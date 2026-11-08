@@ -1,6 +1,6 @@
 import asyncio
 import json
-from types import SimpleNamespace
+from dataclasses import dataclass
 
 import pytest
 
@@ -24,6 +24,11 @@ def composer(tmp_path, workflows: dict, runners: dict, *, store=None, registry=N
         sessions=Sessions(),
         workflows=specs,
     )
+
+
+@dataclass(frozen=True)
+class Leveled:
+    level: str
 
 
 def check_that(fn):
@@ -341,7 +346,7 @@ async def test_a_condition_reads_outputs_the_card_and_config(tmp_path):
             },
         }
     }
-    store = MemoryStore({"card": SimpleNamespace(level="story")})
+    store = MemoryStore({"card": Leveled(level="story")})  # a card's field: a dataclass's, by name
     c = composer(
         tmp_path, wf, {"check": check_that(run)}, store=store, extra={"story": {"layer_attempts": 2}}
     )
@@ -745,3 +750,139 @@ def test_counts_resolve_from_config(tmp_path):
     assert resolve_count(cfg, "story.stage_attempts") == 3 and resolve_count(cfg, 2) == 2
     with pytest.raises(ConfigError, match="story.nope"):
         resolve_count(cfg, "story.nope")
+    with pytest.raises(ConfigError, match="__class__"):
+        resolve_count(cfg, "story.__class__")
+
+
+# ---- a loop re-runs what reads the outputs it clears, and keeps what others wrote (I3, I4) ----
+
+
+async def test_a_loop_re_runs_a_finished_node_that_reads_a_cleared_output_without_a_line(tmp_path):
+    seen = []
+
+    def run(n, c):
+        if c.node == "p":
+            seen.append(("p", None))
+            return {"x": sum(1 for name, _ in seen if name == "p")}
+        if c.node == "q":
+            seen.append(("q", c.store.get("x")))
+            return {"verdict": {"again": c.store.get("x") == 1}}
+        seen.append(("r", c.store.get("x")))
+        return {"y": c.store.get("x")}
+
+    wf = {
+        "w": {
+            "nodes": {
+                "p": chk(outputs={"x": "json"}, to=["q"]),
+                "q": chk(
+                    inputs=["x"],
+                    outputs={"verdict": "json"},
+                    to=[{"node": "p", "when": "verdict.again == true", "loop": {"max": 2}}],
+                ),
+                "r": chk(inputs=["x"], outputs={"y": "json"}),  # no line in: it reads x by name
+            }
+        }
+    }
+    c = composer(tmp_path, wf, {"check": check_that(run)})
+    await c.run("w")
+    assert [s for s in seen if s[0] == "r"][-1] == ("r", 2)  # r ran again with the new x
+    assert c.store.get("y") == 2 and c.store.get("x") == 2
+
+
+async def test_a_loop_keeps_a_name_a_finished_node_outside_it_also_writes(tmp_path):
+    read = []
+
+    def run(n, c):
+        if c.node == "x":
+            return {"s": "from x"}
+        if c.node == "t":
+            read.append(c.store.get("s") if c.store.has("s") else None)
+            return {"seen": len(read)}
+        return {"s": f"from u {len(read)}", "verdict": {"again": len(read) == 1}}
+
+    wf = {
+        "w": {
+            "nodes": {
+                "x": chk(outputs={"s": "text"}, to=["t"]),
+                "t": chk(inputs=["s"], outputs={"seen": "json"}, to=["u"]),
+                "u": chk(
+                    inputs=["seen"],
+                    outputs={"s": "text", "verdict": "json"},
+                    to=[{"node": "t", "when": "verdict.again == true", "loop": {"max": 2}}],
+                ),
+            }
+        }
+    }
+    c = composer(tmp_path, wf, {"check": check_that(run)})
+    await c.run("w")
+    assert read == ["from x", "from u 1"]  # never None: u's rewrite is the latest value, and it stays
+
+
+# ---- a path reads data, never the objects behind it (C1) ----
+
+PROBE = "config.__class__.__init__.__globals__.sys.modules.os.environ.HOME"
+
+
+def lookup_context(tmp_path, values):
+    from dataclasses import replace
+
+    from airlie.flow import RunContext
+    from airlie.story.board import text_card
+
+    return RunContext(
+        cfg=cfg_for(tmp_path),
+        store=MemoryStore({"card": replace(text_card("a card"), title="Fix the marker"), **values}),
+        sessions=Sessions(),
+        registry=Registry(),
+        workflow="w",
+        node="a",
+        item=None,
+        feedback=None,
+    )
+
+
+@pytest.mark.parametrize("path", [PROBE, "card.__class__", "card._private", "story.__len__"])
+def test_a_path_part_starting_with_an_underscore_is_never_read(tmp_path, path):
+    from airlie.flow.render import render
+    from airlie.prompts.hub import PromptError
+
+    ctx = lookup_context(tmp_path, {"story": {"title": "T"}})
+    with pytest.raises(KeyError):
+        ctx.lookup(path)
+    with pytest.raises(PromptError):
+        render("{" + path + "}", ctx.lookup)
+
+
+def test_a_path_descends_only_through_keys_and_declared_fields(tmp_path):
+    ctx = lookup_context(tmp_path, {"story": {"title": "T", "items": ["a"]}})
+    assert ctx.lookup("config.story.max_layers") == ctx.cfg.story.max_layers
+    assert ctx.lookup("card.title") == "Fix the marker"
+    assert ctx.lookup("story.title") == "T"
+    for path in ("card.to_dict", "card.resume", "config.story.model_dump", "story.items.append"):
+        with pytest.raises(KeyError):
+            ctx.lookup(path)  # a method or a property is not data
+
+
+def test_the_probe_is_refused_when_the_workflow_is_checked():
+    def spec(prompt, when):
+        return WorkflowSpec.model_validate(
+            {
+                "inputs": ["card"],
+                "nodes": {
+                    "a": {
+                        "type": "ask",
+                        "role": "product",
+                        "prompt": prompt,
+                        "inputs": ["card"],
+                        "to": [{"node": "b", "when": when}],
+                    },
+                    "b": {"type": "check", "run": "r"},
+                },
+            }
+        )
+
+    problems = check_workflows({"w": spec("{" + PROBE + "} and {card.__class__}", "card.__class__ exists")})
+    assert any(p.startswith("workflow w: node a: prompt") and "'__class__'" in p for p in problems), problems
+    condition = "workflow w: node a: line to b: condition"
+    assert any(p.startswith(condition) and "'__class__'" in p for p in problems), problems
+    assert check_workflows({"w": spec("{config.story.max_layers} {card.title}", "card.title exists")}) == []

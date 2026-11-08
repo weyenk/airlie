@@ -4,9 +4,10 @@
     term := "not" term | "(" expr ")" | atom
     atom := path "exists" | path ("==" | "!=") literal | path
 
-A path is dotted (`verdict.decision`); a bare path is true when its value is truthy. A literal is a quoted
-string, a number, `true`, `false` or a bare word (a string). A path the lookup cannot find makes `exists`
-false and any comparison false. Hand-written tokenizer and recursive descent; imports nothing from `spec`.
+A path is dotted (`verdict.decision`), and no part of it may start with `_`; a bare path is true when its
+value is truthy. A literal is a quoted string, a number, `true`, `false` or a bare word (a string). A path
+the lookup cannot find makes `exists` false and any comparison false. Hand-written tokenizer and recursive
+descent; imports nothing from `spec`.
 """
 
 from __future__ import annotations
@@ -170,6 +171,12 @@ class _Parser:
         if self.tok.kind != "word" or self.tok.text in _KEYWORDS:
             raise self.fail("a path")
         path = self.tok.text
+        hidden = next((part for part in path.split(".") if part.startswith("_")), None)
+        if hidden is not None:
+            raise ConditionError(
+                f"at {self.tok.pos}: the path '{path}' names '{hidden}': "
+                "a part starting with '_' is never read"
+            )
         self.i += 1
         if self.is_word("exists"):
             self.i += 1

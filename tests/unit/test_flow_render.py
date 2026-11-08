@@ -87,3 +87,11 @@ def test_prompt_source_is_the_text_or_the_rule_body():
     assert prompt_source("prompt:mine", {"mine": draft}).strip() == "hello"
     with pytest.raises(PromptError):
         prompt_source("prompt:nope", {})
+
+
+@pytest.mark.parametrize("text", ["{card.__class__}", "{_x}", "{?a._b}x{/a._b}", "{config.__init__.x}"])
+def test_a_placeholder_part_starting_with_an_underscore_is_refused_naming_it(text):
+    with pytest.raises(PromptError, match=r"names '_"):
+        names(text)
+    with pytest.raises(PromptError, match=r"names '_"):
+        render(text, lookup_of({"card": Card("T", "D"), "a": {"_b": 1}}))

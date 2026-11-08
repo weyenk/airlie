@@ -20,13 +20,23 @@ ITEM = "item"
 PREFIX = "prompt:"
 
 _TOKEN = re.compile(r"\{\{|\}\}|\{\?([^{}\s]*)\}|\{/([^{}\s]*)\}|\{([^{}]*)\}|[{}]")
-_PATH = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*")
+_PATH = re.compile(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9][A-Za-z0-9_]*)*")
 
 # A parsed text: literal strings, ("var", path) and ("block", name, children).
 _Part = str | tuple[str, str] | tuple[str, str, list[Any]]
 
 
+def hidden_part(path: str) -> str | None:
+    """The first part of a dotted `path` that starts with `_` (`__class__`), else None: a path reads data,
+    and such a part is never read (`RunContext.lookup`), so a text or a condition naming one is refused."""
+    return next((part for part in path.split(".") if part.startswith("_")), None)
+
+
 def _check_path(path: str, text: str) -> str:
+    if (hidden := hidden_part(path)) is not None:
+        raise PromptError(
+            f"prompt text: '{{{path}}}' names '{hidden}': a part starting with '_' is never read"
+        )
     if not _PATH.fullmatch(path):
         raise PromptError(
             f"prompt text: '{{{path}}}' is not a placeholder (a name or a dotted path): {text[:60]!r}"

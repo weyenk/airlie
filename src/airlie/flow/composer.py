@@ -25,11 +25,13 @@ when a node runs. The rules, as `_Run` implements them:
   not, so a resume runs it again.
 - When a node finishes, its loop lines are tried first, in order: one fires when its `when` holds (with no
   `when`, when the node failed) and its bound (`max`, a count or a config path) is not spent. It puts its
-  `carry` under `feedback.<target>` (`.<item>` in a bundle item), cancels any of the target and the nodes
-  downstream of it (through forward lines) still running, and sends them back to pending: out of the done
-  set, their outputs cleared (`store.put(name, None)`; a session popped; the memory heads kept) and the
-  lines out of them unresolved; a bundle node sent back forgets its items too (their done names, the
-  bundle workflow's outputs, feedback and loop counts), so each item runs again. Else a failed node with
+  `carry` under `feedback.<target>` (`.<item>` in a bundle item), cancels any of the target, the nodes
+  downstream of it (through forward lines) and the nodes that ran and read an output of those (line or no
+  line, transitively) still running, and sends them back to pending: out of the done set, their outputs
+  cleared (`store.put(name, None)`; a session popped; the memory heads kept, and a name a finished node
+  outside them also writes kept at its latest value) and the lines out of them unresolved; a bundle node
+  sent back forgets its items too (their done names, the bundle workflow's outputs, feedback and loop
+  counts), so each item runs again. Else a failed node with
   `on_fail: block` raises `StoryBlocked`; else its forward lines fire or die by their conditions.
 - A `bundle` node runs its workflow once per item of its `each` list (`01`, `02`, ... in order), or once
   without `each`, on a `BundleStore`: the parent's store read by name, written only under the bundle
@@ -49,10 +51,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import time
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
+
+from pydantic import BaseModel
 
 from airlie.flow import conditions
 from airlie.flow.prompt_files import FEEDBACK, PREFIX, prompt_builder
@@ -128,13 +133,16 @@ class RunContext:
     def lookup(self, path: str) -> Any:
         """The value of a dotted path: `feedback` is the carried feedback; `config.<a>.<b>` is read on the
         config; anything else on the store, the longest name it holds first (`verdict.decision` is the
-        `decision` of `verdict`; `card.level` the loose card's field, by key or attribute). A path with no
-        value (missing, or None) is a KeyError."""
+        `decision` of `verdict`; `card.title` the loose card's field). Below the head a path goes through a
+        mapping's keys, a pydantic model's fields and a dataclass's fields only (`_field`), and a part
+        starting with `_` is refused. A path with no value (missing, or None) is a KeyError."""
         if path == FEEDBACK:
             if self.feedback is None:
                 raise KeyError(path)
             return self.feedback
         parts = path.split(".")
+        if any(part.startswith("_") for part in parts):
+            raise KeyError(path)  # a path reads data, never what is behind it (`_field`)
         if parts[0] == "config":
             return _descend(self.cfg, parts[1:], path)
         for cut in range(len(parts), 0, -1):
@@ -148,17 +156,30 @@ class RunContext:
 
 def _descend(value: Any, parts: list[str], path: str) -> Any:
     for part in parts:
-        if isinstance(value, Mapping):
-            if part not in value:
-                raise KeyError(path)
-            value = value[part]
-        elif value is None or not hasattr(value, part):
+        value = _field(value, part)
+        if value is _NONE:
             raise KeyError(path)
-        else:
-            value = getattr(value, part)
     if value is None:
         raise KeyError(path)
     return value
+
+
+_NONE = object()
+
+
+def _field(value: Any, part: str) -> Any:
+    """`part` of `value`: a mapping's key, a pydantic model's declared field or a dataclass's field, else
+    `_NONE`. Never an attribute beyond those (a method, a property, a dunder): a path reads data only, and a
+    part starting with `_` is never read at all."""
+    if part.startswith("_") or value is None:
+        return _NONE
+    if isinstance(value, Mapping):
+        return value.get(part, _NONE)
+    if isinstance(value, BaseModel):
+        return getattr(value, part) if part in type(value).model_fields else _NONE
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return getattr(value, part) if part in {f.name for f in dataclasses.fields(value)} else _NONE
+    return _NONE
 
 
 Runner = Callable[[NodeSpec, RunContext], Awaitable[Mapping[str, Any]]]
@@ -172,9 +193,9 @@ def resolve_count(cfg: AirlieConfig, value: int | str) -> int:
 
     found: Any = cfg
     for part in value.split("."):
-        if not hasattr(found, part):
+        found = _field(found, part)
+        if found is _NONE:
             raise ConfigError(f"count '{value}': config has no '{part}'")
-        found = getattr(found, part)
     return int(found)
 
 
@@ -580,7 +601,7 @@ class _Run:
             if (self.holds(line.when, name) if line.when is not None else failed) and self.again(
                 name, line, result
             ):
-                again = {line.node} | self.downstream(line.node)
+                again = self.readers({line.node} | self.downstream(line.node))
                 if name not in again:
                     self.state[name] = "finished"
                     self.fire(name)
@@ -604,14 +625,38 @@ class _Run:
             self.store.put(self.feedback_name(line.node), result[line.loop.carry])
         return True
 
+    def readers(self, names: set[str]) -> set[str]:
+        """`names` and every node that has run (or is running) and reads, among its inputs, an output of
+        one of them, transitively: what read an output a loop clears runs again with the new one, line or
+        no line."""
+        again = set(names)
+        todo = list(again)
+        while todo:
+            outs = self.nodes[todo.pop()].outputs
+            for m in self.names:
+                if m in again or self.state[m] not in ("finished", "running"):
+                    continue
+                if any(_reads(i, o) for i in self.nodes[m].inputs for o in outs):
+                    again.add(m)
+                    todo.append(m)
+        return again
+
     async def send_back(self, names: set[str]) -> None:
         await self.cancel([t for t, n in self.running.items() if n in names])
+        # a name a finished node outside the loop also writes keeps its latest value: clearing it would
+        # leave a node in the loop that reads it nothing to read
+        kept = {
+            out
+            for m in self.names
+            if m not in names and self.state[m] == "finished"
+            for out in self.nodes[m].outputs
+        }
         for n in names:
             self.state[n] = "pending"
             self.forced.add(n)
             self.store.clear_done(self.done_name(n))
             for out, spec in self.nodes[n].outputs.items():
-                if out.partition(".")[0] in MEMORY:
+                if out.partition(".")[0] in MEMORY or out in kept:
                     continue
                 if spec.format == "session":
                     self.c.sessions.pop(self.name(out))
@@ -622,6 +667,12 @@ class _Run:
             if self.nodes[n].type == "bundle":
                 self.forget(n)
         self.store.save()
+
+
+def _reads(name: str, output: str) -> bool:
+    """An input `name` reads `output`: the same name, or one inside the other (`verdict.decision` of
+    `verdict`)."""
+    return name == output or name.startswith(f"{output}.") or output.startswith(f"{name}.")
 
 
 def _sub(name: str, item: str | None) -> str:

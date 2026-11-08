@@ -67,3 +67,9 @@ def test_a_malformed_expression_says_where_and_what_was_expected():
         parse("(a b")
     with pytest.raises(ConditionError, match=r"at 2: expected 'and', 'or' or the end"):
         parse("a b")
+
+
+@pytest.mark.parametrize("text", ["card.__class__ exists", "x._y == 1", "_x", "not a.__dict__"])
+def test_a_path_part_starting_with_an_underscore_is_refused_naming_it(text):
+    with pytest.raises(ConditionError, match=r"names '_"):
+        parse(text)
