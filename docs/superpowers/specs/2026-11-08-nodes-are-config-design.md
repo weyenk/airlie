@@ -200,6 +200,32 @@ wins). Where a brief today assembles files and sections by code (the layer-build
 an input-rendering rule of the prompt file, not a Python function. Nothing a brief says to a model changes
 in this round; the trace diff (Part 2, Task 6) proves it.
 
+## Bundles and isolation
+
+Noah, 2026-11-08: the story calling the layer bundle is the right way to manage complexity, and it makes
+workflows a first-class thing to manage; steps are isolated and share artifacts only through inputs and
+outputs.
+
+- **A bundle is a step.** A workflow declares `inputs` and `outputs` as a node does; dropped on a canvas it
+  is a box with those ports, and the composer checks the lines into it the same way. Nothing crosses the
+  boundary by name: the layer bundle's `loose: [card, story, layers, base, gate]` becomes its declared inputs,
+  and the parent's line into it carries the list it runs over.
+- **Open in place.** Double-click on a bundle box opens that workflow in the builder with a breadcrumb back.
+- **Use tracking.** The Workflows page shows where a bundle is used; deleting or renaming one in use is
+  refused with the list.
+- **Snapshots stay, with a second door.** A running card keeps the snapshot it started with. A card gets the
+  action "use the current workflow": the snapshot is replaced with what the files and drafts say now and
+  the run continues by the artifacts present, so a card that holds `story` and `layers` goes on from there
+  under the new wiring and a node whose outputs are gone runs again. This is how a person works the kinks
+  out of a new workflow without restarting every card. The restart-from-step keeps the old snapshot, as
+  today.
+- **Shared conversations.** Steps share only through inputs and outputs. The one shared thing today is a
+  `session` artifact, a model's live conversation continued by a later node of the same role (the coder's
+  done-check, fix and follow-up; the architect's package retry), kept because a cold restart of the coder's
+  conversation once cost 47 minutes of lost cache. Noah's rule: allowed only when the same role does both.
+  Proposed, pending Noah: a session line is valid only between two nodes of the same role, enforced by
+  `check_workflows` and refused in the builder; or sessions go for now and each such turn starts fresh.
+
 ## Decisions
 
 - **D1.** A model node is pure configuration: type, role, prompt text, inputs, outputs with fields, steps,
@@ -220,6 +246,9 @@ in this round; the trace diff (Part 2, Task 6) proves it.
 - **D10.** The story workflow is rewritten on this surface and the Python brief builders and parsers are
   deleted. (me)
 - **D11.** Part 2's studio split still follows; this round goes first. (me)
+- **D23.** A bundle is a step with declared inputs and outputs; nothing crosses its boundary by name. (Noah)
+- **D24.** A card can adopt the current workflow in place of its snapshot and continue by the artifacts present. (Noah)
+- **D25.** Steps share only through inputs and outputs; a shared conversation only between nodes of the same role, if kept at all. (Noah; whether sessions stay is pending)
 
 ## Left to the builder
 
