@@ -314,8 +314,11 @@ async def test_a_card_on_a_draft_workflow_restarted_from_a_step_runs_its_own_sna
     saved["story"] = {"title": "fix the marker"}  # what a later point needs reached; mini refines nothing
     (st.path / "state.json").write_text(json.dumps(saved))
     trunk_commit(repo, {"NEWS": "news\n"})
+    assert saved["nodes_done"]  # the composer's done set, before the restart
     await start_over(tmp_path, card, board, GitHubPrs(), "layers")
-    assert json.loads((st.path / "state.json").read_text())["workflow"] == snap
+    kept = json.loads((st.path / "state.json").read_text())
+    assert kept["workflow"] == snap
+    assert "nodes_done" not in kept  # dropped whole: an output-less node runs again
     before = len((st.path / "events.jsonl").read_text().splitlines())
 
     again = pipeline(tmp_path, repo, happy_engine(), board=board)

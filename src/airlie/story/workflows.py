@@ -3,11 +3,11 @@ found among the repo's workflows and the board's drafts, and snapshotted into th
 it is used, so every resume runs what the card started on whatever the drafts and files say since
 (docs/superpowers/specs/2026-11-07-workflow-builder-design.md, D16, D17, D21)."""
 
-# This module still reads the schema v1 fields; Task 9 rewrites it and removes the mypy ignore below.
-# mypy: ignore-errors
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+import hashlib
+import json
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -15,14 +15,16 @@ from pydantic import ValidationError
 
 from airlie.flow.prompt_files import parse_draft_prompts
 from airlie.flow.spec import WorkflowSpec, check_workflows
+from airlie.flow.upgrade import upgrade_v1
 from airlie.prompts.hub import PromptError
 from airlie.prompts.hub import load as hub_prompts
-from airlie.story.board import Card
-from airlie.story.model import StoryError
+from airlie.story.board import Card, note
+from airlie.story.model import StoryError, StoryRunning
 
 if TYPE_CHECKING:
     from airlie.board.model import WorkflowDraft
     from airlie.config import AirlieConfig
+    from airlie.flow.catalog import Catalog
     from airlie.story.pipeline import StoryPipeline
     from airlie.story.state import StoryState
 
@@ -80,13 +82,33 @@ def draft_body(text: str, name: str | None = None) -> tuple[str, Mapping[str, An
     return str(got), body
 
 
-def draft_spec(name: str, text: str) -> WorkflowSpec:
-    """Draft `name`'s YAML text: `workflows:` holding that one workflow."""
+Snapshot = dict[str, Any]
+"""What `StoryState.workflow` keeps (`snapshot`)."""
+
+
+def _catalog() -> Catalog:
+    from airlie.story.flow import STORY_CATALOG  # the story's checks; story.flow imports this module
+
+    return STORY_CATALOG
+
+
+def upgraded_draft(name: str, text: str) -> tuple[WorkflowSpec, list[str]]:
+    """Draft `name`'s YAML text (`workflows:` holding that one workflow), an old-schema one upgraded
+    (`upgrade_v1`, D21), and what the upgrade left for a person to write ("workflow <name>: node <n>: ...").
+    A draft that does not parse or validate is a WorkflowError."""
     _, body = draft_body(text, name)
+    data, problems = upgrade_v1(body, catalog=_catalog())
     try:
-        return WorkflowSpec.model_validate(body)
+        spec = WorkflowSpec.model_validate(data)
     except ValidationError as e:
         raise WorkflowError(f"draft workflow {name!r}: {e}") from None
+    return spec, [f"workflow {name}: {p}" for p in problems]
+
+
+def draft_spec(name: str, text: str) -> WorkflowSpec:
+    """Draft `name`'s YAML text, upgraded when it is the old schema (`upgraded_draft`; what the upgrade left
+    is not said here)."""
+    return upgraded_draft(name, text)[0]
 
 
 DraftPrompts = Mapping[str, Mapping[str, str]]
@@ -131,6 +153,7 @@ def resolve_workflows(
     draft even when a file has the name, as the builder checks an edit of a file (never as a card runs)."""
     specs: dict[str, WorkflowSpec] = {}
     from_drafts: list[str] = []
+    upgrade: list[str] = []  # what an old-schema draft's upgrade left for a person to write (D21)
     todo = [name]
     while todo:
         wanted = todo.pop()
@@ -139,7 +162,8 @@ def resolve_workflows(
         if wanted in cfg.workflows and not (own and wanted == name and wanted in drafts):
             spec = cfg.workflows[wanted]  # a same-name draft is a pending edit of the file: never run
         elif wanted in drafts:
-            spec = draft_spec(wanted, drafts[wanted])
+            spec, left = upgraded_draft(wanted, drafts[wanted])
+            upgrade += left
             from_drafts.append(wanted)
         elif wanted == name:
             raise WorkflowError(f"no workflow named {name!r}")
@@ -151,9 +175,7 @@ def resolve_workflows(
         texts = parse_draft_prompts(closure_prompts(prompts, from_drafts))
     except PromptError as e:
         raise WorkflowError(f"draft workflow {name!r}: prompt file {e}") from None
-    from airlie.story.flow import STORY_CATALOG  # the story's checks; story.flow imports this module
-
-    if problems := check_workflows(specs, prompts=texts, catalog=STORY_CATALOG):
+    if problems := upgrade + check_workflows(specs, prompts=texts, catalog=_catalog()):
         raise WorkflowError("; ".join(problems))
     return specs
 
@@ -207,13 +229,99 @@ def snapshot(
 
 
 def from_snapshot(data: Mapping[str, Any]) -> tuple[str, dict[str, WorkflowSpec], dict[str, str]]:
-    """The name, specs and prompt files a snapshot keeps (none in one saved before snapshots kept them)."""
+    """The name, specs and prompt files a snapshot keeps (none in one saved before snapshots kept them). A
+    spec saved in the old schema is upgraded (`upgrade_v1`, D21); one whose upgrade leaves a problem (a node
+    that named code) is a WorkflowError listing them, and the card can adopt the current workflow
+    (`adopt_current`) or start over."""
     name = str(data["name"])
+    upgraded: dict[str, dict[str, Any]] = {}
+    left: list[str] = []
+    for wname, raw in data["specs"].items():
+        upgraded[wname], problems = upgrade_v1(raw, catalog=_catalog())
+        left += [f"workflow {wname}: {p}" for p in problems]
+    if left:
+        raise WorkflowError(f"snapshot of {name!r} is the old schema and cannot run: {'; '.join(left)}")
     try:
-        specs = {n: WorkflowSpec.model_validate(s) for n, s in data["specs"].items()}
+        specs = {n: WorkflowSpec.model_validate(s) for n, s in upgraded.items()}
     except ValidationError as e:  # saved by an older airlie whose spec this one no longer reads
         raise WorkflowError(f"snapshot of {name!r} no longer validates: {e}") from None
     return name, specs, {str(id): str(text) for id, text in data.get("prompts", {}).items()}
+
+
+def spec_hash(data: Mapping[str, Any] | None) -> str | None:
+    """A short hash of a snapshot's specs as JSON (None for no snapshot): what `workflow_adopted` names."""
+    if data is None:
+        return None
+    text = json.dumps(data.get("specs"), sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
+async def adopt_current(
+    pipe: StoryPipeline,
+    st: StoryState,
+    card: Card,
+    *,
+    running: Callable[[str], bool] | None = None,
+    by: str | None = None,
+) -> Snapshot:
+    """The card takes the current workflow in place of its snapshot (D24): `card_workflow(card)` resolved now
+    over the pipeline's drafts and their prompts, snapshotted into `st`, saved. Every other field of the
+    state is kept (`artifacts` and `nodes_done` too), so the next run goes on by what is present: a node
+    whose outputs exist is skipped, one whose outputs are gone runs. Emits `workflow_adopted {name, from,
+    to}` (the old and new specs' `spec_hash`) and posts a note on the card (naming `by`, who asked, when
+    given); returns the new snapshot.
+
+    Refused with StoryRunning while the story runs (its serve job, by `running`, or a lane: restart's rule),
+    and with a WorkflowError when the card keeps no snapshot (it runs without one, so there is nothing to
+    replace) or the current workflow does not resolve; nothing is changed by a refusal."""
+    from airlie.story.restart import _running_now  # restart imports the local board, which imports this
+
+    why = _running_now(card.key, st.path.parent, running)
+    if why is not None:
+        raise StoryRunning(
+            f"story {card.key} is running now ({why}): use the current workflow once it has stopped"
+        )
+    old = st.workflow
+    if old is None:
+        raise WorkflowError(
+            f"story {card.key} keeps no workflow snapshot: it runs without one, so nothing is replaced"
+        )
+    name = card_workflow(card)
+    prompts = pipe.draft_prompts()
+    specs = resolve_workflows(pipe.cfg, pipe.drafts(), name, prompts=prompts)
+    new = snapshot(name, specs, closure_prompts(prompts, drafted(pipe.cfg, specs)))
+    st.workflow = new
+    st.save()
+    before, after = spec_hash(old), spec_hash(new)
+    st.emit("workflow_adopted", name=name, **{"from": before, "to": after})
+    was = f"{old.get('name')} {before}" if old.get("name") != name else str(before)
+    said = f"now runs the current {name} workflow ({after}, in place of {was})"
+    asked = f", as {by} asked" if by else ""
+    await pipe.board.comment(card, note(f"{said}{asked}; its next run goes on from what it has"))
+    return new
+
+
+def bundle_users(cfg: AirlieConfig, drafts: Mapping[str, str]) -> dict[str, list[str]]:
+    """Each workflow a `bundle` node runs (an old draft's `each` node, as upgraded, too) -> the other
+    workflows, the repo's and the drafts' (name -> YAML text), whose nodes run it, sorted. A draft that does
+    not read runs none."""
+    specs: list[tuple[str, WorkflowSpec]] = list(cfg.workflows.items())
+    for wname, text in drafts.items():
+        try:
+            specs.append((wname, draft_spec(wname, text)))
+        except WorkflowError:
+            continue
+    found: dict[str, set[str]] = {}
+    for wname, spec in specs:
+        for n in spec.nodes.values():
+            if n.type == "bundle" and n.workflow is not None and n.workflow != wname:
+                found.setdefault(n.workflow, set()).add(wname)
+    return {name: sorted(users) for name, users in found.items()}
+
+
+def used_by(cfg: AirlieConfig, drafts: Mapping[str, str], name: str) -> list[str]:
+    """The other workflows whose `bundle` nodes run workflow `name` (`bundle_users`)."""
+    return bundle_users(cfg, drafts).get(name, [])
 
 
 def has_node(spec: WorkflowSpec, name: str) -> bool:

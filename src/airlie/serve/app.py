@@ -60,7 +60,7 @@ from airlie.story.restart import FRESH, RestartError, RestartIncomplete
 from airlie.story.state import STAGES
 from airlie.story.stats import line_stats, parse_since
 from airlie.story.workflow_publish import publish_workflow
-from airlie.story.workflows import board_problems
+from airlie.story.workflows import WorkflowError, board_problems
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
@@ -324,6 +324,12 @@ def _story_restart_factory() -> Callable[..., Any]:
     return restart_one
 
 
+def _story_adopt_factory() -> Callable[..., Any]:
+    from airlie.story.factory import adopt_one
+
+    return adopt_one
+
+
 def _story_job_factory() -> Callable[..., Any]:
     from airlie.story.factory import story_job
 
@@ -416,6 +422,7 @@ def create_app(
     story_job: Callable[..., Any] | None = None,
     initiative_job: Callable[..., Any] | None = None,
     story_restart: Callable[..., Any] | None = None,
+    story_adopt: Callable[..., Any] | None = None,
     auth_store: AuthStore | None = None,
     now: Callable[[], float] = time.time,
     next_dir: Path | None = None,
@@ -427,7 +434,8 @@ def create_app(
     `story_job` builds the job `POST /v1/airlie/stories` starts (default: airlie.story.factory.story_job);
     `initiative_job` the one the initiative routes start (default: airlie.story.factory.initiative_job);
     `story_restart` what `POST /v1/airlie/stories/{key}/restart` runs (default:
-    airlie.story.factory.restart_one).
+    airlie.story.factory.restart_one); `story_adopt` what `POST /v1/airlie/stories/{key}/adopt-workflow` runs
+    (default: airlie.story.factory.adopt_one).
     `auth_store` (default: observability.state_dir/auth.sqlite), `now` and `next_dir` (the Vue app's build,
     default NEXT_DIR), `tick_s` (the line's beat interval, default line.tick_s) and `line_beat` (replaces the
     line's beat, given the function that starts a lane's job) are for tests."""
@@ -446,6 +454,7 @@ def create_app(
     make_story = story_job or _story_job_factory()
     make_initiative = initiative_job or _initiative_job_factory()
     restart_story = story_restart or _story_restart_factory()
+    adopt_story = story_adopt or _story_adopt_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
 
     def workflow_check(name: str) -> str | None:
@@ -889,6 +898,25 @@ def create_app(
             raise HTTPException(400, str(e)) from e
         except PublishError as e:
             raise HTTPException(502, f"{e}; nothing was changed: send it again") from e
+        feed.publish("board", key)
+        return dict(done.to_dict())
+
+    @app.post("/v1/airlie/stories/{key}/adopt-workflow")
+    async def story_adopt_post(key: str, request: Request) -> dict[str, Any]:
+        """The story `key` takes the current workflow in place of the snapshot it started on (D24), as the
+        person signed in asked: its next run goes on by the artifacts it has. 409 while it runs; 422 for a
+        story that has not started or keeps no snapshot, a workflow that does not resolve now, or an item
+        that is not a story; nothing changes on a refusal."""
+        principal = owner_of(request)
+        by = principal.name if principal is not None else "person"
+        try:
+            done = await adopt_story(cfg, key, by=by, running=job_running)
+        except StoryRunning as e:
+            raise HTTPException(409, str(e)) from e
+        except (WorkflowError, BoardError) as e:
+            raise HTTPException(422, str(e)) from e
+        except StorySetupError as e:
+            raise HTTPException(400, str(e)) from e
         feed.publish("board", key)
         return dict(done.to_dict())
 

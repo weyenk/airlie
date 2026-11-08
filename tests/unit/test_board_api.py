@@ -148,7 +148,7 @@ def test_a_move_through_the_api_is_recorded_as_the_principals(tmp_path: Path) ->
 
 # ---- the card's workflow (docs/superpowers/specs/2026-11-07-workflow-builder-design.md) ----
 
-NO_RUN = MINI.replace("intake: {type: check, run: story.intake}", "intake: {type: check}")
+NO_RUN = MINI.replace("intake: {type: check, run: story.intake,", "intake: {type: check,")
 
 
 def test_a_label_naming_an_unknown_workflow_is_refused_with_422(tmp_path: Path) -> None:

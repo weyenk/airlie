@@ -39,19 +39,33 @@ MINI = """\
 workflows:
   mini:
     type: bug
-    start: intake
-    loose: [card, repo]
+    inputs: [card, repo]
     nodes:
-      intake: {type: check, run: story.intake}
-      base: {type: check, run: story.base, outputs: {base: json}}
-      gate: {type: check, run: story.gate, inputs: [base], outputs: {gate: json}}
-      review: {type: gate, run: story.finish}
+      intake: {type: check, run: story.intake, inputs: [card], to: [base]}
+      base: {type: check, run: story.base, inputs: [card, repo], outputs: {base: json}, to: [gate]}
+      gate: {type: check, run: story.gate, inputs: [repo, base], outputs: {gate: json}, to: [review]}
+      review: {type: gate, run: story.finish, inputs: [card]}
 """
-MINI_MORE = MINI.replace(
-    "      review:", "      costed: {type: check, run: story.costed, args: {stages: [plan]}}\n      review:"
+
+
+def before_review(text: str, *nodes: str) -> str:
+    """`text` (MINI, or one made from it) with `nodes` (each `name: {...}`, with no `to`) drawn in order
+    between the gate and the review."""
+    names = [n.split(":", 1)[0] for n in nodes]
+    drawn = "".join(
+        f"      {n[:-1]}, to: [{to}]}}\n" for n, to in zip(nodes, [*names[1:], "review"], strict=True)
+    )
+    return text.replace("to: [review]}", f"to: [{names[0]}]}}").replace(
+        "      review:", drawn + "      review:"
+    )
+
+
+MINI_MORE = before_review(
+    MINI, "costed: {type: check, run: story.costed, inputs: [card], args: {stages: [plan]}}"
 )
-MINI_EACH = MINI.replace(
-    "      review:", "      build_layers: {type: each, over: layers, workflow: tiny}\n      review:"
+MINI_EACH = before_review(
+    MINI.replace("    inputs: [card, repo]\n", "    inputs: [card, repo, layers]\n"),
+    "build_layers: {type: bundle, workflow: tiny, each: layers, inputs: [layers, card]}",
 )
 NOTE = """\
 ---
@@ -62,26 +76,22 @@ why: The mini workflow's note, written in the builder.
 ---
 Write one line about this card: {card}
 """
-MINI_NOTE = MINI.replace(
-    "      review:",
-    "      note: {type: ask, role: product, prompt: 'prompt:mini-note', inputs: [card],\n"
-    "             outputs: {artifacts.note: text}}\n"
-    "      review:",
+MINI_NOTE = before_review(
+    MINI,
+    "note: {type: ask, role: product, prompt: 'prompt:mini-note', inputs: [card],"
+    " outputs: {artifacts.note: text}}",
 )
-MINI_REPRO = MINI.replace(
-    "      review:",
-    "      repro: {type: ask, role: product, prompt: 'prompt:mini-note', inputs: [card],\n"
-    "              outputs: {repro: text}}\n"
-    "      read_repro: {type: check, run: story.costed, args: {stages: [plan]}, inputs: [repro]}\n"
-    "      review:",
+MINI_REPRO = before_review(
+    MINI,
+    "repro: {type: ask, role: product, prompt: 'prompt:mini-note', inputs: [card], outputs: {repro: text}}",
+    "read_repro: {type: check, run: story.costed, args: {stages: [plan]}, inputs: [card, repro]}",
 )
 TINY = """\
 workflows:
   tiny:
-    start: note
-    loose: [card]
+    inputs: [card]
     nodes:
-      note: {type: check, run: story.costed, args: {stages: [layer]}}
+      note: {type: check, run: story.costed, inputs: [card], args: {stages: [layer]}}
 """
 
 
@@ -126,12 +136,12 @@ def test_workflow_label_is_the_first_named_one_and_none_without_one() -> None:
 def test_resolve_adds_a_valid_draft_and_refuses_an_invalid_or_missing_one() -> None:
     cfg = load_config(Path("airlie.yaml"))
     good = (
-        "workflows:\n  mini:\n    type: bug\n    start: intake\n    loose: [card, repo]\n    nodes:\n"
-        "      intake: {type: check, run: story.intake}\n"
+        "workflows:\n  mini:\n    type: bug\n    inputs: [card, repo]\n    nodes:\n"
+        "      intake: {type: check, run: story.intake, inputs: [card]}\n"
     )
     assert set(resolve_workflows(cfg, {"mini": good}, "mini")) == {"mini"}
     with pytest.raises(WorkflowError, match="node intake: check needs run"):
-        resolve_workflows(cfg, {"mini": good.replace(", run: story.intake", "")}, "mini")
+        resolve_workflows(cfg, {"mini": good.replace(" run: story.intake,", "")}, "mini")
     with pytest.raises(WorkflowError, match="no workflow named 'nope'"):
         resolve_workflows(cfg, {}, "nope")
 
@@ -209,7 +219,7 @@ def test_a_drafts_own_prompt_file_resolves_and_an_unknown_or_broken_one_does_not
 
 def test_a_snapshot_that_no_longer_validates_is_a_workflow_error() -> None:
     with pytest.raises(WorkflowError, match="snapshot of 'mini' no longer validates"):
-        from_snapshot({"name": "mini", "specs": {"mini": {"start": "a", "nodes": {}, "gone": 1}}})
+        from_snapshot({"name": "mini", "specs": {"mini": {"nodes": {}, "gone": 1}}})
 
 
 async def test_a_workflow_without_a_planned_node_passes_the_plan_lane_at_once(tmp_path: Path) -> None:

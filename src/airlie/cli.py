@@ -1454,6 +1454,34 @@ def story_restart(
     console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
+@story_app.command("adopt-workflow")
+def story_adopt_workflow(
+    ref: Annotated[str | None, typer.Argument(metavar="ISSUE", help="the story's key (AIR-7)")] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Have a story run the current workflow in place of the snapshot it started on: what the workflow files
+    and the board's drafts say now, for the workflow its label names. Everything else it has is kept, so its
+    next run goes on from there: a step whose outputs it holds is skipped, a new or changed one runs. A story
+    that is running, has not started, or whose workflow does not resolve now is refused, with nothing
+    changed."""
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.model import StoryRunning, StorySetupError
+    from airlie.story.workflows import WorkflowError
+
+    if ref is None:
+        err.print("[red]pass the story's key (AIR-7)[/red]")
+        raise typer.Exit(2)
+    cfg = _story_cfg(config)
+    try:
+        done = _run_stoppable(factory.adopt_one(cfg, ref))
+    except (BoardError, StorySetupError, StoryRunning, WorkflowError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    line = f"{done.key} now runs the current {done.name} workflow ({done.after}, was {done.before})"
+    console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
 @story_app.command("pr-body")
 def story_pr_body(
     ref: Annotated[

@@ -244,6 +244,9 @@ def _cleared(
     # st.workflow is kept: a restart from a step resumes node ids that only the snapshot names, so the
     # snapshot must stay; a changed definition is picked up by a fresh card (a started card's workflow
     # cannot change)
+    # the done set goes whole: a node with outputs is skipped by them, kept or cleared above; one with none
+    # runs again (a board note said twice is the price)
+    st.nodes_done = []
     st.prs = []
     st.blocked = None
     st.save()

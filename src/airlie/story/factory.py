@@ -48,7 +48,7 @@ from airlie.story.publish import Checked, Publisher, PublishError
 from airlie.story.restack import RestackError
 from airlie.story.restart import FRESH, Restarted, restart
 from airlie.story.state import STAGES, StoryState, lane_lock, lane_record, lock_held
-from airlie.story.workflows import board_problems
+from airlie.story.workflows import WorkflowError, adopt_current, board_problems, spec_hash
 from airlie.teams.worktree import remote_url, rev_parse
 from airlie.topology.studio import StudioOrchestrator, specialists
 
@@ -366,6 +366,40 @@ async def restart_one(
         running=running,
         replay=replay,
     )
+
+
+class Adopted(NamedTuple):
+    """What adopting the current workflow did: the card, the workflow it now runs, and the short hashes of
+    the specs it ran before and runs now (`workflows.spec_hash`)."""
+
+    key: str
+    name: str
+    before: str | None
+    after: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"key": self.key, "name": self.name, "from": self.before, "to": self.after}
+
+
+async def adopt_one(
+    cfg: AirlieConfig, key: str, *, by: str = "person", running: Callable[[str], bool] | None = None
+) -> Adopted:
+    """The story `key` takes the current workflow in place of its snapshot (`workflows.adopt_current`, D24),
+    as `by` asked: resolved now over the board's drafts, in the checkout its record names, every other part
+    of its state kept. A story with no record is a WorkflowError (it runs the current workflow when it
+    starts); one running now (its serve job, by `running`, or a lane) is StoryRunning; an item that is not a
+    story is the board's BoardError. It takes no lane, as a restart takes none."""
+    board = make_board(cfg)
+    card = await board.card(key)
+    saved = _recorded(cfg, card)
+    if "repo" not in saved:
+        raise WorkflowError(f"story {key} has not started: it runs the current workflow when it does")
+    repo = Path(saved["repo"])
+    pipe = make_pipeline(cfg, board=board, repo=repo, github_repo=saved.get("github_repo"))
+    st = StoryState.open(stories_dir(cfg) / key, card, repo, github_repo=saved.get("github_repo"))
+    old = st.workflow
+    new = await adopt_current(pipe, st, card, running=running, by=by)
+    return Adopted(key, str(new["name"]), spec_hash(old), spec_hash(new))
 
 
 async def body_one(cfg: AirlieConfig, *, board: Board, card: Card, nn: str, repo: Path | None = None) -> str:

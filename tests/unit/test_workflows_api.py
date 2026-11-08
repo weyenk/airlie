@@ -77,8 +77,10 @@ def test_the_list_shows_the_repo_workflows_and_the_drafts(tmp_path: Path) -> Non
     assert r.status_code == 200
     rows = {w["name"]: w for w in r.json()["workflows"]}
     assert rows["story"] == {
-        "name": "story", "type": "story", "source": "file", "bundle": False, "problems": [], "pr": None
+        "name": "story", "type": "story", "source": "file", "bundle": False, "problems": [], "pr": None,
+        "used_by": [],
     }  # fmt: skip
+    assert rows["layer"]["used_by"] == ["story"]
     assert rows["layer"]["bundle"] is True and rows["layer"]["type"] is None
     assert (
         rows["mini"]["source"] == "draft" and rows["mini"]["type"] == "bug" and rows["mini"]["problems"] == []
@@ -165,7 +167,7 @@ def test_a_file_workflow_reads_as_its_file_text_else_its_spec(tmp_path: Path) ->
     assert story["yaml"] == shipped and story["source"] == "file" and story["type"] == "story"
     assert story["prompts"] == {} and story["problems"] == [] and story["pr"] is None
     dumped = yaml.safe_load(layer["yaml"])["workflows"]
-    assert list(dumped) == ["layer"] and dumped["layer"]["start"] == c.workflows["layer"].start
+    assert list(dumped) == ["layer"] and dumped["layer"]["inputs"] == c.workflows["layer"].inputs
     assert missing.status_code == 404
 
 
@@ -177,7 +179,7 @@ def test_a_draft_named_as_a_file_is_a_pending_edit_of_it(tmp_path: Path) -> None
     data = yaml.safe_load((WORKFLOWS / "story.yaml").read_text())
     data["workflows"]["story"]["layout"] = {"intake": {"x": 10, "y": 20}}
     laid_out = yaml.safe_dump(data, sort_keys=False)
-    broken = laid_out.replace("start: intake", "start: nowhere")
+    broken = laid_out.replace("run: story.intake", "run: story.nowhere", 1)
     assert broken != laid_out
     with http:
         put = http.put("/v1/workflows/drafts/story", json={"type": "story", "yaml": laid_out}, headers=AUTH)
@@ -190,8 +192,8 @@ def test_a_draft_named_as_a_file_is_a_pending_edit_of_it(tmp_path: Path) -> None
     assert read["source"] == "draft" and read["yaml"] == laid_out and read["edits_file"] is True
     assert read["layout"] == {"intake": {"x": 10.0, "y": 20.0}}
     assert [(w["source"], w.get("superseded")) for w in rows] == [("file", None), ("draft", True)]
-    assert checked == {"problems": ["workflow story: start names unknown node 'nowhere'"]}
-    assert bad.json()["problems"] == ["workflow story: start names unknown node 'nowhere'"]
+    nowhere = "workflow story: node intake: run 'story.nowhere' is not in the catalog"
+    assert checked == {"problems": [nowhere]} and bad.json()["problems"] == [nowhere]
     assert store(c).draft("story").yaml == broken
 
 
@@ -259,12 +261,12 @@ def test_a_draft_that_is_not_yaml_or_names_another_workflow_is_refused(tmp_path:
 def test_validate_returns_the_check_problem_and_saves_nothing(tmp_path: Path) -> None:
     http, c = client(tmp_path)
     store(c).save_draft("tiny", type=None, yaml=TINY)
-    bad = MINI.replace("start: intake", "start: nowhere")
+    bad = MINI.replace("to: [base]", "to: [nowhere]")
     with http:
         problems = http.post("/v1/workflows/validate", json={"yaml": bad}, headers=AUTH).json()
         bundled = http.post("/v1/workflows/validate", json={"yaml": MINI_EACH}, headers=AUTH).json()
         broken = http.post("/v1/workflows/validate", json={"yaml": "a: [1,"}, headers=AUTH)
-    assert problems == {"problems": ["workflow mini: start names unknown node 'nowhere'"]}
+    assert problems == {"problems": ["workflow mini: node intake: to names unknown node 'nowhere'"]}
     assert bundled == {"problems": []}  # the draft bundle it names resolves
     assert broken.status_code == 200 and len(broken.json()["problems"]) == 1
     assert [d.name for d in store(c).drafts()] == ["tiny"]
