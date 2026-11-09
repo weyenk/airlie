@@ -276,6 +276,22 @@ def _no_atlassian_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_forced_colour(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A developer's shell (Claude Code sets FORCE_COLOR=3) can force ANSI colour, which splits
+    the text a CLI test asserts on. rich reads these variables when a Console is built, and cli.py builds its
+    two at import, so the variables are set for the test and the module consoles are rebuilt under them."""
+    from rich.console import Console
+
+    from airlie import cli
+
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("CLICOLOR_FORCE", raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(cli, "console", Console())
+    monkeypatch.setattr(cli, "err", Console(stderr=True))
+
+
+@pytest.fixture(autouse=True)
 def _no_real_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """airlie reads the .env beside airlie.yaml and ~/.config/airlie/.env: no unit test may read the person's
     real ones. Tests of the reader pass their own tmp paths, and a test of the lookup imports the real

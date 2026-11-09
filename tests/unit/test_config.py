@@ -57,6 +57,25 @@ def test_role_referencing_unknown_model_fails_with_named_error(tmp_path: Path) -
         load_config(write(tmp_path, data))
 
 
+def test_a_workflow_check_naming_a_run_outside_the_story_catalog_fails_at_load(tmp_path: Path) -> None:
+    """validate_references holds every workflow to the story's catalog (rule 9); without it this passes."""
+    wf = {"nodes": {"c": {"type": "check", "run": "story.nothing_like_this"}}}
+    with pytest.raises(ConfigError, match=r"node c: run 'story\.nothing_like_this' is not in the catalog"):
+        load_config(write(tmp_path, {**MINIMAL, "workflows": {"w": wf}}))
+
+
+def test_a_workflow_problem_and_a_missing_composer_workflow_are_both_reported(tmp_path: Path) -> None:
+    """The composer check adds to the workflow problems; replacing them would hide the first."""
+    wf = {"nodes": {"c": {"type": "check", "run": "story.nothing_like_this"}}}
+    data = {**MINIMAL, "workflows": {"w": wf}, "story": {"composer": True}}
+    with pytest.raises(ConfigError) as exc:
+        load_config(write(tmp_path, data))
+    text = str(exc.value)
+    assert "node c: run 'story.nothing_like_this' is not in the catalog" in text
+    assert "story.composer is on but workflows.story is missing" in text
+    assert "story.composer is on but workflows.layer is missing" in text
+
+
 def test_engine_serving_unknown_model_fails(tmp_path: Path) -> None:
     data = {**MINIMAL, "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["ghost"]}}}
     with pytest.raises(ConfigError, match=r"engines\.main\.models.*'ghost'"):
@@ -1161,8 +1180,9 @@ def test_merge_order_is_include_then_root_then_local_then_profile(tmp_path: Path
 
 
 def test_missing_include_is_a_config_error(tmp_path: Path) -> None:
-    base = write(tmp_path, {**MINIMAL, "includes": ["missing.yaml"]})
-    with pytest.raises(ConfigError, match=r"includes: file not found: missing\.yaml"):
+    # The capital X pins that only *?[ mark a glob: a plain name with any other character is a file.
+    base = write(tmp_path, {**MINIMAL, "includes": ["Xmissing.yaml"]})
+    with pytest.raises(ConfigError, match=r"includes: file not found: Xmissing\.yaml"):
         load_config(base)
 
 
