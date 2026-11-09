@@ -84,21 +84,26 @@ export function lineOf(from: string, entry: unknown): GEdge | null {
   if (!isRecord(entry) || typeof entry.node !== "string") return null;
   const edge: GEdge = { from, to: entry.node, artifacts: [] };
   if (typeof entry.when === "string") edge.when = entry.when;
-  if (isRecord(entry.loop)) {
-    const max = entry.loop.max;
-    const loop: LoopBound = { max: typeof max === "number" || typeof max === "string" ? max : "" };
+  // a loop without its max is no loop (parseWorkflow refuses one): an empty max is never drawn or written
+  const max = isRecord(entry.loop) ? entry.loop.max : undefined;
+  if (isRecord(entry.loop) && hasMax(max)) {
+    const loop: LoopBound = { max };
     if (typeof entry.loop.carry === "string") loop.carry = entry.loop.carry;
     edge.loop = loop;
   }
   return edge;
 }
 
+/** A loop bound's max is a count or a non-empty config path. */
+export const hasMax = (max: unknown): max is number | string => typeof max === "number" || (typeof max === "string" && max.trim() !== "");
+
 /** A line as the YAML writes it: a bare name with neither a condition nor a bound. */
 function entryOf(edge: GEdge): Line {
-  if (edge.when === undefined && edge.loop === undefined) return edge.to;
+  const loop = edge.loop && hasMax(edge.loop.max) ? edge.loop : undefined;
+  if (edge.when === undefined && loop === undefined) return edge.to;
   const entry: Exclude<Line, string> = { node: edge.to };
   if (edge.when !== undefined) entry.when = edge.when;
-  if (edge.loop !== undefined) entry.loop = edge.loop.carry !== undefined ? { max: edge.loop.max, carry: edge.loop.carry } : { max: edge.loop.max };
+  if (loop !== undefined) entry.loop = loop.carry !== undefined ? { max: loop.max, carry: loop.carry } : { max: loop.max };
   return entry;
 }
 
@@ -260,7 +265,7 @@ export function connect(graph: Graph, from: string, to: string, opts: LineOpts =
   const artifacts = opts.artifacts ?? [];
   const writes = outputsOf(source.spec);
   for (const a of artifacts) if (!writes.includes(a)) throw new Error(`${from} writes no ${a}`);
-  if (opts.loop && (opts.loop.max === "" || opts.loop.max === undefined)) throw new Error("a loop needs its max");
+  if (opts.loop && !hasMax(opts.loop.max)) throw new Error("a loop needs its max");
 
   const edge: GEdge = { from, to, artifacts: [] };
   if (opts.when) edge.when = opts.when;
@@ -316,8 +321,9 @@ export function renameOutput(graph: Graph, id: string, old: string, to: string, 
   if (!to.trim()) throw new Error("an output needs a name");
   if (to in outputs) throw new Error(`${id} already has an output ${to}`);
 
-  const reads = (n: GNode) => inputsOf(n.spec).includes(old);
-  const lined = new Set(relabel(graph).edges.filter((e) => e.from === id && e.artifacts.includes(old)).map((e) => e.to));
+  // a box reads `old` by its inputs, or by the session it continues or the list a bundle runs over
+  const reads = (n: GNode) => inputsOf(n.spec).includes(old) || n.spec.session === old || n.spec.each === old;
+  const lined = new Set(graph.edges.filter((e) => e.from === id).map((e) => e.to));
   const only = !graph.nodes.some((n) => n.id !== id && outputsOf(n.spec).includes(old));
   const readers = graph.nodes.filter((n) => n.id !== id && reads(n) && (lined.has(n.id) || only));
 
@@ -333,7 +339,7 @@ export function renameOutput(graph: Graph, id: string, old: string, to: string, 
     s.outputs = Object.fromEntries(Object.entries(outputs).map(([k, v]) => [k === old ? to : k, v]));
   });
   g = editing(g, readers.map((n) => n.id), (s) => {
-    s.inputs = inputsOf(s).map((i) => (i === old ? to : i));
+    if (Array.isArray(s.inputs)) s.inputs = s.inputs.map((i) => (i === old ? to : i));
     for (const key of ["session", "each"]) if (s[key] === old) s[key] = to;
     for (const key of ["prompt", "turn", "worker"]) {
       const text = s[key];

@@ -46,6 +46,22 @@ test("parseWorkflow refuses a line without a node", () => {
   expect(() => parseWorkflow("workflows:\n  w: {nodes: {a: {type: check, run: r, to: b}}}\n")).toThrow(/node a: to must be a list/);
 });
 
+test("parseWorkflow refuses a loop line without its max, naming the node and the line", () => {
+  const bad = (loop: string) => `workflows:\n  w: {nodes: {a: {type: check, run: r}, b: {type: check, run: r, to: [{node: a, loop: ${loop}}]}}}\n`;
+  expect(() => parseWorkflow(bad("{carry: x}"))).toThrow(/workflow w: node b: the line to a: loop needs max/);
+  expect(() => parseWorkflow(bad("{max: ''}"))).toThrow(/loop needs max/);
+  expect(() => parseWorkflow(bad("3"))).toThrow(/loop needs max/);
+  expect(parseWorkflow(bad("{max: 2}")).spec.nodes.b.to).toEqual([{ node: "a", loop: { max: 2 } }]);
+});
+
+test("a loop without its max is never written as an empty max", () => {
+  const { name, spec, layout } = parseWorkflow("workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a}\n");
+  const g = fromWorkflow(name, spec, layout);
+  const text = toYaml({ ...g, edges: [{ from: "a", to: "a", artifacts: [], loop: { max: "" } }] });
+  expect(text).toContain("        to: [a]\n");
+  expect(text).not.toContain("max");
+});
+
 test.each([
   ["story", STORY_YAML],
   ["layer", LAYER_YAML],

@@ -58,6 +58,7 @@ test("connect with no artifacts draws an ordering line; a loop line keeps its bo
 test("connect refuses an artifact its source does not write, a loop without its max, a box that is not there", () => {
   expect(() => connect(small(), "c", "b", { artifacts: ["notes"] })).toThrow(/c writes no notes/);
   expect(() => connect(small(), "b", "a", { loop: { max: "" } })).toThrow(/max/);
+  expect(() => connect(small(), "b", "a", { loop: { max: "  " } })).toThrow(/max/);
   expect(() => connect(small(), "a", "zz", {})).toThrow(/zz/);
 });
 
@@ -100,6 +101,22 @@ test("renameOutput refuses when a reader's prompt file names it, listing the rea
   const ok = renameOutput(g, "a", "notes", "remarks", { "fix-brief": ["card"] });
   expect("refused" in ok).toBe(false);
   expect(renameOutput(g, "a", "notes", "remarks", { "fix-brief": ["notes"] })).toEqual({ refused: ["b"] });
+});
+
+test("renameOutput follows a reader that names it as its session or a bundle's each, not in its inputs", () => {
+  const text = `workflows:
+  w:
+    nodes:
+      p: {type: check, run: x.p, outputs: {plan: session, items: list}, to: [c, b]}
+      c: {type: write, role: architect, prompt: "go on", session: plan}
+      b: {type: bundle, workflow: layer, each: items}
+`;
+  let g = renameOutput(graphOf(text), "p", "plan", "talk");
+  if ("refused" in g) throw new Error("refused");
+  expect(specOf(g, "c")).toEqual({ role: "architect", prompt: "go on", session: "talk" });
+  g = renameOutput(g, "p", "items", "layers");
+  if ("refused" in g) throw new Error("refused");
+  expect(specOf(g, "b")).toEqual({ workflow: "layer", each: "layers" });
 });
 
 test("renameOutput refuses a name taken or an output that is not there", () => {

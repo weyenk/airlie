@@ -2,7 +2,7 @@
 // back as the file the canvas would save, shaped like the shipped config/workflows/*.yaml. Pure: no Vue.
 import { Document, isMap, isScalar, isSeq, parse, visit } from "yaml";
 import type { YAMLMap } from "yaml";
-import { isNodeType, toWorkflow } from "./graph";
+import { hasMax, isNodeType, toWorkflow } from "./graph";
 import type { Graph, Layout, WorkflowSpec } from "./graph";
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -47,7 +47,11 @@ export function parseWorkflow(text: string): { name: string; spec: WorkflowSpec;
     if (isRecord(n.on_fail)) throw new Error(`${at}: ${old("field 'on_fail'", "draw a loop line")}`);
     if (n.to !== undefined) {
       if (!Array.isArray(n.to)) throw new Error(`${at}: to must be a list of lines`);
-      for (const line of n.to) if (typeof line !== "string" && !(isRecord(line) && typeof line.node === "string")) throw new Error(`${at}: a to line needs a node`);
+      for (const line of n.to) {
+        if (typeof line === "string") continue;
+        if (!(isRecord(line) && typeof line.node === "string")) throw new Error(`${at}: a to line needs a node`);
+        if (line.loop !== undefined && !(isRecord(line.loop) && hasMax(line.loop.max))) throw new Error(`${at}: the line to ${line.node}: loop needs max`);
+      }
     }
     nodes[id] = { ...n, type: n.type };
   }
