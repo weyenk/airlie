@@ -18,7 +18,7 @@ from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config
 from airlie.story.state import StoryState
 
 if TYPE_CHECKING:
-    from airlie.engine.http_engine import HTTPEngine
+    from airlie.engine.protocol import Engine
     from airlie.supervisor.ledger import Ledger
 
 app = typer.Typer(
@@ -319,26 +319,39 @@ def _http_engine(
     model_override: str | None = None,
     *,
     transport: httpx.AsyncBaseTransport | None = None,
-) -> HTTPEngine:
+) -> Engine:
+    """One HTTPEngine on `engine_name`; when `model_override` is not set and some role's model is served by
+    another engine, a RoutedEngine over one HTTPEngine per engine that serves a role."""
+    from airlie.engine.dialect import dialect_for
     from airlie.engine.http_engine import HTTPEngine
-
-    e = cfg.engines[engine_name]
-
-    def served(role: str) -> str:
-        return e.served_name(model_override or cfg.roles[role].model)
+    from airlie.engine.routed import RoutedEngine
 
     # only a transport given: passing None would override one HTTPEngine already carries (the story harness
     # wraps HTTPEngine with a scripted transport; None sent its runs to the network)
     given: dict[str, Any] = {"transport": transport} if transport is not None else {}
-    return HTTPEngine(
-        e.base_url or "",
-        served,
-        lambda role: cfg.roles[role],
-        api_key=e.api_key,
-        **given,
-        per_request_draft=e.per_request_draft,
-        model_spec_for=lambda role: cfg.models[model_override or cfg.roles[role].model],
-    )
+
+    def one(name: str) -> HTTPEngine:
+        e = cfg.engines[name]
+        return HTTPEngine(
+            e.base_url or "",
+            lambda role: e.served_name(model_override or cfg.roles[role].model),
+            lambda role: cfg.roles[role],
+            api_key=e.api_key,
+            **given,
+            per_request_draft=e.per_request_draft,
+            model_spec_for=lambda role: cfg.models[model_override or cfg.roles[role].model],
+            dialect=dialect_for(e.kind),
+        )
+
+    # a role whose model no engine serves stays with engine_name, as it did before roles were routed
+    owners = {
+        role: next((n for n, e in cfg.engines.items() if spec.model in e.models), engine_name)
+        for role, spec in cfg.roles.items()
+    }
+    if model_override or set(owners.values()) <= {engine_name}:
+        return one(engine_name)
+    names = [engine_name, *dict.fromkeys(n for n in owners.values() if n != engine_name)]
+    return RoutedEngine(engine_name, {n: one(n) for n in names}, owners.__getitem__)
 
 
 def _parse_list(spec: str, scale: dict[str, int] | None = None) -> list[int]:

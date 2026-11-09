@@ -203,6 +203,33 @@ def test_a_clients_own_thinking_token_budget_wins_and_a_stream_gets_the_roles(tm
     assert [json.loads(x.content)["thinking_token_budget"] for x in up.requests] == [100, 8192]
 
 
+def test_a_role_on_an_mlx_vlm_engine_is_sent_mlx_vlms_thinking_fields_and_its_model_path(
+    tmp_path: Path,
+) -> None:
+    names = ("coder", "summarizer", "judge", "aggregator")
+    for r in names:
+        (tmp_path / f"{r}.md").write_text("x")
+    data = {
+        "version": 1,
+        "engines": {"main": {"kind": "mlx_vlm", "port": 8094, "model": "base"}},
+        "models": {"base": {"repo": "org/m", "revision": "r", "path": "/models/base"}},
+        "roles": {r: {"prompt": f"{r}.md", "model": "base"} for r in names},
+        "observability": {"state_dir": str(tmp_path / "state")},
+    }
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    c = load_config(tmp_path / "airlie.yaml")
+    up = FakeUpstream()
+    client = TestClient(create_app(c, transport=httpx.MockTransport(up)))
+    ask = {"messages": [{"role": "user", "content": "yo"}]}
+    client.post("/v1/chat/completions", json={"model": "judge", **ask})
+    client.post("/v1/chat/completions", json={"model": "judge", "thinking_budget": 100, **ask})
+    first, second = (json.loads(r.content) for r in up.requests)
+    assert first["model"] == "/models/base"
+    assert first["enable_thinking"] is True and first["thinking_budget"] == c.roles["judge"].thinking_budget
+    assert "chat_template_kwargs" not in first and "thinking_token_budget" not in first
+    assert second["thinking_budget"] == 100  # a client's own value wins
+
+
 def test_unknown_role_is_404(tmp_path: Path) -> None:
     app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()))
     r = TestClient(app).post("/v1/chat/completions", json={"model": "ghost", "messages": []})

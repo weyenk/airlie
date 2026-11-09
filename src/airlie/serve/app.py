@@ -29,6 +29,7 @@ from airlie.board import BoardStore
 from airlie.board.api import board_router
 from airlie.board.model import WorkflowDraft
 from airlie.config import AirlieConfig
+from airlie.engine.dialect import dialect_for, thinking_fields
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
 from airlie.prompts import text as hub_text
@@ -688,10 +689,22 @@ def create_app(
         if name in cfg.roles:
             spec = cfg.roles[name]
             out.setdefault("max_tokens", spec.max_tokens)
-            out.setdefault("chat_template_kwargs", {"enable_thinking": bool(spec.thinking)})
-            # as HTTPEngine sends it, under the name vllm-mlx reads: a thinking role's reasoning is capped
-            if spec.thinking and spec.thinking_budget:
-                out.setdefault("thinking_token_budget", spec.thinking_budget)
+            if dialect_for(cfg.engines[cfg.engine_for_model(spec.model)].kind) == "mlx_vlm":
+                # mlx-vlm's names, as HTTPEngine sends them (a client's own values win)
+                for k, v in thinking_fields(
+                    dialect="mlx_vlm",
+                    thinking=bool(spec.thinking),
+                    budget=spec.thinking_budget,
+                    chat_template_kwargs=spec.chat_template_kwargs,
+                    tool_parser=cfg.models[spec.model].tool_call_parser,
+                    tools=bool(out.get("tools")),
+                ).items():
+                    out.setdefault(k, v)
+            else:
+                out.setdefault("chat_template_kwargs", {"enable_thinking": bool(spec.thinking)})
+                # as HTTPEngine sends it, under the name vllm-mlx reads: a thinking role's reasoning is capped
+                if spec.thinking and spec.thinking_budget:
+                    out.setdefault("thinking_token_budget", spec.thinking_budget)
         tool_role = CHAT_SKILL_TOOL_ROLES.get(str(skill)) if skill is not None and name == "chat" else None
         if tool_role is not None:
             if out.get("stream"):

@@ -30,6 +30,7 @@ from autogen_core import CancellationToken
 from autogen_core.models import ChatCompletionClient, SystemMessage, UserMessage
 
 from airlie.config import AirlieConfig, RoleSpec
+from airlie.engine.dialect import dialect_for
 from airlie.prompts import text as hub_text
 from airlie.prompts.reply import reply
 from airlie.skills import prompt_text
@@ -1232,6 +1233,7 @@ def http_clients(cfg: AirlieConfig) -> ClientFactory:
             spec,
             engine.api_key,
             model=cfg.models.get(spec.model),
+            dialect=dialect_for(engine.kind),
         )
 
     return make

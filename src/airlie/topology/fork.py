@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from airlie.config import AirlieConfig
+from airlie.engine.dialect import dialect_for
 from airlie.engine.protocol import Engine
 from airlie.obs import EventSink, RunDir
 from airlie.orchestrator import LoggingObserver
@@ -124,7 +125,9 @@ class ForkOrchestrator:
 
             role = self.cfg.roles[self.cfg.teams.role]
             e = self.cfg.engines[self.cfg.engine_for_model(role.model)]
-            return AutoGenTeam(e.base_url or "", e.served_name(role.model), e.api_key)
+            return AutoGenTeam(
+                e.base_url or "", e.served_name(role.model), e.api_key, dialect=dialect_for(e.kind)
+            )
         return NativeTeam(self.engine)
 
     # ---- run ----

@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from airlie.config import AirlieConfig
+from airlie.engine.dialect import dialect_for
 from airlie.engine.protocol import Engine
 from airlie.engine.types import GenRequest, Message, ToolCall
 from airlie.lts import MemoryEntry, SharedMemoryBank
@@ -179,7 +180,9 @@ class ParallelAgentTeamOrchestrator:
 
             role = self.cfg.roles[self.cfg.teams.role]
             e = self.cfg.engines[self.cfg.engine_for_model(role.model)]
-            return AutoGenTeam(e.base_url or "", e.served_name(role.model), e.api_key)
+            return AutoGenTeam(
+                e.base_url or "", e.served_name(role.model), e.api_key, dialect=dialect_for(e.kind)
+            )
         return NativeTeam(self.engine)
 
     def evaluate_lts_admission(self, query: str, summary: str, output: str) -> bool:

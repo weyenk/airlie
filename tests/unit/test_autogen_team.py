@@ -96,6 +96,25 @@ def test_model_client_passes_the_roles_thinking_settings_via_extra_body(tmp_path
     assert extra["chat_template_kwargs"] == {"enable_thinking": False}
 
 
+def test_model_client_for_an_mlx_vlm_engine_uses_its_field_names(tmp_path: Path) -> None:
+    (tmp_path / "p.md").write_text("x")
+    role = RoleSpec(
+        prompt=tmp_path / "p.md",
+        model="base",
+        thinking=True,
+        thinking_budget=512,
+        max_tokens=2000,
+        chat_template_kwargs={"reasoning_strength": "low"},
+    )
+    client = build_model_client(
+        "http://127.0.0.1:1/v1", "/models/base", role, api_key=None, dialect="mlx_vlm"
+    )
+    extra = client._create_args["extra_body"]
+    assert extra["enable_thinking"] is True and extra["thinking_budget"] == 512
+    assert extra["reasoning_effort"] == "low" and extra["top_k"] == role.sampling.top_k
+    assert "chat_template_kwargs" not in extra and "thinking_token_budget" not in extra
+
+
 def test_model_client_targets_engine_and_role_model(tmp_path: Path) -> None:
     (tmp_path / "p.md").write_text("x")
     role = RoleSpec(prompt=tmp_path / "p.md", model="base", thinking=False, max_tokens=64)

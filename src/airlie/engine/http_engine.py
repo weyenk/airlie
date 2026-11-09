@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from airlie.config import ModelSpec, RoleSpec
+from airlie.engine.dialect import LATE_KEYS, Dialect, thinking_fields
 from airlie.engine.output_parse import parse_output
 from airlie.engine.protocol import OnToken
 from airlie.engine.sse import iter_sse
@@ -48,6 +49,7 @@ class HTTPEngine:
         timeout_s: float = 600.0,
         per_request_draft: bool = False,
         model_spec_for: Callable[[str], ModelSpec] | None = None,
+        dialect: Dialect = "vllm_mlx",
     ) -> None:
         self.capabilities = EngineCapabilities(
             batching=True,
@@ -61,6 +63,7 @@ class HTTPEngine:
         self._served = served_name_for_role
         self._role = role_spec_for
         self._model = model_spec_for
+        self._dialect: Dialect = dialect
         self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._transport = transport
         self._timeout = timeout_s
@@ -118,12 +121,20 @@ class HTTPEngine:
             "top_k": req.sampling.top_k,
             "min_p": req.sampling.min_p,
             "presence_penalty": req.sampling.presence_penalty,
-            "chat_template_kwargs": {"enable_thinking": bool(thinking), **spec.chat_template_kwargs},
-            # vllm-mlx gates its thinking-budget processor on this top-level field (default True), not on the
-            # template kwarg: without it a server started with a default budget cuts a non-thinking reply at
-            # the budget and stamps </think> into it (AIR-7 layer 02, 2026-10-18)
-            "enable_thinking": bool(thinking),
         }
+        fields = thinking_fields(
+            dialect=self._dialect,
+            thinking=bool(thinking),
+            budget=spec.thinking_budget,
+            chat_template_kwargs=spec.chat_template_kwargs,
+            tool_parser=(
+                self._model(req.role).tool_call_parser
+                if self._model is not None and self._dialect == "mlx_vlm"  # only that dialect names it
+                else None
+            ),
+            tools=bool(req.tools),
+        )
+        body.update({k: v for k, v in fields.items() if k not in LATE_KEYS})
         if req.sampling.repetition_penalty != 1.0:
             body["repetition_penalty"] = req.sampling.repetition_penalty
         if stream:
@@ -139,8 +150,7 @@ class HTTPEngine:
                 for t in req.tools
             ]
             body["tool_choice"] = "auto"
-        if thinking and spec.thinking_budget:  # vllm-mlx's name for it: it drops keys it does not know
-            body["thinking_token_budget"] = spec.thinking_budget
+        body.update({k: v for k, v in fields.items() if k in LATE_KEYS})
         if req.draft_budget is not None and self.capabilities.per_request_draft:
             body["num_draft_tokens"] = req.draft_budget
         return body
@@ -280,8 +290,7 @@ class HTTPEngine:
             "stream": False,
             "max_tokens": 3,
             "temperature": 0.0,
-            "chat_template_kwargs": {"enable_thinking": False},
-            "enable_thinking": False,  # the top-level flag vllm-mlx's thinking-budget processor reads
+            **thinking_fields(dialect=self._dialect, thinking=False, budget=None, chat_template_kwargs={}),
         }
         self._stats.requests += 1
         r = await self._c().post(f"{self.base_url}/chat/completions", json=body)
