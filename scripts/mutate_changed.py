@@ -30,10 +30,15 @@ Sharding (CI runs a matrix of these, then one merge)
   on all of them together, and writes the one report; --expect N fails it when fewer than N shards
   reported, so a shard that died before writing cannot pass.
 
-Enrolment is `[tool.airlie.mutation].enrolled` in pyproject.toml. Exit 0 when every selected mutant of an
-enrolled module is caught (killed, or timed out); 1 when one survives, has no covering test, is suspicious
-or crashed the runner, or when mutmut itself fails (a red unit test). Mutants outside the enrolled modules
-are reported, never failed. Run it after the unit tests: a red unit test stops mutmut before it starts."""
+Enrolment is `[tool.airlie.mutation].enrolled` in pyproject.toml. A mutant no test can catch (it changes
+nothing a caller can see) is listed in `[[tool.airlie.mutation.equivalent]]` with its `mutant` name, the
+mutated `line` (the `+` line of `mutmut show`) and a `reason`; it is then reported, not failed. An entry whose
+mutant is now caught, or whose line no longer matches, is reported as stale. Every shard's record carries the
+`mutmut show` diff of each uncaught mutant, so --merge applies the list without the mutants directory.
+Exit 0 when every selected mutant of an enrolled module is caught (killed, or timed out) or listed; 1 when one
+survives, has no covering test, is suspicious or crashed the runner, or when mutmut itself fails (a red unit
+test). Mutants outside the enrolled modules are reported, never failed.
+Run it after the unit tests: a red unit test stops mutmut before it starts."""
 
 from __future__ import annotations
 
@@ -50,6 +55,7 @@ import sys
 import tomllib
 from collections import defaultdict
 from pathlib import Path
+from typing import TypedDict
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP_FILES = {"pyproject.toml", "tests/unit/conftest.py"}
@@ -194,6 +200,28 @@ def changed_functions(merge_base: str, paths: list[str]) -> tuple[dict[str, int]
 def enrolled_files() -> list[str]:
     cfg = tomllib.loads((ROOT / "pyproject.toml").read_text())
     return list(cfg["tool"]["airlie"]["mutation"]["enrolled"])
+
+
+class Equivalent(TypedDict):
+    """One `[[tool.airlie.mutation.equivalent]]` entry: a mutant no test can catch, and why."""
+
+    mutant: str
+    line: str
+    reason: str
+
+
+def equivalents() -> dict[str, Equivalent]:
+    """The listed equivalent mutants, keyed by mutant name."""
+    cfg = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    return {e["mutant"]: e for e in cfg["tool"]["airlie"]["mutation"].get("equivalent", [])}
+
+
+def mutated_line(diff: str) -> str | None:
+    """The first added line of a `mutmut show` diff, stripped; None when it has none."""
+    for line in diff.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            return line[1:].strip()
+    return None
 
 
 def module_name(path: str) -> str:
@@ -407,20 +435,38 @@ def read_stats() -> dict[str, object]:
     return json.loads((ROOT / "mutants" / "mutmut-stats.json").read_text())  # type: ignore[no-any-return]
 
 
-def write_results(path: Path | None, status: str, results: dict[str, str], shard: str, scope: str) -> None:
-    """A shard's record for --merge: how it ended ("ran", "nothing" or "could_not_run") and every mutant it
-    selected, with mutmut's status."""
+def write_results(
+    path: Path | None,
+    status: str,
+    results: dict[str, str],
+    shard: str,
+    scope: str,
+    shown: dict[str, str] | None = None,
+) -> None:
+    """A shard's record for --merge: how it ended ("ran", "nothing" or "could_not_run"), every mutant it
+    selected with mutmut's status, and `shown`: the `mutmut show` diff of each gating uncaught mutant."""
     if path is None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    record = {"status": status, "shard": shard, "scope": scope, "results": results}
+    record = {"status": status, "shard": shard, "scope": scope, "results": results, "shown": shown or {}}
     path.write_text(json.dumps(record, indent=1, sort_keys=True))
 
 
-def verdict(results: dict[str, str], enrolled_modules: set[str], scope: str) -> tuple[list[str], int]:
+def verdict(
+    results: dict[str, str],
+    enrolled_modules: set[str],
+    scope: str,
+    shown: dict[str, str] | None = None,
+    listed: dict[str, Equivalent] | None = None,
+) -> tuple[list[str], int]:
     """The report's verdict lines over `results`, and the exit code: 0 when every mutant of an enrolled module
-    is caught, 1 when one is not."""
+    is caught or listed as equivalent (its `shown` diff's mutated line is the listed one), 1 when one is not.
+    A listed mutant that is caught, or whose line differs, is reported as stale."""
     gating, info = split_failures(results, enrolled_modules)
+    shown, listed = shown or {}, listed or {}
+    equivalent = [n for n in gating if n in listed and mutated_line(shown.get(n, "")) == listed[n]["line"]]
+    stale = [n for n in listed if n in results and n not in equivalent]
+    gating = [n for n in gating if n not in equivalent]
     report = [""]
     if scope == "project" or info:
         report += score_table(results, enrolled_modules)
@@ -428,6 +474,12 @@ def verdict(results: dict[str, str], enrolled_modules: set[str], scope: str) -> 
         report.append(
             f"\n{len(info)} uncaught mutant(s) in modules that are not enrolled (reported, not failed)"
         )
+    if equivalent:
+        report.append("\nequivalent (listed in pyproject.toml):")
+        report += [f"- {n}: {listed[n]['reason']}" for n in equivalent]
+    if stale:
+        report.append("\nstale equivalent entries:")
+        report += [f"- {n}: {results[n]}, no longer matches its listed line" for n in stale]
     if not gating:
         report.append("\nall selected mutants of the enrolled modules were caught")
         return report, 0
@@ -450,12 +502,15 @@ def merge(where: Path, expect: int | None, report: Path | None, enrolled_modules
         say([*out, f"mutmut did not run to the end in shard(s) {', '.join(failed)}; see their logs"], report)
         return COULD_NOT_RUN
     results: dict[str, str] = {}
+    shown: dict[str, str] = {}
     for r in records:
         results.update(r["results"])
+        shown.update(r.get("shown", {}))
     if not results:
         say([*out, "nothing to mutate in any shard"], report)
         return 0
-    lines, code = verdict(results, enrolled_modules, "project" if "project" in scopes else "changed")
+    scope = "project" if "project" in scopes else "changed"
+    lines, code = verdict(results, enrolled_modules, scope, shown, equivalents())
     say([*out, *lines], report)
     if code:
         print("run `uv run mutmut show NAME` on a checkout of this commit to see a mutant")
@@ -614,14 +669,15 @@ def main() -> int:
         return COULD_NOT_RUN
 
     results = selected(parse_results(mutmut_out("results", "--all", "true")), globs)
-    write_results(args.results, "ran", results, shard, args.scope)
-    report, code = verdict(results, enrolled_modules, args.scope)
+    gating, _ = split_failures(results, enrolled_modules)
+    shown = {name: mutmut_out("show", name) for name in gating}
+    write_results(args.results, "ran", results, shard, args.scope, shown)
+    report, code = verdict(results, enrolled_modules, args.scope, shown, equivalents())
     say(report, args.report)
     if not code:
         return 0
-    gating, _ = split_failures(results, enrolled_modules)
     for name in gating[:SHOW_LIMIT]:
-        print(f"\n## {name}\n{mutmut_out('show', name)}")
+        print(f"\n## {name}\n{shown[name]}")
     if len(gating) > SHOW_LIMIT:
         print(f"... and {len(gating) - SHOW_LIMIT} more; run `uv run mutmut show NAME` for each")
     return 1

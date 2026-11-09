@@ -82,6 +82,7 @@ def test_macos_only_functions_go_to_the_mac_job_and_the_rest_of_their_file_stays
     (tmp_path / "src" / "airlie" / "v.py").write_text("import mlx\n\n\ndef f(a):\n    return a\n")
     monkeypatch.setattr(mc, "mac_functions", lambda: ["airlie.m:plain"])
     monkeypatch.setattr(mc, "enrolled_files", lambda: [plain_file, "src/airlie/v.py"])
+    monkeypatch.setattr(mc, "equivalents", dict)
 
     def globs(argv: list[str], has_mlx: bool) -> set[str]:
         fake = FakeMutmut()
@@ -545,3 +546,56 @@ def test_only_the_functions_a_change_touched_are_selected(
         "airlie.m.xǁToolǁmake__mutmut_*",
         "airlie.m.xǁToolǁrun__mutmut_*",
     ]
+
+
+EQ_MUTANT = "airlie.engine.sse.x_parse__mutmut_3"
+EQ_LISTED = {EQ_MUTANT: {"mutant": EQ_MUTANT, "line": "return  None", "reason": "same value"}}
+
+
+def test_mutated_line_is_the_plus_line_of_the_diff() -> None:
+    diff = '--- src/a.py\n+++ src/a.py\n@@ -1 +1 @@\n-    if c in "*?[":\n+    if c in "XX*?[XX":\n'
+    assert mc.mutated_line(diff) == 'if c in "XX*?[XX":'
+    assert mc.mutated_line("--- a\n+++ a\n") is None
+
+
+def test_a_listed_equivalent_mutant_does_not_gate() -> None:
+    shown = {EQ_MUTANT: "+++ x\n+    return  None\n"}
+    report, code = mc.verdict({EQ_MUTANT: "survived"}, {"airlie.engine.sse"}, "changed", shown, EQ_LISTED)
+    assert code == 0 and any("equivalent (listed" in r for r in report)
+
+
+def test_an_equivalent_entry_whose_line_changed_is_stale_and_still_gates() -> None:
+    shown = {EQ_MUTANT: "+    x = 2\n"}
+    report, code = mc.verdict({EQ_MUTANT: "survived"}, {"airlie.engine.sse"}, "changed", shown, EQ_LISTED)
+    assert code == 1 and any("stale equivalent" in r for r in report)
+
+
+def test_a_caught_listed_mutant_is_a_stale_entry() -> None:
+    report, code = mc.verdict({EQ_MUTANT: "killed"}, {"airlie.engine.sse"}, "changed", {}, EQ_LISTED)
+    assert code == 0 and any("stale equivalent" in r for r in report)
+
+
+def test_write_results_carries_the_shown_diffs(tmp_path: Path) -> None:
+    out = tmp_path / "s" / "shard-1.json"
+    mc.write_results(out, "ran", {EQ_MUTANT: "survived"}, "1/1", "changed", {EQ_MUTANT: "+ x\n"})
+    assert mc.json.loads(out.read_text())["shown"] == {EQ_MUTANT: "+ x\n"}
+
+
+def test_merge_applies_the_equivalent_list_to_the_shards_diffs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    record = {
+        "status": "ran",
+        "shard": "1/1",
+        "scope": "changed",
+        "results": {EQ_MUTANT: "survived"},
+        "shown": {EQ_MUTANT: "+    return  None\n"},
+    }
+    (tmp_path / "shard-1.json").write_text(mc.json.dumps(record))
+    monkeypatch.setattr(mc, "equivalents", lambda: EQ_LISTED)
+    assert mc.merge(tmp_path, 1, None, {"airlie.engine.sse"}) == 0
+    assert "equivalent (listed in pyproject.toml)" in capsys.readouterr().out
+
+
+def test_the_committed_equivalent_list_parses() -> None:
+    assert all({"mutant", "line", "reason"} <= e.keys() for e in mc.equivalents().values())

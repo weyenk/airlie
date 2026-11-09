@@ -151,6 +151,10 @@ enrolled = [
     "src/airlie/tools/sandbox.py",
     "src/airlie/engine/http_engine.py",
 ]
+# Mutants no test can catch, listed so they stop gating: each entry has the `mutant` name, the mutated `line`
+# (the `+` line of `mutmut show`) and the `reason` it changes nothing a caller can see. An entry whose mutant
+# is caught, or whose line no longer matches, is reported as stale.
+equivalent = []
 # Functions whose code runs only on macOS (module:function, or module:Class.method): their mutants are run on
 # the mac job (scripts/mutate_changed.py --mac-only), as a file that imports mlx is. On Linux no
 # test reaches them, so each mutant passed every test of its caller before it counted as survived (shell's
