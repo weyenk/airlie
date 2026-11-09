@@ -21,7 +21,7 @@ const api = vi.hoisted(() => ({
 vi.mock("@/api/board", () => api);
 const wf = vi.hoisted(() => ({ storyFlow: vi.fn(), repoNames: vi.fn() }));
 vi.mock("@/api/workflows", () => wf);
-const defs = vi.hoisted(() => ({ listWorkflowDefs: vi.fn() }));
+const defs = vi.hoisted(() => ({ listWorkflowDefs: vi.fn(), adoptWorkflow: vi.fn() }));
 vi.mock("@/api/workflow_defs", () => defs);
 const PR_URL = "https://example.test/weyenk/airlie/pull/42";
 const DEFS = [
@@ -90,6 +90,7 @@ beforeEach(() => {
   api.editComment.mockReset().mockResolvedValue({ ...STORY, updated_at: 3000 });
   wf.storyFlow.mockReset().mockResolvedValue(structuredClone(FLOW));
   wf.repoNames.mockReset().mockResolvedValue(["weyenk/airlie", "weyenk/openhand"]);
+  defs.adoptWorkflow.mockReset();
   defs.listWorkflowDefs.mockReset().mockResolvedValue(structuredClone(DEFS));
 });
 afterEach(() => {
@@ -448,4 +449,28 @@ test("a draft that edits a file is not offered: the file runs", async () => {
   defs.listWorkflowDefs.mockResolvedValue([...structuredClone(DEFS), edit]);
   await open();
   expect([...workflowSelect().options].map((o) => o.value)).toEqual(["story", "bug-fix", "my-draft", "in-review"]);
+});
+
+test("only a started card offers to use the current workflow", async () => {
+  await open();
+  expect(q("[data-adopt-link]")).toBeNull();
+  document.body.innerHTML = "";
+  api.getItem.mockResolvedValue({ ...structuredClone(STORY), started: true, updated_at: 9000 });
+  await open();
+  expect(q("[data-adopt-link]")!.textContent).toBe("use the current workflow");
+});
+
+test("the card's link opens the dialog; adopting refetches the card", async () => {
+  defs.adoptWorkflow.mockResolvedValue({ key: "AIR-4", name: "bug-fix", from: "story", to: "bug-fix" });
+  api.getItem.mockResolvedValue({ ...structuredClone(STORY), started: true, updated_at: 9000 });
+  await open();
+  q("[data-adopt-link]")!.click();
+  await flushPromises();
+  expect(q("[data-adopt-dialog]")!.textContent).toContain("Use the current workflow?");
+  const before = api.getItem.mock.calls.length;
+  q("[data-adopt-ok]")!.click();
+  await flushPromises();
+  expect(defs.adoptWorkflow).toHaveBeenCalledWith("AIR-4");
+  expect(api.getItem.mock.calls.length).toBeGreaterThan(before);
+  expect(q("[data-adopted]")!.textContent).toBe("now on bug-fix (story → bug-fix)");
 });

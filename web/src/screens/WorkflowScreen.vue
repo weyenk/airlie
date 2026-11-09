@@ -5,6 +5,7 @@ import { computed, provide, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { ApiError } from "@/api";
 import { cancelJob, listJobs, listRunning, storyFlow, storyJob } from "@/api/workflows";
+import type { Adopted } from "@/api/workflow_defs";
 import type { Flow, Restarted } from "@/api/workflows";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import ItemKey from "@/components/ItemKey.vue";
@@ -16,6 +17,7 @@ import { liveResource } from "@/stores/live";
 import JobDetailView from "./workflow/JobDetail.vue";
 import JobSheet from "./workflow/JobSheet.vue";
 import Pipeline from "./workflow/Pipeline.vue";
+import AdoptDialog from "./workflow/AdoptDialog.vue";
 import RestartDialog from "./workflow/RestartDialog.vue";
 import { RESTART, restartPoint } from "./workflow/restart";
 import { useJobSelection } from "./workflow/selection";
@@ -116,6 +118,15 @@ provide(RESTART, {
     if (node && point) asking.value = { point, label: node.label };
   },
 });
+
+// "Use the current workflow": the story's card names a workflow that may have moved since the story started
+const adopting = ref(false);
+const adopted = ref<string | null>(null);
+const isRunning = computed(() => !!live.value || flow.data.value?.now?.status === "running");
+async function onAdopted(result: Adopted) {
+  adopted.value = `now on ${result.name} (${result.from} → ${result.to})`;
+  await Promise.all([flow.refresh(), jobs.refresh()]);
+}
 async function onRestarted(result: Restarted) {
   asking.value = null;
   restarted.value = result.note ?? `${result.key} is back in Approved.`;
@@ -143,10 +154,22 @@ async function onRestarted(result: Restarted) {
           <h1 class="break-words text-[22px] font-bold tracking-[-0.01em] max-[640px]:text-xl">{{ flow.data.value.title ?? flow.data.value.key }}</h1>
           <p v-if="flow.data.value.blocked" role="alert" class="break-words rounded-lg bg-danger px-3 py-2 text-xs font-medium text-danger-foreground">{{ flow.data.value.blocked }}</p>
         </div>
+        <Button
+          type="button"
+          data-adopt
+          variant="outline"
+          size="sm"
+          class="font-semibold"
+          :disabled="isRunning"
+          :title="isRunning ? 'the story is running' : undefined"
+          @click="adopting = true"
+        >Use the current workflow</Button>
         <Button v-if="live" type="button" data-stop variant="destructive" size="sm" class="font-semibold" @click="stop"><Square class="size-4" />Stop</Button>
       </section>
       <ErrorBanner v-if="stopError" :error="stopError" />
       <p v-if="restarted" data-restarted role="status" class="break-words rounded-lg border border-border bg-card px-3 py-2 text-xs">{{ restarted }}</p>
+      <p v-if="adopted" data-adopted role="status" class="break-words rounded-lg border border-border bg-card px-3 py-2 text-xs">{{ adopted }}</p>
+      <AdoptDialog v-model:open="adopting" :story-key="key" :running="isRunning" @adopted="onAdopted" />
       <RestartDialog :story-key="key" :ask="asking" @close="asking = null" @done="onRestarted" />
 
       <Pipeline :nodes="flow.data.value.nodes" :selected="selected" :progress="progress" :now="flow.data.value.now" :exit="flow.data.value.exit" @pick="pick" />
