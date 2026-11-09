@@ -15,7 +15,6 @@ from airlie.config import RoleSpec, Sampling
 from airlie.engine import ContentPart, EngineError, GenRequest, Message, ToolCall, ToolSchema
 from airlie.engine.http_engine import YES_NO_SYSTEM, HTTPEngine, _error_text, _finish, _wire_message
 from airlie.engine.types import EngineCapabilities, EngineHealth, EngineStats, TokenEvent
-from tests.unit.vllm_helpers import chat_completion_request
 
 
 def role_spec(**kw: Any) -> RoleSpec:
@@ -87,9 +86,8 @@ def test_constructor_normalises_urls_headers_and_capabilities() -> None:
     assert e._headers == {"Authorization": "Bearer k"}
     assert e.capabilities == EngineCapabilities(True, True, False, True, per_request_draft=False)
     assert e.stats() == EngineStats(0, 0, 0)
-    bare = HTTPEngine("http://h:1", lambda r: "x", lambda r: role_spec(), per_request_draft=True)
+    bare = HTTPEngine("http://h:1", lambda r: "x", lambda r: role_spec())
     assert (bare.base_url, bare._root, bare._headers) == ("http://h:1", "http://h:1", {})
-    assert bare.capabilities.per_request_draft is True
     assert HTTPEngine("http://h/v1", lambda r: "x", lambda r: role_spec(), api_key="")._headers == {}
 
 
@@ -156,7 +154,6 @@ def test_body_has_every_sampling_field_and_the_served_name() -> None:
         "top_k": 5,
         "min_p": 0.1,
         "presence_penalty": 0.2,
-        "chat_template_kwargs": {"enable_thinking": False},
         "enable_thinking": False,
     }
     streamed = e._body(r, stream=True)
@@ -167,7 +164,7 @@ def test_body_has_every_sampling_field_and_the_served_name() -> None:
 def test_body_optional_fields_appear_only_when_set() -> None:
     e, _ = make()
     plain = e._body(req(), stream=False)
-    keys = ("stop", "tools", "tool_choice", "thinking_token_budget", "num_draft_tokens", "repetition_penalty")
+    keys = ("stop", "tools", "tool_choice", "thinking_budget", "num_draft_tokens", "repetition_penalty")
     for key in keys:
         assert key not in plain
     stopped = e._body(req(stop=["END"]), stream=False)
@@ -186,52 +183,37 @@ def test_body_optional_fields_appear_only_when_set() -> None:
     assert e._body(req(sampling=Sampling(repetition_penalty=1.1)), stream=False)["repetition_penalty"] == 1.1
 
 
-def test_thinking_comes_from_the_request_over_the_role_and_gates_the_thinking_token_budget() -> None:
+def test_thinking_comes_from_the_request_over_the_role_and_gates_the_thinking_budget() -> None:
     on = role_spec(thinking=True, thinking_budget=100)
     e, _ = make(spec=on)
-    assert e._body(req(), stream=False)["chat_template_kwargs"] == {"enable_thinking": True}
     body = e._body(req(), stream=False)
-    assert body["thinking_token_budget"] == 100
-    assert [k for k in body if "budget" in k] == ["thinking_token_budget"]  # under no other name
+    assert body["enable_thinking"] is True and "chat_template_kwargs" not in body
+    assert body["thinking_budget"] == 100
+    assert [k for k in body if "budget" in k] == ["thinking_budget"]  # under no other name
     off = e._body(req(thinking=False), stream=False)
-    assert off["chat_template_kwargs"] == {"enable_thinking": False} and "thinking_token_budget" not in off
+    assert off["enable_thinking"] is False and "thinking_budget" not in off
     e2, _ = make(spec=role_spec(thinking=False, thinking_budget=100))
     forced = e2._body(req(thinking=True), stream=False)
-    assert forced["chat_template_kwargs"] == {"enable_thinking": True}
-    assert forced["thinking_token_budget"] == 100
-    assert "thinking_token_budget" not in e2._body(req(), stream=False)
+    assert forced["enable_thinking"] is True
+    assert forced["thinking_budget"] == 100
+    assert "thinking_budget" not in e2._body(req(), stream=False)
     e3, _ = make(spec=role_spec(thinking=True, thinking_budget=None))
-    assert "thinking_token_budget" not in e3._body(req(), stream=False)
+    assert "thinking_budget" not in e3._body(req(), stream=False)
 
 
-def test_vllm_mlx_reads_the_budget_from_the_body_the_engine_sends() -> None:
-    """vllm-mlx 0.5.0 drops request keys its pydantic model does not know, and reads the per-request budget
-    from `thinking_token_budget` (it never reads `thinking_budget`): its own request model, given our body,
-    must come out with the role's budget."""
-    e, _ = make(spec=role_spec(thinking=True, thinking_budget=100, max_tokens=4096))
-    tools = [ToolSchema("read_file", "Read", {"type": "object"})]
-    body = e._body(req(tools=tools, stop=["END"], max_tokens=4096), stream=True)
-    read = chat_completion_request().model_validate(body)
-    assert read.thinking_token_budget == 100
-    assert read.max_tokens == 4096 and read.stop == ["END"]
-    assert read.chat_template_kwargs == {"enable_thinking": True}
+def test_the_reasoning_strength_is_sent_as_reasoning_effort_and_the_tool_parser_with_tools() -> None:
+    from airlie.config import ModelSpec
 
-
-def test_role_template_kwargs_merge_over_the_thinking_flag() -> None:
-    e, _ = make(spec=role_spec(chat_template_kwargs={"reasoning_strength": "low", "enable_thinking": True}))
-    assert e._body(req(), stream=False)["chat_template_kwargs"] == {
-        "enable_thinking": True,
-        "reasoning_strength": "low",
-    }
-
-
-def test_draft_budget_is_sent_only_when_the_engine_supports_it() -> None:
-    plain, _ = make()
-    assert "num_draft_tokens" not in plain._body(req(draft_budget=3), stream=False)
-    cap, _ = make(per_request_draft=True)
-    assert cap._body(req(draft_budget=3), stream=False)["num_draft_tokens"] == 3
-    assert cap._body(req(draft_budget=0), stream=False)["num_draft_tokens"] == 0
-    assert "num_draft_tokens" not in cap._body(req(), stream=False)
+    spec = role_spec(chat_template_kwargs={"reasoning_strength": "low"})
+    e, _ = make(
+        spec=spec, model_spec_for=lambda r: ModelSpec(repo="o/m", revision="r", tool_call_parser="atem")
+    )
+    tool = ToolSchema("f", "d", {"type": "object"})
+    body = e._body(req(tools=[tool]), stream=False)
+    assert body["reasoning_effort"] == "low" and body["tool_parser"] == "atem"
+    assert list(body)[-1] == "tool_parser" and "chat_template_kwargs" not in body  # set after the tools
+    plain = e._body(req(), stream=False)
+    assert plain["reasoning_effort"] == "low" and "tool_parser" not in plain
 
 
 # ---- generation ----
@@ -269,21 +251,21 @@ async def test_live_response_is_registered_during_the_stream_and_cleared_after()
     assert e._live == {} and e._cancelled == set()
 
 
-async def test_speculative_decoding_metadata_is_read_including_zero() -> None:
+async def test_draft_counts_are_read_from_timings_including_zero() -> None:
     e, _ = make(
         {
             CHAT: sse(
-                frame(generation_metadata={"mtp_accepted": 0, "mtp_drafts": 4}),
-                frame(generation_metadata="ignored", finish="stop"),
+                frame(timings={"draft_n_accepted": 0, "draft_n": 4}),
+                frame(timings="ignored", finish="stop"),
             )
         }
     )
     res = await e.generate(req())
     assert (res.accepted_draft_tokens, res.draft_tokens) == (0, 4)
-    only, _ = make({CHAT: sse(frame(generation_metadata={"mtp_drafts": 2}, finish="stop"))})
+    only, _ = make({CHAT: sse(frame(timings={"draft_n": 2}, finish="stop"))})
     res = await only.generate(req())
     assert (res.accepted_draft_tokens, res.draft_tokens) == (None, 2)
-    none, _ = make({CHAT: sse(frame(finish="stop"))})
+    none, _ = make({CHAT: sse(frame(timings={"draft_n": None, "draft_n_accepted": None}, finish="stop"))})
     res = await none.generate(req())
     assert (res.accepted_draft_tokens, res.draft_tokens) == (None, None)
 
@@ -373,7 +355,7 @@ async def test_fragments_repeating_the_same_id_are_appended() -> None:
 
 
 async def test_a_call_resent_whole_under_a_new_id_is_kept_once() -> None:
-    """vllm-mlx 0.5.0 repeats a finished call (same index, new id, whole arguments): keep it once."""
+    """A finished call re-sent (same index, new id, whole arguments) is kept once."""
     frames = [
         frame({"tool_calls": [tc(0, "a", "read_file", '{"path": "README.md"}')]}),
         frame({"tool_calls": [tc(0, "b", "read_file", '{"path": "README.md"}')]}, "tool_calls"),
@@ -538,33 +520,7 @@ async def test_timing_single_token_has_no_decode_rate_and_tool_calls_count_as_fi
     assert res.decode_tps == 3 / 1e-6  # first and last token were the same instant
 
 
-async def test_timing_takes_the_engines_first_output_time_over_a_tool_call_held_back_to_the_end(
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    """vllm-mlx sends a parsed call whole at the end: its arrival is no first token (AIR-46 refine read 1,015
-    tok/s). The engine's own time (patches/first_output.py) splits the request."""
-    monkeypatch.setattr(he, "time", fake_clock(0.0, 5.0, 5.0))
-    frames = [
-        frame({"tool_calls": [tc(0, "c", "f", "{}")]}),
-        frame({}, "tool_calls", usage={"completion_tokens": 21}, airlie_ttft_ms=1500.0),
-    ]
-    e, _ = make({CHAT: sse(*frames)})
-    res = await e.generate(req())
-    assert res.ttft_ms == 1500.0
-    assert res.decode_tps == 21 / 3.5
-    # a clock that does not start at 0, and a decode shorter than a second: the span is the request's own
-    # time less the engine's first-output time, floored at 1e-6, not 1
-    monkeypatch.setattr(he, "time", fake_clock(100.0, 105.0, 105.0))
-    late = [
-        frame({"tool_calls": [tc(0, "c", "f", "{}")]}),
-        frame({}, "tool_calls", usage={"completion_tokens": 21}, airlie_ttft_ms=4500.0),
-    ]
-    e2, _ = make({CHAT: sse(*late)})
-    res = await e2.generate(req())
-    assert res.decode_tps == 21 / 0.5
-
-
-async def test_timing_without_the_engines_time_counts_a_tool_call_only_when_nothing_streamed_before(
+async def test_timing_counts_a_tool_call_only_when_nothing_streamed_before(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(he, "time", fake_clock(0.0, 1.0, 4.0))
@@ -583,20 +539,6 @@ async def test_timing_without_any_token_is_zero_ttft(monkeypatch) -> None:  # ty
     e, _ = make({CHAT: sse(frame({}, "stop", usage={"completion_tokens": 3}))})
     res = await e.generate(req())
     assert res.ttft_ms == 0.0 and res.decode_tps == 3 / 1e-6
-
-
-async def test_model_spec_for_gets_the_role_when_parsing_output() -> None:
-    from airlie.config import ModelSpec
-
-    roles: list[str] = []
-
-    def model_spec_for(role: str) -> ModelSpec:
-        roles.append(role)
-        return ModelSpec(repo="o/m", revision="r")
-
-    e, _ = make({CHAT: sse(frame({"content": "plain"}, "stop"))}, model_spec_for=model_spec_for)
-    res = await e.generate(req(role="judge"))
-    assert roles == ["judge"] and res.text == "plain"
 
 
 # ---- yes / no ----
@@ -620,10 +562,23 @@ async def test_yes_no_sends_the_constrained_request() -> None:
         "stream": False,
         "max_tokens": 3,
         "temperature": 0.0,
-        "chat_template_kwargs": {"enable_thinking": False},
         "enable_thinking": False,
     }
     assert e.stats().requests == 1 and e.stats().errors == 0
+
+
+async def test_yes_no_turns_thinking_off_explicitly() -> None:
+    e, seen = make({CHAT: verdict("NO")})
+    await e.yes_no("judge", [Message("user", "Is it?")])
+    body = json.loads(seen[0].content)
+    assert body["enable_thinking"] is False and "chat_template_kwargs" not in body
+
+
+async def test_yes_no_uses_the_engines_dialect() -> None:
+    e, seen = make({CHAT: verdict("NO")}, dialect="openai")
+    await e.yes_no("judge", [Message("user", "Is it?")])
+    body = json.loads(seen[0].content)
+    assert body["chat_template_kwargs"] == {"enable_thinking": False} and "enable_thinking" not in body
 
 
 @pytest.mark.parametrize(
@@ -725,8 +680,8 @@ def test_the_role_spec_is_looked_up_for_the_requests_own_role() -> None:
     specs = {"deep": role_spec(thinking=True), "quick": role_spec(thinking=False)}
     seen, transport = stub({})
     e = HTTPEngine("http://h/v1", lambda r: r, lambda r: specs[r], transport=transport)
-    assert e._body(req(role="deep"), stream=False)["chat_template_kwargs"] == {"enable_thinking": True}
-    assert e._body(req(role="quick"), stream=False)["chat_template_kwargs"] == {"enable_thinking": False}
+    assert e._body(req(role="deep"), stream=False)["enable_thinking"] is True
+    assert e._body(req(role="quick"), stream=False)["enable_thinking"] is False
 
 
 async def test_a_tool_call_without_index_is_call_zero_and_a_nameless_call_has_an_empty_name() -> None:
@@ -823,18 +778,15 @@ def test_finish_passes_known_values_through_unchanged() -> None:
     ]
 
 
-def test_thinking_off_is_said_at_the_top_level_too_so_a_server_default_budget_leaves_the_reply_alone() -> (
-    None
-):
-    """AIR-7 layer 02, 2026-10-18: the engine ran with --default-thinking-token-budget 2048 from before the
-    coder stopped thinking. vllm-mlx gates its budget processor on the request's top-level enable_thinking
-    (default True), not on chat_template_kwargs, so the non-thinking coder's replies were cut at 2,048 tokens
-    with a </think> stamped in: two test files ended in `assert</think>`."""
-    e, _ = make(spec=role_spec(thinking=False))
-    off = e._body(req(), stream=False)
-    assert off["enable_thinking"] is False and off["chat_template_kwargs"]["enable_thinking"] is False
-    on, _ = make(spec=role_spec(thinking=True, thinking_budget=100))
-    body = on._body(req(), stream=False)
-    assert body["enable_thinking"] is True and body["chat_template_kwargs"]["enable_thinking"] is True
-    forced = e._body(req(thinking=True), stream=False)
-    assert forced["enable_thinking"] is True
+def test_an_openai_dialect_body_carries_only_chat_template_kwargs() -> None:
+    from airlie.config import ModelSpec
+
+    spec = role_spec(thinking=True, thinking_budget=100, chat_template_kwargs={"reasoning_strength": "low"})
+    e, _ = make(
+        spec=spec,
+        dialect="openai",
+        model_spec_for=lambda r: ModelSpec(repo="o/m", revision="r", tool_call_parser="atem"),
+    )
+    body = e._body(req(tools=[ToolSchema("f", "d", {"type": "object"})]), stream=False)
+    assert body["chat_template_kwargs"] == {"enable_thinking": True, "reasoning_strength": "low"}
+    assert not {"enable_thinking", "thinking_budget", "tool_parser", "reasoning_effort"} & set(body)

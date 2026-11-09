@@ -28,7 +28,7 @@ permissions:
 jobs:
   # ---- stage 1: static ----
   static:
-    # Linux since 2026-11-02: mlx and vllm-mlx install on macOS only (pyproject.toml), and the tests and mutants
+    # Linux since 2026-11-02: mlx installs on macOS only (pyproject.toml), and the tests and mutants
     # that need them run on the `mac` and `mutation-mac` jobs (tests/unit/conftest.py MAC_ONLY, MAC_ONLY_TESTS)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -84,7 +84,7 @@ jobs:
           path: mutation/
           if-no-files-found: ignore
 
-  # The unit tests that need vllm-mlx or mlx, on Apple Silicon. A macOS runner is the longest wait, so the two
+  # The unit tests that need mlx, on Apple Silicon. A macOS runner is the longest wait, so the two
   # mac jobs start with the pipeline (no `needs`) and no other job waits for them: each is its own check.
   mac:
     runs-on: macos-15
@@ -94,7 +94,7 @@ jobs:
       - uses: ./.github/actions/setup
       - run: task test:mac
 
-  # The mutants of the sources that import vllm-mlx or mlx (scripts/mutate_changed.py --mac-only), gated here.
+  # The mutants of the sources that import mlx (scripts/mutate_changed.py --mac-only), gated here.
   mutation-mac:
     runs-on: macos-15
     # a setup-file change (pyproject.toml, tests/unit/conftest.py) runs the whole suite first, then every mac-only source

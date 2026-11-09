@@ -19,7 +19,6 @@ from airlie.prompts import text
 from airlie.serve.app import create_app
 from airlie.teams import TeamResult
 from tests.unit.serve_helpers import TestClient
-from tests.unit.vllm_helpers import chat_completion_request
 
 
 def cfg(tmp_path: Path):
@@ -162,45 +161,102 @@ def test_a_streamed_reply_cut_off_at_max_tokens_ends_with_finish_reason_length(t
     assert b'"finish_reason":"length"' in body and b"[DONE]" in body
 
 
-def test_a_role_that_thinks_and_has_a_budget_is_sent_to_the_engine_as_thinking_token_budget(
+def test_a_role_on_an_mlx_vlm_engine_is_sent_mlx_vlms_thinking_fields_and_its_model_path(
     tmp_path: Path,
 ) -> None:
-    """The name vllm-mlx reads (it drops others, `thinking_budget` among them); HTTPEngine sends the same."""
-    up, c = FakeUpstream(), cfg(tmp_path)
-    c.roles["coder"].thinking = False  # does not think: no budget to send
-    c.roles["summarizer"].thinking_budget = None  # thinks, uncapped: none either
-    client = TestClient(create_app(c, transport=httpx.MockTransport(up)))
-    ask = {"messages": [{"role": "user", "content": "yo"}]}
-    # judge thinks with the default budget; base is a raw model, not a role
-    for model in ("judge", "coder", "summarizer", "base"):
-        assert client.post("/v1/chat/completions", json={"model": model, **ask}).status_code == 200
-    bodies = [json.loads(r.content) for r in up.requests]
-    sent = [b.get("thinking_token_budget") for b in bodies]
-    assert sent == [c.roles["judge"].thinking_budget, None, None, None]
-    assert c.roles["judge"].thinking_budget == 8192 and not any("thinking_budget" in b for b in bodies)
-
-
-def test_vllm_mlx_reads_the_budget_from_the_body_serve_sends(tmp_path: Path) -> None:
-    """vllm-mlx's own request model, given the body serve forwards, comes out with the role's budget."""
-    up, c = FakeUpstream(), cfg(tmp_path)
-    client = TestClient(create_app(c, transport=httpx.MockTransport(up)))
-    client.post(
-        "/v1/chat/completions", json={"model": "judge", "messages": [{"role": "user", "content": "yo"}]}
-    )
-    read = chat_completion_request().model_validate(json.loads(up.requests[0].content))
-    assert read.thinking_token_budget == c.roles["judge"].thinking_budget == 8192
-    assert read.max_tokens == c.roles["judge"].max_tokens
-
-
-def test_a_clients_own_thinking_token_budget_wins_and_a_stream_gets_the_roles(tmp_path: Path) -> None:
+    names = ("coder", "summarizer", "judge", "aggregator")
+    for r in names:
+        (tmp_path / f"{r}.md").write_text("x")
+    data = {
+        "version": 1,
+        "engines": {"main": {"kind": "mlx_vlm", "port": 8094, "model": "base"}},
+        "models": {"base": {"repo": "org/m", "revision": "r", "path": "/models/base"}},
+        "roles": {r: {"prompt": f"{r}.md", "model": "base"} for r in names},
+        "observability": {"state_dir": str(tmp_path / "state")},
+    }
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    c = load_config(tmp_path / "airlie.yaml")
     up = FakeUpstream()
-    client = TestClient(create_app(cfg(tmp_path), transport=httpx.MockTransport(up)))
+    client = TestClient(create_app(c, transport=httpx.MockTransport(up)))
     ask = {"messages": [{"role": "user", "content": "yo"}]}
-    client.post("/v1/chat/completions", json={"model": "judge", "thinking_token_budget": 100, **ask})
-    with client.stream("POST", "/v1/chat/completions", json={"model": "judge", "stream": True, **ask}) as r:
-        assert r.status_code == 200
-        b"".join(r.iter_bytes())
-    assert [json.loads(x.content)["thinking_token_budget"] for x in up.requests] == [100, 8192]
+    client.post("/v1/chat/completions", json={"model": "judge", **ask})
+    client.post("/v1/chat/completions", json={"model": "judge", "thinking_budget": 100, **ask})
+    first, second = (json.loads(r.content) for r in up.requests)
+    assert first["model"] == "/models/base"
+    assert first["enable_thinking"] is True and first["thinking_budget"] == c.roles["judge"].thinking_budget
+    assert "chat_template_kwargs" not in first and "thinking_token_budget" not in first
+    assert second["thinking_budget"] == 100  # a client's own value wins
+
+
+def mlx_vlm_upstream(tmp_path: Path) -> tuple[FakeUpstream, TestClient, Any]:
+    names = ("coder", "summarizer", "judge", "aggregator")
+    for r in names:
+        (tmp_path / f"{r}.md").write_text("x")
+    data = {
+        "version": 1,
+        "engines": {"main": {"kind": "mlx_vlm", "port": 8094, "model": "base"}},
+        "models": {
+            "base": {
+                "repo": "org/m",
+                "revision": "r",
+                "path": "/models/base",
+                "tool_call_parser": "qwen3_coder",
+            }
+        },
+        "roles": {
+            r: {"prompt": f"{r}.md", "model": "base", "thinking": True, "thinking_budget": 4096}
+            for r in names
+        },
+        "observability": {"state_dir": str(tmp_path / "state")},
+    }
+    data["roles"]["judge"]["chat_template_kwargs"] = {"reasoning_strength": "low"}
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    c = load_config(tmp_path / "airlie.yaml")
+    up = FakeUpstream()
+    return up, TestClient(create_app(c, transport=httpx.MockTransport(up))), c
+
+
+ASK = {"messages": [{"role": "user", "content": "yo"}]}
+
+
+def test_the_old_thinking_field_names_from_a_client_are_translated_for_an_mlx_vlm_role(
+    tmp_path: Path,
+) -> None:
+    """The Press Box bridge speaks the old names (thinking_token_budget); mlx-vlm would drop the budget."""
+    up, client, _ = mlx_vlm_upstream(tmp_path)
+    body = {
+        "model": "coder",
+        "chat_template_kwargs": {"enable_thinking": False},
+        "thinking_token_budget": 64,
+        **ASK,
+    }
+    client.post("/v1/chat/completions", json=body)
+    sent = json.loads(up.requests[0].content)
+    assert sent["enable_thinking"] is False and sent["thinking_budget"] == 64
+    assert "thinking_token_budget" not in sent and "chat_template_kwargs" not in sent
+
+
+def test_other_client_template_kwargs_survive_the_translation(tmp_path: Path) -> None:
+    up, client, _ = mlx_vlm_upstream(tmp_path)
+    client.post(
+        "/v1/chat/completions",
+        json={"model": "coder", "chat_template_kwargs": {"enable_thinking": True, "x": 1}, **ASK},
+    )
+    sent = json.loads(up.requests[0].content)
+    assert sent["enable_thinking"] is True and sent["chat_template_kwargs"] == {"x": 1}
+
+
+def test_an_mlx_vlm_role_gets_its_tool_parser_when_tools_are_sent_and_its_reasoning_effort(
+    tmp_path: Path,
+) -> None:
+    up, client, _ = mlx_vlm_upstream(tmp_path)
+    tool = {"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}
+    client.post("/v1/chat/completions", json={"model": "coder", "tools": [tool], **ASK})
+    client.post("/v1/chat/completions", json={"model": "summarizer", **ASK})
+    client.post("/v1/chat/completions", json={"model": "judge", **ASK})
+    with_tools, without, strength = (json.loads(r.content) for r in up.requests)
+    assert with_tools["tool_parser"] == "qwen3_coder" and "tool_parser" not in without
+    assert strength["reasoning_effort"] == "low" and "reasoning_effort" not in without
 
 
 def test_unknown_role_is_404(tmp_path: Path) -> None:
@@ -807,3 +863,16 @@ def test_the_line_events_tail(tmp_path: Path) -> None:
         assert [e["line"] for e in got] == ["beat 7", "beat 8", "beat 9"]  # the tail, oldest first
         assert len(client.get("/v1/airlie/line/events", headers=auth).json()["events"]) == 10
         assert client.get("/v1/airlie/line/events", params={"limit": 0}, headers=auth).status_code == 422
+
+
+def test_an_openai_http_role_gets_a_clients_template_kwargs_unchanged(tmp_path: Path) -> None:
+    up = FakeUpstream()
+    client = TestClient(create_app(cfg(tmp_path), transport=httpx.MockTransport(up)))
+    ask = {"messages": [{"role": "user", "content": "yo"}]}
+    kwargs = {"enable_thinking": False, "x": 1}
+    client.post("/v1/chat/completions", json={"model": "judge", "chat_template_kwargs": kwargs, **ask})
+    client.post("/v1/chat/completions", json={"model": "judge", "thinking_token_budget": 9, **ask})
+    first, second = (json.loads(r.content) for r in up.requests)
+    assert first["chat_template_kwargs"] == kwargs and "enable_thinking" not in first
+    assert second["thinking_token_budget"] == 9 and "thinking_budget" not in second
+    assert "tool_parser" not in first

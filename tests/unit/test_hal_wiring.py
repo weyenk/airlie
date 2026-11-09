@@ -1,4 +1,4 @@
-"""M6: HAL fed from engine accepted-draft counters; draft budget sent only when the engine supports it."""
+"""M6: HAL fed from engine accepted-draft counters; mlx-vlm takes no per-request draft budget."""
 
 from __future__ import annotations
 
@@ -13,15 +13,13 @@ from airlie.engine import EngineCapabilities, FakeEngine, FakeReply, GenRequest,
 from airlie.engine.http_engine import HTTPEngine
 from airlie.orchestrator import ParallelAgentTeamOrchestrator
 
-FIX = Path(__file__).resolve().parents[1] / "fixtures" / "vllm_mlx"
-
 
 def role_spec(tmp_path: Path) -> RoleSpec:
     (tmp_path / "p.md").write_text("x")
     return RoleSpec(prompt=tmp_path / "p.md", model="base", thinking=False, max_tokens=8)
 
 
-def test_http_engine_reads_mtp_counters_from_generation_metadata(tmp_path: Path) -> None:
+def test_http_engine_reads_draft_counters_from_timings(tmp_path: Path) -> None:
     import asyncio
 
     seen: list[dict] = []
@@ -31,7 +29,7 @@ def test_http_engine_reads_mtp_counters_from_generation_metadata(tmp_path: Path)
         body = (
             b'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
             b'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2},'
-            b'"generation_metadata":{"mtp_drafts":2,"mtp_accepted":1}}\n\ndata: [DONE]\n\n'
+            b'"timings":{"draft_n":2,"draft_n_accepted":1}}\n\ndata: [DONE]\n\n'
         )
         return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
 
@@ -48,38 +46,7 @@ def test_http_engine_reads_mtp_counters_from_generation_metadata(tmp_path: Path)
     )
     res = asyncio.run(eng.generate(req))
     assert res.accepted_draft_tokens == 1 and res.draft_tokens == 2
-    assert "num_draft_tokens" not in seen[0]  # vllm-mlx has no per-request draft control
-
-
-def test_http_engine_sends_draft_budget_when_capable(tmp_path: Path) -> None:
-    import asyncio
-
-    seen: list[dict] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(json.loads(request.content))
-        return httpx.Response(
-            200, content=(FIX / "plain.sse").read_bytes(), headers={"content-type": "text/event-stream"}
-        )
-
-    eng = HTTPEngine(
-        "http://e/v1",
-        lambda r: "base",
-        lambda r: role_spec(tmp_path),
-        transport=httpx.MockTransport(handler),
-        per_request_draft=True,
-    )
-    assert eng.capabilities.per_request_draft is True
-    req = GenRequest(
-        role="coder",
-        messages=[Message(role="user", content="hi")],
-        sampling=Sampling(),
-        max_tokens=8,
-        stop=[],
-        draft_budget=5,
-    )
-    asyncio.run(eng.generate(req))
-    assert seen[0]["num_draft_tokens"] == 5
+    assert "num_draft_tokens" not in seen[0]  # mlx-vlm has no per-request draft control
 
 
 async def test_orchestrator_updates_hal_from_steps_and_emits_budgets(tmp_path: Path) -> None:

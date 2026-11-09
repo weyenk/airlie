@@ -1,4 +1,4 @@
-"""Tool-call argument repair: vllm-mlx's qwen3_coder parser can emit trailing braces or truncated JSON."""
+"""Tool-call argument repair: a qwen3_coder parser can emit trailing braces or truncated JSON."""
 
 from __future__ import annotations
 
@@ -47,8 +47,8 @@ def test_history_keeps_the_arguments_the_tool_ran_with() -> None:
 
 
 def test_history_replays_unparseable_arguments_as_an_empty_object() -> None:
-    """vllm-mlx replays arguments it cannot parse as `{"value": "<string>"}`; the model then copies that
-    junk into its next call, one escaping level deeper each turn (run 20261014-165050-e4ef)."""
+    """An engine's parser replays arguments it cannot parse as `{"value": "<string>"}`; the model then copies
+    that junk into its next call, one escaping level deeper each turn (run 20261014-165050-e4ef)."""
     assert history_arguments('{"path": "x.py", "content": "def f():') == "{}"
     assert history_arguments("[1, 2]") == "{}"
     assert history_arguments("") == "{}"
@@ -57,9 +57,7 @@ def test_history_replays_unparseable_arguments_as_an_empty_object() -> None:
 def test_repair_create_result_fixes_args_and_keeps_the_first_call() -> None:
     calls = [
         FunctionCall(id="a", name="write_file", arguments='{"path": "x", "content": "{}"}}'),
-        FunctionCall(
-            id="b", name="write_file", arguments='{"path": "x", "content": "{}"}}'
-        ),  # vllm-mlx double emit
+        FunctionCall(id="b", name="write_file", arguments='{"path": "x", "content": "{}"}}'),  # a double emit
         FunctionCall(id="c", name="shell", arguments='{"cmd": "ls"}'),
     ]
     res = CreateResult(

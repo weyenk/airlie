@@ -1,7 +1,6 @@
-"""HTTPEngine: the Engine seam over any OpenAI-compatible server (vllm-mlx by default).
+"""HTTPEngine: the Engine seam over the mlx-vlm server (or any OpenAI-compatible one).
 
-Written against the recorded vllm-mlx 0.5.0 responses in tests/fixtures/vllm_mlx (see the design doc's
-"wire format" section). Also works with llama-server and mlx_lm.server, which follow the same shape."""
+Written against the recorded mlx-vlm 0.7.12 responses in tests/fixtures/mlx_vlm."""
 
 from __future__ import annotations
 
@@ -13,7 +12,7 @@ from typing import Any
 import httpx
 
 from airlie.config import ModelSpec, RoleSpec
-from airlie.engine.output_parse import parse_output
+from airlie.engine.dialect import LATE_KEYS, Dialect, thinking_fields
 from airlie.engine.protocol import OnToken
 from airlie.engine.sse import iter_sse
 from airlie.engine.types import (
@@ -34,6 +33,11 @@ YES_NO_SYSTEM = "Answer with exactly one word: YES or NO."
 HTTP_POST = "POST"  # a module constant: httpx upper-cases the method, so "post" would be an equivalent mutant
 
 
+_THINKING_OFF = (
+    False  # pragma: no mutate  (None is falsy too: bool(None) is False, so the value is equivalent)
+)
+
+
 class HTTPEngine:
     capabilities = EngineCapabilities(batching=True, prefix_cache=True, logprobs=False, native_tools=True)
 
@@ -46,21 +50,21 @@ class HTTPEngine:
         api_key: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_s: float = 600.0,
-        per_request_draft: bool = False,
         model_spec_for: Callable[[str], ModelSpec] | None = None,
+        dialect: Dialect = "mlx_vlm",
     ) -> None:
         self.capabilities = EngineCapabilities(
             batching=True,
             prefix_cache=True,
             logprobs=False,
             native_tools=True,
-            per_request_draft=per_request_draft,
         )
         self.base_url = base_url.rstrip("/")
         self._root = self.base_url.removesuffix("/v1")
         self._served = served_name_for_role
         self._role = role_spec_for
         self._model = model_spec_for
+        self._dialect: Dialect = dialect
         self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._transport = transport
         self._timeout = timeout_s
@@ -94,14 +98,18 @@ class HTTPEngine:
         except httpx.HTTPError as e:
             return EngineHealth(ok=False, models={}, detail=f"{type(e).__name__}: {e}")
         ok = h.status_code == 200 and m.status_code == 200
-        ids: list[str] = []
+        models: dict[str, ModelState] = {}
         if m.status_code == 200:
-            ids = [str(x.get("id")) for x in m.json().get("data", [])]
-        models: dict[str, ModelState] = dict.fromkeys(ids, "ready")
+            for x in m.json().get("data", []):
+                # mlx-vlm lists every model in the HF cache and flags the resident one
+                models[str(x.get("id"))] = "ready" if x.get("loaded", True) else "lazy"
         detail = ""  # pragma: no mutate  (None is just as falsy for the fallback below)
         if h.status_code == 200:
             hj = h.json()
-            detail = f"{hj.get('status', '?')} engine={hj.get('engine_type', '?')}"
+            engine = hj.get("engine_type") or (
+                f"loaded_model={hj['loaded_model']}" if hj.get("loaded_model") else "?"
+            )
+            detail = f"{hj.get('status', '?')} engine={engine}"
         return EngineHealth(ok=ok, models=models, detail=detail or f"health {h.status_code}")
 
     # ---- generation ----
@@ -118,12 +126,16 @@ class HTTPEngine:
             "top_k": req.sampling.top_k,
             "min_p": req.sampling.min_p,
             "presence_penalty": req.sampling.presence_penalty,
-            "chat_template_kwargs": {"enable_thinking": bool(thinking), **spec.chat_template_kwargs},
-            # vllm-mlx gates its thinking-budget processor on this top-level field (default True), not on the
-            # template kwarg: without it a server started with a default budget cuts a non-thinking reply at
-            # the budget and stamps </think> into it (AIR-7 layer 02, 2026-10-18)
-            "enable_thinking": bool(thinking),
         }
+        fields = thinking_fields(
+            dialect=self._dialect,
+            thinking=bool(thinking),
+            budget=spec.thinking_budget,
+            chat_template_kwargs=spec.chat_template_kwargs,
+            tool_parser=(self._model(req.role).tool_call_parser if self._model is not None else None),
+            tools=bool(req.tools),
+        )
+        body.update({k: v for k, v in fields.items() if k not in LATE_KEYS})
         if req.sampling.repetition_penalty != 1.0:
             body["repetition_penalty"] = req.sampling.repetition_penalty
         if stream:
@@ -139,10 +151,7 @@ class HTTPEngine:
                 for t in req.tools
             ]
             body["tool_choice"] = "auto"
-        if thinking and spec.thinking_budget:  # vllm-mlx's name for it: it drops keys it does not know
-            body["thinking_token_budget"] = spec.thinking_budget
-        if req.draft_budget is not None and self.capabilities.per_request_draft:
-            body["num_draft_tokens"] = req.draft_budget
+        body.update({k: v for k, v in fields.items() if k in LATE_KEYS})
         return body
 
     async def generate(self, req: GenRequest, on_token: OnToken | None = None) -> GenResult:
@@ -158,7 +167,6 @@ class HTTPEngine:
         cached: int | None = None
         accepted: int | None = None
         drafts: int | None = None
-        engine_ttft_ms: float | None = None  # the engine's own (patches/first_output.py), when it sends one
         t0 = time.monotonic()
         t_first: float | None = None  # pragma: no mutate  ("" is just as falsy)
         t_last = t0
@@ -173,25 +181,25 @@ class HTTPEngine:
                     if req.request_id in self._cancelled:
                         finish = "cancelled"
                         break
-                    meta = frame.get("generation_metadata")
-                    if isinstance(meta, dict):
-                        if meta.get("mtp_accepted") is not None:
-                            accepted = int(meta["mtp_accepted"])
-                        if meta.get("mtp_drafts") is not None:
-                            drafts = int(meta["mtp_drafts"])
-                    if isinstance(frame.get("airlie_ttft_ms"), int | float):
-                        engine_ttft_ms = float(frame["airlie_ttft_ms"])
+                    timings = frame.get("timings")  # mlx-vlm: draft counts, null without a drafter
+                    if isinstance(timings, dict):
+                        if isinstance(timings.get("draft_n_accepted"), int | float):
+                            accepted = int(timings["draft_n_accepted"])
+                        if isinstance(timings.get("draft_n"), int | float):
+                            drafts = int(timings["draft_n"])
                     usage = frame.get("usage")
                     if isinstance(usage, dict):
-                        prompt_tokens = int(usage.get("prompt_tokens", prompt_tokens))
-                        completion_tokens = int(usage.get("completion_tokens", completion_tokens))
+                        prompt_tokens = int(usage.get("prompt_tokens") or prompt_tokens)
+                        completion_tokens = int(usage.get("completion_tokens") or completion_tokens)
                         details = usage.get("prompt_tokens_details")
                         if isinstance(details, dict) and details.get("cached_tokens") is not None:
                             cached = int(details["cached_tokens"])
                     for choice in frame.get("choices") or []:
                         delta = choice.get("delta") or {}
                         now = time.monotonic()
-                        if rc := delta.get("reasoning_content"):
+                        if rc := delta.get("reasoning_content") or delta.get(
+                            "reasoning"
+                        ):  # mlx-vlm sends both, same text
                             t_first = t_first or now
                             t_last = now
                             reasoning.append(rc)
@@ -206,12 +214,13 @@ class HTTPEngine:
                         for tc in delta.get("tool_calls") or []:
                             t_first = t_first or now
                             t_last = now
-                            idx = int(tc.get("index", 0))
+                            idx = int(tc.get("index") or 0)
                             slot = calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
                             fn = tc.get("function") or {}
                             if tc.get("id"):
                                 if slot["id"] and str(tc["id"]) != slot["id"]:
-                                    slot["arguments"] = ""  # vllm-mlx re-sends a finished call under a new id
+                                    # a finished call re-sent under a new id: keep it once
+                                    slot["arguments"] = ""
                                 slot["id"] = slot["id"] or str(tc["id"])
                             if fn.get("name"):
                                 slot["name"] = str(fn["name"])
@@ -228,27 +237,15 @@ class HTTPEngine:
         finally:
             self._live.pop(req.request_id, None)
             self._cancelled.discard(req.request_id)
-        if finish == "error":
-            # vllm-mlx ends a request it could not serve (out of GPU memory in a prefill, AIR-47 layer 02,
-            # 2026-11-01) with finish_reason "error" and nothing else: an empty "stop" spent a package try
-            self._stats.errors += 1
-            raise EngineError(
-                "the engine failed the request (finish_reason error; its log names why, such as "
-                "running out of GPU memory)",
-                partial_text="".join(text),
-            )
         tool_calls = [
             ToolCall(id=v["id"], name=v["name"], arguments=v["arguments"]) for _, v in sorted(calls.items())
         ]
         if tool_calls and finish != "cancelled":
             finish = "tool_calls"
         self._stats.tokens_out += completion_tokens
-        # a tool call arrives whole at the end, so its delta is no first token: the engine's own time wins
-        ttft_ms = ((t_first or t_last) - t0) * 1000.0 if engine_ttft_ms is None else engine_ttft_ms
+        ttft_ms = ((t_first or t_last) - t0) * 1000.0
         span = max(t_last - (t_first or t_last), 1e-6)
-        if engine_ttft_ms is not None:
-            span = max(t_last - t0 - engine_ttft_ms / 1000.0, 1e-6)
-        res = GenResult(
+        return GenResult(
             text="".join(text),
             reasoning="".join(reasoning),
             tool_calls=tool_calls,
@@ -262,9 +259,6 @@ class HTTPEngine:
             decode_tps=(completion_tokens / span) if completion_tokens > 1 else 0.0,
             raw_finish=finish,
         )
-        if self._model is not None:
-            res = parse_output(self._model(req.role), res)
-        return res
 
     async def cancel(self, request_id: str) -> None:
         self._cancelled.add(request_id)
@@ -280,8 +274,12 @@ class HTTPEngine:
             "stream": False,
             "max_tokens": 3,
             "temperature": 0.0,
-            "chat_template_kwargs": {"enable_thinking": False},
-            "enable_thinking": False,  # the top-level flag vllm-mlx's thinking-budget processor reads
+            **thinking_fields(
+                dialect=self._dialect,
+                thinking=_THINKING_OFF,
+                budget=None,
+                chat_template_kwargs={},
+            ),
         }
         self._stats.requests += 1
         r = await self._c().post(f"{self.base_url}/chat/completions", json=body)

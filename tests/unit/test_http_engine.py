@@ -1,4 +1,4 @@
-"""HTTPEngine against the recorded vllm-mlx fixtures, replayed by httpx.MockTransport."""
+"""HTTPEngine against the recorded mlx-vlm fixtures, replayed by httpx.MockTransport."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from airlie.engine import EngineError, Message, TokenEvent, ToolSchema
 from airlie.engine.http_engine import HTTPEngine
 from tests.unit.engine_contract import check_plain_stream, plain_request
 
-FIX = Path(__file__).resolve().parents[1] / "fixtures" / "vllm_mlx"
+FIX = Path(__file__).resolve().parents[1] / "fixtures" / "mlx_vlm"
 
 
 def role_spec(prompt: Path = Path("/dev/null")) -> RoleSpec:
@@ -64,7 +64,7 @@ async def test_plain_stream_contract() -> None:
     assert body["stream"] is True and body["stream_options"] == {"include_usage": True}
     assert body["temperature"] == 0.0
     assert body["max_tokens"] == 32
-    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert body["enable_thinking"] is False and "chat_template_kwargs" not in body
     assert body["messages"][0] == {"role": "system", "content": "Reply in one short sentence."}
 
 
@@ -72,7 +72,7 @@ async def test_usage_comes_from_the_final_usage_frame() -> None:
     eng, _ = engine({"stream": sse("plain")})
     res = await eng.generate(plain_request())
     assert (res.prompt_tokens, res.completion_tokens) == (28, 13)
-    assert res.cached_tokens is None  # vllm-mlx 0.5.0 does not report prompt_tokens_details
+    assert res.cached_tokens == 0  # mlx-vlm reports usage.prompt_tokens_details.cached_tokens
 
 
 async def test_reasoning_deltas_are_separated_from_content() -> None:
@@ -84,7 +84,7 @@ async def test_reasoning_deltas_are_separated_from_content() -> None:
     assert seen[0].reasoning is True
     assert res.reasoning.startswith("\nOkay")
     assert "Okay" not in res.text
-    assert json.loads(rec.requests[0].content)["chat_template_kwargs"] == {"enable_thinking": True}
+    assert json.loads(rec.requests[0].content)["enable_thinking"] is True
 
 
 async def test_tool_calls_are_merged_by_index_and_finish_is_tool_calls() -> None:
@@ -95,7 +95,7 @@ async def test_tool_calls_are_merged_by_index_and_finish_is_tool_calls() -> None
     ]
     res = await eng.generate(req)
     assert res.finish_reason == "tool_calls"
-    assert len(res.tool_calls) == 1  # vllm-mlx emits the same index twice; merge, don't duplicate
+    assert len(res.tool_calls) == 1  # fragments of one call, merged by index
     assert res.tool_calls[0].name == "read_file"
     assert json.loads(res.tool_calls[0].arguments) == {"path": "README.md"}
     body = json.loads(rec.requests[0].content)
@@ -105,7 +105,7 @@ async def test_tool_calls_are_merged_by_index_and_finish_is_tool_calls() -> None
 
 async def test_fastapi_detail_error_becomes_engine_error() -> None:
     eng, _ = engine({"stream": (404, (FIX / "error_bad_model.json").read_bytes())})
-    with pytest.raises(EngineError, match=r"404.*does not exist"):
+    with pytest.raises(EngineError, match=r"404: Failed to load model"):
         await eng.generate(plain_request())
 
 
@@ -120,30 +120,6 @@ async def test_openai_error_frame_mid_stream_raises_with_partial_text() -> None:
     assert ei.value.partial_text == "part"
 
 
-async def test_a_request_the_engine_failed_is_an_engine_error_not_an_empty_answer() -> None:
-    """AIR-47 layer 02, 2026-11-01: vllm-mlx ran out of GPU memory prefilling 56k tokens, ended the request
-    with finish_reason "error" and nothing else, and airlie took it as an empty stop: the architect's package
-    try was spent on "no JSON object in the reply" instead of the engine error being retried."""
-    body = (
-        b'data: {"choices":[{"index":0,"delta":{"content":"pa"},"finish_reason":null}]}\n\n'
-        b'data: {"choices":[{"index":0,"delta":{"content":"rt"},"finish_reason":null}]}\n\n'
-        b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"error"}]}\n\n'
-        b'data: {"choices":[],"usage":{"prompt_tokens":0,"completion_tokens":0}}\n\n'
-        b"data: [DONE]\n\n"
-    )
-    eng, _ = engine({"stream": body})
-    with pytest.raises(EngineError) as ei:
-        await eng.generate(plain_request())
-    assert str(ei.value) == (
-        "the engine failed the request (finish_reason error; its log names why, such as "
-        "running out of GPU memory)"
-    )
-    assert ei.value.partial_text == "part"
-    with pytest.raises(EngineError):
-        await eng.generate(plain_request())
-    assert eng.stats().errors == 2  # each failed request counts once
-
-
 async def test_truncated_stream_raises() -> None:
     eng, _ = engine(
         {"stream": b'data: {"choices":[{"index":0,"delta":{"content":"x"},"finish_reason":null}]}\n\n'}
@@ -152,8 +128,9 @@ async def test_truncated_stream_raises() -> None:
         await eng.generate(plain_request())
 
 
-async def test_yes_no_falls_back_to_constrained_text_answer() -> None:
-    eng, rec = engine({"nonstream": (FIX / "logprobs.json").read_bytes()})
+async def test_yes_no_reads_a_constrained_text_answer() -> None:
+    answer = {"choices": [{"message": {"content": "YES"}, "finish_reason": "stop"}], "usage": {}}
+    eng, rec = engine({"nonstream": json.dumps(answer).encode()})
     p_yes, p_no = await eng.yes_no("judge", [Message(role="user", content="Is water wet?")])
     assert (p_yes, p_no) == (1.0, 0.0)
     body = json.loads(rec.requests[0].content)
@@ -167,7 +144,7 @@ async def test_health_reads_available_models() -> None:
     )
     h = await eng.health()
     assert h.ok is True
-    assert h.models == {"small": "ready"}
+    assert h.models["/models/small"] == "ready" and h.models["/models/other-1"] == "lazy"
 
 
 async def test_health_when_server_down() -> None:
@@ -191,7 +168,7 @@ async def test_cancel_closes_stream() -> None:
 
 def test_body_carries_repetition_penalty_when_set() -> None:
     """Live finding 2026-10-13: the coder collapses into repetition (thousands of '0's, repeated run_tests
-    blocks) until max_tokens; a mild mlx-lm style repetition_penalty is the per-request guard."""
+    blocks) until max_tokens; a mild repetition_penalty is the per-request guard."""
     from airlie.config import RoleSpec, Sampling
     from airlie.engine.http_engine import HTTPEngine
     from airlie.engine.types import GenRequest, Message
@@ -204,30 +181,6 @@ def test_body_carries_repetition_penalty_when_set() -> None:
     assert "repetition_penalty" not in eng._body(req, stream=False)  # noqa: SLF001 - 1.0 means off
     req.sampling = Sampling(repetition_penalty=1.05)
     assert eng._body(req, stream=False)["repetition_penalty"] == 1.05  # noqa: SLF001
-
-
-async def test_engine_applies_the_models_parsers_to_raw_content() -> None:
-    from airlie.config import ModelSpec
-
-    raw = (Path(__file__).resolve().parents[1] / "fixtures" / "parsers" / "qwen3_coder_xml.txt").read_text()
-    frames = [
-        {"choices": [{"delta": {"content": raw}, "finish_reason": None}]},
-        {
-            "choices": [{"delta": {}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 3, "completion_tokens": 9},
-        },
-    ]
-    body = "".join(f"data: {json.dumps(f)}\n\n" for f in frames) + "data: [DONE]\n\n"
-    rec = Recorder({"stream": body.encode()})
-    eng = HTTPEngine(
-        base_url="http://engine.test/v1",
-        served_name_for_role=lambda role: "base",
-        role_spec_for=lambda role: role_spec(),
-        model_spec_for=lambda role: ModelSpec(repo="o/m", revision="r", tool_call_parser="qwen3_coder"),
-        transport=httpx.MockTransport(rec),
-    )
-    res = await eng.generate(plain_request())
-    assert res.finish_reason == "tool_calls" and res.tool_calls[0].name == "read_file"
 
 
 async def test_message_parts_are_sent_as_content_list_and_role_kwargs_merge(tmp_path: Path) -> None:
@@ -256,4 +209,4 @@ async def test_message_parts_are_sent_as_content_list_and_role_kwargs_merge(tmp_
     assert content[0] == {"type": "text", "text": "critique this"}
     assert content[1]["type"] == "image_url"
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,iVBOR")
-    assert body["chat_template_kwargs"] == {"enable_thinking": False, "reasoning_strength": "low"}
+    assert body["enable_thinking"] is False and body["reasoning_effort"] == "low"

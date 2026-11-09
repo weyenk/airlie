@@ -13,7 +13,6 @@ TOOLS_OK = {
     "uv": "0.6.0",
     "git": "2.45.0",
     "hf": "1.0.0",
-    "vllm-mlx": "0.5.0",
     "node": "v26.10.0",
 }
 
@@ -26,26 +25,16 @@ class FakeProbe(SystemProbe):
         ram_gb: float = 128.0,
         snapshots: set[str] | None = None,
         tools: dict[str, str | None] | None = None,
-        binaries: dict[str, str] | None = None,
-        dylib_has_systemone: bool = True,
-        files: set[str] | None = None,
+        mlx_vlm: str | None = "0.7.12",
     ) -> None:
         self._wired = wired_mb
         self._ram = ram_gb
         self._snaps = snapshots if snapshots is not None else set()
         self._tools = tools if tools is not None else dict(TOOLS_OK)
-        self._bins = binaries or {}
-        self._systemone = dylib_has_systemone
-        self._files = files or set()
+        self._mlx_vlm = mlx_vlm
 
-    def resolve_binary(self, name: str) -> Path | None:
-        return Path(self._bins[name]) if name in self._bins else None
-
-    def file_contains(self, path: Path, needle: str) -> bool | None:
-        return self._systemone if needle == "/v1/systemone" else None
-
-    def model_file(self, repo: str, revision: str, file: str) -> Path | None:
-        return Path(f"/fake/{repo}/{revision}/{file}") if f"{repo}@{revision}/{file}" in self._files else None
+    def package_version(self, dist: str) -> str | None:
+        return self._mlx_vlm if dist == "mlx-vlm" else None
 
     def sysctl_int(self, name: str) -> int | None:
         return self._wired if name == "iogpu.wired_limit_mb" else None
@@ -82,7 +71,7 @@ def make_cfg(tmp_path: Path, engines: dict, models: dict) -> AirlieConfig:
 
 def managed(tmp_path: Path) -> AirlieConfig:
     return make_cfg(
-        tmp_path, {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}}, {"team": "org/model"}
+        tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}}, {"team": "org/model"}
     )
 
 
@@ -121,34 +110,15 @@ def test_missing_tool_is_fail(tmp_path: Path) -> None:
     assert by_name(run_checks(managed(tmp_path), probe))["tool:uv"].status == "fail"
 
 
-def test_vllm_mlx_binary_missing_is_fail_with_install_task(tmp_path: Path) -> None:
-    probe = FakeProbe(snapshots={"org/model@r1"}, tools={**TOOLS_OK, "vllm-mlx": None})
-    r = by_name(run_checks(managed(tmp_path), probe))["engine:main:binary"]
-    assert r.status == "fail"
-    assert "task engine:install" in r.detail
-
-
 def test_external_openai_engine_needs_no_binary_or_model_files(tmp_path: Path) -> None:
     cfg = make_cfg(
         tmp_path,
         {"main": {"kind": "openai_http", "base_url": "http://127.0.0.1:9/v1", "models": ["team"]}},
         {"team": "org/model"},
     )
-    names = {
-        r.name for r in run_checks(cfg, FakeProbe(snapshots=set(), tools={**TOOLS_OK, "vllm-mlx": None}))
-    }
+    names = {r.name for r in run_checks(cfg, FakeProbe(snapshots=set(), mlx_vlm=None))}
     assert "engine:main:binary" not in names
     assert "model:team" not in names  # an external server owns its own weights
-
-
-def test_memory_budget_over_ram_is_fail(tmp_path: Path) -> None:
-    cfg = make_cfg(
-        tmp_path,
-        {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"], "memory_budget_gb": 200}},
-        {"team": "org/model"},
-    )
-    r = by_name(run_checks(cfg, FakeProbe(snapshots={"org/model@r1"})))["engine:main:memory_budget"]
-    assert r.status == "fail"
 
 
 # ---- M0 Task 3: memory projection (spec 01 §1) ----
@@ -157,7 +127,7 @@ def test_memory_budget_over_ram_is_fail(tmp_path: Path) -> None:
 def projected_cfg(tmp_path: Path, est_gb: float) -> AirlieConfig:
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"], "max_kv_size": 65536}},
+        "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"], "max_kv_size": 65536}},
         "models": {
             "team": {
                 "repo": "org/model",
@@ -239,7 +209,16 @@ def test_real_probe_rejects_incomplete_download(tmp_path: Path) -> None:
     assert RealProbe(hf_cache=tmp_path).model_snapshot_dir("org/model", "r1") is None
 
 
-# ---- hybrid-attention warning (vllm-mlx 0.5.0 prefix cache cannot store linear/SSM attention state) ----
+# ---- hybrid (linear/SSM) attention ----
+
+
+class HealthProbe(FakeProbe):
+    def __init__(self, health: dict[str, bool], **kw) -> None:
+        super().__init__(**kw)
+        self._health = health
+
+    def http_ok(self, url: str) -> bool:
+        return self._health.get(url, False)
 
 
 class ConfigProbe(FakeProbe):
@@ -251,20 +230,9 @@ class ConfigProbe(FakeProbe):
         return self._configs.get(f"{repo}@{revision}")
 
 
-def test_hybrid_attention_model_is_ok_because_airlies_engine_patches_the_prefix_cache(tmp_path: Path) -> None:
-    cfg = make_cfg(
-        tmp_path, {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}}, {"team": "org/model"}
-    )
-    hybrid = {"text_config": {"layer_types": ["linear_attention", "linear_attention", "full_attention"]}}
-    probe = ConfigProbe({"org/model@r1": hybrid}, snapshots={"org/model@r1"})
-    r = by_name(run_checks(cfg, probe))["model:team:attention"]
-    assert r.status == "ok"
-    assert "hybrid" in r.detail and "engine patch" in r.detail
-
-
 def test_standard_attention_model_is_ok(tmp_path: Path) -> None:
     cfg = make_cfg(
-        tmp_path, {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}}, {"team": "org/model"}
+        tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}}, {"team": "org/model"}
     )
     probe = ConfigProbe({"org/model@r1": {"layer_types": ["full_attention"] * 4}}, snapshots={"org/model@r1"})
     assert by_name(run_checks(cfg, probe))["model:team:attention"].status == "ok"
@@ -272,36 +240,10 @@ def test_standard_attention_model_is_ok(tmp_path: Path) -> None:
 
 def test_attention_check_skipped_when_config_unreadable(tmp_path: Path) -> None:
     cfg = make_cfg(
-        tmp_path, {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}}, {"team": "org/model"}
+        tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}}, {"team": "org/model"}
     )
     names = {r.name for r in run_checks(cfg, ConfigProbe({}, snapshots={"org/model@r1"}))}
     assert "model:team:attention" not in names
-
-
-# ---- engine health row (M1 Task 5) ----
-
-
-class HealthProbe(ConfigProbe):
-    def __init__(self, health: dict[str, bool], **kw) -> None:
-        super().__init__({}, **kw)
-        self._health = health
-
-    def http_ok(self, url: str) -> bool:
-        return self._health.get(url, False)
-
-
-def test_engine_health_ok_when_health_endpoint_answers(tmp_path: Path) -> None:
-    cfg = managed(tmp_path)
-    probe = HealthProbe({"http://127.0.0.1:8080/health": True}, snapshots={"org/model@r1"})
-    r = by_name(run_checks(cfg, probe))["engine:main:health"]
-    assert r.status == "ok"
-
-
-def test_engine_health_warn_when_not_running(tmp_path: Path) -> None:
-    cfg = managed(tmp_path)
-    r = by_name(run_checks(cfg, HealthProbe({}, snapshots={"org/model@r1"})))["engine:main:health"]
-    assert r.status == "warn"
-    assert "task up" in r.detail
 
 
 def test_standard_config_without_layer_types_is_classified_standard() -> None:
@@ -314,37 +256,19 @@ def test_standard_config_without_layer_types_is_classified_standard() -> None:
     assert is_hybrid_attention({"model_type": "mystery"}) is None
 
 
-def test_missing_lazy_model_is_warn_not_fail(tmp_path: Path) -> None:
-    cfg = make_cfg(
-        tmp_path,
-        {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team", "alt"]}},
-        {"team": "org/model", "alt": "org/alt"},
-    )
-    cfg.models["alt"].preload = False
-    r = by_name(run_checks(cfg, FakeProbe(snapshots={"org/model@r1"})))["model:alt"]
-    assert r.status == "warn"
-    assert "lazy" in r.detail and "task models:pull" in r.detail
-
-
-# ---- Studio foundations Task 3: llama_server engine (Kev) and per-profile projection ----
+# ---- per-profile projection ----
 
 
 def decision_cfg(tmp_path: Path) -> AirlieConfig:
     data = {
         "version": 1,
         "engines": {
-            "main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]},
-            "decision": {"kind": "llama_server", "port": 8081, "models": ["kev"]},
+            "main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]},
+            "decision": {"kind": "mlx_vlm", "port": 8081, "models": ["kev"], "decision": True},
         },
         "models": {
             "team": {"repo": "org/t", "revision": "r1", "estimated_memory_gb": 16},
-            "kev": {
-                "repo": "ggml-org/Kev-4B-GGUF",
-                "revision": "d9",
-                "file": "Kev-4B-Q4_K_M.gguf",
-                "preload": True,
-                "estimated_memory_gb": 3,
-            },
+            "kev": {"repo": "org/decider", "revision": "d9", "estimated_memory_gb": 3},
         },
         "roles": {
             r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
@@ -360,53 +284,21 @@ def decision_cfg(tmp_path: Path) -> AirlieConfig:
     return load_config(tmp_path / "airlie.yaml")
 
 
-def test_llama_server_engine_checks_binary_systemone_and_gguf(tmp_path: Path) -> None:
-    cfg = decision_cfg(tmp_path)
-    probe = FakeProbe(
-        snapshots={"org/t@r1"},
-        binaries={"llama-server": "/opt/homebrew/bin/llama-server"},
-        files={"ggml-org/Kev-4B-GGUF@d9/Kev-4B-Q4_K_M.gguf"},
-    )
-    rows = by_name(run_checks(cfg, probe))
-    assert rows["engine:decision:binary"].status == "ok"
-    assert rows["engine:decision:systemone"].status == "ok"
-    assert rows["model:kev:file"].status == "ok"
-
-
-def test_llama_server_without_systemone_fails(tmp_path: Path) -> None:
-    cfg = decision_cfg(tmp_path)
-    probe = FakeProbe(
-        snapshots={"org/t@r1"},
-        binaries={"llama-server": "/opt/homebrew/bin/llama-server"},
-        dylib_has_systemone=False,
-        files={"ggml-org/Kev-4B-GGUF@d9/Kev-4B-Q4_K_M.gguf"},
-    )
-    rows = by_name(run_checks(cfg, probe))
-    assert rows["engine:decision:systemone"].status == "fail"
-    assert "brew" in rows["engine:decision:systemone"].detail
-
-
-def test_missing_gguf_file_fails_with_pull_hint(tmp_path: Path) -> None:
-    cfg = decision_cfg(tmp_path)
-    probe = FakeProbe(snapshots={"org/t@r1"}, binaries={"llama-server": "/x/llama-server"})
-    rows = by_name(run_checks(cfg, probe))
-    assert rows["model:kev:file"].status == "fail"
-    assert "task models:pull -- kev" in rows["model:kev:file"].detail
-
-
 def test_memory_projection_is_reported_per_profile(tmp_path: Path) -> None:
     cfg = decision_cfg(tmp_path)
     rows = by_name(run_checks(cfg, FakeProbe(snapshots={"org/t@r1"})))
-    assert "engine:main:memory_projection[single]" in rows
-    assert "engine:main:memory_projection[teams]" in rows
-    assert "1 teams" in rows["engine:main:memory_projection[single]"].detail
-    assert "3 teams" in rows["engine:main:memory_projection[teams]"].detail
+    assert "engine:decision:memory_projection[single]" in rows
+    assert "engine:decision:memory_projection[teams]" in rows
+    assert "1 teams" in rows["engine:decision:memory_projection[single]"].detail
+    assert "3 teams" in rows["engine:decision:memory_projection[teams]"].detail
 
 
 def test_memory_projection_counts_every_managed_engines_preloaded_weights(tmp_path: Path) -> None:
-    cfg = decision_cfg(tmp_path)  # team 16 GB on main, Kev 3 GB preloaded on the decision engine
+    cfg = decision_cfg(tmp_path)  # team 16 GB on main, the decision model 3 GB
     rows = by_name(run_checks(cfg, FakeProbe(snapshots={"org/t@r1"})))
-    assert "projected 47 GB" in rows["engine:main:memory_projection[single]"].detail  # 16 + 16.4 KV + 12 + 3
+    assert (
+        "projected 47 GB" in rows["engine:decision:memory_projection[single]"].detail
+    )  # 16 + 16.4 KV + 12 + 3
 
 
 def test_invalid_profile_is_a_fail_row_not_a_crash(tmp_path: Path) -> None:
@@ -415,7 +307,7 @@ def test_invalid_profile_is_a_fail_row_not_a_crash(tmp_path: Path) -> None:
     data["topology"]["profiles"]["single"] = {"teams": {"k": 0}}
     (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
     rows = by_name(run_checks(cfg, FakeProbe(snapshots={"org/t@r1"})))
-    row = rows["engine:main:memory_projection[single]"]
+    row = rows["engine:decision:memory_projection[single]"]
     assert row.status == "fail" and "config invalid" in row.detail
 
 
@@ -498,26 +390,29 @@ ROOT = Path(__file__).resolve().parents[2]
 NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
 
 
-def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant() -> None:
+def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from airlie.doctor import cache_memory_gb, project_memory_gb
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, unknown = project_memory_gb(studio, "main")
-    # 41.5 GB of weights (small, generalist, reviewer, Kev) + the build lane's one sequence at the coder's
-    # 65.536k × 64 MB/1k = 4.1 GB + 4 asks at 8.192k = 2.0 GB + 12 GB reserve = 59.6 GB, and the prefix cache
-    # the profile sets aside (12288 MB = 12 GB since 2026-11-02; 44 GB filled the machine beside the gate's
-    # own test runs, and 24 GB ran the engine out of GPU memory under macOS's default wired limit)
-    assert cache_memory_gb(studio.engines["main"]) == 12.0
-    assert (round(projected, 1), unknown) == (71.6, [])
+    # 42.0 GB of weights (small, generalist, reviewer, decider-2b) + the build lane's one sequence at the
+    # coder's 65.536k × 64 MB/1k = 4.1 GB + 4 asks at 8.192k = 2.0 GB + 12 GB reserve = 59.6 GB, and the
+    # caches the autostart mlx-vlm engines set aside (main 8, reviewer 3.5, small 1)
+    assert cache_memory_gb(studio.engines["main"]) == 8.0
+    assert (round(projected, 1), unknown) == (72.6, [])
     assert projected < studio.memory.wired_limit_mb / 1024  # 104 GB
-    coder8 = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-coder8")
-    projected, unknown = project_memory_gb(coder8, "main")
-    # the lane's sequence is at the coder model's rate: coder8's 32.5 GB, 65.536k × 96 MB/1k = 6.1 GB
-    assert coder8.engines["main"].max_kv_size == 131072
-    assert (round(projected, 1), unknown) == (103.2, [])
-    assert projected < coder8.memory.wired_limit_mb / 1024  # every studio profile's cache fits its own budget
+    monkeypatch.setattr(
+        "airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name
+    )  # the profiles reload from the file
+    base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     qwen = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen25")
-    assert project_memory_gb(qwen, "main")[0] < qwen.memory.wired_limit_mb / 1024
+    projected, unknown = project_memory_gb(qwen, "main")
+    assert (round(projected, 1), unknown) == (103.9, [])
+    assert projected < qwen.memory.wired_limit_mb / 1024
+    row = by_name(run_checks(base, FakeProbe()))["engine:main:memory_projection[studio-qwen25]"]
+    assert row.status == "ok", row
 
 
 def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
@@ -540,30 +435,25 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
     )
     teams = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="teams")
     assert (
-        live_kv_gb(teams, teams.engines["main"]) == 3 * 65.536 * 64 / 1024
+        live_kv_gb(teams, teams.engines["main"]) == 3 * 131.072 * 64 / 1024
     )  # the other topologies are as they were
 
 
-class RunningEngine(FakeProbe):
-    """A probe whose host runs a vllm-mlx server with `argv` (or none)."""
-
-    def __init__(self, argv: list[str] | None) -> None:
-        super().__init__()
-        self.argv = argv
-
-    def process_args(self, marker: str) -> list[str] | None:
-        return self.argv
-
-
-def serve_argv(profile: str, tmp_path: Path) -> list[str]:
-    """What `task restart -- --topology <profile>` starts, as `ps` shows it."""
-    from airlie.engine.registry import build_registry, build_serve_command, write_registry
-
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology=profile)
-    path = write_registry(
-        build_registry(cfg, "main", lambda m: Path("/models") / m.repo), tmp_path / f"{profile}.yaml"
-    )
-    return build_serve_command(cfg, "main", path)
+def profile_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AirlieConfig:
+    """An mlx_vlm config with a `wide` profile that widens the KV."""
+    monkeypatch.setattr("airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name)
+    data = {
+        "version": 1,
+        "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"], "max_kv_size": 65536}},
+        "models": {"team": {"repo": "org/model", "revision": "r1"}},
+        "roles": {
+            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+        },
+        "topology": {"profiles": {"wide": {"engines": {"main": {"max_kv_size": 131072}}}}},
+    }
+    (tmp_path / "p.md").write_text("x")
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    return load_config(tmp_path / "airlie.yaml")
 
 
 def test_an_engine_running_other_flags_than_the_story_profile_is_a_mismatch_naming_the_restart(
@@ -571,35 +461,136 @@ def test_an_engine_running_other_flags_than_the_story_profile_is_a_mismatch_nami
 ) -> None:
     from airlie.doctor import engine_matches_profile
 
-    # the check reloads the config from its file for the profile, local overrides and all: never the person's
-    monkeypatch.setattr("airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name)
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    ok = engine_matches_profile(cfg, RunningEngine(serve_argv("studio", tmp_path)), "studio")
-    assert ok.status == "ok" and "studio" in ok.detail
-    # the engine the person left running from another profile: a smaller KV, no cache size, full-width KV
-    wrong = engine_matches_profile(cfg, RunningEngine(serve_argv("single", tmp_path)), "studio")
+    cfg = profile_cfg(tmp_path, monkeypatch)
+    wide = load_config(tmp_path / "airlie.yaml", topology="wide")
+    ok = engine_matches_profile(cfg, MlxVlmProcesses([mlx_vlm_argv(wide, "main")]), "wide")
+    assert ok.status == "ok" and "main" in ok.name
+    wrong = engine_matches_profile(cfg, MlxVlmProcesses([mlx_vlm_argv(cfg, "main")]), "wide")
     assert wrong.status == "fail"
-    named = (
-        "--max-kv-size 65536 (profile: 131072)",
-        "--cache-memory-mb (unset) (profile: 12288)",
-        "--kv-cache-quantization off (profile: on)",
+    assert "--max-kv-size 65536 (config: 131072)" in wrong.detail, wrong.detail
+    assert wrong.detail.endswith("restart it: task restart")
+    assert engine_matches_profile(cfg, MlxVlmProcesses([]), "wide").status == "warn"
+    assert engine_matches_profile(cfg, MlxVlmProcesses([]), "nope").status == "warn"  # a profile not declared
+
+
+class MlxVlmProcesses(FakeProbe):
+    """A probe whose host runs mlx_vlm.server processes with the given argvs."""
+
+    def __init__(self, argvs: list[list[str]]) -> None:
+        super().__init__()
+        self.argvs = argvs
+
+    def all_process_args(self, marker: str) -> list[list[str]] | None:
+        return [a for a in self.argvs if marker in " ".join(a)]
+
+
+def mlx_vlm_argv(cfg: AirlieConfig, engine: str) -> list[str]:
+    from airlie.config.load import hf_snapshot_dir
+    from airlie.engine.mlx_vlm import build_mlx_vlm_command
+
+    return ["python", *build_mlx_vlm_command(cfg, engine, hf_snapshot_dir)[0][1:]]
+
+
+def committed_cfg(monkeypatch: pytest.MonkeyPatch) -> AirlieConfig:
+    monkeypatch.setattr("airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name)
+    return load_config(ROOT / "airlie.yaml", NO_LOCAL)
+
+
+def test_an_mlx_vlm_engine_running_other_flags_than_the_config_is_a_mismatch_naming_task_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from airlie.doctor import engine_matches_config
+
+    cfg = committed_cfg(monkeypatch)
+    assert cfg.engines["main"].max_kv_size == 131072
+    main = mlx_vlm_argv(cfg, "main")
+    stale = list(main)
+    stale[stale.index("--max-kv-size") + 1] = "65536"
+    other = mlx_vlm_argv(cfg, "reviewer")  # on 8082: ignored by main's check
+    ok = engine_matches_config(cfg, MlxVlmProcesses([other, main]), "main")
+    assert (ok.name, ok.status) == ("engine:config[main]", "ok")
+    bad = engine_matches_config(cfg, MlxVlmProcesses([other, stale]), "main")
+    assert bad.status == "fail" and "--max-kv-size 65536 (config: 131072)" in bad.detail, bad.detail
+    assert "--max-num-seqs" not in bad.detail and bad.detail.endswith("restart it: task restart")
+    # the stale argv is on 8080, not the reviewer's port
+    assert engine_matches_config(cfg, MlxVlmProcesses([other, stale]), "reviewer").status == "ok"
+    bits = main.index("--kv-bits")
+    no_bits = main[:bits] + main[bits + 2 :]
+    assert (
+        "--kv-bits (unset) (config: 8)"
+        in engine_matches_config(cfg, MlxVlmProcesses([no_bits]), "main").detail
     )
-    for flag in named:
-        assert flag in wrong.detail, wrong.detail
-    assert wrong.detail.endswith("restart it: task restart -- --topology studio")
-    # one flag alone is enough
-    argv = serve_argv("studio", tmp_path)
-    argv[argv.index("--max-kv-size") + 1] = "32768"
-    one = engine_matches_profile(cfg, RunningEngine(argv), "studio")
-    assert one.status == "fail" and "--max-kv-size 32768" in one.detail and "--max-num-seqs" not in one.detail
-    # the resident models are compared too: a registry that preloads other models
-    studio_argv = serve_argv("studio-coder8", tmp_path)
-    models = engine_matches_profile(cfg, RunningEngine(studio_argv), "studio")
-    assert models.status == "fail" and "preloaded models" in models.detail
-    # none running is a warning (the engine-down gate says so), an unmanaged engine is fine
-    assert engine_matches_profile(cfg, RunningEngine(None), "studio").status == "warn"
-    assert engine_matches_profile(cfg, RunningEngine(None), "single").status == "warn"
-    assert engine_matches_profile(cfg, RunningEngine(None), "nope").status == "warn"  # a profile not declared
+
+
+def test_no_mlx_vlm_server_on_the_engines_port_is_a_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    from airlie.doctor import engine_matches_config
+
+    cfg = committed_cfg(monkeypatch)
+    only_reviewer = MlxVlmProcesses([mlx_vlm_argv(cfg, "reviewer")])
+    found = engine_matches_config(cfg, only_reviewer, "main")
+    assert found.status == "warn" and "8080" in found.detail
+    assert engine_matches_config(cfg, FakeProbe(), "main").status == "warn"  # ps unreadable: no processes
+
+
+def test_the_story_line_gates_on_the_build_engines_config_not_a_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from airlie.doctor import engine_matches_profile
+
+    cfg = committed_cfg(monkeypatch)
+    main = mlx_vlm_argv(cfg, "main")
+    ok = engine_matches_profile(cfg, MlxVlmProcesses([main]), "studio")
+    assert (ok.name, ok.status) == ("engine:config[main]", "ok")
+    stale = list(main)
+    stale[stale.index("--max-num-seqs") + 1] = "2"
+    bad = engine_matches_profile(cfg, MlxVlmProcesses([stale]), "studio")
+    assert bad.status == "fail" and "--max-num-seqs 2 (config: 16)" in bad.detail
+    # the qwen25 experiment builds on its own engine (port 8093), which nothing runs
+    assert engine_matches_profile(cfg, MlxVlmProcesses([main]), "studio-qwen25").status == "warn"
+
+
+def test_real_probe_lists_every_matching_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from airlie.doctor import RealProbe
+
+    ps = (
+        "python -m mlx_vlm.server --model /m/a --port 8080\n"
+        "python -m mlx_vlm.server --model /m/b --port 8082\n"
+        "ps -axo args= mlx_vlm.server\n"
+    )
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=ps, stderr="")
+    )
+    probe = RealProbe()
+    ports = [a[a.index("--port") + 1] for a in probe.all_process_args("mlx_vlm.server") or []]
+    assert ports == ["8080", "8082"]
+
+
+def test_a_bench_engine_mismatch_is_restarted_by_name_not_by_task_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from airlie.doctor import engine_matches_profile, start_command
+
+    cfg = committed_cfg(monkeypatch)
+    qwen = mlx_vlm_argv(cfg, "qwen25_32b")
+    stale = list(qwen)
+    stale[stale.index("--max-kv-size") + 1] = "4096"
+    bad = engine_matches_profile(cfg, MlxVlmProcesses([stale]), "studio-qwen25")
+    assert bad.name == "engine:config[qwen25_32b]" and bad.status == "fail", bad
+    assert bad.detail.endswith("restart it: uv run airlie engine restart qwen25_32b"), bad.detail
+    assert "task restart" not in bad.detail
+    assert start_command(cfg.engines["qwen25_32b"], "qwen25_32b") == "uv run airlie engine up qwen25_32b"
+    assert start_command(cfg.engines["main"], "main") == "task restart"
+
+
+def test_a_bench_engines_model_missing_from_the_cache_is_a_warning_not_a_failure(tmp_path: Path) -> None:
+    cfg = mlx_vlm_cfg(tmp_path)  # `bench` is autostart: false; `rev` is not
+    found = by_name(run_checks(cfg, FakeProbe()))
+    assert found["model:bench"].status == "warn"
+    assert found["model:rev"].status == "fail"
 
 
 def test_a_missing_mtp_head_is_its_own_finding_and_names_the_pull_task(tmp_path: Path) -> None:
@@ -613,3 +604,141 @@ def test_a_missing_mtp_head_is_its_own_finding_and_names_the_pull_task(tmp_path:
     )
     present = by_name(run_checks(c, FakeProbe(snapshots={"org/model@r1", "org/model-MTP@h1"})))
     assert present["model:team:mtp"].status == "ok"
+
+
+def mlx_vlm_cfg(
+    tmp_path: Path, *, bench_autostart: bool = False, entry: list[str] | None = None
+) -> AirlieConfig:
+    main: dict = {
+        "kind": "mlx_vlm",
+        "port": 8080,
+        "model": "base",
+        "prefix_cache": True,
+        "cache_memory_gb": 8,
+    }
+    if entry:
+        main["entry"] = entry
+    data = {
+        "version": 1,
+        "engines": {
+            "main": main,
+            "reviewer": {
+                "kind": "mlx_vlm",
+                "port": 8082,
+                "model": "rev",
+                "prefix_cache": True,
+                "cache_memory_gb": 4,
+            },
+            "bench": {
+                "kind": "mlx_vlm",
+                "port": 8091,
+                "model": "bench",
+                "autostart": bench_autostart,
+                "prefix_cache": True,
+                "cache_memory_gb": 1,
+            },
+        },
+        "models": {
+            "base": {"repo": "org/base", "revision": "r1", "estimated_memory_gb": 16},
+            "rev": {"repo": "org/rev", "revision": "r1", "estimated_memory_gb": 19},
+            "bench": {"repo": "org/bench", "revision": "r1", "estimated_memory_gb": 20},
+        },
+        "roles": {
+            r: {"prompt": "p.md", "model": "base"} for r in ("coder", "summarizer", "judge", "aggregator")
+        },
+    }
+    (tmp_path / "p.md").write_text("x")
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    return load_config(tmp_path / "airlie.yaml")
+
+
+def test_memory_projection_counts_every_autostart_mlx_vlm_engine_and_its_cache(tmp_path: Path) -> None:
+    from airlie.doctor import live_kv_gb, project_memory_gb
+
+    cfg = mlx_vlm_cfg(tmp_path)
+    gb, unknown = project_memory_gb(cfg, "main")
+    assert gb == pytest.approx(
+        16 + 19 + 8 + 4 + live_kv_gb(cfg, cfg.engines["main"]) + cfg.memory.os_reserve_gb
+    )
+    assert unknown == []
+
+
+class PackageProbe(FakeProbe):
+    def __init__(self, versions: dict[str, str], **kw) -> None:
+        super().__init__(**kw)
+        self._versions = versions
+
+    def package_version(self, dist: str) -> str | None:
+        return self._versions.get(dist)
+
+
+def test_doctor_reports_the_installed_mlx_vlm_for_mlx_vlm_engines(tmp_path: Path) -> None:
+    cfg = mlx_vlm_cfg(tmp_path)
+    probe = PackageProbe({"mlx-vlm": "0.7.12"})
+    r = by_name(run_checks(cfg, probe))["engine:main:binary"]
+    assert r.status == "ok"
+    assert r.detail == "mlx-vlm 0.7.12 (python -m mlx_vlm.server)"
+    r = by_name(run_checks(cfg, PackageProbe({}, mlx_vlm=None)))["engine:main:binary"]
+    assert r.status == "fail"
+    assert "uv sync" in r.detail
+
+
+def test_doctor_names_a_custom_mlx_vlm_entry_command(tmp_path: Path) -> None:
+    cfg = mlx_vlm_cfg(tmp_path, entry=["mlx-vlm-server", "--x"])
+    r = by_name(run_checks(cfg, PackageProbe({}, tools={**TOOLS_OK, "mlx-vlm-server": "1.2"})))
+    assert r["engine:main:binary"].status == "ok"
+    assert "mlx-vlm-server" in r["engine:main:binary"].detail
+
+
+def test_hybrid_attention_model_is_ok_because_the_prefix_cache_stores_checkpoints(tmp_path: Path) -> None:
+    cfg = mlx_vlm_cfg(tmp_path)
+    hybrid = {"text_config": {"layer_types": ["linear_attention", "full_attention"]}}
+    probe = ConfigProbe({"org/base@r1": hybrid}, snapshots={"org/base@r1"})
+    r = by_name(run_checks(cfg, probe))["model:base:attention"]
+    assert r.status == "ok"
+    assert "checkpoints" in r.detail and "patch" not in r.detail
+
+
+def test_a_managed_engines_health_row_is_ok_when_it_answers_and_names_the_start_command_when_not(
+    tmp_path: Path,
+) -> None:
+    cfg = managed(tmp_path)
+    up = HealthProbe({"http://127.0.0.1:8080/health": True}, snapshots={"org/model@r1"})
+    ok = by_name(run_checks(cfg, up))["engine:main:health"]
+    assert ok.status == "ok" and "8080/health" in ok.detail
+    down = by_name(run_checks(cfg, HealthProbe({}, snapshots={"org/model@r1"})))["engine:main:health"]
+    assert down.status == "warn" and "run: task restart" in down.detail
+    cfg.engines["main"].autostart = False
+    by_hand = by_name(run_checks(cfg, HealthProbe({}, snapshots={"org/model@r1"})))["engine:main:health"]
+    assert "uv run airlie engine up main" in by_hand.detail
+
+
+class KeyedProbe(HealthProbe):
+    """A host whose engine answers /health only to the right Bearer key."""
+
+    def __init__(self, key: str | None, **kw) -> None:
+        super().__init__({}, **kw)
+        self._key = key
+        self.sent: list[dict[str, str] | None] = []
+
+    def http_status(self, url: str, headers: dict[str, str] | None = None) -> int | None:
+        self.sent.append(headers)
+        if self._key is None:
+            return None
+        return 200 if headers == {"Authorization": f"Bearer {self._key}"} else 401
+
+
+def test_a_keyed_engines_health_row_sends_its_key_and_blames_a_wrong_one(tmp_path: Path) -> None:
+    cfg = managed(tmp_path)
+    cfg.engines["main"].api_key = "sekret"
+    snaps = {"snapshots": {"org/model@r1"}}
+    right = KeyedProbe("sekret", **snaps)
+    assert by_name(run_checks(cfg, right))["engine:main:health"].status == "ok"
+    assert right.sent == [{"Authorization": "Bearer sekret"}]
+    wrong = by_name(run_checks(cfg, KeyedProbe("other", **snaps)))["engine:main:health"]
+    assert wrong.status == "warn" and "api_key" in wrong.detail and "not running" not in wrong.detail
+    down = by_name(run_checks(cfg, KeyedProbe(None, **snaps)))["engine:main:health"]
+    assert down.status == "warn" and "not running" in down.detail and "run: task restart" in down.detail
+    cfg.engines["main"].api_key = None  # no key set: a 401 is only "not answering well", never a key blame
+    keyless = by_name(run_checks(cfg, KeyedProbe("other", **snaps)))["engine:main:health"]
+    assert "not running" in keyless.detail

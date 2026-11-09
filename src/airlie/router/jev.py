@@ -1,4 +1,4 @@
-"""JevClient: POST /v1/systemone on a llama-server serving Kev (System One decision model); JevRouter."""
+"""JevClient: POST /v1/decisions on the mlx-vlm decision engine."""
 
 from __future__ import annotations
 
@@ -27,9 +27,12 @@ class JevClient:
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_s: float = 60.0,
         api_key: str | None = None,
+        endpoint: str = "/decisions",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.endpoint = endpoint
+        self._name = endpoint.strip("/")
         # header names are case-insensitive, so case-mutating the name is an equivalent mutant
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}  # pragma: no mutate
         self._client = httpx.AsyncClient(transport=transport, timeout=timeout_s, headers=headers)
@@ -40,20 +43,23 @@ class JevClient:
             "state": state,
             "questions": {question: {"type": "choice", "instructions": instructions, "criteria": criteria}},
         }
-        r = await self._client.post(f"{self.base_url}/systemone", json=body)
+        r = await self._client.post(f"{self.base_url}{self.endpoint}", json=body)
         if r.status_code != 200:
             raise httpx.HTTPStatusError(
-                f"systemone returned {r.status_code}: {r.text[:200]}", request=r.request, response=r
+                f"{self._name} returned {r.status_code}: {r.text[:200]}", request=r.request, response=r
             )
         data = r.json()
         ans = (data.get("answers") or {}).get(question)
-        if not isinstance(ans, dict) or "choice" not in ans:
-            raise ValueError(f"systemone answered without '{question}': {str(data)[:200]}")
+        if not isinstance(ans, dict) or "value" not in ans:
+            raise ValueError(f"{self._name} answered without '{question}': {str(data)[:200]}")
         probs = {str(k): float(v) for k, v in (ans.get("probabilities") or {}).items()}
         usage = data.get("usage") or {}
-        return Answer(
-            str(ans["choice"]), probs, float(ans.get("confidence", 0.0)), int(usage.get("input_tokens", 0))
-        )
+        if "confidence" in (ans.get("metadata") or {}):
+            confidence = float(ans["metadata"]["confidence"])
+        else:
+            confidence = max(probs.values(), default=0.0)
+        tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
+        return Answer(str(ans["value"]), probs, confidence, int(tokens))
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -85,7 +91,7 @@ class JevRouter:
         if ans.choice not in criteria:
             chosen = hint if hint in criteria else top
             if chosen is None:
-                raise ValueError(f"systemone chose {ans.choice!r}, outside the closed set, and no fallback")
+                raise ValueError(f"the decision engine chose {ans.choice!r}, outside the set; no fallback")
             return RouteDecision(
                 question,
                 ans.choice,

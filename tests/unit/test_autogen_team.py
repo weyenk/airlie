@@ -12,7 +12,7 @@ from autogen_core import FunctionCall
 from autogen_core.models import CreateResult, FunctionExecutionResult, RequestUsage
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
-from airlie.config import RoleSpec
+from airlie.config import ModelSpec, RoleSpec
 from airlie.engine import ToolCall
 from airlie.scheduler import SlotScheduler
 from airlie.teams import NullObserver, TeamContext
@@ -70,7 +70,7 @@ async def test_function_tools_call_the_registry(tmp_path: Path) -> None:
 
 def test_model_client_passes_the_roles_thinking_settings_via_extra_body(tmp_path: Path) -> None:
     """The meeting needs the architect and the tester to think as their roles are configured, as
-    HTTPEngine._body sends it: the top-level flag, the template kwargs and the budget only when thinking."""
+    HTTPEngine._body sends it: the top-level flag, the reasoning effort and the budget only when thinking."""
     (tmp_path / "p.md").write_text("x")
     thinking = RoleSpec(
         prompt=tmp_path / "p.md",
@@ -84,16 +84,39 @@ def test_model_client_passes_the_roles_thinking_settings_via_extra_body(tmp_path
         "extra_body"
     ]
     assert extra["enable_thinking"] is True
-    assert extra["chat_template_kwargs"] == {"enable_thinking": True, "reasoning_strength": "low"}
-    assert extra["thinking_token_budget"] == 512 and extra["top_k"] == thinking.sampling.top_k
+    assert extra["reasoning_effort"] == "low" and "chat_template_kwargs" not in extra
+    assert extra["thinking_budget"] == 512 and extra["top_k"] == thinking.sampling.top_k
     plain = RoleSpec(
         prompt=tmp_path / "p.md", model="base", thinking=False, thinking_budget=512, max_tokens=64
     )
     extra = build_model_client("http://127.0.0.1:1/v1", "base", plain, api_key=None)._create_args[
         "extra_body"
     ]
-    assert extra["enable_thinking"] is False and "thinking_token_budget" not in extra
-    assert extra["chat_template_kwargs"] == {"enable_thinking": False}
+    assert extra["enable_thinking"] is False and "thinking_budget" not in extra
+
+
+def test_model_client_uses_mlx_vlms_field_names(tmp_path: Path) -> None:
+    (tmp_path / "p.md").write_text("x")
+    role = RoleSpec(
+        prompt=tmp_path / "p.md",
+        model="base",
+        thinking=True,
+        thinking_budget=512,
+        max_tokens=2000,
+        chat_template_kwargs={"reasoning_strength": "low"},
+    )
+    client = build_model_client(
+        "http://127.0.0.1:1/v1",
+        "/models/base",
+        role,
+        api_key=None,
+        model=ModelSpec(repo="o/m", revision="r", tool_call_parser="qwen3_coder"),
+    )
+    extra = client._create_args["extra_body"]
+    assert extra["tool_parser"] == "qwen3_coder"  # an agent always carries its tools
+    assert extra["enable_thinking"] is True and extra["thinking_budget"] == 512
+    assert extra["reasoning_effort"] == "low" and extra["top_k"] == role.sampling.top_k
+    assert "chat_template_kwargs" not in extra and "thinking_token_budget" not in extra
 
 
 def test_model_client_targets_engine_and_role_model(tmp_path: Path) -> None:
@@ -205,7 +228,6 @@ def test_model_client_passes_sampling_the_openai_client_lacks_via_extra_body(tmp
         "min_p": 0.05,
         "repetition_penalty": 1.05,
         "enable_thinking": False,
-        "chat_template_kwargs": {"enable_thinking": False},
     }
 
 
@@ -370,3 +392,15 @@ def test_each_message_carries_its_speaker_in_its_text(tmp_path: Path) -> None:
     assert client._add_name_prefixes is True
     said = to_oai_type(UserMessage(content="I post the proof.", source="product"), prepend_name=True)
     assert said[0]["content"] == "product said:\nI post the proof."
+
+
+def test_an_openai_dialect_client_sends_only_template_kwargs(tmp_path: Path) -> None:
+    (tmp_path / "p.md").write_text("x")
+    role = RoleSpec(
+        prompt=tmp_path / "p.md", model="base", thinking=True, thinking_budget=512, max_tokens=2000
+    )
+    spec = ModelSpec(repo="o/m", revision="r", tool_call_parser="qwen3_coder")
+    client = build_model_client("http://x/v1", "base", role, api_key=None, model=spec, dialect="openai")
+    extra = client._create_args["extra_body"]
+    assert extra["chat_template_kwargs"] == {"enable_thinking": True}
+    assert not {"enable_thinking", "thinking_budget", "tool_parser", "reasoning_effort"} & set(extra)

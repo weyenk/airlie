@@ -94,17 +94,17 @@ Run `task` to list them. The ones that exist today:
 | Task | Does |
 | --- | --- |
 | `task setup` | one-time, idempotent setup |
-| `task doctor` | validates `airlie.yaml`, checks the wired-memory limit, RAM, tools (node against the pin in `web/package.json`: the first `node` on your `PATH` must be that major), vllm-mlx, model weights, and the spec's memory projection; exit 1 on any red row |
+| `task doctor` | validates `airlie.yaml`, checks the wired-memory limit, RAM, tools (node against the pin in `web/package.json`: the first `node` on your `PATH` must be that major), mlx-vlm, model weights, and the spec's memory projection; exit 1 on any red row |
 | `task config` | prints the fully resolved configuration (`airlie.yaml` + `airlie.local.yaml`) |
 | `task searxng:up` / `:status` / `:down` / `:destroy` | SearXNG for the web roles' `web_search`, in a Tart Linux VM reached at `127.0.0.1:8888` (the first `up` downloads a few GB and installs it); `docs/integrations/web-tools.md` |
 | `task web:e2e [-- --roles chief,ux]` | asks every web-enabled role (chief, research, ux, design, reviewer) about something after its training data and checks it searched and cited what it found |
 | `task models:list` / `task models:pull [-- name…]` | show the catalog with pinned revisions / download exactly those revisions |
-| `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop every managed engine in `airlie.yaml`: the vllm-mlx process (`main`, all catalog models in its registry) and the llama-server process serving Kev (`decision`, `/v1/systemone`); status shows pid and per-model readiness |
+| `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop every managed engine in `airlie.yaml`: one mlx-vlm server per model (`main`, `reviewer`, `small`, and `decision`: decider-2b on `/v1/decisions`); `airlie engine up <name>` starts any other engine by hand (the bench engines `llama70b`, `qwen25_32b`); status shows pid and per-model readiness |
 | `task run -- "goal" --repo PATH [--topology fork] [--k 3] [--test-cmd "pytest -q"]` | run a topology on a goal (default `topology.kind: single`; `single` / `teams` / `fork` are experimental — use `task studio` or `--topology studio` for the supported path); every team/branch works in its own git worktree under the run directory and the report lists each one's outcome, branch and trace |
 | `task eval -- lang_detect [--topology fork] [--k 1]` | materialize a graded task from `evals/tasks/`, run it, grade every worktree with the hidden tests (same topology note as `task run`) |
 | `task serve [-- --port 8090]` | OpenAI-compatible endpoint: roles are models (`/v1/models`, `/v1/chat/completions` with the role prompt prepended), plus `POST /v1/airlie/run {goal, repo, k}`; jobs: `POST /v1/airlie/plans`, `/runs` or `/stories`, then `GET /v1/airlie/jobs/{id}?since=&wait=` (long poll), `DELETE` to cancel |
 | `task web:install` / `web:check` / `web:build` / `web:gate` / `web:dev` | the Vue app in `web/` (node 26, pinned in `web/package.json`): `npm ci` / typecheck + lint + tests / build into `src/airlie/serve/web_next` (`task serve` and `task setup` run it) / check then build, skipped while nothing under `web/` changed since it last passed / Vite dev server with `/v1` proxied to `task serve` |
-| `task studio -- "goal" --repo PATH [--image shot.png] [--test-cmd "pytest -q"]` | the studio topology: the chief plans in JSON, Kev routes each subtask to a specialist role (and a skill), specialists run on one worktree, a cross-family reviewer gets one fix round, the chief synthesises; `report.md` and `routing.jsonl` land in the run directory |
+| `task studio -- "goal" --repo PATH [--image shot.png] [--test-cmd "pytest -q"]` | the studio topology: the chief plans in JSON, the decision model routes each subtask to a specialist role (and a skill), specialists run on one worktree, a cross-family reviewer gets one fix round, the chief synthesises; `report.md` and `routing.jsonl` land in the run directory |
 | `task story -- ISSUE [--repo PATH] [--test-cmd CMD]` / `task story -- --text "request" …` | a board item (a key like `AIR-7`; a Jira issue or its link with `story.board: jira`) or a written request → product's story → architect's layers → the story meeting (product, the architect and the tester agree the requirements, the changes and the proof) → each layer built from the architect's package (its tests as code, placed and checked before the coder builds) by the studio on its own branch → draft PRs (`story.publish`: `single` in the committed `airlie.yaml` is one PR on the top layer; `stack` is one draft PR per layer via gh-stack) → the issue in *In Review*; only a human merges; a stopped story resumes from its last finished stage; an issue is built in the repository its `repo:<owner>/<name>` label names (its clone in `~/git`, `story.repos_root`), and every layer must pass the `## Test gate` of that repository's `AGENTS.md`; Jira comes from the `ATLASSIAN_*` variables in `~/.config/airlie/.env` (or a `.env` beside `airlie.yaml`), which airlie reads itself and never exports; with `story.github_app.app_id` set, a GitHub App's bot pushes, opens the PRs and authors the layer commits with a token scoped to the story's one repository, never your gh login or SSH key; the committed `airlie.yaml` publishes as this repository owner's app, so in a clone set `story.github_app.app_id: null` in `airlie.local.yaml` to publish with your own gh login, or set your own app's id there (`docs/integrations/story.md`) |
 | `task line:tick` / `task story:check [-- ISSUE]` | one beat of the line (what serve runs every minute and the launchd agent every 15): the gates, the bookkeeping, then a job in the planning lane and one in the build lane / check roles, gh + gh-stack, which board is in use (with Jira: its credentials, project and statuses), and an issue's label, checkout, trunk and test gate |
 | `task line:pause` / `task line:resume` | hold the line (the gates and the bookkeeping still run, no job starts, a running one finishes) / let it go; a card moved to blocked or todo holds everything under it (`docs/integrations/story.md`, *The line*) |
@@ -131,7 +131,7 @@ Run `task` to list them. The ones that exist today:
 | `task bridge` / `bridge:launchd:install` / `bridge:launchd:uninstall` | Job Bus worker: claim/result to the hub, studio and llm jobs on loopback `task serve` (`src/airlie/serve/bridge/README.md`) |
 | `task hub:install` / `hub:check` / `hub:gate` | Job Bus hub npm deps / typecheck + contract tests / the hub gate |
 | `task opencode:install` | copy the OpenCode chief, its subagents, `/studio` and `/story` into `~/.config/opencode` and register `airlie mcp`, an MCP server (stdio) that gives OpenCode the tools `airlie_plan`, `airlie_run`, `airlie_status`, `airlie_cancel` and `airlie_story` over `task serve`'s jobs API, in its `opencode.json` (merged into an entry you already have; after a backup when it changes the file; `docs/integrations/local-agents.md`) |
-| `task route:eval -- --min-accuracy 0.9 --out docs/bench/routing.json` | score the Kev router on `evals/routing.jsonl` (54 labelled tasks seeded from ai-mode) against the role criteria in `evals/routing-roles.yaml`: accuracy, mean confidence, wrong-but-clear, confusions |
+| `task route:eval -- --min-accuracy 0.9 --out docs/bench/routing.json` | score the decision-model router on `evals/routing.jsonl` (54 labelled tasks seeded from ai-mode) against the role criteria in `evals/routing-roles.yaml`: accuracy, mean confidence, wrong-but-clear, confusions |
 | `task bench:topology -- --topologies single,teams,fork,studio --repeats 3` | experimental topologies and studio on the graded tasks: wall-clock, steps, forks, winner graded by the hidden tests |
 | `task bench:lts -- --tasks lang_detect --repeats 2` | memory-free baseline vs the configured controller on graded tasks: wall-clock, steps, admissions, retrievals, pass rate, and the spec's ≥25 % verdict (experimental `teams` / LTS path) |
 | `task bench:story` / `bench:story-compare` | a fixed story built end to end, measured and graded / deltas between two story bench records |
@@ -140,7 +140,7 @@ Run `task` to list them. The ones that exist today:
 | `task bench [-- --model NAME --ctx 4k,32k --n 1,2,4]` | engine throughput through the seam: TTFT, prefill and decode tok/s, aggregate at N streams, and whether turn 2 of a conversation hits the prefix cache |
 | `task bench:models` | the same for every catalog model marked `bench: true`, one table |
 | `task bench:compare -- a.json b.json` | per-cell deltas between two saved runs |
-| `task test` / `task test:live` / `task test:mac` / `task lint` / `task typecheck` / `task check` | unit tests / tests against the running engine / mac-only unit tests (vllm-mlx / mlx) / ruff / mypy / lint+types+unit |
+| `task test` / `task test:live` / `task test:mac` / `task lint` / `task typecheck` / `task check` | unit tests / tests against the running engine / mac-only unit tests (mlx) / ruff / mypy / lint+types+unit |
 | `task static` | lint + typecheck: part of pipeline stage 1 and the pre-push gate (`task hooks:install`, run by `task setup`) |
 | `task test:unit` / `test:functional` / `test:contract` / `test:integration` / `test:e2e` / `test:journey` / `test:performance` / `test:security` | one layer of the test pyramid, `tests/<layer>/`; a layer with no tests yet succeeds |
 | `task mutate [-- --max-children 6]` / `task mutate:results` | mutation-test every enrolled module (`[tool.airlie.mutation].enrolled`); an uncaught mutant exits 1 |
@@ -195,16 +195,16 @@ open draft PRs:** run `task serve -- --api-key SECRET` (or set `AIRLIE_SERVE_API
 
 **`studio`** is the topology the line and the web app run (design:
 `docs/superpowers/specs/2026-10-13-studio-topology-design.md`). One generalist (`chief`, Qwen3.8-27B, also the
-vision model) scopes the request into a JSON plan of subtasks; the router (Kev on llama-server, or the chief's
+vision model) scopes the request into a JSON plan of subtasks; the router (the decision model on mlx-vlm, or the chief's
 own hint with `router.kind: chief`) assigns each subtask a specialist role from the roles whose prompts carry a
 `summary:` line, and for roles with a skill library (`skills/qa/*.md`, folded into the coder's test brief) picks
 the guideline to inject; specialists are prompts over the catalog (generalist for most seats, Muse Glimmer for
 the `reviewer`) and run as single agents on one worktree, writers one at a time, readers in parallel; after a
 code subtask the reviewer (a different model family, on purpose: judges favour their own family's text) returns
 a JSON verdict and blocking findings give the coder one fix round; the chief synthesises. Run it with
-`task studio -- "goal" --repo . [--image shot.png]` after `task restart -- --topology studio` (the profile
-preloads the generalist and the reviewer; the server keeps parsing the coder family's tool calls and airlie
-parses what it leaves raw, such as Muse's channels). Every routing decision is logged
+`task studio -- "goal" --repo . [--image shot.png]` after `task restart` (the committed engines are the studio's:
+one mlx-vlm server each for the generalist, the reviewer and the small model; mlx-vlm parses the tool calls,
+the parser named per model in the catalog). Every routing decision is logged
 (`runs/<id>/routing.jsonl`) and scorable with `task route:eval`.
 
 Every topology injects a deterministic repository map (tree, sizes, Python signatures; `repo_map.*`, cached under
@@ -235,9 +235,8 @@ for those tasks; pass `--topology studio` (or use `task studio`) for the support
   events: `fork_point`, `fork_resolved`, `branch_done`.
 
 The EdgeAgent HAL scheduler (spec 04 §1) can run alongside multi-team layouts: accepted-draft counts update each
-team's EMA and re-allocate the 16-slot draft budget after every step (`hal` events). vllm-mlx 0.5.0 cannot take a
-per-request draft length, so the budgets are computed and logged but only *applied* on an engine with
-`engines.<name>.per_request_draft: true`. Every step of a run is written to
+team's EMA and re-allocate the 16-slot draft budget after every step (`hal` events). mlx-vlm cannot take a
+per-request draft length, so the budgets are computed and logged but not applied. Every step of a run is written to
 `~/.local/state/airlie/runs/<run_id>/events.jsonl` and `trace/`.
 
 **Profiles.** `topology.profiles.<kind>` is a partial config deep-merged over `airlie.yaml` when that kind is
@@ -246,13 +245,11 @@ and models. `--topology` on `task run`/`task eval`/`task studio` and `topology` 
 the profile for one run; a profile name that is not a kind (a named variant, or a parent other profiles
 `extends`) can be selected the same way and takes its kind from its own `topology.kind` or the file's.
 `--k N` with `N > 1` under the `single` kind selects the `teams` profile. `task doctor` projects memory per
-profile across every managed engine. A profile that changes engine settings (`max_kv_size`, `server_parsers`,
-the resident model set) takes effect at the next `task restart`. `studio-qwen25` is `studio` with Qwen2.5-32B
+profile across every managed engine. Profiles carry no engine flags: the engines come from the base config, and
+`task restart` takes no `--topology`. `studio-qwen25` is `studio` with Qwen2.5-32B
 (`qwen25_32b`, already in the catalog) in the coder seat, an experiment kept beside the default:
-`task restart -- --topology studio-qwen25`, and `story: { topology: studio-qwen25 }` in `airlie.local.yaml`
-makes `task line:tick` build with it. `studio-coder8` is the same experiment with Qwen3-Coder 8-bit (`coder8`)
-in the coder seat: `task models:pull -- coder8`, then `task restart -- --topology studio-coder8`, and
-`task bench:models` includes it.
+start its engine by hand with `airlie engine up qwen25_32b`, and `story: { topology: studio-qwen25 }` in `airlie.local.yaml`
+makes `task line:tick` build with it.
 
 ## Learning to Share
 
@@ -278,10 +275,9 @@ trains the spec 03 §2 model (frozen Qwen3-0.6B embedder, three projection layer
 
 ## Choosing the team model
 
-The default team / chief model is `generalist` (Qwen3.8-27B, hybrid attention). vllm-mlx 0.5.0's own prefix
-cache cannot store hybrid (linear/SSM) state; airlie's engine patch
-(`engine/patches/hybrid_prefix_cache.py`) can, so a resumed turn is not re-prefilled. `task doctor` reports that
-as ok. Without the patch (another server), every turn re-prefills. Swap with one line:
+The default team / chief model is `generalist` (Qwen3.8-27B, hybrid attention). mlx-vlm's prefix cache stores
+hybrid (linear/SSM) state as checkpoints (`cache_checkpoints`), so a resumed turn is not re-prefilled; `task
+doctor` reports that as ok. Swap with one line:
 `roles.coder.model` (and `roles.aggregator.model`) at another catalog entry; numbers in
 [`docs/bench/`](docs/bench/).
 
@@ -295,18 +291,17 @@ fragment is deep-merged in list order, then the root file's other keys merge on
 top, then `airlie.local.yaml` (deep-merged, gitignored, and **not** processed for `includes:`), then the selected
 topology profile. Role prompts, model paths, `story.repo`, and the like resolve against the **root** config file's
 directory (`airlie.yaml`'s parent), not the including fragment's directory. Copy `airlie.local.example.yaml` to
-`airlie.local.yaml` for local overrides. Every seam is a key there: engines (`vllm_mlx` managed process, a
-`llama_server` managed process for one GGUF such as Kev, or any `openai_http` server), the model catalog (pinned
-Hugging Face revisions; `bench: true` entries are compared by `task bench:models`; `tool_call_parser` /
-`reasoning_parser` name the parser classes, vllm-mlx's or airlie's own (`qwen3_xml_raw`, `muse_glimmer`, which
-the managed engine loads at start), that run on each model's output, in the engine or, when
-`engines.<e>.server_parsers` is false, in airlie), roles, tools and MCP servers, the router (`jev` on Kev's `/v1/systemone`
+`airlie.local.yaml` for local overrides. Every seam is a key there: engines (`mlx_vlm` managed process, one per model,
+or any `openai_http` server), the model catalog (pinned
+Hugging Face revisions; `bench: true` entries are compared by `task bench:models`; `tool_call_parser`
+names mlx-vlm's parser for the model, sent per request: `qwen3_coder`, `atem`; unset lets the server infer it
+from the chat template), roles, tools and MCP servers, the router (`jev` on the decision engine's `/v1/decisions`
 or `chief`), the LTS admission controller, summarizer, scheduler, teams, aggregator, topology profiles, and the
 `studio` block (chief role, parallelism, the review: which roles are reviewed, how many fix rounds; `done_check`:
 a coder that stops on a brief with acceptance criteria ticks each one against its diff before review, and
 `done_check_steps` is what a miss may cost). A role may
 declare `tools` (a subset of the builtins plus `decide` and `search_knowledge`), `skills` (a directory of
-guidelines with `summary:` frontmatter, routed by Kev), `knowledge` (a directory the `search_knowledge` tool
+guidelines with `summary:` frontmatter, routed by the decision model), `knowledge` (a directory the `search_knowledge` tool
 indexes with BM25), `vision` (receives the run's images) and `max_steps`. Unknown keys are errors, and every
 error names the key path.
 

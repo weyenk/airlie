@@ -47,7 +47,7 @@ tasks:
       - '{{.RUN}} airlie models pull {{.CLI_ARGS}}'
 
   up:
-    desc: Start the vllm-mlx engine(s) from airlie.yaml and wait until preloaded models are ready
+    desc: Start the mlx-vlm engines from airlie.yaml (autostart ones; `-- NAME` starts one by hand) and wait until their models are ready
     cmds:
       - '{{.RUN}} airlie engine up {{.CLI_ARGS}}'
 
@@ -57,7 +57,7 @@ tasks:
       - '{{.RUN}} airlie engine down {{.CLI_ARGS}}'
 
   restart:
-    desc: Stop then start the managed engine(s)
+    desc: Stop then start the managed mlx-vlm engines
     cmds:
       - '{{.RUN}} airlie engine restart {{.CLI_ARGS}}'
 
@@ -447,7 +447,7 @@ tasks:
       - '{{.RUN}} airlie bench lts {{.CLI_ARGS}}'
 
   route:eval:
-    desc: "Score the Kev router on evals/routing.jsonl (task route:eval -- --min-accuracy 0.9 --out docs/bench/routing.json)"
+    desc: "Score the decision-model router on evals/routing.jsonl (task route:eval -- --min-accuracy 0.9 --out docs/bench/routing.json)"
     cmds:
       - '{{.RUN}} airlie route eval {{.CLI_ARGS}}'
 
@@ -575,7 +575,7 @@ tasks:
       - '{{.RUN}} python scripts/run_layer.py unit {{.CLI_ARGS}}'
 
   test:mac:
-    desc: "The unit tests that need vllm-mlx or mlx (macOS only; tests/unit/conftest.py MAC_ONLY, MAC_ONLY_TESTS): the pipeline's mac job"
+    desc: "The unit tests that need mlx (macOS only; tests/unit/conftest.py MAC_ONLY, MAC_ONLY_TESTS): the pipeline's mac job"
     cmds:
       - '{{.RUN}} python scripts/run_layer.py unit --mac-only {{.CLI_ARGS}}'
 

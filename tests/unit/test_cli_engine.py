@@ -1,4 +1,4 @@
-"""`airlie engine up|down|status|logs`: the CLI builds an EngineProcess per vllm_mlx engine and renders it."""
+"""`airlie engine up|down|status|logs`: the CLI builds an EngineProcess per mlx_vlm engine and renders it."""
 
 from pathlib import Path
 
@@ -15,7 +15,7 @@ def write_cfg(tmp_path: Path) -> Path:
     data = {
         "version": 1,
         "engines": {
-            "main": {"kind": "vllm_mlx", "port": 8080, "models": ["base"]},
+            "main": {"kind": "mlx_vlm", "port": 8080, "models": ["base"]},
             "ext": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["small"]},
         },
         "models": {
@@ -106,8 +106,8 @@ def test_up_skips_an_engine_that_is_already_running_and_starts_the_rest(tmp_path
     )
     p = write_cfg(tmp_path)
     data = yaml.safe_load(p.read_text())
-    data["engines"]["decision"] = {"kind": "llama_server", "port": 8081, "models": ["kev"]}
-    data["models"]["kev"] = {"repo": "ggml-org/Kev-4B-GGUF", "revision": "d9", "file": "k.gguf"}
+    data["engines"]["decision"] = {"kind": "mlx_vlm", "port": 8081, "model": "kev", "decision": True}
+    data["models"]["kev"] = {"repo": "org/decider", "revision": "d9", "path": "/models/kev"}
     p.write_text(yaml.safe_dump(data))
     r = runner.invoke(cli.app, ["engine", "up", "--config", str(p)])
     assert r.exit_code == 0, r.output
@@ -115,21 +115,63 @@ def test_up_skips_an_engine_that_is_already_running_and_starts_the_rest(tmp_path
     assert "already running" in r.output
 
 
-def test_engine_up_and_restart_take_a_topology_profile(tmp_path: Path, monkeypatch) -> None:
-    seen: list[str] = []
+def test_engine_up_down_and_restart_take_no_topology_option(tmp_path: Path, monkeypatch) -> None:
+    StubProcess.calls = []
+    monkeypatch.setattr(cli, "_engine_process", lambda cfg, name: StubProcess(cfg, name))
+    p = write_cfg(tmp_path)
+    for command in ("up", "down", "restart"):
+        r = runner.invoke(cli.app, ["engine", command, "--config", str(p), "--topology", "fork"])
+        assert r.exit_code == 2, (command, r.output)
+    assert StubProcess.calls == []
+    r = runner.invoke(cli.app, ["engine", "restart", "--config", str(p)])
+    assert r.exit_code == 0, r.output
+    assert StubProcess.calls == ["stop:main", "start:main"]
 
-    def make(cfg, name):  # type: ignore[no-untyped-def]
-        seen.append(cfg.topology.kind)
-        return StubProcess(cfg, name)
+
+def test_engine_down_and_restart_name_one_engine_even_with_autostart_off(tmp_path: Path, monkeypatch) -> None:
+    cfg_path = write_cfg(tmp_path)
+    data = yaml.safe_load(cfg_path.read_text())
+    data["engines"]["bench"] = {"kind": "mlx_vlm", "port": 8091, "model": "benchm", "autostart": False}
+    data["models"]["benchm"] = {"repo": "org/bench", "revision": "r3", "path": "/models/bench"}
+    cfg_path.write_text(yaml.safe_dump(data))
+    StubProcess.calls = []
+    monkeypatch.setattr(cli, "_engine_process", lambda cfg, name: StubProcess(cfg, name))
+    r = runner.invoke(cli.app, ["engine", "restart", "bench", "--config", str(cfg_path)])
+    assert r.exit_code == 0, r.output
+    assert StubProcess.calls == ["stop:bench", "start:bench"]
+    StubProcess.calls = []
+    assert runner.invoke(cli.app, ["engine", "down", "bench", "--config", str(cfg_path)]).exit_code == 0
+    assert StubProcess.calls == ["stop:bench"]
+    assert runner.invoke(cli.app, ["engine", "down", "nope", "--config", str(cfg_path)]).exit_code == 1
+
+
+def test_engine_up_skips_engines_with_autostart_false_unless_named(tmp_path: Path, monkeypatch) -> None:
+    cfg_path = write_cfg(tmp_path)
+    data = yaml.safe_load(cfg_path.read_text())
+    data["engines"]["bench"] = {
+        "kind": "mlx_vlm",
+        "port": 8091,
+        "model": "benchm",
+        "autostart": False,
+    }
+    data["models"]["benchm"] = {
+        "repo": "org/bench",
+        "revision": "r3",
+        "path": "/models/bench",
+        "estimated_memory_gb": 3,
+    }
+    cfg_path.write_text(yaml.safe_dump(data))
+    monkeypatch.setattr(cli, "_engine_process", lambda cfg, name: StubProcess(cfg, name))
 
     StubProcess.calls = []
-    monkeypatch.setattr(cli, "_engine_process", make)
-    p = write_cfg(tmp_path)
-    data = yaml.safe_load(p.read_text())
-    data["topology"] = {"kind": "teams", "profiles": {"fork": {"engines": {"main": {"max_kv_size": 4096}}}}}
-    p.write_text(yaml.safe_dump(data))
-    r = runner.invoke(cli.app, ["engine", "up", "--config", str(p), "--topology", "fork"])
+    r = runner.invoke(cli.app, ["engine", "up", "--config", str(cfg_path)])
     assert r.exit_code == 0, r.output
-    r = runner.invoke(cli.app, ["engine", "restart", "--config", str(p), "--topology", "fork"])
+    assert StubProcess.calls == ["start:main"]
+
+    StubProcess.calls = []
+    r = runner.invoke(cli.app, ["engine", "up", "bench", "--config", str(cfg_path)])
     assert r.exit_code == 0, r.output
-    assert seen and set(seen) == {"fork"}
+    assert StubProcess.calls == ["start:bench"]
+
+    r = runner.invoke(cli.app, ["engine", "up", "nope", "--config", str(cfg_path)])
+    assert r.exit_code == 1

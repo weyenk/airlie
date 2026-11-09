@@ -128,7 +128,7 @@ def story_yaml(tmp_path: Path, repos_root: Path) -> Path:
 
 
 def _sse(reply: FakeReply) -> bytes:
-    """`reply` as vllm-mlx streams it: content, then each tool call, then the finish reason and the usage."""
+    """`reply` as the engine streams it: content, each tool call, then the finish reason and the usage."""
     frames: list[dict[str, Any]] = []
     if reply.text:
         frames.append({"choices": [{"index": 0, "delta": {"content": reply.text}, "finish_reason": None}]})

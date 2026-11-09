@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from airlie.config.schema import TOPOLOGY_KINDS, AirlieConfig
+from airlie.config.schema import TOPOLOGY_KINDS, AirlieConfig, ModelSpec
 
 DEFAULT_CONFIG = "airlie.yaml"
 DEFAULT_LOCAL = "airlie.local.yaml"
@@ -220,6 +220,16 @@ def apply_profile(data: dict[str, Any], kind: str | None) -> dict[str, Any]:
     return out
 
 
+def hf_snapshot_dir(m: ModelSpec, hf_cache: Path | None = None) -> Path:
+    cache = hf_cache or Path("~/.cache/huggingface/hub").expanduser()
+    return cache / f"models--{m.repo.replace('/', '--')}" / "snapshots" / m.revision
+
+
+def model_dir(m: ModelSpec) -> Path:
+    """Where a model's weights are: `path` when set, else the HF cache snapshot."""
+    return m.path if m.path is not None else hf_snapshot_dir(m)
+
+
 def load_config(
     path: Path | None = None, local_path: Path | None = None, *, topology: str | None = None
 ) -> AirlieConfig:
@@ -260,6 +270,9 @@ def load_config(
     problems = cfg.validate_references()
     if problems:
         raise ConfigError("config invalid:\n  " + "\n  ".join(problems))
+    for eng in cfg.engines.values():
+        if eng.kind == "mlx_vlm":  # the server knows its model only by the exact --model string
+            eng.served_names[eng.models[0]] = str(model_dir(cfg.models[eng.models[0]]))
     return cfg
 
 

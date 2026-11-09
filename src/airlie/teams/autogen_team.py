@@ -2,7 +2,7 @@
 
 One `AssistantAgent` with `max_tool_iterations=1` is driven step by step so the StepObserver can inject
 shared memory keys before each model call and receive each (u_t, o_t) afterwards. The model client is
-AutoGen's OpenAI client pointed at the engine endpoint, so all generation still goes through vllm-mlx.
+AutoGen's OpenAI client pointed at the engine endpoint, so all generation still goes through the engine.
 Per-request sampling the OpenAI client has no field for (top_k, min_p, the repetition penalty) and the role's
 thinking settings go in `extra_body` (`build_model_client`); until 2026-10-24 thinking was the server's
 default (`--default-chat-template-kwargs`), and the story meeting needed each role to think as configured."""
@@ -32,6 +32,7 @@ from pydantic import BaseModel, create_model
 
 from airlie.config import ModelSpec, RoleSpec
 from airlie.config.schema import MUTATING_TOOLS
+from airlie.engine.dialect import Dialect, thinking_fields
 from airlie.engine.types import ToolCall
 from airlie.scheduler import SlotScheduler
 from airlie.skills import prompt_text
@@ -134,6 +135,7 @@ def build_model_client(
     scheduler: SlotScheduler | None = None,
     team_id: str = "",
     model: ModelSpec | None = None,
+    dialect: Dialect = "mlx_vlm",
 ) -> RepairingOpenAIClient:
     info: ModelInfo = {
         "vision": False,
@@ -142,18 +144,23 @@ def build_model_client(
         "family": "unknown",
         "structured_output": False,
     }
-    extra: dict[str, Any] = {  # sampling the OpenAI client has no field for; vllm-mlx reads these per request
+    extra: dict[str, Any] = {  # sampling the OpenAI client has no field for; read per request
         "top_k": role.sampling.top_k,
         "min_p": role.sampling.min_p,
         "repetition_penalty": role.sampling.repetition_penalty,
-        # the role's thinking, as HTTPEngine._body sends it (three-amigos D7, 2026-10-24): the top-level
-        # flag vllm-mlx gates its budget processor on, and the template kwarg; before this the server's
-        # defaults decided whether an AutoGen agent thought
-        "enable_thinking": bool(role.thinking),
-        "chat_template_kwargs": {"enable_thinking": bool(role.thinking), **role.chat_template_kwargs},
     }
-    if role.thinking and role.thinking_budget:
-        extra["thinking_token_budget"] = role.thinking_budget
+    # the role's thinking, as HTTPEngine._body sends it (three-amigos D7, 2026-10-24); before this the
+    # server's defaults decided whether an AutoGen agent thought. An agent always carries its tools
+    extra.update(
+        thinking_fields(
+            dialect=dialect,
+            thinking=bool(role.thinking),
+            budget=role.thinking_budget,
+            chat_template_kwargs=role.chat_template_kwargs,
+            tool_parser=model.tool_call_parser if model is not None else None,
+            tools=True,
+        )
+    )
     client = RepairingOpenAIClient(
         model=served_model,
         base_url=base_url,
@@ -171,7 +178,6 @@ def build_model_client(
     )
     client.slot_scheduler = scheduler
     client.team_id = team_id
-    client.model_spec = model  # its parsers read what the server left as text (Muse's calls)
     return client
 
 
@@ -213,8 +219,11 @@ async def load_agent_state(agent: AssistantAgent, state: dict[str, Any]) -> None
 
 
 class AutoGenTeam:
-    def __init__(self, base_url: str, served_model: str, api_key: str | None = None) -> None:
+    def __init__(
+        self, base_url: str, served_model: str, api_key: str | None = None, *, dialect: Dialect = "mlx_vlm"
+    ) -> None:
         self.base_url = base_url
+        self.dialect = dialect
         self.served_model = served_model
         self.api_key = api_key
 
@@ -227,6 +236,7 @@ class AutoGenTeam:
             self.api_key,
             scheduler=ctx.scheduler,
             team_id=ctx.team_id,
+            dialect=self.dialect,
         )
         agent = AssistantAgent(
             name=ctx.team_id.replace("-", "_"),

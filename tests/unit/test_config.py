@@ -10,11 +10,11 @@ from pydantic import ValidationError
 
 from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, StorySpec, load_config, profile_configs
 from airlie.config.load import _yaml_problem
-from airlie.config.schema import MUTATING_TOOLS
+from airlie.config.schema import MUTATING_TOOLS, EngineSpec
 
 MINIMAL: dict = {
     "version": 1,
-    "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}},
+    "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
     "models": {"team": {"repo": "mlx-community/Qwen3.8-27B-4bit", "revision": "abc123"}},
     "roles": {
         "coder": {"prompt": "prompts/roles/coder.md", "model": "team"},
@@ -77,7 +77,7 @@ def test_a_workflow_problem_and_a_missing_composer_workflow_are_both_reported(tm
 
 
 def test_engine_serving_unknown_model_fails(tmp_path: Path) -> None:
-    data = {**MINIMAL, "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["ghost"]}}}
+    data = {**MINIMAL, "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["ghost"]}}}
     with pytest.raises(ConfigError, match=r"engines\.main\.models.*'ghost'"):
         load_config(write(tmp_path, data))
 
@@ -96,8 +96,8 @@ def test_model_served_by_two_engines_fails(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
         "engines": {
-            "main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]},
-            "dup": {"kind": "vllm_mlx", "port": 8081, "models": ["team"]},
+            "main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]},
+            "dup": {"kind": "mlx_vlm", "port": 8081, "models": ["team"]},
         },
     }
     with pytest.raises(ConfigError, match=r"models\.team.*(main.*dup|dup.*main)"):
@@ -140,19 +140,18 @@ def test_two_managed_engines_cannot_share_a_port(tmp_path: Path) -> None:
         **MINIMAL,
         "models": {**MINIMAL["models"], "small": {"repo": "x/y", "revision": "r"}},
         "engines": {
-            "main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]},
-            "aux": {"kind": "vllm_mlx", "port": 8080, "models": ["small"]},
+            "main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]},
+            "aux": {"kind": "mlx_vlm", "port": 8080, "models": ["small"]},
         },
     }
     with pytest.raises(ConfigError, match=r"port 8080.*(main.*aux|aux.*main)"):
         load_config(write(tmp_path, data))
 
 
-def test_vllm_mlx_engine_defaults_match_the_spec(tmp_path: Path) -> None:
+def test_mlx_vlm_engine_launch_defaults(tmp_path: Path) -> None:
     e = load_config(write(tmp_path, MINIMAL)).engines["main"]
     assert e.host == "127.0.0.1"
     assert e.base_url == "http://127.0.0.1:8080/v1"
-    assert e.continuous_batching is True
     assert e.max_num_seqs == 16
     assert e.max_kv_size == 65536
     assert e.prefill_step_size == 2048
@@ -204,11 +203,10 @@ def test_committed_default_config_is_valid() -> None:
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")  # never the person's own
     assert {"coder", "summarizer", "judge", "aggregator"} <= set(cfg.roles)
     assert {"generalist", "llama70b", "qwen25_32b"} <= {n for n, m in cfg.models.items() if m.bench}
-    assert cfg.engines["main"].kind == "vllm_mlx"
+    assert cfg.engines["main"].kind == "mlx_vlm"
     for name, m in cfg.models.items():
         assert m.revision, f"models.{name} must pin a revision"
-    for role in cfg.roles:
-        assert cfg.engine_for_role(role) == "main"
+    assert cfg.engine_for_role("coder") == "main" and cfg.engine_for_role("reviewer") == "reviewer"
 
 
 # ---- a thinking role has room to answer (HDS-3, 2026-10-15) ----
@@ -304,8 +302,8 @@ BELOW_ONE = "config invalid:\n  roles.coder.thinking_budget: Input should be gre
 def test_a_thinking_budget_below_one_is_a_config_error_at_load(
     tmp_path: Path, budget: int, thinking: bool
 ) -> None:
-    """vllm-mlx refuses a thinking_token_budget below 1 (a 422 on every request): airlie refuses it first, on
-    any role, whether or not it thinks."""
+    """The engine refuses a thinking budget below 1 (a 422 on every request): airlie refuses it first, on any
+    role, whether or not it thinks."""
     with pytest.raises(ConfigError) as e:
         load_config(write(tmp_path, with_coder(thinking=thinking, thinking_budget=budget)))
     assert str(e.value) == BELOW_ONE
@@ -359,38 +357,55 @@ def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_w
 
 
 def test_the_qwen25_experiment_is_a_profile_beside_the_default() -> None:
-    """Noah 2026-10-18: Qwen2.5-32B in the coder seat as an experiment; the default and its parsers stay."""
+    """Noah 2026-10-18: Qwen2.5-32B in the coder seat as an experiment; the default stays. The profile changes
+    no engine or model entry: its engine is a bench engine started by hand (`airlie engine up qwen25_32b`)."""
     base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     assert base.roles["coder"].model == "generalist"
-    assert base.models["qwen25_32b"].tool_call_parser == "qwen"
     assert load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"].model == "generalist"
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen25")
     coder = cfg.roles["coder"]
     assert (coder.model, coder.thinking, coder.max_tokens) == ("qwen25_32b", False, 10240)
-    # the server-wide parser follows the coder's model: airlie's, which reads the generalist's XML too
-    assert (cfg.models["qwen25_32b"].tool_call_parser, cfg.models["qwen25_32b"].reasoning_parser) == (
-        "qwen3_xml_raw",
-        "qwen3",
+    assert cfg.engines == base.engines and cfg.models == base.models
+    assert cfg.engines["qwen25_32b"].autostart is False
+    assert cfg.roles["chief"].model == "generalist"
+
+
+def test_committed_config_declares_four_autostart_engines_and_the_bench_engines() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    kinds = {n: e.kind for n, e in cfg.engines.items()}
+    assert kinds == {
+        "main": "mlx_vlm",
+        "reviewer": "mlx_vlm",
+        "small": "mlx_vlm",
+        "decision": "mlx_vlm",
+        "llama70b": "mlx_vlm",
+        "qwen25_32b": "mlx_vlm",
+    }
+    autostart = [n for n, e in cfg.engines.items() if e.autostart]
+    assert autostart == ["main", "reviewer", "small", "decision"]
+    assert cfg.engines["main"].models == ["generalist"] and cfg.engines["main"].port == 8080
+    assert [n for n, e in cfg.engines.items() if e.decision] == ["decision"]
+    assert cfg.engines["decision"].port == 8081 and cfg.router.model == "decider_2b"  # the 4b gate's pick
+    decider = cfg.models["decider_2b"]
+    assert (decider.repo, decider.revision) == (
+        "nativ-community/decider-2b",
+        "acbae4ecce4dbcc0aea8c5a501c9f54008458a70",
     )
-    assert [cfg.models[m].preload for m in ("qwen25_32b", "generalist", "reviewer")] == [True, True, True]
-    assert cfg.roles["chief"].model == "generalist" and cfg.engines["main"].max_kv_size == 65536
+    assert (
+        cfg.engines["main"]
+        .served_name("generalist")
+        .endswith(f"models--mlx-community--Qwen3.8-27B-4bit/snapshots/{cfg.models['generalist'].revision}")
+    )  # the HF-cache snapshot: the exact --model string
+    assert cfg.models["generalist"].tool_call_parser == "qwen3_coder"
+    assert cfg.models["reviewer"].tool_call_parser == "atem"
+    assert cfg.models["qwen25_32b"].tool_call_parser is None  # mlx-vlm has no `qwen` parser: inferred
+    assert cfg.models["llama70b"].tool_call_parser is None  # nor `llama`; an unknown name is a 422
 
 
-def test_the_coder8_experiment_is_a_profile_beside_the_default() -> None:
-    """Noah 2026-10-18: Qwen3-Coder 8-bit in the coder seat as an experiment, the default unchanged."""
-    base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    coder8 = base.models["coder8"]
-    assert coder8.repo == "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit" and coder8.bench
-    assert not coder8.preload and "coder8" in base.engines["main"].models  # lazy unless the profile asks
-    assert base.roles["coder"].model == "generalist"
-    assert load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"].model == "generalist"
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-coder8")
-    coder = cfg.roles["coder"]
-    assert (coder.model, coder.thinking, coder.max_tokens) == ("coder8", False, 10240)
-    assert [cfg.models[m].preload for m in ("coder8", "generalist", "reviewer")] == [True, True, True]
-    assert cfg.roles["security"].model == "generalist" and cfg.roles["chief"].model == "generalist"
-    # the studio's KV: 74 GB of weights + 12.3 GB KV (coder8 at 96 MB/1k) + 12 GB reserve = 98 GB < 104 GB
-    assert cfg.engines["main"].max_kv_size == 131072
+def test_profiles_carry_no_engine_or_model_overrides() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    for name, profile in cfg.topology.profiles.items():
+        assert "engines" not in profile and "models" not in profile, name
 
 
 def test_catalog_kv_constants_follow_each_models_attention_geometry() -> None:
@@ -400,7 +415,6 @@ def test_catalog_kv_constants_follow_each_models_attention_geometry() -> None:
     profile's KV."""
     models = load_config(ROOT / "airlie.yaml", NO_LOCAL).models
     assert models["generalist"].kv_mb_per_1k_tokens == 64  # 16 full-attention layers × 4 heads × 256 dim
-    assert models["coder8"].kv_mb_per_1k_tokens == 96  # 48 layers × 4 heads × 128 dim
     assert models["small"].kv_mb_per_1k_tokens == 144  # 36 layers × 8 heads × 128 dim
     assert models["qwen25_32b"].kv_mb_per_1k_tokens == 256  # 64 layers × 8 heads × 128 dim
     assert models["llama70b"].kv_mb_per_1k_tokens == 320  # 80 layers × 8 heads × 128 dim
@@ -416,13 +430,12 @@ def test_model_bench_and_tags_default_off(tmp_path: Path) -> None:
     assert m.kv_mb_per_1k_tokens == 256.0
 
 
-def test_role_may_use_non_preloaded_model(tmp_path: Path) -> None:
+def test_a_model_may_be_a_bench_model_with_tags(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
-        "models": {"team": {**MINIMAL["models"]["team"], "preload": False, "bench": True, "tags": ["spec"]}},
+        "models": {"team": {**MINIMAL["models"]["team"], "bench": True, "tags": ["spec"]}},
     }
     cfg = load_config(write(tmp_path, data))
-    assert cfg.models["team"].preload is False
     assert cfg.models["team"].bench is True
     assert cfg.models["team"].tags == ["spec"]
 
@@ -549,29 +562,10 @@ def test_unknown_topology_override_is_a_config_error(tmp_path: Path) -> None:
         load_config(write(tmp_path, MINIMAL), topology="ring")
 
 
-def test_jev_router_needs_a_llama_server_engine_serving_its_model(tmp_path: Path) -> None:
+def test_jev_router_needs_a_decision_engine_serving_its_model(tmp_path: Path) -> None:
     data = {**MINIMAL, "router": {"kind": "jev", "model": "team"}}
-    with pytest.raises(ConfigError, match=r"router\.model.*'team'.*llama_server"):
+    with pytest.raises(ConfigError, match=r"router\.model.*'team'.*decision: true"):
         load_config(write(tmp_path, data))
-
-
-def test_llama_server_engine_serves_one_gguf_model(tmp_path: Path) -> None:
-    data = {
-        **MINIMAL,
-        "engines": {
-            **MINIMAL["engines"],
-            "decision": {"kind": "llama_server", "port": 8081, "models": ["kev"]},
-        },
-        "models": {**MINIMAL["models"], "kev": {"repo": "ggml-org/Kev-4B-GGUF", "revision": "d9"}},
-        "router": {"kind": "jev", "model": "kev"},
-    }
-    with pytest.raises(ConfigError, match=r"models\.kev\.file.*llama_server"):
-        load_config(write(tmp_path, data))
-    data["models"]["kev"]["file"] = "Kev-4B-Q4_K_M.gguf"
-    cfg = load_config(write(tmp_path, data))
-    assert cfg.engines["decision"].base_url == "http://127.0.0.1:8081/v1"
-    assert cfg.engines["decision"].server_parsers is True and cfg.engines["decision"].ctx_size == 16384
-    assert cfg.router.kind == "jev" and cfg.router.ambiguous_gap == 0.15
 
 
 def test_profile_configs_loads_every_profile_from_the_source_file(tmp_path: Path) -> None:
@@ -1409,3 +1403,141 @@ def test_a_glob_that_matches_nothing_is_an_error(tmp_path: Path) -> None:
 
 def test_the_shipped_story_workflow_declares_its_type() -> None:
     assert load_config(Path("airlie.yaml")).workflows["story"].type == "story"
+
+
+def mlx(tmp_path: Path, engines: dict, *, roles: dict | None = None, models: dict | None = None):
+    data = {
+        **MINIMAL,
+        "engines": engines,
+        "models": models
+        or {
+            "team": {"repo": "org/team", "revision": "r0", "path": "/models/team"},
+            "base": {"repo": "org/base", "revision": "r1"},
+        },
+        "roles": {**MINIMAL["roles"], **(roles or {})},
+    }
+    return load_config(write(tmp_path, data))
+
+
+def test_mlx_vlm_engine_spells_one_model_as_model_or_models(tmp_path: Path) -> None:
+    cfg = mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team"}})
+    assert cfg.engines["main"].models == ["team"]
+    assert cfg.engines["main"].base_url == "http://127.0.0.1:8080/v1"
+    assert cfg.engine_for_model("team") == "main"
+
+
+def test_an_mlx_vlm_engine_is_addressed_by_its_exact_model_path(tmp_path: Path) -> None:
+    cfg = mlx(
+        tmp_path,
+        {
+            "main": {"kind": "mlx_vlm", "port": 8080, "model": "team"},
+            "other": {"kind": "mlx_vlm", "port": 8083, "model": "base", "autostart": False},
+        },
+    )
+    assert cfg.engines["main"].served_name("team") == "/models/team"  # models.team.path
+    assert cfg.engines["other"].served_name("base").endswith("/models--org--base/snapshots/r1")  # HF cache
+
+
+def test_served_name_falls_back_to_the_model_key_itself() -> None:
+    e = EngineSpec(
+        kind="openai_http", base_url="http://h/v1", port=8080, models=["team"], served_names={"team": "alias"}
+    )
+    assert e.served_name("team") == "alias"
+    assert e.served_name("other") == "other"
+
+
+def test_an_mlx_vlm_engine_takes_no_served_alias(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="served_names"):
+        mlx(
+            tmp_path,
+            {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", "served_names": {"team": "t"}}},
+        )
+
+
+def test_mlx_vlm_engine_refuses_two_models(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="engines.main: an mlx_vlm engine serves exactly one model"):
+        mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team", "base"]}})
+
+
+def test_the_removed_engine_kinds_and_settings_are_refused(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="kind"):
+        mlx(tmp_path, {"main": {"kind": "removed", "port": 8080, "model": "team"}})
+    for field in ("buffer_cache_mb", "server_parsers", "memory_budget_gb", "ctx_size", "binary"):
+        with pytest.raises(ConfigError, match=field):
+            mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", field: 1}})
+
+
+def test_mlx_vlm_engine_defaults(tmp_path: Path) -> None:
+    e = mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team"}}).engines["main"]
+    assert (e.autostart, e.decision, e.kv_bits, e.prefix_cache) == (True, False, None, False)
+    assert (e.cache_memory_gb, e.cache_checkpoints, e.cache_checkpoint_interval) == (1.0, 4, 2048)
+    assert e.env == {} and e.entry is None and e.max_image_px is None
+
+
+def test_a_role_on_an_mlx_vlm_engine_may_only_pass_known_template_arguments(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="roles.coder.chat_template_kwargs: mlx_vlm engines accept only"):
+        mlx(
+            tmp_path,
+            {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team"}},
+            roles={
+                "coder": {
+                    "prompt": "prompts/roles/coder.md",
+                    "model": "team",
+                    "chat_template_kwargs": {"foo": 1},
+                }
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("kv_bits", 0), ("cache_memory_gb", 0), ("cache_checkpoints", -1), ("cache_checkpoint_interval", 0)],
+)
+def test_mlx_vlm_engine_refuses_out_of_range_cache_settings(tmp_path: Path, field: str, value: float) -> None:
+    with pytest.raises(ConfigError, match=f"engines.main.{field}"):
+        mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", field: value}})
+
+
+def test_router_model_may_be_served_by_an_mlx_vlm_decision_engine(tmp_path: Path) -> None:
+    def data(decision: bool) -> dict:
+        return {
+            **MINIMAL,
+            "engines": {
+                **MINIMAL["engines"],
+                "dec": {"kind": "mlx_vlm", "port": 8084, "model": "clef", "decision": decision},
+            },
+            "models": {
+                **MINIMAL["models"],
+                "clef": {"repo": "org/c", "revision": "r", "path": "/models/clef"},
+            },
+            "router": {"kind": "jev", "model": "clef"},
+        }
+
+    assert load_config(write(tmp_path, data(True))).router.model == "clef"
+    with pytest.raises(ConfigError, match="an mlx_vlm engine with decision: true"):
+        load_config(write(tmp_path, data(False)))
+
+
+def test_hf_snapshot_dir_defaults_to_the_home_huggingface_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.config.load import hf_snapshot_dir
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    m = load_config(write(tmp_path, MINIMAL)).models["team"]
+    got = hf_snapshot_dir(m, None)
+    assert (
+        got
+        == tmp_path
+        / ".cache/huggingface/hub"
+        / "models--mlx-community--Qwen3.8-27B-4bit"
+        / "snapshots/abc123"
+    )
+
+
+def test_hf_snapshot_dir_honours_an_explicit_cache(tmp_path: Path) -> None:
+    from airlie.config.load import hf_snapshot_dir
+
+    m = load_config(write(tmp_path, MINIMAL)).models["team"]
+    got = hf_snapshot_dir(m, tmp_path / "elsewhere")
+    assert got == tmp_path / "elsewhere" / "models--mlx-community--Qwen3.8-27B-4bit" / "snapshots" / "abc123"

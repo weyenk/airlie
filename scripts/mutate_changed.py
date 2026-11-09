@@ -53,8 +53,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP_FILES = {"pyproject.toml", "tests/unit/conftest.py"}
-MAC_IMPORT = re.compile(r"^\s*(?:from|import)\s+(?:vllm_mlx|mlx_lm|mlx)\b", re.MULTILINE)
-"""A source file that imports vllm-mlx or mlx, which install on macOS only (pyproject.toml): its tests are not
+MAC_IMPORT = re.compile(r"^\s*(?:from|import)\s+mlx\b", re.MULTILINE)
+"""A source file that imports mlx, which install on macOS only (pyproject.toml): its tests are not
 collected elsewhere (tests/unit/conftest.py), so its mutants are run on the Mac job only (--mac-only)."""
 
 
@@ -66,7 +66,7 @@ def _importable(name: str) -> bool:
         return False
 
 
-HAS_VLLM = _importable("vllm_mlx")
+HAS_MLX = _importable("mlx")
 COULD_NOT_RUN = 2
 """The exit code when mutmut did not run to the end (a red unit test, a crash): no verdict on the mutants, as
 against 1, mutants of enrolled modules survived. airlie's story pipeline tells the two apart (AIR-7,
@@ -226,7 +226,7 @@ def file_globs(path: str) -> list[str]:
 
 
 def needs_mac(path: str) -> bool:
-    """Whether the source file at `path` imports vllm-mlx or mlx (MAC_IMPORT)."""
+    """Whether the source file at `path` imports mlx (MAC_IMPORT)."""
     return bool(MAC_IMPORT.search((ROOT / path).read_text()))
 
 
@@ -249,17 +249,17 @@ _GLOB_MODULE = re.compile(r"^(?P<module>.+?)\.x[_ǁ]")
 
 def on_mac(glob: str, mac_modules: set[str], mac_globs: set[str]) -> bool:
     """Whether a function's mutants (`glob`) run on the mac job: a function `mac_functions` names, or one of a
-    module that imports vllm-mlx or mlx (`mac_modules`)."""
+    module that imports mlx (`mac_modules`)."""
     found = _GLOB_MODULE.match(glob)
     return glob in mac_globs or (found is not None and found["module"] in mac_modules)
 
 
 def platform_sources(sources: list[str], mac_only: bool) -> tuple[list[str], list[str]]:
     """(the sources this run mutates, the ones it leaves to another platform): with `mac_only`, only the
-    files that need a Mac; where vllm-mlx is missing, every file but those; on a Mac without the flag, all."""
+    files that need a Mac; where mlx is missing, every file but those; on a Mac without the flag, all."""
     if mac_only:
         return [f for f in sources if needs_mac(f)], [f for f in sources if not needs_mac(f)]
-    if HAS_VLLM:
+    if HAS_MLX:
         return list(sources), []
     return [f for f in sources if not needs_mac(f)], [f for f in sources if needs_mac(f)]
 
@@ -495,7 +495,7 @@ def main() -> int:
     ap.add_argument(
         "--mac-only",
         action="store_true",
-        help="mutate only the sources that import vllm-mlx or mlx (the pipeline's mac job)",
+        help="mutate only the sources that import mlx (the pipeline's mac job)",
     )
     args = ap.parse_args()
 
@@ -535,7 +535,7 @@ def main() -> int:
     if args.scope != "project":
         sources, elsewhere = platform_sources(sources, args.mac_only)
         if elsewhere:
-            where = "on the other runners" if args.mac_only else "on the mac job (they need vllm-mlx or mlx)"
+            where = "on the other runners" if args.mac_only else "on the mac job (they need mlx)"
             out += [f"mutated {where}:", *[f"- {f}" for f in elsewhere]]
 
     if args.scope == "project":
@@ -553,9 +553,9 @@ def main() -> int:
         moved = sorted(g for g in weights if g in mac_globs and not on_mac(g, mac_modules, set()))
         if args.mac_only:
             weights = {g: w for g, w in weights.items() if on_mac(g, mac_modules, mac_globs)}
-        elif not HAS_VLLM:
+        elif not HAS_MLX:
             weights = {g: w for g, w in weights.items() if not on_mac(g, mac_modules, mac_globs)}
-        if moved and (args.mac_only or not HAS_VLLM):
+        if moved and (args.mac_only or not HAS_MLX):
             where = "here" if args.mac_only else "on the mac job"
             out += [f"macOS-only functions (mac_functions) mutated {where}:", *[f"- {g}" for g in moved]]
         if args.scope == "changed" and not whole:

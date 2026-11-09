@@ -20,46 +20,18 @@ os.environ.setdefault("NO_PROXY", "*")
 ATLASSIAN = ("ATLASSIAN_API_KEY", "ATLASSIAN_EMAIL", "ATLASSIAN_BASE_URL", "ATLASSIAN_PROJECT_KEY")
 ROOT = Path(__file__).resolve().parents[2]
 
-MAC_ONLY = (
-    "test_active_requests.py",
-    "test_engine_mtp.py",
-    "test_first_output.py",
-    "test_hybrid_prefix_cache.py",
-    "test_learned_controller.py",
-    "test_mtp_batch_join.py",
-    "test_muse_parsers.py",
-    "test_qwen3_xml_raw.py",
-    "test_vllm_mlx_serve.py",
-)
-"""The test modules that import vllm-mlx or mlx, which install on macOS only (pyproject.toml): where they are
-missing (the Linux CI runners, 2026-11-02) these are not collected, and `task test:mac` runs them on a Mac."""
+MAC_ONLY = ("test_learned_controller.py",)
+"""The test modules that import mlx, which installs on macOS only (pyproject.toml): where it is missing
+(the Linux CI runners, 2026-11-02) these are not collected, and `task test:mac` runs them on a Mac."""
 MAC_ONLY_TESTS = (
-    "test_process.py::test_a_model_with_an_mtp_head_is_served_from_a_directory_built_for_it",
-    "test_serve.py::test_vllm_mlx_reads_the_budget_from_the_body_serve_sends",
-    "test_http_engine_wire.py::test_vllm_mlx_reads_the_budget_from_the_body_the_engine_sends",
-    "test_http_engine.py::test_engine_applies_the_models_parsers_to_raw_content",
-    "test_output_parse.py::test_qwen3_coder_xml_becomes_a_tool_call",
-    "test_output_parse.py::test_qwen_json_call_and_think_block",
-    "test_output_parse.py::test_harmony_reasoning_and_final",
-    "test_output_parse.py::test_muse_review_one_shot",
-    "test_output_parse.py::test_muse_tool_channel_without_user_block",
-    "test_output_parse.py::test_muse_bare_user_turn_through_parse_output",
-    "test_output_parse.py::test_empty_think_block_is_removed_from_text",
-    "test_autogen_client.py::test_a_muse_tool_call_the_server_left_as_text_becomes_a_call",
-    "test_autogen_client.py::test_a_muse_answer_loses_its_channel_headers_and_keeps_the_verdict",
-    "test_autogen_client.py::test_a_call_on_the_tool_less_last_request_is_asked_again_once_for_the_answer",
-    "test_autogen_client.py::test_a_second_call_on_the_tool_less_request_ends_as_text_without_the_call",
-    "test_autogen_client.py::test_a_reply_with_no_answer_in_it_is_asked_again_once",
-    "test_autogen_client.py::test_the_tool_less_request_after_a_tool_round_says_no_tools_are_left",
-    "test_autogen_client.py::test_the_reflection_request_carries_the_callers_note",
     "test_trainer.py::test_train_reduces_loss_and_saves_checkpoint",
     "test_trainer.py::test_evaluate_reports_usage_weighted_precision",
     "test_cli_controller.py::test_dataset_train_eval",
 )
-"""The tests of other modules that reach vllm-mlx's parsers or mlx at run time (output_parse, the LTS
-trainer): skipped where vllm-mlx is missing (pytest_collection_modifyitems), run by `task test:mac`."""
-HAS_MLX = not os.environ.get("AIRLIE_TEST_WITHOUT_MLX") and importlib.util.find_spec("vllm_mlx") is not None
-"""Whether vllm-mlx is importable here; AIRLIE_TEST_WITHOUT_MLX=1 runs the suite as the Linux runners do."""
+"""The tests of other modules that reach mlx at run time (the LTS trainer): skipped where mlx is missing
+(pytest_collection_modifyitems), run by `task test:mac`."""
+HAS_MLX = not os.environ.get("AIRLIE_TEST_WITHOUT_MLX") and importlib.util.find_spec("mlx") is not None
+"""Whether mlx is importable here; AIRLIE_TEST_WITHOUT_MLX=1 runs the suite as the Linux runners do."""
 collect_ignore = [] if HAS_MLX else list(MAC_ONLY)
 
 
@@ -141,10 +113,10 @@ def stale_entries(entries: dict[str, str], nodeids: list[str], root: Path) -> li
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip MAC_ONLY_TESTS where vllm-mlx is missing, naming where they run instead; deselect (or keep only)
+    """Skip MAC_ONLY_TESTS where mlx is missing, naming where they run instead; deselect (or keep only)
     the quarantined tests. A run of the whole of tests/unit also checks no entry has gone stale."""
     if not HAS_MLX:
-        skip = pytest.mark.skip(reason="needs vllm-mlx or mlx (macOS only): `task test:mac` runs it")
+        skip = pytest.mark.skip(reason="needs mlx (macOS only): `task test:mac` runs it")
         for item in items:
             if item.nodeid.split("[")[0].removeprefix("tests/unit/") in MAC_ONLY_TESTS:
                 item.add_marker(skip)

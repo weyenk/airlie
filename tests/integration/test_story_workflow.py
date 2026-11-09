@@ -154,7 +154,7 @@ async def test_live_models_build_the_same_story_to_review(
     """The same story on the models airlie.yaml (and airlie.local.yaml) configure, with the story settings as
     they are: survey, planning rounds, the architect's package, done-check. Only the state, the board and the
     checkouts are this test's own, and gh is recorded, so nothing reaches GitHub and the person's board and
-    stories are untouched. Needs `task up` (and `task restart -- --topology studio`); skipped while an
+    stories are untouched. Needs `task up`; skipped while an
     engine does not answer. The models decide the code, so this checks the outcome: the story in review, and
     its branch passes the gate."""
     cfg = live_story_config(tmp_path)

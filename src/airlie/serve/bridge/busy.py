@@ -4,21 +4,22 @@ The owner wants airlie to run one thing at a time. Three signals say it is busy:
 
 - Serve or an engine is not answering. Claiming into an outage would fail every queued job in minutes
   (`serve unreachable`), so the bridge waits: serve's `GET /health` must answer 200, and each engine's
-  `/v1/status` must answer at all. An HTTP answer that is not 200 (404 from an engine kind with no
-  `/v1/status`) is an answer and leaves that engine idle; a refused connection or a timeout is not.
+  `/v1/metrics` must answer at all. An HTTP answer that is not 200 (404 from an external server with no
+  `/v1/metrics`) is an answer and leaves that engine idle; a refused connection or a timeout is not. On an
+  mlx-vlm engine a 401 or 403 reads as not answering: a wrong or rotated key must not open the gate.
 - A story lane lock (`build.lock`, `plan.lock` in the stories directory) is held. A story's whole run
   counts, gaps included: between two model calls (a test run, a git step, a pause for a human) no model
   is in use, yet the run is still going and a hub job taking the GPU then would slow it.
-- A loaded model has a request in flight. vllm-mlx stamps `last_used_at` only when a request starts and
-  ends, so one generation longer than `bridge.idle_s` would look idle halfway; airlie's engine patch
-  (airlie.engine.patches.active_requests) adds each model's `active_requests` to `/v1/status`. The bridge
-  probes only while no job of its own runs, so any request in flight is someone else's.
-- A loaded model was used within `bridge.idle_s` by anything but the bridge (a chat, an editor, a script):
-  the gaps between one request and the next. A use at or just after the bridge's own last job is the
-  bridge's own and does not count. An engine without the patch (no `active_requests`) has only this rule.
+- An engine has a request in flight: `summary.in_flight` of its mlx-vlm `GET /v1/metrics` above zero.
+  The bridge probes only while no job of its own runs, so any request in flight is someone else's.
+- An engine was used within `bridge.idle_s` by anything but the bridge (a chat, an editor, a script):
+  `summary.last_request_at` (epoch seconds, null before the first request): the gaps between one
+  request and the next. A use at or just after the bridge's own last job is the bridge's own and does
+  not count.
+  It is named after the engine's catalog model. Nothing reads `latest.*`: its `reasoning_tokens` is wrong
+  upstream.
 
-The probe sends each engine's `api_key`, as serve does: vllm-mlx checks it on `/v1/status`, and an engine
-that answers 401 (or anything but 200) reads as idle.
+The probe sends each engine's `api_key`, as serve does.
 
 This is the one place GPU sharing would change: if jobs ever ran beside a story, this gate is what to relax.
 """
@@ -47,17 +48,17 @@ def reason_key(reason: str) -> str:
     return _AGE.sub(" used recently ", reason)
 
 
-def _engine_roots(cfg: AirlieConfig) -> list[tuple[str, str, str | None]]:
-    """(engine name, root URL, api key) per distinct root, in config order."""
+def _engine_roots(cfg: AirlieConfig) -> list[tuple[str, str, str | None, str]]:
+    """(engine name, root URL, api key, engine kind) per distinct root, in config order."""
     seen: set[str] = set()
-    out: list[tuple[str, str, str | None]] = []
+    out: list[tuple[str, str, str | None, str]] = []
     for name, spec in cfg.engines.items():
         if not spec.base_url:
             continue
         root = spec.base_url.rstrip("/").removesuffix("/v1").rstrip("/")
         if root not in seen:
             seen.add(root)
-            out.append((name, root, spec.api_key))
+            out.append((name, root, spec.api_key, spec.kind))
     return out
 
 
@@ -70,20 +71,23 @@ async def _serve_answers(http: httpx.AsyncClient, url: str, api_key: str | None)
     return r.status_code == 200
 
 
-async def _models(http: httpx.AsyncClient, root: str, api_key: str | None) -> list[Any] | None:
-    """The engine's models; [] when it answered without any; None when it did not answer at all."""
+async def _metrics(http: httpx.AsyncClient, root: str, api_key: str | None) -> dict[str, Any] | int | None:
+    """The engine's `/v1/metrics` `summary`; {} when it answered without one; the status code on a 401 or 403
+    (a wrong or rotated key must not read as idle); None when it did not answer at all."""
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
-        r = await http.get(f"{root}/v1/status", headers=headers, timeout=STATUS_TIMEOUT_S)
+        r = await http.get(f"{root}/v1/metrics", headers=headers, timeout=STATUS_TIMEOUT_S)
     except httpx.TransportError:  # refused, reset, timed out
         return None
+    if r.status_code in (401, 403):
+        return r.status_code
     try:
         if r.status_code != 200:
-            return []
-        models = r.json()["model_manager"]["models"]
+            return {}
+        summary = r.json()["summary"]
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
-        return []
-    return models if isinstance(models, list) else []
+        return {}
+    return summary if isinstance(summary, dict) else {}
 
 
 def _number(value: Any) -> float | None:
@@ -110,25 +114,23 @@ async def busy_reason(
             if lock_held(stories, lane):
                 return f"story {lane} lane is running"
     newest: tuple[float, str, str] | None = None
-    for engine, root, key in _engine_roots(cfg):
-        models = await _models(http, root, key)
-        if models is None:
+    for engine, root, key, kind in _engine_roots(cfg):
+        summary = await _metrics(http, root, key)
+        if summary is None:
             return f"engine {engine} not answering"
-        for m in models:
-            if not isinstance(m, dict) or not m.get("loaded"):
-                continue
-            model = str(m.get("id", "?"))
-            active = _number(m.get("active_requests"))
-            if active is not None and active > 0:
-                n = int(active)
-                return f"model {model} has {n} request{'s' if n != 1 else ''} in flight on engine {engine}"
-            used = _number(m.get("last_used_at"))
-            if used is None:
-                continue
-            if now - used >= cfg.bridge.idle_s or used <= own_last_used + OWN_SLACK_S:
-                continue
-            if newest is None or used > newest[0]:
-                newest = (used, model, engine)
+        if isinstance(summary, int) and kind == "mlx_vlm":
+            return f"engine {engine} not answering (HTTP {summary})"
+        if isinstance(summary, int):  # an external server that denies the probe: it answered, so idle
+            continue
+        active = _number(summary.get("in_flight"))
+        if active is not None and active > 0:
+            return f"engine {engine} has {int(active)} request(s) in flight"
+        used = _number(summary.get("last_request_at"))
+        if used is None or now - used >= cfg.bridge.idle_s or used <= own_last_used + OWN_SLACK_S:
+            continue
+        if newest is None or used > newest[0]:
+            spec_models = cfg.engines[engine].models
+            newest = (used, spec_models[0] if spec_models else engine, engine)
     if newest is None:
         return None
     used, model, engine = newest

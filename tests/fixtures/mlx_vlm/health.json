@@ -1,0 +1,1 @@
+{"status":"healthy","loaded_model":"/models/small","loaded_adapter":null,"loaded_models":{"text_generation":{"model":"/models/small","adapter":null,"model_kind":"text_generation"}},"loaded_context_size":null,"configured_context_limit":null,"effective_context_limit":null,"loaded_tool_parser":"json_tools","continuous_batching_enabled":true,"apc_enabled":true}

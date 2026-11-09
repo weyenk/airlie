@@ -1532,7 +1532,7 @@ class FlakyEngine(FakeEngine):
 async def test_a_stalled_generation_is_asked_again_once_before_the_run_stops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """AIR-31 layer 02, 2026-10-19: vllm-mlx sent one chunk and then nothing for its 600 s guard; the run
+    """AIR-31 layer 02, 2026-10-19: the engine sent one chunk and then nothing for its 600 s guard; the run
     ended as engine_error with its conversation lost. One retry of the same step, after a pause, and the
     run goes on; a second failure in a row still stops it."""
     from airlie.teams import native_team as nt

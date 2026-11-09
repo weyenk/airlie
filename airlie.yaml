@@ -9,31 +9,49 @@ includes:
   - config/workflows/*.yaml
 
 # ---- Inference engines ------------------------------------------------------------------------------------------
-# A `vllm_mlx` engine is a process airlie starts for you (`task up`); `openai_http` is any external
-# OpenAI-compatible server (llama-server, mlx_lm.server, vllm-mlx you run yourself). Roles pick a model; the engine
-# that serves that model is derived, so swapping engines never touches the roles.
+# An `mlx_vlm` engine is one mlx-vlm server process serving one model; airlie starts the `autostart` ones
+# (`task up`), and `airlie engine up <name>` starts any other by hand (the bench engines). `openai_http` is any
+# external OpenAI-compatible server. Roles pick a model; the engine that serves that model is derived, so swapping
+# engines never touches the roles. The studio's values (131072 KV, 8-bit KV) are the base.
 engines:
-  main:
-    kind: vllm_mlx
-    host: 127.0.0.1
+  main:                            # the team model; its MTP head rides as the draft model
+    kind: mlx_vlm
     port: 8080
-    models: [small, llama70b, qwen25_32b, generalist, reviewer, coder8]   # one process; preloaded + lazy (--models-config)
-    memory_budget_gb: 90           # vllm-mlx cap on resident WEIGHTS only; the doctor projects weights + KV + os_reserve against memory.wired_limit_mb (104 GB)
-    continuous_batching: true
+    model: generalist
     max_num_seqs: 16               # docs/wiki/build-spec/02 §1
-    max_kv_size: 65536
+    max_kv_size: 131072
+    kv_bits: 8
     prefill_step_size: 2048
-    kv_cache_quantization: false
-    use_paged_cache: false
-    extra_args: []
-    server_parsers: true           # false = airlie parses every model's output itself (design 2026-10-13 §4b)
-  decision:                        # llama-server serving Kev; POST /v1/systemone (llama.cpp 0.6.0 has the endpoint)
-    kind: llama_server
-    host: 127.0.0.1
+    prefix_cache: true
+    cache_memory_gb: 8
+    cache_checkpoints: 8
+    max_image_px: 1536
+  reviewer:                        # the adversarial reviewer: any model from a different lab than the coder's
+    kind: mlx_vlm
+    port: 8082
+    model: reviewer
+    max_num_seqs: 4
+    max_kv_size: 65536
+    kv_bits: 8
+    prefix_cache: true
+    cache_memory_gb: 3.5
+  small:
+    kind: mlx_vlm
+    port: 8083
+    model: small
+    max_num_seqs: 8
+    max_kv_size: 16384
+    prefix_cache: true
+    cache_memory_gb: 1
+  decision:                        # typed decisions (router, decide tool) on mlx-vlm's /v1/decisions; the phase 4b
+    kind: mlx_vlm                  # gate's pick over Kev: 20/20 the same choices on the routing briefs
     port: 8081
-    models: [kev4b]
-    ctx_size: 16384
-
+    model: decider_2b
+    decision: true
+    max_num_seqs: 4
+  # bench engines: start one by hand with `airlie engine up <name>`
+  llama70b: { kind: mlx_vlm, port: 8092, model: llama70b, autostart: false, max_kv_size: 65536, kv_bits: 8 }
+  qwen25_32b: { kind: mlx_vlm, port: 8093, model: qwen25_32b, autostart: false, max_kv_size: 65536, kv_bits: 8 }
 
 
 # ---- Tools --------------------------------------------------------------------------------------------------------
@@ -52,7 +70,7 @@ web:
 # ---- Chat attachments (design 2026-10-22-chat-attachments) -------------------------------------------------------
 # Files the + in the web app's Chat attaches, under observability.state_dir/uploads. The chat role (vision: true)
 # gets a picture scaled to max_image_px, a video as frames airlie samples (video_fps a second, at most
-# video_max_frames, video_frame_px each: vllm-mlx 0.5.0's batched engine refuses video parts), a text file or a PDF
+# video_max_frames, video_frame_px each: the batched engine refuses video parts), a text file or a PDF
 # as its text cut at max_text_kb, anything else as a line saying what it is. 100 MB of video is what the Cloudflare
 # quick tunnel lets through; Tailscale has no such limit.
 # ---- LHR authoring (lhr-office /api/authoring; token in state_dir/lhr/supabase_token) ---------------------------
@@ -101,7 +119,7 @@ lts:
 # ---- Router (design 2026-10-13 §6) ------------------------------------------------------------------------------
 router:                            # jev | chief
   kind: jev
-  model: kev4b
+  model: decider_2b
   ambiguous_gap: 0.15
   min_confidence: 0.5
 
@@ -171,7 +189,7 @@ observability:
 # repository its repo:<owner>/<name> label names (its clone under story.repos_root, default ~/git), gated by that
 # repository's AGENTS.md "## Test gate". Personal settings go in airlie.local.yaml.
 story:
-  topology: studio                 # the profile story runs load (start it with `task restart -- --topology studio`)
+  topology: studio                 # the profile story runs load (start the engines with `task restart`)
   trunk: main                      # the stack's base branch
   publish: single                  # one draft PR on the top layer's branch; stack = one per layer, the schema default
   max_layers: 5

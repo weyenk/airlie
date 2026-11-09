@@ -27,6 +27,8 @@ KNOWN_TOOLS = frozenset(
     }
 )  # fmt: skip
 
+MLX_VLM_TEMPLATE_KWARGS = frozenset({"enable_thinking", "reasoning_strength"})
+
 MUTATING_TOOLS = frozenset({"write_file", "edit_file", "shell", "git", "run_tests"})  # fmt: skip
 
 
@@ -37,7 +39,7 @@ class Sampling(Strict):
     min_p: float = 0.0
     presence_penalty: float = 0.0
     repetition_penalty: float = Field(
-        default=1.0, ge=1.0, description="mlx-lm style (>1.0 penalizes); guards against repetition collapse"
+        default=1.0, ge=1.0, description="(>1.0 penalizes); guards against repetition collapse"
     )
 
 
@@ -54,25 +56,20 @@ class ModelSpec(Strict):
     repo: str
     revision: str = Field(min_length=1, description="HF commit sha; `task models:pull` fetches exactly this")
     path: Path | None = Field(default=None, description="local directory instead of the HF cache")
-    file: str | None = Field(
-        default=None, description="one file inside the repo (a .gguf) for llama_server engines"
-    )
-    preload: bool = True
-    continuous_batching: bool | None = Field(
-        default=None, description="per-model override of the engine default"
-    )
-    enable_mtp: bool = False
     mtp: ModelRef | None = Field(
         default=None,
-        description="an MTP head published apart from the body (vllm_mlx engines): served beside it, with "
-        "speculative decoding on (engine/mtp.py)",
+        description="an MTP head published apart from the body (mlx_vlm engines): served beside it as the "
+        "--draft-model, with speculative decoding on",
     )
     estimated_memory_gb: float | None = Field(
         default=None, description="weights only; feeds the engine memory budget"
     )
     chat_template_kwargs: dict[str, object] = Field(default_factory=dict)
-    tool_call_parser: str | None = None
-    reasoning_parser: str | None = None
+    tool_call_parser: str | None = Field(
+        default=None,
+        description="the engine's parser name (mlx-vlm: qwen3_coder, atem, ...); unset = inferred from the "
+        "chat template",
+    )
     kv_mb_per_1k_tokens: float = Field(
         default=256.0, description="KV cache cost; feeds the doctor memory projection"
     )
@@ -81,53 +78,65 @@ class ModelSpec(Strict):
 
 
 class EngineSpec(Strict):
-    """An inference endpoint. `vllm_mlx` is a process airlie manages; `openai_http` is any external server."""
+    """An inference endpoint. `mlx_vlm` is a process airlie manages; `openai_http` is any external server."""
 
-    kind: Literal["vllm_mlx", "openai_http", "llama_server"]
-    models: list[str] = Field(min_length=1, description="catalog names this engine serves")
+    kind: Literal["mlx_vlm", "openai_http"]
+    models: list[str] = Field(default_factory=list, description="catalog names this engine serves")
+    model: str | None = Field(
+        default=None, description="one-model spelling of `models` (what an mlx_vlm engine serves)"
+    )
     host: str = "127.0.0.1"
     port: int = 8080
-    base_url: str | None = Field(default=None, description="required for openai_http; derived for vllm_mlx")
+    base_url: str | None = Field(default=None, description="required for openai_http; derived for mlx_vlm")
     api_key: str | None = None
     served_names: dict[str, str] = Field(
         default_factory=dict, description="catalog name → name the server expects"
     )
-    # vllm-mlx serve flags (names mirror the CLI; see docs/wiki/build-spec/02 and vllm-mlx cli-inventory)
-    memory_budget_gb: float = 90.0
-    continuous_batching: bool = True
     max_num_seqs: int = 16
     max_kv_size: int = 65536
     prefill_step_size: int = 2048
-    kv_cache_quantization: bool = False
-    use_paged_cache: bool = False
-    gpu_memory_utilization: float = 0.9
-    max_request_tokens: int = 32768
     timeout_s: float = 600.0
-    per_request_draft: bool = Field(
+    extra_args: list[str] = Field(default_factory=list, description="appended verbatim to the server command")
+    autostart: bool = Field(default=True, description="mlx_vlm: `task up` starts this engine")
+    decision: bool = Field(
         default=False,
-        description="engine accepts num_draft_tokens per request (HAL budgets apply); vllm-mlx 0.5.0: no",
+        description="mlx_vlm: the model is a typed-decision model, started with --decision-model and asked "
+        "through /v1/decisions",
     )
-    buffer_cache_mb: int | None = Field(
-        default=None,
-        gt=0,
-        description="vllm_mlx: MLX's cap on freed GPU buffers it keeps for reuse (MLX_BUFFER_CACHE_LIMIT); "
-        "None = vllm-mlx's device-scaled cap (103.9 GB on a 128 GB Mac, which ran a six-hour engine out of "
-        "memory on 52-56k-token prefills, AIR-47 2026-11-01)",
+    kv_bits: int | None = Field(
+        default=None, ge=1, description="mlx_vlm: KV cache quantization bits; None = off"
     )
-    extra_args: list[str] = Field(default_factory=list, description="appended verbatim to `vllm-mlx serve`")
-    server_parsers: bool = Field(
-        default=True,
-        description="vllm_mlx: pass the team model's tool/reasoning parsers as server flags; "
-        "False = airlie parses every model's output itself (design 2026-10-13 §4b)",
+    prefix_cache: bool = Field(default=False, description="mlx_vlm: the automatic prefix cache (APC_*)")
+    cache_memory_gb: float = Field(default=1.0, gt=0, description="mlx_vlm: APC_MEMORY_MAX_GB")
+    cache_checkpoints: int = Field(default=4, ge=0, description="mlx_vlm: APC checkpoints per sequence")
+    cache_checkpoint_interval: int = Field(
+        default=2048, ge=1, description="mlx_vlm: tokens between checkpoints"
     )
-    ctx_size: int = Field(default=16384, description="llama_server: -c")
-    binary: str = Field(default="llama-server", description="llama_server: executable name or path")
+    max_image_px: int | None = Field(default=None, description="mlx_vlm: longest image side, in pixels")
+    env: dict[str, str] = Field(default_factory=dict, description="mlx_vlm: extra environment variables")
+    entry: list[str] | None = Field(
+        default=None, description="mlx_vlm: the server's command prefix instead of the pinned one"
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _model_is_models(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("model") and not data.get("models"):
+            return {**data, "models": [data["model"]]}
+        return data
 
     @model_validator(mode="after")
     def _derive_or_require_base_url(self) -> EngineSpec:
+        if not self.models:
+            raise ValueError("an engine needs model or models")
         if self.kind == "openai_http" and not self.base_url:
             raise ValueError("engines of kind 'openai_http' need a base_url (e.g. http://127.0.0.1:8080/v1)")
-        if self.kind in ("vllm_mlx", "llama_server") and not self.base_url:
+        if self.kind == "mlx_vlm" and self.served_names:
+            raise ValueError(
+                "served_names: an mlx_vlm engine is addressed by its exact --model path; "
+                "set models.<name>.path instead"
+            )
+        if self.kind == "mlx_vlm" and not self.base_url:
             self.base_url = f"http://{self.host}:{self.port}/v1"
         return self
 
@@ -168,7 +177,7 @@ class RoleSpec(Strict):
     sampling: Sampling = Field(default_factory=Sampling)
     thinking: bool = True
     thinking_budget: int | None = Field(
-        default=8192, ge=1, description="cap on reasoning tokens (vllm-mlx refuses < 1); None = uncapped"
+        default=8192, ge=1, description="cap on reasoning tokens (the engine refuses < 1); None = uncapped"
     )
     last_turn_thinking: bool = Field(
         default=True,
@@ -506,7 +515,8 @@ class MemorySpec(Strict):
 
 class RouterSpec(Strict):
     kind: Literal["jev", "chief"] = Field(
-        default="chief", description="jev = /v1/systemone on a llama_server engine"
+        default="chief",
+        description="jev = /v1/decisions on an mlx_vlm decision engine",
     )
     model: str | None = Field(default=None, description="catalog name of the decision model (jev)")
     ambiguous_gap: float = Field(default=0.15, ge=0.0, le=1.0)
@@ -991,19 +1001,16 @@ class AirlieConfig(Strict):
                     served_by[m].append(ename)
         ports: dict[int, list[str]] = {}
         for ename, e in self.engines.items():
-            if e.kind in ("vllm_mlx", "llama_server"):
+            if e.kind == "mlx_vlm":
                 ports.setdefault(e.port, []).append(ename)
         for port, names in ports.items():
             if len(names) > 1:
                 problems.append(f"port {port} is used by more than one managed engine: {', '.join(names)}")
         for ename, e in self.engines.items():
-            if e.kind != "llama_server":
+            if e.kind != "mlx_vlm":
                 continue
             if len(e.models) != 1:
-                problems.append(f"engines.{ename}.models: a llama_server engine serves exactly one model")
-            for m in e.models:
-                if m in self.models and not self.models[m].file:
-                    problems.append(f"models.{m}.file is required (served by llama_server engine '{ename}')")
+                problems.append(f"engines.{ename}: an mlx_vlm engine serves exactly one model")
         if self.router.kind == "jev":
             rm = self.router.model
             if rm is None or rm not in self.models:
@@ -1011,9 +1018,15 @@ class AirlieConfig(Strict):
                     f"router.model must name a catalog model when router.kind is jev (got {rm!r})"
                 )
             else:
-                hosts = [n for n, e in self.engines.items() if rm in e.models and e.kind == "llama_server"]
+                hosts = [
+                    n
+                    for n, e in self.engines.items()
+                    if rm in e.models and e.kind == "mlx_vlm" and e.decision
+                ]
                 if not hosts:
-                    problems.append(f"router.model '{rm}' must be served by a llama_server engine")
+                    problems.append(
+                        f"router.model '{rm}' must be served by an mlx_vlm engine with decision: true"
+                    )
         for rname, r in self.roles.items():
             if r.on_context_full not in ("stop", "trim"):
                 problems.append(f"roles.{rname}.on_context_full must be one of: stop, trim")
@@ -1040,6 +1053,13 @@ class AirlieConfig(Strict):
                 problems.append(
                     f"models.{r.model} is served by more than one engine ({', '.join(engines)}); pick one"
                 )
+            if any(self.engines[n].kind == "mlx_vlm" for n in engines):
+                extra = set(r.chat_template_kwargs) - MLX_VLM_TEMPLATE_KWARGS
+                if extra:
+                    problems.append(
+                        f"roles.{rname}.chat_template_kwargs: mlx_vlm engines accept only enable_thinking "
+                        f"and reasoning_strength (got {sorted(extra)})"
+                    )
             if not r.prompt.is_file():
                 problems.append(f"roles.{rname}.prompt file not found: {r.prompt}")
             for t in r.tools or []:

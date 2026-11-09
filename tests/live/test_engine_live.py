@@ -1,4 +1,4 @@
-"""HTTPEngine against the real managed vllm-mlx engine (task up). Marked live; skipped when it is down."""
+"""HTTPEngine against the real managed engines (task up). Marked live; skipped when it is down."""
 
 from __future__ import annotations
 
@@ -26,7 +26,8 @@ def req(role: str, content: str, **kw) -> GenRequest:
 async def test_health_lists_models(engine, cfg) -> None:
     h = await engine.health()
     assert h.ok
-    assert set(cfg.engines["main"].models) <= set(h.models)
+    e = cfg.engines["main"]
+    assert {e.served_name(m) for m in e.models} <= set(h.models)  # an mlx_vlm engine lists its model's path
 
 
 async def test_plain_generation_streams(engine) -> None:
@@ -41,7 +42,8 @@ async def test_plain_generation_streams(engine) -> None:
 
 
 async def test_reasoning_is_separated(engine, cfg) -> None:
-    if not cfg.models[cfg.roles["coder"].model].reasoning_parser:
+    owner = cfg.engines[cfg.engine_for_role("coder")]  # an mlx_vlm engine splits reasoning on the server
+    if owner.kind != "mlx_vlm" and not cfg.models[cfg.roles["coder"].model].reasoning_parser:
         pytest.skip("team model has no reasoning parser (non-thinking model)")
     res = await engine.generate(
         req(

@@ -1,7 +1,7 @@
 """Chat attachments (design 2026-10-22-chat-attachments): a file a person attaches in Chat is stored under
 observability.state_dir/uploads as `<id>` beside `<id>.json`, and each request that names it gets what the
-chat model can take: a picture scaled to max_image_px, a video as frames airlie samples from it (vllm-mlx
-0.5.0's batched engine refuses video parts), a text file or a PDF's text in a fence, anything else as one
+chat model can take: a picture scaled to max_image_px, a video as frames airlie samples from it (the
+batched engine refuses video parts), a text file or a PDF's text in a fence, anything else as one
 line saying what it is. The kind is read from the bytes, never taken from the browser. What is derived from
 an upload (a scaled picture, a video's frames, a PDF's text) is kept beside it as `<id>.*`."""
 

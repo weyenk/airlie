@@ -11,7 +11,7 @@ def test_web_section_with_searxng_backend_parses(tmp_path: Path) -> None:
     """Test that a config with web section and searxng backend parses correctly."""
     config_data = {
         "version": 1,
-        "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}},
+        "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
         "models": {"team": {"repo": "mlx-community/Qwen3.8-27B-4bit", "revision": "abc123"}},
         "roles": {
             "coder": {"prompt": "prompts/roles/coder.md", "model": "team"},
@@ -48,7 +48,7 @@ def test_web_section_defaults_when_not_present(tmp_path: Path) -> None:
     """Test that web section uses defaults when not present."""
     config_data = {
         "version": 1,
-        "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}},
+        "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
         "models": {"team": {"repo": "mlx-community/Qwen3.8-27B-4bit", "revision": "abc123"}},
         "roles": {
             "coder": {"prompt": "prompts/roles/coder.md", "model": "team"},
@@ -83,7 +83,7 @@ def test_web_search_and_fetch_tools_in_known_tools(tmp_path: Path) -> None:
     # This test verifies the tools are recognized as valid
     config_data = {
         "version": 1,
-        "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}},
+        "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
         "models": {"team": {"repo": "mlx-community/Qwen3.8-27B-4bit", "revision": "abc123"}},
         "roles": {
             "coder": {"prompt": "prompts/roles/coder.md", "model": "team"},

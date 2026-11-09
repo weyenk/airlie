@@ -13,7 +13,7 @@ from airlie.config import Sampling
 
 FinishReason = Literal["stop", "length", "tool_calls", "cancelled"]
 ModelState = Literal["ready", "loading", "lazy", "missing"]
-"""lazy = registered in the vllm-mlx registry, loads on first request (preload: false)."""
+"""lazy = listed by the server but not resident; it loads on first request."""
 
 
 @dataclass(frozen=True)

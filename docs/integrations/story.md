@@ -114,7 +114,7 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.stage_attempts` | 2 | tries for the story and for the layer plan before the story stops |
 | `story.plan_round_steps` | 5 | the architect plans in rounds of this many steps and stops when a round leaves the plan unchanged (*Planning time*); 0 plans in one go |
 | `story.survey` | true | while product refines the request, the architect reads the code it touches and takes notes the layer planning starts from |
-| `story.topology` | `studio` | the profile story runs load (start the engines with it: `task restart -- --topology studio`) |
+| `story.topology` | `studio` | the profile story runs load (the engines come from the base config, not the profile: `task restart`) |
 | `story.product_role`, `architect_role`, `build_role` | `product`, `architect`, `coder` | which role does what |
 | `story.package_attempts` | 2 | tries the architect gets at one layer's package before the story stops: a package that fails the readiness check goes back to it with the findings and the package as checked; a try back for lint alone is not charged, once a layer (*The package check*) |
 | `story.layer_attempts` | 2 | builds of one layer, each re-planned by the architect from the last gate's output, before the story stops |
@@ -131,7 +131,7 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 ## Run one
 
 ```bash
-task restart -- --topology studio
+task restart
 task story -- AIR-7
 task story -- https://NAME.atlassian.net/browse/AIR-7
 task story -- --text "Let users upload an avatar (PNG, max 2 MB)" --repo ~/git/myproject
@@ -751,7 +751,7 @@ serve is up. A beat runs, in order:
    compares the running vllm-mlx server's flags (`--max-kv-size`, `--max-num-seqs`, `--chunked-prefill-tokens`,
    `--kv-cache-quantization`, `--cache-memory-mb`, the preloaded models) with the profile's (`story.topology`); a
    KV smaller than the profile's rotates a long prompt and wastes a layer, so on a mismatch the beat starts nothing
-   and logs `engine mismatch: ... restart it: task restart -- --topology studio`. The line never restarts the
+   and logs `engine mismatch: ... restart it: task restart` (`uv run airlie engine restart NAME` for a bench engine). The line never restarts the
    engine;
 3. **one job in each lane**, side by side:
    - the **planning lane** (`plan.lock`) takes the oldest ready of an initiative's turn or an epic's revision (a
@@ -773,9 +773,8 @@ during the gate, the review, the publish and between layers, `idle`), and the pl
 started runs to its end. Its **short asks** (consultations, surveys, a planner's reads, mockup renders) ride beside
 the build's decode, `line.fanout` (4) at a time, one at a time while the build's last five steps decode under
 `line.decode_floor_tps` (12 tokens a second). The line's log records `lane_yield`, `lane_wait` (with the seconds
-waited) and `lane_resume`. The studio profile turns on chunked prefill, 8-bit stored KV and an explicit prefix
-cache (`config/profiles.yaml`) so the riders do not stall the build; they take effect at the next
-`task restart -- --topology studio`.
+waited) and `lane_resume`. The engines' 8-bit stored KV and explicit prefix caches (`airlie.yaml`) let the riders sit beside
+the build; engine settings take effect at the next `task restart`.
 
 **One switch, and the statuses.** `task line:pause` writes `line.paused` in the state directory (`task line:resume`
 removes it, `POST /v1/airlie/line {"paused": true}` does the same): a paused beat does the gates and the
@@ -841,7 +840,7 @@ agent if it is there); the agent then runs the beat every 15 minutes (log: `~/.l
 - **Install it from the checkout you keep** (your main one, not a temporary worktree). The beat reads that
   checkout's `airlie.yaml`, `airlie.local.yaml` (`story.repos_root`, if your clones are not in `~/git`) and `.env`
   (or `~/.config/airlie/.env`). Each issue it takes is built in the repository its `repo:` label names.
-- **It never starts the engines:** run `task restart -- --topology studio` first, or the beat logs `engine down`.
+- **It never starts the engines:** run `task restart` first, or the beat logs `engine down`.
 - **It waits for GitHub:** before it takes an issue, the beat checks that GitHub answers: as the bot, the app asks
   GitHub who it is (`GET /app`), which also needs its key (`story.github_app.key_file`) to be there and to be the
   app's; as you, one request with no credential to GitHub's API (`GET /rate_limit`, which costs no quota). When
