@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import httpx
-import yaml
 
 from airlie.config import AirlieConfig, ConfigError, load_config
 from airlie.engine.mlx_vlm import MLX_VLM_ENTRY
@@ -38,10 +37,6 @@ class SystemProbe(Protocol):
     def tool_version(self, name: str) -> str | None: ...
     def model_config(self, repo: str, revision: str) -> dict[str, Any] | None: ...
     def http_ok(self, url: str) -> bool: ...
-    def resolve_binary(self, name: str) -> Path | None: ...
-    def file_contains(self, path: Path, needle: str) -> bool | None: ...
-    def model_file(self, repo: str, revision: str, file: str) -> Path | None: ...
-    def process_args(self, marker: str) -> list[str] | None: ...
     def all_process_args(self, marker: str) -> list[list[str]] | None:
         return None
 
@@ -49,18 +44,11 @@ class SystemProbe(Protocol):
         return None
 
 
-def systemone_impl_path(binary: Path) -> Path:
-    """llama-server's HTTP routes live in lib/libllama-server-impl.dylib beside the binary's prefix
-    (ai-mode's doctor checked the same file); the binary itself is a thin launcher."""
-    real = binary.resolve()
-    return real.parent.parent / "lib" / "libllama-server-impl.dylib"
-
-
 def is_hybrid_attention(config: dict[str, Any]) -> bool | None:
     """True when the checkpoint mixes linear/SSM layers with attention (Qwen3.5/3.8, Qwen3-Next, Mamba).
 
-    vllm-mlx 0.5.0's prefix cache cannot rewind SSM state, so such models never get prefix-cache hits
-    (measured 2026-10-12). None when the config does not say."""
+    Such a model's prefix cache keeps checkpoints of the SSM state instead of rewinding it. None when the
+    config does not say."""
     text = config.get("text_config") if isinstance(config.get("text_config"), dict) else config
     assert isinstance(text, dict)
     layer_types = text.get("layer_types") or text.get("layers_block_type")
@@ -109,7 +97,7 @@ class RealProbe:
         entries = list(d.iterdir())
         if any(p.name.endswith(".incomplete") for p in entries):
             return None
-        weights = [p for p in entries if p.suffix in {".safetensors", ".gguf"}]
+        weights = [p for p in entries if p.suffix in {".safetensors"}]
         if not weights:
             return None
         if all(p.resolve().is_file() and p.resolve().stat().st_size > 0 for p in weights):
@@ -131,30 +119,6 @@ class RealProbe:
             return httpx.get(url, timeout=3.0).status_code == 200
         except httpx.HTTPError:
             return False
-
-    def resolve_binary(self, name: str) -> Path | None:
-        exe = shutil.which(name)
-        return Path(exe) if exe else None
-
-    def file_contains(self, path: Path, needle: str) -> bool | None:
-        try:
-            return needle.encode() in path.read_bytes()
-        except OSError:
-            return None
-
-    def model_file(self, repo: str, revision: str, file: str) -> Path | None:
-        d = self.hf_cache / f"models--{repo.replace('/', '--')}" / "snapshots" / revision / file
-        if d.is_file() and d.resolve().is_file() and d.resolve().stat().st_size > 0:
-            return d
-        return None
-
-    def process_args(self, marker: str) -> list[str] | None:
-        """The arguments of the running process whose command line holds `marker` and `serve` (the managed
-        vllm-mlx server), or None when none runs. Read from `ps`; nothing is started or stopped."""
-        for argv in self.all_process_args(marker) or []:
-            if " serve" in " ".join(argv):
-                return argv
-        return None
 
     def all_process_args(self, marker: str) -> list[list[str]] | None:
         """The arguments of every running process whose command line holds `marker` (mlx-vlm runs one
@@ -186,7 +150,7 @@ class RealProbe:
             out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10)
             line = (out.stdout or out.stderr).strip().splitlines()
             if not line or line[0].lower().startswith("usage:"):
-                return f"present ({exe})"  # tool has no --version (e.g. vllm-mlx)
+                return f"present ({exe})"  # tool has no --version
             return line[0]
         except (OSError, subprocess.TimeoutExpired):
             return "present"
@@ -229,15 +193,8 @@ def node_check(version: str | None, pin: str) -> CheckResult:
 
 def cache_memory_gb(e: Any) -> float:
     """The prefix cache the engine is told to keep, in GB: an mlx_vlm engine's `cache_memory_gb` when its
-    prefix cache is on, a vllm_mlx engine's `--cache-memory-mb N` in its extra_args; 0 when it is left to the
-    server's own default."""
-    if e.kind == "mlx_vlm":
-        return float(e.cache_memory_gb) if e.prefix_cache else 0.0
-    args = list(e.extra_args)
-    for i, arg in enumerate(args[:-1]):
-        if arg == "--cache-memory-mb" and args[i + 1].isdigit():
-            return int(args[i + 1]) / 1024.0
-    return 0.0
+    prefix cache is on; 0 when it is left to the server's own default."""
+    return float(e.cache_memory_gb) if e.kind == "mlx_vlm" and e.prefix_cache else 0.0
 
 
 def _resident_engines(cfg: AirlieConfig) -> list[Any]:
@@ -253,7 +210,7 @@ def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[
     The live KV of the single, teams and fork topologies is K × max_kv_size. The studio's is its two lanes'
     (planning-line P5b, D10): the build lane's one sequence at the coder's `max_context`, plus `line.fanout`
     short asks at `line.consult_context`, each at its model's KV rate. The prefix cache is what the engine's
-    `--cache-memory-mb` sets aside.
+    `cache_memory_gb` sets aside.
 
     Returns (projected GB, names of preloaded models with no estimated_memory_gb)."""
     e = cfg.engines[engine_name]
@@ -262,15 +219,11 @@ def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[
     unknown: list[str] = []
     resident = _resident_engines(cfg)
     for other in cfg.engines.values():  # every managed process shares the one wired limit
-        if other.kind not in ("vllm_mlx", "llama_server", "mlx_vlm"):
-            continue
-        if other not in resident:
+        if other.kind != "mlx_vlm" or other not in resident:
             continue
         cache += cache_memory_gb(other)
         for mname in other.models:
             m = cfg.models[mname]
-            if other.kind != "mlx_vlm" and not m.preload:
-                continue  # an mlx_vlm engine loads its one model at start whatever `preload` says
             if m.estimated_memory_gb is None:
                 unknown.append(mname)
             else:
@@ -310,41 +263,6 @@ def projection_detail(cfg: AirlieConfig, e: Any) -> str:
         f"preloaded weights + {cfg.teams.k} teams × {e.max_kv_size} KV{tail} + "
         f"{cfg.memory.os_reserve_gb:.0f} GB reserve"
     )
-
-
-# the flags a running engine must carry to be the one a profile describes (planning-line P5b, D10): the ones
-# that decide whether a long prompt rotates or a rider stalls the build
-_PROFILE_FLAGS = (
-    "--max-kv-size",
-    "--max-num-seqs",
-    "--chunked-prefill-tokens",
-    "--cache-memory-mb",
-)
-_PROFILE_SWITCHES = ("--kv-cache-quantization",)
-
-
-def _flags(argv: list[str]) -> tuple[dict[str, str], set[str]]:
-    values: dict[str, str] = {}
-    switches: set[str] = set()
-    for i, arg in enumerate(argv):
-        if arg in _PROFILE_FLAGS and i + 1 < len(argv):
-            values[arg] = argv[i + 1]
-        elif arg in _PROFILE_SWITCHES:
-            switches.add(arg)
-    return values, switches
-
-
-def _registry_models(argv: list[str]) -> set[str] | None:
-    """The preloaded models of the registry file the running engine was given (`--models-config`), or None
-    when it cannot be read."""
-    for i, arg in enumerate(argv[:-1]):
-        if arg == "--models-config":
-            try:
-                data = yaml.safe_load(Path(argv[i + 1]).read_text())
-                return {str(m["name"]) for m in data["models"] if m.get("preload")}
-            except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError):
-                return None
-    return None
 
 
 def restart_command(spec: Any, engine_name: str) -> str:
@@ -405,11 +323,9 @@ def engine_matches_config(cfg: AirlieConfig, probe: SystemProbe, engine_name: st
 
 
 def engine_matches_profile(cfg: AirlieConfig, probe: SystemProbe, profile: str) -> CheckResult:
-    """The running vllm-mlx server's arguments against the profile's engine spec (planning-line P5b, D10): the
-    KV cap, the sequences, chunked prefill, stored-KV quantization, the prefix cache and the preloaded models.
-    `fail` names the flags that differ and the command that restarts it on the profile; a KV smaller than the
-    profile's rotates a long prompt and wastes a layer, so the line starts no build on a mismatch. `warn` when
-    none runs (the engine gate says so), `ok` when the engine is not one airlie manages."""
+    """The running engine's arguments against the profile's build engine (planning-line P5b, D10), by
+    `engine_matches_config`: a KV smaller than the profile's rotates a long prompt and wastes a layer, so the
+    line starts no build on a mismatch. `ok` when the engine is not one airlie manages."""
     name = f"engine:profile[{profile}]"
     if profile not in cfg.topology.profiles:
         return CheckResult(name, "warn", f"the config declares no profile {profile}: nothing to compare")
@@ -421,38 +337,7 @@ def engine_matches_profile(cfg: AirlieConfig, probe: SystemProbe, profile: str) 
     if target.engines[build_engine].kind == "mlx_vlm":
         found = engine_matches_config(target, probe, build_engine)
         return CheckResult(f"engine:config[{build_engine}]", found.status, found.detail)
-    managed = [n for n, e in target.engines.items() if e.kind == "vllm_mlx"]
-    if not managed:
-        return CheckResult(name, "ok", "no engine airlie manages for this profile")
-    running = probe.process_args("airlie.engine.vllm_mlx_serve") or probe.process_args("vllm-mlx")
-    if running is None:
-        return CheckResult(name, "warn", "no vllm-mlx server is running")
-    from airlie.engine.registry import build_serve_command
-
-    wanted_values, wanted_switches = _flags(build_serve_command(target, managed[0], Path("registry.yaml")))
-    have_values, have_switches = _flags(running)
-    differ: list[str] = []
-    for flag in _PROFILE_FLAGS:
-        if wanted_values.get(flag) != have_values.get(flag):
-            differ.append(
-                f"{flag} {have_values.get(flag, '(unset)')} (profile: {wanted_values.get(flag, '(unset)')})"
-            )
-    for flag in _PROFILE_SWITCHES:
-        if (flag in wanted_switches) != (flag in have_switches):
-            running_is = "on" if flag in have_switches else "off"
-            differ.append(f"{flag} {running_is} (profile: {'on' if flag in wanted_switches else 'off'})")
-    loaded = _registry_models(running)
-    expected = {m for m in target.engines[managed[0]].models if target.models[m].preload}
-    if loaded is not None and loaded != expected:
-        differ.append(f"preloaded models {sorted(loaded)} (profile: {sorted(expected)})")
-    if differ:
-        return CheckResult(
-            name,
-            "fail",
-            f"the engine runs other flags than the {profile} profile: {'; '.join(differ)}; restart it: "
-            "task restart",
-        )
-    return CheckResult(name, "ok", f"the running engine carries the {profile} profile's flags")
+    return CheckResult(name, "ok", "no engine airlie manages for this profile")
 
 
 def _profile_variants(cfg: AirlieConfig) -> dict[str, AirlieConfig | ConfigError]:
@@ -548,10 +433,6 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
     managed_models: set[str] = set()
     projected_once = False
     for ename, e in cfg.engines.items():
-        if e.kind == "llama_server":
-            managed_models.update(e.models)
-            results.extend(_llama_server_checks(ename, e.binary, e.base_url or "", probe))
-            continue
         if e.kind == "mlx_vlm":
             managed_models.update(e.models)
             results.append(_mlx_vlm_binary_check(ename, e.entry, probe))
@@ -559,60 +440,12 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
                 projected_once = True
                 results.extend(_projection_rows(cfg, variants, ename))
             continue
-        if e.kind != "vllm_mlx":
-            continue
-        managed_models.update(e.models)
-        v = probe.tool_version("vllm-mlx")
-        results.append(
-            CheckResult(
-                f"engine:{ename}:binary",
-                "ok" if v else "fail",
-                v or "vllm-mlx not installed; run: task engine:install",
-            )
-        )
-        if e.memory_budget_gb > ram_gb:
-            results.append(
-                CheckResult(
-                    f"engine:{ename}:memory_budget",
-                    "fail",
-                    f"memory_budget_gb={e.memory_budget_gb} exceeds host RAM {ram_gb:.0f} GiB",
-                )
-            )
-        else:
-            results.append(
-                CheckResult(
-                    f"engine:{ename}:memory_budget", "ok", f"{e.memory_budget_gb} GB of {ram_gb:.0f} GiB"
-                )
-            )
-        health_url = f"{(e.base_url or '').removesuffix('/v1')}/health"
-        if probe.http_ok(health_url):
-            results.append(CheckResult(f"engine:{ename}:health", "ok", f"{health_url} answers"))
-        else:
-            results.append(
-                CheckResult(f"engine:{ename}:health", "warn", f"not running ({health_url}); run: task up")
-            )
-        results.extend(_projection_rows(cfg, variants, ename))
-
     for mname in sorted(managed_models):
         m = cfg.models[mname]
         # an mlx_vlm engine loads its one model at start, so its model is lazy only when the engine is
         # started by hand (autostart: false)
         serving = [e for e in cfg.engines.values() if mname in e.models]
-        needed = m.preload and not (serving and all(e.kind == "mlx_vlm" and not e.autostart for e in serving))
-        if m.file:
-            f = probe.model_file(m.repo, m.revision, m.file)
-            if f:
-                results.append(CheckResult(f"model:{mname}:file", "ok", str(f)))
-            else:
-                results.append(
-                    CheckResult(
-                        f"model:{mname}:file",
-                        "fail",
-                        f"{m.repo}@{m.revision[:8]} {m.file} not in HF cache; "
-                        f"run: task models:pull -- {mname}",
-                    )
-                )
-            continue
+        needed = not (serving and all(not e.autostart for e in serving))
         if m.path is not None:
             ok = m.path.is_dir()
             results.append(
@@ -637,24 +470,13 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
             results.append(CheckResult(f"model:{mname}", "ok", f"{m.repo}@{m.revision[:8]}"))
             conf = probe.model_config(m.repo, m.revision)
             hybrid = is_hybrid_attention(conf) if conf is not None else None
-            on_mlx_vlm = any(e.kind == "mlx_vlm" and mname in e.models for e in cfg.engines.values())
-            if hybrid is True and on_mlx_vlm:
+            if hybrid is True:
                 results.append(
                     CheckResult(
                         f"model:{mname}:attention",
                         "ok",
                         "hybrid (linear/SSM) attention: mlx-vlm's prefix cache stores it as checkpoints "
                         "(`cache_checkpoints`)",
-                    )
-                )
-            elif hybrid is True:
-                results.append(
-                    CheckResult(
-                        f"model:{mname}:attention",
-                        "ok",
-                        "hybrid (linear/SSM) attention: vllm-mlx 0.5.0's own prefix cache cannot store it, "
-                        "airlie's engine patch (engine/patches/hybrid_prefix_cache.py) does, so a resumed "
-                        "turn is not re-prefilled; another server would re-prefill every turn",
                     )
                 )
             elif hybrid is False:
@@ -692,36 +514,6 @@ def _mlx_vlm_binary_check(ename: str, entry: list[str] | None, probe: SystemProb
     if v:
         return CheckResult(name, "ok", f"mlx-vlm {v} ({' '.join(MLX_VLM_ENTRY)})")
     return CheckResult(name, "fail", "mlx-vlm not installed; run: uv sync")
-
-
-def _llama_server_checks(ename: str, binary: str, base_url: str, probe: SystemProbe) -> list[CheckResult]:
-    out: list[CheckResult] = []
-    exe = probe.resolve_binary(binary)
-    out.append(
-        CheckResult(
-            f"engine:{ename}:binary",
-            "ok" if exe else "fail",
-            str(exe) if exe else f"'{binary}' not on PATH; run: brew install llama.cpp",
-        )
-    )
-    if exe:
-        impl = systemone_impl_path(exe)
-        if probe.file_contains(impl, "/v1/systemone"):
-            out.append(CheckResult(f"engine:{ename}:systemone", "ok", f"{impl.name} has /v1/systemone"))
-        else:
-            out.append(
-                CheckResult(
-                    f"engine:{ename}:systemone",
-                    "fail",
-                    f"{impl} lacks /v1/systemone (Kev needs it); run: brew install --HEAD llama.cpp",
-                )
-            )
-    health_url = f"{base_url.removesuffix('/v1')}/health"
-    if probe.http_ok(health_url):
-        out.append(CheckResult(f"engine:{ename}:health", "ok", f"{health_url} answers"))
-    else:
-        out.append(CheckResult(f"engine:{ename}:health", "warn", f"not running ({health_url}); run: task up"))
-    return out
 
 
 def worst(results: list[CheckResult]) -> Status:

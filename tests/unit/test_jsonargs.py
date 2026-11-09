@@ -1,7 +1,7 @@
 """tools/jsonargs.typed_value: a tool call's parameter text read by the parameter's schema type.
 
-Its other callers' tests (test_qwen3_xml_raw.py) need vllm-mlx and run on the mac job only, so the function is
-pinned here where every runner has it (PR 207's whole-module mutation run, 2026-11-02)."""
+It is pinned here, beside the module's other tests, where every runner has it (PR 207's whole-module mutation
+run, 2026-11-02)."""
 
 from airlie.tools.jsonargs import typed_value
 

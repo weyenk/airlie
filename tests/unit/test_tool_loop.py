@@ -65,10 +65,10 @@ async def test_with_no_registry_or_no_tools_it_is_the_plain_single_call(tmp_path
 async def test_a_tool_call_is_run_and_its_result_goes_back_before_the_answer(tmp_path: Path) -> None:
     tool = Lookup()
     engine = FakeEngine(
-        {"chief": [search("vllm-mlx latest release"), FakeReply(text="the answer, from the page")]}
+        {"chief": [search("mlx-vlm latest release"), FakeReply(text="the answer, from the page")]}
     )
     res = await generate_with_tools(engine, request(), registry(tool, tmp_path))
-    assert res.text == "the answer, from the page" and tool.asked == ["vllm-mlx latest release"]
+    assert res.text == "the answer, from the page" and tool.asked == ["mlx-vlm latest release"]
     first, second = engine.requests
     assert [t.name for t in first.tools or []] == ["web_search"] == [t.name for t in second.tools or []]
     assistant, result = second.messages[-2], second.messages[-1]
@@ -80,7 +80,7 @@ async def test_a_tool_call_is_run_and_its_result_goes_back_before_the_answer(tmp
     assert (
         result.role == "tool"
         and result.tool_call_id == "c1"
-        and "answer to vllm-mlx latest release" in result.content
+        and "answer to mlx-vlm latest release" in result.content
     )
 
 

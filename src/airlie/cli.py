@@ -33,9 +33,7 @@ config_app = typer.Typer(no_args_is_help=True, help="Inspect configuration.")
 app.add_typer(config_app, name="config")
 models_app = typer.Typer(no_args_is_help=True, help="Model catalog: list and pull pinned revisions.")
 app.add_typer(models_app, name="models")
-engine_app = typer.Typer(
-    no_args_is_help=True, help="Manage the vllm-mlx process(es) declared in airlie.yaml."
-)
+engine_app = typer.Typer(no_args_is_help=True, help="Manage the mlx-vlm process(es) declared in airlie.yaml.")
 app.add_typer(engine_app, name="engine")
 bench_app = typer.Typer(no_args_is_help=True, help="Benchmarks through the Engine seam.")
 app.add_typer(bench_app, name="bench")
@@ -169,7 +167,7 @@ def models_list(config: ConfigOpt = None) -> None:
             engine = cfg.engine_for_model(name)
         except KeyError:
             engine = "-"
-        table.add_row(name, str(m.path or m.repo), m.revision[:12], engine, "yes" if m.preload else "no")
+        table.add_row(name, str(m.path or m.repo), m.revision[:12], engine, "yes")
     console.print(table)
 
 
@@ -205,7 +203,7 @@ def _engine_process(cfg: AirlieConfig, name: str):  # type: ignore[no-untyped-de
 
 
 def _managed(cfg: AirlieConfig) -> list[str]:
-    return [n for n, e in cfg.engines.items() if e.kind in ("vllm_mlx", "llama_server", "mlx_vlm")]
+    return [n for n, e in cfg.engines.items() if e.kind == "mlx_vlm"]
 
 
 def _health_table(rows: list[tuple[str, object]]) -> Table:
@@ -350,7 +348,6 @@ def _http_engine(
             lambda role: cfg.roles[role],
             api_key=e.api_key,
             **given,
-            per_request_draft=e.per_request_draft,
             model_spec_for=lambda role: cfg.models[model_override or cfg.roles[role].model],
             dialect=dialect_for(e.kind),
         )

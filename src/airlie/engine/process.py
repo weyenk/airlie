@@ -1,4 +1,4 @@
-"""EngineProcess: start, stop and inspect the vllm-mlx server that serves one `vllm_mlx` engine entry.
+"""EngineProcess: start, stop and inspect the mlx-vlm server that serves one `mlx_vlm` engine entry.
 
 All OS interaction goes through `ProcessRunner` and `Prober`, so the logic is unit-tested without a server."""
 
@@ -21,15 +21,6 @@ import psutil
 from airlie.config import AirlieConfig, ModelSpec
 from airlie.config.load import hf_snapshot_dir
 from airlie.engine.mlx_vlm import MLX_VLM_ENTRY, build_mlx_vlm_command, served_model
-from airlie.engine.mtp import mtp_model_dir
-from airlie.engine.registry import (
-    SERVE_ENTRY,
-    build_llama_command,
-    build_registry,
-    build_serve_command,
-    gguf_path,
-    write_registry,
-)
 from airlie.engine.types import EngineError, ModelState
 
 
@@ -42,7 +33,6 @@ class ProcessRunner(Protocol):
 
 class Prober(Protocol):
     async def health_ok(self) -> bool: ...
-    async def model_ids(self) -> list[str]: ...
     async def loaded_model_ids(self) -> list[str]: ...
     async def preload_failures(self) -> list[str]: ...
 
@@ -56,11 +46,11 @@ class ProcessHealth:
 
 
 class RealRunner:
-    """Spawns the engine detached from the CLI so it survives `task up`; vllm-mlx runs inside `uv run`."""
+    """Spawns the engine detached from the CLI so it survives `task up`; mlx-vlm runs inside `uv run`."""
 
     def spawn(self, argv: list[str], log_path: Path, cwd: Path, env: dict[str, str] | None = None) -> int:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        in_uv = argv[: len(SERVE_ENTRY)] == SERVE_ENTRY or argv[: len(MLX_VLM_ENTRY)] == MLX_VLM_ENTRY
+        in_uv = argv[: len(MLX_VLM_ENTRY)] == MLX_VLM_ENTRY
         cmd = ["uv", "run", "--quiet", *argv] if in_uv else list(argv)
         with log_path.open("ab") as log:
             proc = subprocess.Popen(
@@ -110,16 +100,6 @@ class HTTPProber:
                 return r.status_code == 200
         except httpx.HTTPError:
             return False
-
-    async def model_ids(self) -> list[str]:
-        try:
-            async with httpx.AsyncClient(timeout=3.0, headers=self._headers, transport=self._transport) as c:
-                r = await c.get(f"{self._root}/v1/models")
-                if r.status_code != 200:
-                    return []
-                return [str(m.get("id")) for m in r.json().get("data", [])]
-        except (httpx.HTTPError, ValueError):
-            return []
 
     async def loaded_model_ids(self) -> list[str]:
         """The ids `/v1/models` lists with `loaded` true (mlx-vlm lists every cached model)."""
@@ -189,10 +169,6 @@ class EngineProcess:
     def log_path(self) -> Path:
         return self.dir / "server.log"
 
-    @property
-    def registry_path(self) -> Path:
-        return self.dir / "models.yaml"
-
     def pid(self) -> int | None:
         try:
             pid = int(self.pidfile.read_text().strip())
@@ -203,20 +179,6 @@ class EngineProcess:
         self.pidfile.unlink(missing_ok=True)
         return None
 
-    def built_models(self) -> dict[str, Path]:
-        """The model directories this engine serves that airlie builds: each body with an MTP head published
-        apart, under `<state>/engines/<engine>/models/<name>-<body rev>-<head rev>` (engine/mtp.py)."""
-        out: dict[str, Path] = {}
-        for name in self.spec.models:
-            m = self.cfg.models[name]
-            if m.mtp is None:
-                continue
-            body = m.path if m.path is not None else self.snapshot_dir(m)
-            head = self.snapshot_dir(ModelSpec(repo=m.mtp.repo, revision=m.mtp.revision))
-            where = self.dir / "models" / f"{name}-{m.revision[:8]}-{m.mtp.revision[:8]}"
-            out[name] = mtp_model_dir(body, head, where)
-        return out
-
     # ---- lifecycle ----
     async def start(self, timeout_s: float = 600.0) -> ProcessHealth:
         if (pid := self.pid()) is not None:
@@ -226,16 +188,7 @@ class EngineProcess:
                 f"port {self.spec.port} is held by pid {holder}, not by airlie; "
                 f"stop it or change engines.{self.name}.port"
             )
-        env: dict[str, str] | None = None
-        if self.spec.kind == "mlx_vlm":
-            argv, env = build_mlx_vlm_command(self.cfg, self.name, self.snapshot_dir)
-        elif self.spec.kind == "llama_server":
-            gguf = gguf_path(self.cfg.models[self.spec.models[0]], self.snapshot_dir)
-            argv = build_llama_command(self.cfg, self.name, gguf)
-        else:
-            registry = build_registry(self.cfg, self.name, self.snapshot_dir, self.built_models())
-            write_registry(registry, self.registry_path)
-            argv = build_serve_command(self.cfg, self.name, self.registry_path)
+        argv, env = build_mlx_vlm_command(self.cfg, self.name, self.snapshot_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
         pid = self.runner.spawn(argv, self.log_path, self.cwd, env)
         self.pidfile.write_text(f"{pid}\n")
@@ -243,15 +196,14 @@ class EngineProcess:
 
     async def _wait_ready(self, pid: int, timeout_s: float) -> ProcessHealth:
         deadline = time.monotonic() + timeout_s
-        mlx = self.spec.kind == "mlx_vlm"
-        preload = [m for m in self.spec.models if mlx or self.cfg.models[m].preload]
+        preload = list(self.spec.models)
         last: ProcessHealth = ProcessHealth(False, {}, pid, "starting")
         while True:
             if not self.runner.is_alive(pid):
                 self.pidfile.unlink(missing_ok=True)
                 raise EngineError(f"engine '{self.name}' exited during startup; see {self.log_path}")
             last = await self._probe(pid)
-            if mlx and (failures := await self.prober.preload_failures()):
+            if failures := await self.prober.preload_failures():
                 raise EngineError(
                     f"engine '{self.name}' failed to load its model: {'; '.join(failures)}; "
                     f"see {self.log_path}"
@@ -269,25 +221,12 @@ class EngineProcess:
 
     async def _probe(self, pid: int | None) -> ProcessHealth:
         ok = await self.prober.health_ok()
-        if self.spec.kind == "mlx_vlm":
-            # /health stays "healthy" after a failed preload and its loaded_model is null for a decision-only
-            # engine, so readiness is the /v1/models entry under the exact --model path with loaded true.
-            loaded = (
-                served_model(self.cfg, self.name) in await self.prober.loaded_model_ids() if ok else False
-            )
-            state: ModelState = "ready" if loaded else ("loading" if ok else "missing")
-            detail = "healthy" if ok else "health endpoint not answering"
-            return ProcessHealth(ok, {self.spec.models[0]: state}, pid, detail)
-        ids = set(await self.prober.model_ids()) if ok else set()
-        models: dict[str, ModelState] = {}
-        for m in self.spec.models:
-            if m not in ids:
-                models[m] = "loading" if ok else "missing"
-            elif self.cfg.models[m].preload:
-                models[m] = "ready"  # vllm-mlx preloads before /health answers (see server.log)
-            else:
-                models[m] = "lazy"  # registered; the registry loads it on first request
-        return ProcessHealth(ok, models, pid, "healthy" if ok else "health endpoint not answering")
+        # /health stays "healthy" after a failed preload and its loaded_model is null for a decision-only
+        # engine, so readiness is the /v1/models entry under the exact --model path with loaded true.
+        loaded = served_model(self.cfg, self.name) in await self.prober.loaded_model_ids() if ok else False
+        state: ModelState = "ready" if loaded else ("loading" if ok else "missing")
+        detail = "healthy" if ok else "health endpoint not answering"
+        return ProcessHealth(ok, {self.spec.models[0]: state}, pid, detail)
 
     async def status(self) -> ProcessHealth:
         pid = self.pid()

@@ -31,7 +31,7 @@ def _write_config(tmp_path: Path, research_tools: list[str] | None, web: dict | 
         roles["research"]["tools"] = research_tools
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}},
+        "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
         "models": {"team": {"repo": "mlx-community/Qwen3.8-27B-4bit", "revision": "abc123"}},
         "roles": roles,
     }
@@ -91,13 +91,7 @@ class _FakeProbe:
     def http_ok(self, url: str) -> bool:
         return False
 
-    def resolve_binary(self, name: str):
-        return None
-
-    def file_contains(self, path: Path, needle: str):
-        return None
-
-    def model_file(self, repo: str, revision: str, file: str):
+    def package_version(self, dist: str):
         return None
 
 

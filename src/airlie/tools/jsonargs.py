@@ -1,7 +1,7 @@
 """Lenient parsing of tool-call arguments.
 
-vllm-mlx's `qwen3_coder` tool parser rebuilds JSON from the model's XML-style call; when a parameter value
-contains braces it has been seen to append an extra `}` (`{"path": …, "content": "d = {}"}}`), and a cut-off
+A `qwen3_coder` tool parser rebuilds JSON from the model's XML-style call; when a parameter value
+contains braces one has been seen to append an extra `}` (`{"path": …, "content": "d = {}"}}`), and a cut-off
 generation leaves the string unterminated. `repair_json_args` takes the first complete JSON object and drops
 anything before or after it; a truncated object is returned unchanged so the caller reports it."""
 
@@ -45,8 +45,8 @@ def parse_tool_args(raw: str) -> dict[str, Any]:
 
 def history_arguments(raw: str) -> str:
     """The arguments a conversation replays: what the tool ran with, or `{}` when it could not run.
-    vllm-mlx replays unparseable arguments as `{"value": "<string>"}`, and the model copies that junk into its
-    next call."""
+    An engine's parser can replay unparseable arguments as `{"value": "<string>"}`, and the model copies
+    that junk into its next call."""
     try:
         args = parse_tool_args(raw)
     except ValueError:

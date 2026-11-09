@@ -44,12 +44,6 @@ models:
     kv_mb_per_1k_tokens: 64        # 2 KV heads × 128 dim × 52 layers, 3/4 of them sliding-window
     tool_call_parser: atem         # mlx-vlm's name for Muse's tool-call format
     tags: [modern, vision, reviewer]
-  kev4b:                           # System One decision model behind the Jev API (router, decide tool)
-    repo: ggml-org/Kev-4B-GGUF
-    revision: d924f2e2c3872da8b8aaf3eb4453b4126deceb79
-    file: Kev-4B-Q4_K_M.gguf
-    preload: true
-    estimated_memory_gb: 3
   decider_2b:                      # the decision model (router, decide tool) on mlx-vlm's /v1/decisions
     repo: nativ-community/decider-2b   # the repo mlx-vlm documents; Mapika/decider-2b fails to load on 0.7.12 and
                                        # clef-flash-4bit is no decision model there. LiquidAI/d1-3B is the documented
@@ -59,5 +53,4 @@ models:
   controller_base:                 # M5: base for the learned LTS admission controller (LoRA r=16)
     repo: Qwen/Qwen3-0.6B
     revision: c1899de289a04d12100db370d81485cdf75e47ca
-    preload: false
     estimated_memory_gb: 1.5

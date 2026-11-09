@@ -121,7 +121,7 @@ refused greps, never wrote). The hold a repeat earns (repeat-write-only) grants 
 the read it would get."""
 ENGINE_RETRIES = 1
 """How many times one step's generation is asked again after an EngineError, before the run stops. AIR-31
-layer 02 (2026-10-19): vllm-mlx sent one chunk and then nothing for its 600 s inactivity guard; the run ended
+layer 02 (2026-10-19): the engine sent one chunk, then nothing for its 600 s inactivity guard; the run ended
 as engine_error with the conversation lost, when the same request a moment later would have gone through."""
 ENGINE_RETRY_S = 5.0
 """The pause before a retried generation: the engine's guard has just cancelled the request on its side."""
@@ -192,7 +192,7 @@ def _in_text(messages: list[Message]) -> list[Message]:
 
 def _carried_tail(role: RoleSpec, thinking: bool, res: GenResult, call: ToolCall) -> str:
     """The tail of a turn's reasoning to carry to the next: the turn thought, its completion reached the
-    role's thinking_budget (vllm-mlx closes the think block there), and its action was a read rather than a
+    role's thinking_budget (the engine closes the think block there), and its action was a read rather than a
     write or run_tests; at most carried_reasoning_chars characters. "" for none."""
     budget, cap = role.thinking_budget, role.carried_reasoning_chars
     reasoning = res.reasoning.strip()

@@ -1,4 +1,4 @@
-"""`airlie engine up|down|status|logs`: the CLI builds an EngineProcess per vllm_mlx engine and renders it."""
+"""`airlie engine up|down|status|logs`: the CLI builds an EngineProcess per mlx_vlm engine and renders it."""
 
 from pathlib import Path
 
@@ -15,7 +15,7 @@ def write_cfg(tmp_path: Path) -> Path:
     data = {
         "version": 1,
         "engines": {
-            "main": {"kind": "vllm_mlx", "port": 8080, "models": ["base"]},
+            "main": {"kind": "mlx_vlm", "port": 8080, "models": ["base"]},
             "ext": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["small"]},
         },
         "models": {
@@ -106,8 +106,8 @@ def test_up_skips_an_engine_that_is_already_running_and_starts_the_rest(tmp_path
     )
     p = write_cfg(tmp_path)
     data = yaml.safe_load(p.read_text())
-    data["engines"]["decision"] = {"kind": "llama_server", "port": 8081, "models": ["kev"]}
-    data["models"]["kev"] = {"repo": "ggml-org/Kev-4B-GGUF", "revision": "d9", "file": "k.gguf"}
+    data["engines"]["decision"] = {"kind": "mlx_vlm", "port": 8081, "model": "kev", "decision": True}
+    data["models"]["kev"] = {"repo": "org/decider", "revision": "d9", "path": "/models/kev"}
     p.write_text(yaml.safe_dump(data))
     r = runner.invoke(cli.app, ["engine", "up", "--config", str(p)])
     assert r.exit_code == 0, r.output

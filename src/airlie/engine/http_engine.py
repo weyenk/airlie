@@ -1,7 +1,6 @@
-"""HTTPEngine: the Engine seam over any OpenAI-compatible server (vllm-mlx by default).
+"""HTTPEngine: the Engine seam over the mlx-vlm server (or any OpenAI-compatible one).
 
-Written against the recorded vllm-mlx 0.5.0 responses in tests/fixtures/vllm_mlx (see the design doc's
-"wire format" section). Also works with llama-server and mlx_lm.server, which follow the same shape."""
+Written against the recorded mlx-vlm 0.7.12 responses in tests/fixtures/mlx_vlm."""
 
 from __future__ import annotations
 
@@ -14,7 +13,6 @@ import httpx
 
 from airlie.config import ModelSpec, RoleSpec
 from airlie.engine.dialect import LATE_KEYS, Dialect, thinking_fields
-from airlie.engine.output_parse import parse_output
 from airlie.engine.protocol import OnToken
 from airlie.engine.sse import iter_sse
 from airlie.engine.types import (
@@ -47,16 +45,14 @@ class HTTPEngine:
         api_key: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_s: float = 600.0,
-        per_request_draft: bool = False,
         model_spec_for: Callable[[str], ModelSpec] | None = None,
-        dialect: Dialect = "vllm_mlx",
+        dialect: Dialect = "mlx_vlm",
     ) -> None:
         self.capabilities = EngineCapabilities(
             batching=True,
             prefix_cache=True,
             logprobs=False,
             native_tools=True,
-            per_request_draft=per_request_draft,
         )
         self.base_url = base_url.rstrip("/")
         self._root = self.base_url.removesuffix("/v1")
@@ -100,7 +96,7 @@ class HTTPEngine:
         models: dict[str, ModelState] = {}
         if m.status_code == 200:
             for x in m.json().get("data", []):
-                # mlx-vlm lists every model in the HF cache and flags the resident one; vllm-mlx has no flag
+                # mlx-vlm lists every model in the HF cache and flags the resident one
                 models[str(x.get("id"))] = "ready" if x.get("loaded", True) else "lazy"
         detail = ""  # pragma: no mutate  (None is just as falsy for the fallback below)
         if h.status_code == 200:
@@ -131,11 +127,7 @@ class HTTPEngine:
             thinking=bool(thinking),
             budget=spec.thinking_budget,
             chat_template_kwargs=spec.chat_template_kwargs,
-            tool_parser=(
-                self._model(req.role).tool_call_parser
-                if self._model is not None and self._dialect == "mlx_vlm"  # only that dialect names it
-                else None
-            ),
+            tool_parser=(self._model(req.role).tool_call_parser if self._model is not None else None),
             tools=bool(req.tools),
         )
         body.update({k: v for k, v in fields.items() if k not in LATE_KEYS})
@@ -155,8 +147,6 @@ class HTTPEngine:
             ]
             body["tool_choice"] = "auto"
         body.update({k: v for k, v in fields.items() if k in LATE_KEYS})
-        if req.draft_budget is not None and self.capabilities.per_request_draft:
-            body["num_draft_tokens"] = req.draft_budget
         return body
 
     async def generate(self, req: GenRequest, on_token: OnToken | None = None) -> GenResult:
@@ -172,7 +162,6 @@ class HTTPEngine:
         cached: int | None = None
         accepted: int | None = None
         drafts: int | None = None
-        engine_ttft_ms: float | None = None  # the engine's own (patches/first_output.py), when it sends one
         t0 = time.monotonic()
         t_first: float | None = None  # pragma: no mutate  ("" is just as falsy)
         t_last = t0
@@ -187,14 +176,6 @@ class HTTPEngine:
                     if req.request_id in self._cancelled:
                         finish = "cancelled"
                         break
-                    meta = frame.get("generation_metadata")
-                    if isinstance(meta, dict):
-                        if meta.get("mtp_accepted") is not None:
-                            accepted = int(meta["mtp_accepted"])
-                        if meta.get("mtp_drafts") is not None:
-                            drafts = int(meta["mtp_drafts"])
-                    if isinstance(frame.get("airlie_ttft_ms"), int | float):
-                        engine_ttft_ms = float(frame["airlie_ttft_ms"])
                     timings = frame.get("timings")  # mlx-vlm: draft counts, null without a drafter
                     if isinstance(timings, dict):
                         if isinstance(timings.get("draft_n_accepted"), int | float):
@@ -233,7 +214,9 @@ class HTTPEngine:
                             fn = tc.get("function") or {}
                             if tc.get("id"):
                                 if slot["id"] and str(tc["id"]) != slot["id"]:
-                                    slot["arguments"] = ""  # vllm-mlx re-sends a finished call under a new id
+                                    slot["arguments"] = (
+                                        ""  # a finished call re-sent under a new id: keep it once
+                                    )
                                 slot["id"] = slot["id"] or str(tc["id"])
                             if fn.get("name"):
                                 slot["name"] = str(fn["name"])
@@ -250,27 +233,15 @@ class HTTPEngine:
         finally:
             self._live.pop(req.request_id, None)
             self._cancelled.discard(req.request_id)
-        if finish == "error":
-            # vllm-mlx ends a request it could not serve (out of GPU memory in a prefill, AIR-47 layer 02,
-            # 2026-11-01) with finish_reason "error" and nothing else: an empty "stop" spent a package try
-            self._stats.errors += 1
-            raise EngineError(
-                "the engine failed the request (finish_reason error; its log names why, such as "
-                "running out of GPU memory)",
-                partial_text="".join(text),
-            )
         tool_calls = [
             ToolCall(id=v["id"], name=v["name"], arguments=v["arguments"]) for _, v in sorted(calls.items())
         ]
         if tool_calls and finish != "cancelled":
             finish = "tool_calls"
         self._stats.tokens_out += completion_tokens
-        # a tool call arrives whole at the end, so its delta is no first token: the engine's own time wins
-        ttft_ms = ((t_first or t_last) - t0) * 1000.0 if engine_ttft_ms is None else engine_ttft_ms
+        ttft_ms = ((t_first or t_last) - t0) * 1000.0
         span = max(t_last - (t_first or t_last), 1e-6)
-        if engine_ttft_ms is not None:
-            span = max(t_last - t0 - engine_ttft_ms / 1000.0, 1e-6)
-        res = GenResult(
+        return GenResult(
             text="".join(text),
             reasoning="".join(reasoning),
             tool_calls=tool_calls,
@@ -284,9 +255,6 @@ class HTTPEngine:
             decode_tps=(completion_tokens / span) if completion_tokens > 1 else 0.0,
             raw_finish=finish,
         )
-        if self._model is not None and self._dialect == "vllm_mlx":  # mlx-vlm parses on the server
-            res = parse_output(self._model(req.role), res)
-        return res
 
     async def cancel(self, request_id: str) -> None:
         self._cancelled.add(request_id)

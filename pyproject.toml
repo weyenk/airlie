@@ -9,8 +9,6 @@ dependencies = [
     # Spec 01 §3 dependency list, floors raised to current releases (2026-10-12).
     "mlx>=0.32.4; sys_platform == 'darwin'",
     "mlx-vlm==0.7.12; sys_platform == 'darwin'",
-    "mlx-lm==0.32.0; sys_platform == 'darwin'",
-    "vllm-mlx==0.5.0; sys_platform == 'darwin'",
     "torch>=2.8", # used solely for LTS controller RL training (spec 03)
     "transformers>=5.7",
     "peft>=0.14", # LoRA adapters for the admission controller
@@ -34,8 +32,8 @@ dependencies = [
     "duckdb>=1.0", # airlie.metrics: DuckDB aggregation over the event JSONL
     "pypdf>=6.21", # chat attachments: the text of an attached PDF
     "pillow>=11", # chat attachments: a picture scaled before it is sent
-    # chat attachments: airlie samples a video's frames (vllm-mlx 0.5.0's batched engine refuses video). The
-    # build vllm-mlx installs on the Mac; headless on Linux (the e2e image): one cv2 either way.
+    # chat attachments: airlie samples a video's frames (the batched engine refuses video parts). The build
+    # mlx-vlm installs on the Mac; headless on Linux (the e2e image): one cv2 either way.
     "opencv-python>=4.10 ; sys_platform == 'darwin'",
     "opencv-python-headless>=4.10 ; sys_platform == 'linux'",
 ]
@@ -140,7 +138,6 @@ enrolled = [
     "src/airlie/scheduler/states.py",
     "src/airlie/tools/decide.py",
     "src/airlie/tools/jsonargs.py",
-    "src/airlie/engine/output_parse.py",
     "src/airlie/engine/sse.py",
     "src/airlie/lts/bank.py",
     "src/airlie/router/jev.py",
@@ -153,11 +150,9 @@ enrolled = [
     "src/airlie/tools/shell.py",
     "src/airlie/tools/sandbox.py",
     "src/airlie/engine/http_engine.py",
-    "src/airlie/engine/parsers/qwen3_xml_raw.py",
-    "src/airlie/engine/vllm_mlx_serve.py",
 ]
 # Functions whose code runs only on macOS (module:function, or module:Class.method): their mutants are run on
-# the mac job (scripts/mutate_changed.py --mac-only), as a file that imports vllm-mlx or mlx is. On Linux no
+# the mac job (scripts/mutate_changed.py --mac-only), as a file that imports mlx is. On Linux no
 # test reaches them, so each mutant passed every test of its caller before it counted as survived (shell's
 # confined spawn: 5.5 minutes a mutant, PRs 207 and 208, 2026-11-02).
 mac_functions = [

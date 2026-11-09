@@ -1,1 +1,0 @@
- to=self<|message|>Still thinking about the edge case

@@ -1,4 +1,4 @@
-"""JevClient: POST /v1/systemone on a llama-server (Kev) or /v1/decisions on an mlx-vlm decision engine."""
+"""JevClient: POST /v1/decisions on the mlx-vlm decision engine."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ class JevClient:
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_s: float = 60.0,
         api_key: str | None = None,
-        endpoint: str = "/systemone",
+        endpoint: str = "/decisions",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -50,19 +50,16 @@ class JevClient:
             )
         data = r.json()
         ans = (data.get("answers") or {}).get(question)
-        if not isinstance(ans, dict) or ("choice" not in ans and "value" not in ans):
+        if not isinstance(ans, dict) or "value" not in ans:
             raise ValueError(f"{self._name} answered without '{question}': {str(data)[:200]}")
         probs = {str(k): float(v) for k, v in (ans.get("probabilities") or {}).items()}
         usage = data.get("usage") or {}
-        if "confidence" in ans:
-            confidence = float(ans["confidence"])
-        elif "confidence" in (ans.get("metadata") or {}):
+        if "confidence" in (ans.get("metadata") or {}):
             confidence = float(ans["metadata"]["confidence"])
         else:
-            confidence = max(probs.values(), default=0.0) if "value" in ans else 0.0
+            confidence = max(probs.values(), default=0.0)
         tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
-        choice = ans["choice"] if "choice" in ans else ans["value"]
-        return Answer(str(choice), probs, confidence, int(tokens))
+        return Answer(str(ans["value"]), probs, confidence, int(tokens))
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -94,7 +91,7 @@ class JevRouter:
         if ans.choice not in criteria:
             chosen = hint if hint in criteria else top
             if chosen is None:
-                raise ValueError(f"systemone chose {ans.choice!r}, outside the closed set, and no fallback")
+                raise ValueError(f"the decision engine chose {ans.choice!r}, outside the set; no fallback")
             return RouteDecision(
                 question,
                 ans.choice,

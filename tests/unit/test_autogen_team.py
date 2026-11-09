@@ -70,7 +70,7 @@ async def test_function_tools_call_the_registry(tmp_path: Path) -> None:
 
 def test_model_client_passes_the_roles_thinking_settings_via_extra_body(tmp_path: Path) -> None:
     """The meeting needs the architect and the tester to think as their roles are configured, as
-    HTTPEngine._body sends it: the top-level flag, the template kwargs and the budget only when thinking."""
+    HTTPEngine._body sends it: the top-level flag, the reasoning effort and the budget only when thinking."""
     (tmp_path / "p.md").write_text("x")
     thinking = RoleSpec(
         prompt=tmp_path / "p.md",
@@ -84,19 +84,18 @@ def test_model_client_passes_the_roles_thinking_settings_via_extra_body(tmp_path
         "extra_body"
     ]
     assert extra["enable_thinking"] is True
-    assert extra["chat_template_kwargs"] == {"enable_thinking": True, "reasoning_strength": "low"}
-    assert extra["thinking_token_budget"] == 512 and extra["top_k"] == thinking.sampling.top_k
+    assert extra["reasoning_effort"] == "low" and "chat_template_kwargs" not in extra
+    assert extra["thinking_budget"] == 512 and extra["top_k"] == thinking.sampling.top_k
     plain = RoleSpec(
         prompt=tmp_path / "p.md", model="base", thinking=False, thinking_budget=512, max_tokens=64
     )
     extra = build_model_client("http://127.0.0.1:1/v1", "base", plain, api_key=None)._create_args[
         "extra_body"
     ]
-    assert extra["enable_thinking"] is False and "thinking_token_budget" not in extra
-    assert extra["chat_template_kwargs"] == {"enable_thinking": False}
+    assert extra["enable_thinking"] is False and "thinking_budget" not in extra
 
 
-def test_model_client_for_an_mlx_vlm_engine_uses_its_field_names(tmp_path: Path) -> None:
+def test_model_client_uses_mlx_vlms_field_names(tmp_path: Path) -> None:
     (tmp_path / "p.md").write_text("x")
     role = RoleSpec(
         prompt=tmp_path / "p.md",
@@ -112,7 +111,6 @@ def test_model_client_for_an_mlx_vlm_engine_uses_its_field_names(tmp_path: Path)
         role,
         api_key=None,
         model=ModelSpec(repo="o/m", revision="r", tool_call_parser="qwen3_coder"),
-        dialect="mlx_vlm",
     )
     extra = client._create_args["extra_body"]
     assert extra["tool_parser"] == "qwen3_coder"  # an agent always carries its tools
@@ -230,7 +228,6 @@ def test_model_client_passes_sampling_the_openai_client_lacks_via_extra_body(tmp
         "min_p": 0.05,
         "repetition_penalty": 1.05,
         "enable_thinking": False,
-        "chat_template_kwargs": {"enable_thinking": False},
     }
 
 
@@ -395,15 +392,3 @@ def test_each_message_carries_its_speaker_in_its_text(tmp_path: Path) -> None:
     assert client._add_name_prefixes is True
     said = to_oai_type(UserMessage(content="I post the proof.", source="product"), prepend_name=True)
     assert said[0]["content"] == "product said:\nI post the proof."
-
-
-def test_model_client_parses_only_for_vllm_mlx(tmp_path: Path) -> None:
-    (tmp_path / "p.md").write_text("x")
-    role = RoleSpec(prompt=tmp_path / "p.md", model="base")
-    spec = ModelSpec(repo="o/m", revision="r", tool_call_parser="qwen3_coder")
-    mlx = build_model_client("http://127.0.0.1:1/v1", "/m", role, api_key=None, model=spec, dialect="mlx_vlm")
-    assert mlx.model_spec is None  # mlx-vlm parses tool calls and reasoning itself
-    vllm = build_model_client(
-        "http://127.0.0.1:1/v1", "base", role, api_key=None, model=spec, dialect="vllm_mlx"
-    )
-    assert vllm.model_spec is spec

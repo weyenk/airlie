@@ -1,12 +1,11 @@
 """Phase 4b gate, Step 4: prefix-cache hits and MTP drafts on one engine while four other requests stream.
 
-    uv run python scripts/gate_cache.py --url http://127.0.0.1:8080/v1 --model generalist        # vllm-mlx
-    uv run python scripts/gate_cache.py --engine main                                            # mlx_vlm
+    uv run python scripts/gate_cache.py --engine main
 
 A two-turn conversation is sent twice (turn 1, then turn 1 + its reply + turn 2) while four unrelated requests
 stream on the same engine. Every request streams with `stream_options.include_usage`; the script prints, per
 request, the cached prompt tokens (`usage.prompt_tokens_details.cached_tokens`, also `timings.cache_n`)
-and the drafts (`timings.draft_n`/`draft_n_accepted` on mlx-vlm, `generation_metadata.mtp_*` on vllm-mlx).
+and the drafts (`timings.draft_n`/`draft_n_accepted`).
 """
 
 from __future__ import annotations

@@ -1,4 +1,5 @@
-"""JevClient / JevRouter wire details and RouteDecision fields (pinned for mutation testing)."""
+"""JevClient / JevRouter wire details (mlx-vlm /v1/decisions) and RouteDecision fields (pinned for mutation
+testing)."""
 
 from __future__ import annotations
 
@@ -27,7 +28,14 @@ def answering(payload: dict[str, Any], status: int = 200, text: str | None = Non
 
 
 def ok_payload(question: str = "role", **ans: Any) -> dict[str, Any]:
-    return {"answers": {question: {"choice": "coder", "probabilities": {"coder": 0.9, "qa": 0.1}, **ans}}}
+    """An mlx-vlm decision answer; `confidence` goes where mlx-vlm puts it, in `metadata`."""
+    if "confidence" in ans:
+        ans = {**ans, "metadata": {"confidence": ans.pop("confidence")}}
+    return {
+        "answers": {
+            question: {"type": "choice", "value": "coder", "probabilities": {"coder": 0.9, "qa": 0.1}, **ans}
+        }
+    }
 
 
 async def test_defaults_model_timeout_and_trailing_slashes_are_normalised() -> None:
@@ -35,7 +43,7 @@ async def test_defaults_model_timeout_and_trailing_slashes_are_normalised() -> N
     client = JevClient("http://k/v1/", transport=transport)
     assert client._client.timeout == httpx.Timeout(60.0)
     await client.ask("s", "role", "pick", CRITERIA)
-    assert seen[0].url == "http://k/v1/systemone"
+    assert seen[0].url == "http://k/v1/decisions"
     assert json.loads(seen[0].content)["model"] == "jev"
     assert client.base_url == "http://k/v1"
     assert JevClient("http://k/v1///", transport=transport).base_url == "http://k/v1"
@@ -64,9 +72,9 @@ async def test_non_200_raises_http_status_error_with_truncated_body() -> None:
     transport, _ = answering({}, status=503, text=body)
     with pytest.raises(httpx.HTTPStatusError) as ei:
         await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
-    assert str(ei.value) == f"systemone returned 503: {'x' * 200}"
+    assert str(ei.value) == f"decisions returned 503: {'x' * 200}"
     assert ei.value.response.status_code == 503
-    assert ei.value.request.url.path == "/v1/systemone"
+    assert ei.value.request.url.path == "/v1/decisions"
 
 
 async def test_answer_missing_the_question_raises_with_truncated_payload() -> None:
@@ -74,28 +82,28 @@ async def test_answer_missing_the_question_raises_with_truncated_payload() -> No
     transport, _ = answering(payload)
     with pytest.raises(ValueError) as ei:
         await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
-    assert str(ei.value) == f"systemone answered without 'role': {str(payload)[:200]}"
+    assert str(ei.value) == f"decisions answered without 'role': {str(payload)[:200]}"
     transport, _ = answering({"answers": {"role": {"probabilities": {}}}})
     with pytest.raises(ValueError, match="answered without 'role'"):
         await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
 
 
-async def test_missing_confidence_and_usage_default_to_zero() -> None:
-    transport, _ = answering(ok_payload())
+async def test_missing_usage_defaults_to_zero_tokens() -> None:
+    transport, _ = answering(ok_payload(confidence=0.4))
     ans = await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
-    assert ans.confidence == 0.0 and ans.input_tokens == 0
+    assert ans.input_tokens == 0
     transport, _ = answering({**ok_payload(confidence=0.4), "usage": {}})
     ans = await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
     assert ans.confidence == 0.4 and ans.input_tokens == 0
 
 
 async def test_answer_without_probabilities_is_empty() -> None:
-    transport, _ = answering({"answers": {"role": {"choice": "coder"}}})
+    transport, _ = answering({"answers": {"role": {"value": "coder"}}})
     ans = await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
     assert ans.probabilities == {} and ans.choice == "coder"
 
 
-async def test_confidence_falls_back_to_the_answers_metadata() -> None:
+async def test_confidence_is_read_from_the_answers_metadata() -> None:
     transport, _ = answering(ok_payload(metadata={"confidence": 0.7}))
     ans = await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
     assert ans.confidence == 0.7
@@ -115,10 +123,10 @@ async def test_a_value_answer_without_probabilities_has_zero_confidence() -> Non
     assert ans.confidence == 0.0
 
 
-async def test_a_choice_answer_without_confidence_has_zero_even_with_probabilities() -> None:
-    transport, _ = answering(ok_payload())
-    ans = await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
-    assert ans.confidence == 0.0
+async def test_an_answer_with_no_value_is_refused() -> None:
+    transport, _ = answering({"answers": {"role": {"choice": "coder", "probabilities": {"coder": 1.0}}}})
+    with pytest.raises(ValueError, match="answered without 'role'"):
+        await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
 
 
 async def test_errors_name_the_endpoint_without_its_slashes() -> None:
@@ -178,9 +186,9 @@ async def test_off_set_choice_uses_hint_then_top_and_reports_every_field() -> No
     payload = {
         "answers": {
             "role": {
-                "choice": "zzz",
+                "value": "zzz",
                 "probabilities": {"zzz": 0.5, "qa": 0.3, "coder": 0.2},
-                "confidence": 0.8,
+                "metadata": {"confidence": 0.8},
             }
         },
         "usage": {"input_tokens": 42},
@@ -196,11 +204,13 @@ async def test_off_set_choice_uses_hint_then_top_and_reports_every_field() -> No
 
 
 async def test_off_set_choice_with_nothing_in_set_and_no_hint_raises() -> None:
-    payload = {"answers": {"role": {"choice": "zzz", "probabilities": {"zzz": 1.0}, "confidence": 0.8}}}
+    payload = {
+        "answers": {"role": {"value": "zzz", "probabilities": {"zzz": 1.0}, "metadata": {"confidence": 0.8}}}
+    }
     transport, _ = answering(payload)
     with pytest.raises(ValueError) as ei:
         await router(transport).route("s", CRITERIA)
-    assert str(ei.value) == "systemone chose 'zzz', outside the closed set, and no fallback"
+    assert str(ei.value) == "the decision engine chose 'zzz', outside the set; no fallback"
 
 
 async def test_clear_decision_reports_every_field() -> None:

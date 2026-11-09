@@ -1,7 +1,7 @@
 # Benchmarks
 
-Every number here was produced through the `Engine` seam (`HTTPEngine`) against the managed vllm-mlx process started
-by `task up`, on the Mac Studio M5 Max / 128 GB. Re-run with the commands shown; JSON next to each table is the raw
+Every number here was produced through the `Engine` seam (`HTTPEngine`) against the managed engine process started
+by `task up` (vllm-mlx until the move to mlx-vlm, 2026-11; the tables below predate it), on the Mac Studio M5 Max / 128 GB. Re-run with the commands shown; JSON next to each table is the raw
 output (`task bench:compare -- a.json b.json` prints deltas).
 
 ## Before any benchmark: restart the engine, and know the model's failure mode
@@ -16,7 +16,10 @@ team paths) and `roles.coder.max_tokens: 4096` (bounds a runaway to ~2 min); a c
 the model as such instead of executed. Still: run `task restart` before a benchmark, and compare the count of
 `8192 tokens` / `4096 tokens` completions in `engines/main/server.log` across runs when results look off.
 
-## Output parsing without server parser flags (checked live 2026-10-13)
+## Output parsing without server parser flags (checked live 2026-10-13; historical)
+
+This section describes vllm-mlx 0.5.0 and airlie's client-side parser (`engine/output_parse.py`), both removed
+with the move to mlx-vlm, which parses tool calls and reasoning on the server.
 
 A throwaway `vllm-mlx serve` of Qwen3-4B with no `--enable-auto-tool-choice` and no `--reasoning-parser` was
 sent a chat request with one `read_file` tool: the tools were rendered into the prompt, the model answered with a
@@ -34,7 +37,7 @@ bracket protocol (`[Calling tool: name({...})]`) and the coder's calls came back
 single-agent baseline failed in 6 s. The studio profile therefore keeps `server_parsers: true`; client-side
 parsing is for what the server leaves raw.
 
-## Routing (Kev-4B on llama-server, `task route:eval`, 2026-10-13)
+## Routing (Kev-4B on llama-server, `task route:eval`, 2026-10-13; historical)
 
 `ggml-org/Kev-4B-GGUF` (Q4_K_M, 3 GB) behind `/v1/systemone`, asked the role question over the nine criteria in
 `evals/routing-roles.yaml` for the 54 labelled tasks in `evals/routing.jsonl` (ai-mode's classify sets, role
@@ -135,5 +138,5 @@ each count side by side, changed or not.
 | `2026-10-12-lts-bench-bigger-v2.md` / `lts-bigger-v2.json` | round 2: background admission + ranked injection, 3 repeats | admission wait gone, still +28 % per step from the injected block; 0 retrievals; runs dominated by solve/no-solve; criterion not met |
 | `2026-10-12-lts-bench-bigger.md` / `lts-bigger.json` | never vs heuristic on inventory_cli + log_pipeline, K=3 | still 0 retrievals; LTS overhead doubled wall-clock; criterion not met |
 | `2026-10-12-lts-bench.md` / `lts-lang_detect.json` | never vs heuristic, K=3 | first `task bench:lts` run; verdict not meaningful yet (0 retrievals, 1 sample) |
-| `qwen38.json` | mlx-community/Qwen3.8-27B-4bit | hybrid attention: no prefix cache in vllm-mlx 0.5.0 |
+| `qwen38.json` | mlx-community/Qwen3.8-27B-4bit | hybrid attention: no prefix cache in vllm-mlx 0.5.0 (measured on the old engine) |
 | `base.json` | mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit | default team model |

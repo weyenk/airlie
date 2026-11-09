@@ -14,7 +14,7 @@ from airlie.config.schema import MUTATING_TOOLS
 
 MINIMAL: dict = {
     "version": 1,
-    "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}},
+    "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
     "models": {"team": {"repo": "mlx-community/Qwen3.8-27B-4bit", "revision": "abc123"}},
     "roles": {
         "coder": {"prompt": "prompts/roles/coder.md", "model": "team"},
@@ -77,7 +77,7 @@ def test_a_workflow_problem_and_a_missing_composer_workflow_are_both_reported(tm
 
 
 def test_engine_serving_unknown_model_fails(tmp_path: Path) -> None:
-    data = {**MINIMAL, "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["ghost"]}}}
+    data = {**MINIMAL, "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["ghost"]}}}
     with pytest.raises(ConfigError, match=r"engines\.main\.models.*'ghost'"):
         load_config(write(tmp_path, data))
 
@@ -96,8 +96,8 @@ def test_model_served_by_two_engines_fails(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
         "engines": {
-            "main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]},
-            "dup": {"kind": "vllm_mlx", "port": 8081, "models": ["team"]},
+            "main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]},
+            "dup": {"kind": "mlx_vlm", "port": 8081, "models": ["team"]},
         },
     }
     with pytest.raises(ConfigError, match=r"models\.team.*(main.*dup|dup.*main)"):
@@ -140,19 +140,18 @@ def test_two_managed_engines_cannot_share_a_port(tmp_path: Path) -> None:
         **MINIMAL,
         "models": {**MINIMAL["models"], "small": {"repo": "x/y", "revision": "r"}},
         "engines": {
-            "main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]},
-            "aux": {"kind": "vllm_mlx", "port": 8080, "models": ["small"]},
+            "main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]},
+            "aux": {"kind": "mlx_vlm", "port": 8080, "models": ["small"]},
         },
     }
     with pytest.raises(ConfigError, match=r"port 8080.*(main.*aux|aux.*main)"):
         load_config(write(tmp_path, data))
 
 
-def test_vllm_mlx_engine_defaults_match_the_spec(tmp_path: Path) -> None:
+def test_mlx_vlm_engine_launch_defaults(tmp_path: Path) -> None:
     e = load_config(write(tmp_path, MINIMAL)).engines["main"]
     assert e.host == "127.0.0.1"
     assert e.base_url == "http://127.0.0.1:8080/v1"
-    assert e.continuous_batching is True
     assert e.max_num_seqs == 16
     assert e.max_kv_size == 65536
     assert e.prefill_step_size == 2048
@@ -303,8 +302,8 @@ BELOW_ONE = "config invalid:\n  roles.coder.thinking_budget: Input should be gre
 def test_a_thinking_budget_below_one_is_a_config_error_at_load(
     tmp_path: Path, budget: int, thinking: bool
 ) -> None:
-    """vllm-mlx refuses a thinking_token_budget below 1 (a 422 on every request): airlie refuses it first, on
-    any role, whether or not it thinks."""
+    """The engine refuses a thinking budget below 1 (a 422 on every request): airlie refuses it first, on any
+    role, whether or not it thinks."""
     with pytest.raises(ConfigError) as e:
         load_config(write(tmp_path, with_coder(thinking=thinking, thinking_budget=budget)))
     assert str(e.value) == BELOW_ONE
@@ -385,7 +384,6 @@ def test_committed_config_declares_four_autostart_engines_and_the_bench_engines(
     autostart = [n for n, e in cfg.engines.items() if e.autostart]
     assert autostart == ["main", "reviewer", "small", "decision"]
     assert cfg.engines["main"].models == ["generalist"] and cfg.engines["main"].port == 8080
-    assert cfg.engines["main"].buffer_cache_mb is None  # mlx-vlm reads none
     assert [n for n, e in cfg.engines.items() if e.decision] == ["decision"]
     assert cfg.engines["decision"].port == 8081 and cfg.router.model == "decider_2b"  # the 4b gate's pick
     decider = cfg.models["decider_2b"]
@@ -402,7 +400,6 @@ def test_committed_config_declares_four_autostart_engines_and_the_bench_engines(
     assert cfg.models["reviewer"].tool_call_parser == "atem"
     assert cfg.models["qwen25_32b"].tool_call_parser is None  # mlx-vlm has no `qwen` parser: inferred
     assert cfg.models["llama70b"].tool_call_parser is None  # nor `llama`; an unknown name is a 422
-    assert all(m.reasoning_parser is None for m in cfg.models.values())
 
 
 def test_profiles_carry_no_engine_or_model_overrides() -> None:
@@ -433,13 +430,12 @@ def test_model_bench_and_tags_default_off(tmp_path: Path) -> None:
     assert m.kv_mb_per_1k_tokens == 256.0
 
 
-def test_role_may_use_non_preloaded_model(tmp_path: Path) -> None:
+def test_a_model_may_be_a_bench_model_with_tags(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
-        "models": {"team": {**MINIMAL["models"]["team"], "preload": False, "bench": True, "tags": ["spec"]}},
+        "models": {"team": {**MINIMAL["models"]["team"], "bench": True, "tags": ["spec"]}},
     }
     cfg = load_config(write(tmp_path, data))
-    assert cfg.models["team"].preload is False
     assert cfg.models["team"].bench is True
     assert cfg.models["team"].tags == ["spec"]
 
@@ -566,29 +562,10 @@ def test_unknown_topology_override_is_a_config_error(tmp_path: Path) -> None:
         load_config(write(tmp_path, MINIMAL), topology="ring")
 
 
-def test_jev_router_needs_a_llama_server_engine_serving_its_model(tmp_path: Path) -> None:
+def test_jev_router_needs_a_decision_engine_serving_its_model(tmp_path: Path) -> None:
     data = {**MINIMAL, "router": {"kind": "jev", "model": "team"}}
-    with pytest.raises(ConfigError, match=r"router\.model.*'team'.*llama_server"):
+    with pytest.raises(ConfigError, match=r"router\.model.*'team'.*decision: true"):
         load_config(write(tmp_path, data))
-
-
-def test_llama_server_engine_serves_one_gguf_model(tmp_path: Path) -> None:
-    data = {
-        **MINIMAL,
-        "engines": {
-            **MINIMAL["engines"],
-            "decision": {"kind": "llama_server", "port": 8081, "models": ["kev"]},
-        },
-        "models": {**MINIMAL["models"], "kev": {"repo": "ggml-org/Kev-4B-GGUF", "revision": "d9"}},
-        "router": {"kind": "jev", "model": "kev"},
-    }
-    with pytest.raises(ConfigError, match=r"models\.kev\.file.*llama_server"):
-        load_config(write(tmp_path, data))
-    data["models"]["kev"]["file"] = "Kev-4B-Q4_K_M.gguf"
-    cfg = load_config(write(tmp_path, data))
-    assert cfg.engines["decision"].base_url == "http://127.0.0.1:8081/v1"
-    assert cfg.engines["decision"].server_parsers is True and cfg.engines["decision"].ctx_size == 16384
-    assert cfg.router.kind == "jev" and cfg.router.ambiguous_gap == 0.15
 
 
 def test_profile_configs_loads_every_profile_from_the_source_file(tmp_path: Path) -> None:
@@ -1473,11 +1450,12 @@ def test_mlx_vlm_engine_refuses_two_models(tmp_path: Path) -> None:
         mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team", "base"]}})
 
 
-def test_mlx_vlm_engine_refuses_a_buffer_cache_limit(tmp_path: Path) -> None:
-    with pytest.raises(
-        ConfigError, match="engines.main.buffer_cache_mb: mlx-vlm reads no buffer-cache limit"
-    ):
-        mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", "buffer_cache_mb": 8192}})
+def test_the_removed_engine_kinds_and_settings_are_refused(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="kind"):
+        mlx(tmp_path, {"main": {"kind": "removed", "port": 8080, "model": "team"}})
+    for field in ("buffer_cache_mb", "server_parsers", "memory_budget_gb", "ctx_size", "binary"):
+        with pytest.raises(ConfigError, match=field):
+            mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", field: 1}})
 
 
 def test_mlx_vlm_engine_defaults(tmp_path: Path) -> None:
@@ -1527,7 +1505,7 @@ def test_router_model_may_be_served_by_an_mlx_vlm_decision_engine(tmp_path: Path
         }
 
     assert load_config(write(tmp_path, data(True))).router.model == "clef"
-    with pytest.raises(ConfigError, match="llama_server engine or an mlx_vlm engine with decision: true"):
+    with pytest.raises(ConfigError, match="an mlx_vlm engine with decision: true"):
         load_config(write(tmp_path, data(False)))
 
 

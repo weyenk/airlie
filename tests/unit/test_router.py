@@ -1,4 +1,4 @@
-"""Router: Kev (/v1/systemone) client, ai-mode's decision policy, chief fallback, JSONL log."""
+"""Router: the decision-engine (/v1/decisions) client, the decision policy, chief fallback, JSONL log."""
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ from airlie.router import ChiefRouter, JevClient, JevRouter, RoutingLog, policy,
 CRITERIA = {"coder": "Implement or change code", "qa": "Tests and edge cases", "docs": "README and guides"}
 
 
-def systemone(answers: dict[str, float], confidence: float, choice: str | None = None):  # type: ignore[no-untyped-def]
-    """A MockTransport handler answering /v1/systemone with the given probabilities."""
+def decisions(answers: dict[str, float], confidence: float, choice: str | None = None):  # type: ignore[no-untyped-def]
+    """A MockTransport handler answering /v1/decisions with the given probabilities."""
     seen: list[dict] = []  # type: ignore[type-arg]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v1/systemone"
+        assert request.url.path == "/v1/decisions"
         body = json.loads(request.content)
         seen.append(body)
         q = next(iter(body["questions"]))
@@ -26,7 +26,14 @@ def systemone(answers: dict[str, float], confidence: float, choice: str | None =
         return httpx.Response(
             200,
             json={
-                "answers": {q: {"choice": top, "probabilities": answers, "confidence": confidence}},
+                "answers": {
+                    q: {
+                        "type": "choice",
+                        "value": top,
+                        "probabilities": answers,
+                        "metadata": {"confidence": confidence},
+                    }
+                },
                 "usage": {"input_tokens": 42},
             },
         )
@@ -53,11 +60,11 @@ def test_policy_matches_ai_mode() -> None:
 
 
 async def test_client_posts_the_system_one_request_shape() -> None:
-    handler, seen = systemone({"coder": 0.9, "qa": 0.1}, 0.95)
-    client = JevClient("http://kev.test/v1", model="kev", transport=httpx.MockTransport(handler))
+    handler, seen = decisions({"coder": 0.9, "qa": 0.1}, 0.95)
+    client = JevClient("http://decider.test/v1", model="decider", transport=httpx.MockTransport(handler))
     ans = await client.ask("fix the 500", "role", "Which specialist should handle this task?", CRITERIA)
     assert seen[0] == {
-        "model": "kev",
+        "model": "decider",
         "state": "fix the 500",
         "questions": {
             "role": {
@@ -71,13 +78,13 @@ async def test_client_posts_the_system_one_request_shape() -> None:
 
 
 async def test_clear_decision_takes_the_choice_over_the_hint() -> None:
-    handler, _ = systemone({"coder": 0.9, "qa": 0.1}, 0.95)
+    handler, _ = decisions({"coder": 0.9, "qa": 0.1}, 0.95)
     d = await jev(handler).route("fix the 500", CRITERIA, hint="docs")
     assert d.decision == "clear" and d.chosen == "coder" and d.hint == "docs"
 
 
 async def test_ambiguous_takes_the_hint_when_it_is_in_the_top_two() -> None:
-    handler, _ = systemone({"coder": 0.45, "qa": 0.4, "docs": 0.15}, 0.9)
+    handler, _ = decisions({"coder": 0.45, "qa": 0.4, "docs": 0.15}, 0.9)
     r = jev(handler)
     assert (await r.route("add tests for the fix", CRITERIA, hint="qa")).chosen == "qa"
     assert (await r.route("add tests for the fix", CRITERIA, hint="docs")).chosen == "coder"
@@ -85,14 +92,14 @@ async def test_ambiguous_takes_the_hint_when_it_is_in_the_top_two() -> None:
 
 
 async def test_low_confidence_takes_the_hint_else_top() -> None:
-    handler, _ = systemone({"coder": 0.8, "qa": 0.2}, 0.2)
+    handler, _ = decisions({"coder": 0.8, "qa": 0.2}, 0.2)
     r = jev(handler)
     assert (await r.route("x", CRITERIA, hint="docs")).chosen == "docs"
     assert (await r.route("x", CRITERIA)).chosen == "coder"
 
 
 async def test_choice_outside_closed_set_falls_back() -> None:
-    handler, _ = systemone({"coder": 0.6, "qa": 0.4}, 0.9, choice="chief")
+    handler, _ = decisions({"coder": 0.6, "qa": 0.4}, 0.9, choice="chief")
     r = jev(handler)
     d = await r.route("x", CRITERIA, hint="qa")
     assert d.decision == "invalid" and d.chosen == "qa"
@@ -142,7 +149,7 @@ def _decision_cfg(tmp_path, *, decision: bool = True):  # type: ignore[no-untype
     data = {
         "version": 1,
         "engines": {
-            "main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]},
+            "main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]},
             "dec": {"kind": "mlx_vlm", "port": 8084, "model": "clef", "decision": decision},
         },
         "models": {

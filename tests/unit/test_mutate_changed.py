@@ -17,24 +17,34 @@ spec.loader.exec_module(mc)
 SCOPE = ["src/airlie/engine/sse.py", "src/airlie/tools/fs.py", "src/airlie/lts/bank.py"]
 
 
-MAC = "src/airlie/engine/parsers/qwen3_xml_raw.py"  # imports vllm-mlx at its top
-LAZY = "src/airlie/engine/output_parse.py"  # imports vllm-mlx inside a function
+MAC = "src/airlie/m_top.py"  # imports mlx at its top
+LAZY = "src/airlie/m_lazy.py"  # imports mlx inside a function
 PLAIN = "src/airlie/engine/http_engine.py"
 
 
-def test_a_source_that_imports_vllm_mlx_or_mlx_needs_a_mac() -> None:
+@pytest.fixture
+def mlx_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No airlie module imports mlx now, so the two that do are tmp_path's own; PLAIN is the real file."""
+    (tmp_path / "src" / "airlie" / "engine").mkdir(parents=True)
+    (tmp_path / MAC).write_text("import mlx.core as mx\n")
+    (tmp_path / LAZY).write_text("def f():\n    import mlx\n")
+    (tmp_path / PLAIN).write_text("import httpx\n")
+    monkeypatch.setattr(mc, "ROOT", tmp_path)
+
+
+def test_a_source_that_imports_mlx_needs_a_mac(mlx_sources: None) -> None:
     assert mc.needs_mac(MAC) and mc.needs_mac(LAZY) and not mc.needs_mac(PLAIN)
 
 
-def test_the_mac_job_mutates_only_the_mac_sources_and_a_runner_without_vllm_mutates_the_rest(
-    monkeypatch: pytest.MonkeyPatch,
+def test_the_mac_job_mutates_only_the_mac_sources_and_a_runner_without_mlx_mutates_the_rest(
+    mlx_sources: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The Linux runners (2026-11-02) cannot import vllm-mlx: its sources' mutants go to the mac job."""
+    """The Linux runners (2026-11-02) cannot import mlx: its sources' mutants go to the mac job."""
     sources = [PLAIN, MAC, LAZY]
     assert mc.platform_sources(sources, mac_only=True) == ([MAC, LAZY], [PLAIN])
-    monkeypatch.setattr(mc, "HAS_VLLM", False)
+    monkeypatch.setattr(mc, "HAS_MLX", False)
     assert mc.platform_sources(sources, mac_only=False) == ([PLAIN], [MAC, LAZY])
-    monkeypatch.setattr(mc, "HAS_VLLM", True)
+    monkeypatch.setattr(mc, "HAS_MLX", True)
     assert mc.platform_sources(sources, mac_only=False) == (sources, [])
 
 
@@ -73,11 +83,11 @@ def test_macos_only_functions_go_to_the_mac_job_and_the_rest_of_their_file_stays
     monkeypatch.setattr(mc, "mac_functions", lambda: ["airlie.m:plain"])
     monkeypatch.setattr(mc, "enrolled_files", lambda: [plain_file, "src/airlie/v.py"])
 
-    def globs(argv: list[str], vllm: bool) -> set[str]:
+    def globs(argv: list[str], has_mlx: bool) -> set[str]:
         fake = FakeMutmut()
         monkeypatch.setattr(mc, "mutmut", fake.run)
         monkeypatch.setattr(mc, "mutmut_out", lambda *a: "")
-        monkeypatch.setattr(mc, "HAS_VLLM", vllm)
+        monkeypatch.setattr(mc, "HAS_MLX", has_mlx)
         monkeypatch.setattr(
             mc.sys, "argv", ["mutate_changed.py", "--scope", "enrolled", "--gate-only", *argv]
         )
@@ -85,12 +95,12 @@ def test_macos_only_functions_go_to_the_mac_job_and_the_rest_of_their_file_stays
         [ran] = [r for r in fake.runs if r[0] == "run"]
         return set(ran[1:]) - {"--max-children"}
 
-    linux = globs([], vllm=False)
-    mac_job = globs(["--mac-only"], vllm=True)
+    linux = globs([], has_mlx=False)
+    mac_job = globs(["--mac-only"], has_mlx=True)
     assert linux == {"airlie.m.xǁToolǁrun__mutmut_*", "airlie.m.xǁToolǁmake__mutmut_*"}
     assert mac_job == {"airlie.m.x_plain__mutmut_*", "airlie.v.x_f__mutmut_*"}
     assert "macOS-only functions (mac_functions) mutated on the mac job:" in capsys.readouterr().out
-    assert globs([], vllm=True) == linux | mac_job  # a Mac without --mac-only runs them all
+    assert globs([], has_mlx=True) == linux | mac_job  # a Mac without --mac-only runs them all
 
 
 def test_only_changed_enrolled_files_are_impacted_in_scope_order() -> None:

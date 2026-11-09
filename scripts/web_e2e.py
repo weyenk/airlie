@@ -12,7 +12,7 @@ Whether the answer is *true* is for you to read: the report prints each role's q
 its answer. The control asks the chief the same question with its tools removed, to show what it says
 without them.
 
-The reviewer is asked something it can only settle on the web: a change pins vllm-mlx to a "latest release"
+The reviewer is asked something it can only settle on the web: a change pins mlx-vlm to a "latest release"
 that does not exist (one version past PyPI's latest, read when the script runs)."""
 
 from __future__ import annotations
@@ -237,7 +237,7 @@ async def ask_chief(cfg: Any, question: str, label: str = "chief") -> RoleResult
     return result
 
 
-def pypi_latest(package: str = "vllm-mlx") -> str:
+def pypi_latest(package: str = "mlx-vlm") -> str:
     with urllib.request.urlopen(f"https://pypi.org/pypi/{package}/json", timeout=30) as resp:
         return str(json.load(resp)["info"]["version"])
 
@@ -254,7 +254,7 @@ async def ask_reviewer(cfg: Any) -> RoleResult:
     latest = pypi_latest()
     claimed = next_minor(latest)
     question = (
-        f"Review a change that pins vllm-mlx to {claimed}, described as 'the latest release' (check it)."
+        f"Review a change that pins mlx-vlm to {claimed}, described as 'the latest release' (check it)."
     )
     result = RoleResult("reviewer", question)
     orch = await single_call_orchestrator(cfg, "reviewer")
@@ -264,11 +264,11 @@ async def ask_reviewer(cfg: Any) -> RoleResult:
         recording(tools, log)
     diff = (
         "diff --git a/pyproject.toml b/pyproject.toml\n--- a/pyproject.toml\n+++ b/pyproject.toml\n"
-        f'@@ -10,1 +10,1 @@\n-    "vllm-mlx=={latest}",\n+    "vllm-mlx=={claimed}",\n'
+        f'@@ -10,1 +10,1 @@\n-    "mlx-vlm=={latest}",\n+    "mlx-vlm=={claimed}",\n'
     )
     try:
         review = await Reviewer(orch.engine, "reviewer", cfg.roles["reviewer"], tools).review(
-            f"Bump vllm-mlx to {claimed}, the latest release.", diff, "all tests pass", {}
+            f"Bump mlx-vlm to {claimed}, the latest release.", diff, "all tests pass", {}
         )
         result.answer = f"verdict: {review.verdict}\n" + "\n".join(
             f"- [{f.severity}] {f.claim} (evidence: {f.evidence})" for f in review.findings

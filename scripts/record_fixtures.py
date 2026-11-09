@@ -1,14 +1,10 @@
-"""Record raw vllm-mlx responses as test fixtures (M1 Task 2). Run against a hand-started server:
+"""Record raw mlx-vlm responses as test fixtures. Run against a hand-started server:
 
-    uv run vllm-mlx serve <snapshot> --port 8099 --continuous-batching --reasoning-parser qwen3 \
-        --enable-auto-tool-choice --tool-call-parser qwen --offline
-    uv run python scripts/record_fixtures.py --base-url http://127.0.0.1:8099/v1 --model <served name>
+    uv run python -m mlx_vlm.server --model <snapshot> --host 127.0.0.1 --port 8094
+    uv run python scripts/record_fixtures.py --base-url http://127.0.0.1:8094/v1 --model <snapshot>
 
-Writes the bodies verbatim into tests/fixtures/<--out>/. HTTPEngine is written against these, not docs.
-
-For mlx-vlm's own server, start it with
-`python -m mlx_vlm.server --model <snapshot> --host 127.0.0.1 --port 8094` and run with
-`--out mlx_vlm --dialect mlx_vlm --model <snapshot>` (the exact --model string)."""
+The model is the exact --model string. Writes the bodies verbatim into tests/fixtures/<--out>/ (default
+mlx_vlm). HTTPEngine is written against these, not docs."""
 
 from __future__ import annotations
 
@@ -23,19 +19,16 @@ FIXTURES = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base-url", default="http://127.0.0.1:8099/v1")
+    ap.add_argument("--base-url", default="http://127.0.0.1:8094/v1")
     ap.add_argument("--model", required=True)
-    ap.add_argument("--out", default="vllm_mlx", help="fixture subdirectory under tests/fixtures")
-    ap.add_argument("--tool-parser", default="qwen3_coder", help="mlx_vlm only: per-request tool_parser")
-    ap.add_argument("--dialect", choices=["vllm_mlx", "mlx_vlm"], default="vllm_mlx")
+    ap.add_argument("--out", default="mlx_vlm", help="fixture subdirectory under tests/fixtures")
+    ap.add_argument("--tool-parser", default="qwen3_coder", help="the per-request tool_parser")
     a = ap.parse_args()
     root = a.base_url.removesuffix("/v1")
     OUT = FIXTURES / a.out
-    vlm = a.dialect == "mlx_vlm"
 
     def thinking(on: bool) -> dict:
-        # mlx-vlm reads a top-level enable_thinking; vllm-mlx reads chat_template_kwargs.
-        return {"enable_thinking": on} if vlm else {"chat_template_kwargs": {"enable_thinking": on}}
+        return {"enable_thinking": on}  # mlx-vlm reads a top-level enable_thinking
 
     OUT.mkdir(parents=True, exist_ok=True)
     c = httpx.Client(timeout=300)
@@ -53,8 +46,7 @@ def main() -> None:
 
     once("health", "GET", f"{root}/health")
     once("models", "GET", f"{a.base_url}/models")
-    if vlm:
-        once("metrics", "GET", f"{root}/v1/metrics")
+    once("metrics", "GET", f"{root}/v1/metrics")
     base = {"model": a.model, "stream": True, "stream_options": {"include_usage": True}, "temperature": 0}
     stream(
         "plain",
@@ -74,7 +66,7 @@ def main() -> None:
             **base,
             "max_tokens": 256,
             **thinking(True),
-            **({"thinking_budget": 128} if vlm else {}),
+            "thinking_budget": 128,
             "messages": [
                 {"role": "user", "content": "What is 17 * 23? Think briefly, then answer with the number."}
             ],
@@ -101,7 +93,7 @@ def main() -> None:
                 }
             ],
             "tool_choice": "auto",
-            **({"tool_parser": a.tool_parser} if vlm else {}),
+            "tool_parser": a.tool_parser,
             "messages": [{"role": "user", "content": "Read the file README.md using the tool."}],
         },
     )
@@ -120,25 +112,6 @@ def main() -> None:
             ],
         },
     )
-    if not vlm:
-        once(
-            "logprobs",
-            "POST",
-            f"{a.base_url}/chat/completions",
-            {
-                "model": a.model,
-                "stream": False,
-                "max_tokens": 1,
-                "temperature": 0,
-                "logprobs": True,
-                "top_logprobs": 5,
-                **thinking(False),
-                "messages": [
-                    {"role": "system", "content": "Answer with exactly one word: YES or NO."},
-                    {"role": "user", "content": "Is water wet?"},
-                ],
-            },
-        )
     once(
         "nonstream",
         "POST",

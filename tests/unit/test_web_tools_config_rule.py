@@ -11,7 +11,7 @@ from airlie.config import ConfigError, load_config
 
 MINIMAL: dict = {
     "version": 1,
-    "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}},
+    "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
     "models": {"team": {"repo": "mlx-community/Qwen3.8-27B-4bit", "revision": "abc123"}},
     "roles": {
         "coder": {"prompt": "prompts/roles/coder.md", "model": "team"},

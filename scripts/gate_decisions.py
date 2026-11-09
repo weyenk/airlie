@@ -1,6 +1,5 @@
 """Phase 4b gate, Step 6: airlie's role question over twenty recorded briefs through one decision engine.
 
-    uv run python scripts/gate_decisions.py ask decision --out kev.json          # Kev (/v1/systemone)
     uv run python scripts/gate_decisions.py ask decision_mlx --out mlx.json      # mlx_vlm (/v1/decisions)
     uv run python scripts/gate_decisions.py compare kev.json mlx.json
 
@@ -51,17 +50,11 @@ def ask(
     engine: str,
     out: Annotated[Path, typer.Option()],
     n: int = 20,
-    systemone: Annotated[
-        str | None, typer.Option(help="ask Kev on this llama-server /v1 URL instead (model kev4b)")
-    ] = None,
 ) -> None:
     cfg = load_config(ROOT / "airlie.yaml")
     e = cfg.engines[engine]
-    if systemone is not None:  # Kev after the config moved `decision` to mlx_vlm
-        base, model, endpoint, key = systemone, "kev4b", "/systemone", None
-    else:
-        base, model, key = e.base_url or "", e.served_name(e.models[0]), e.api_key
-        endpoint = "/decisions" if e.kind == "mlx_vlm" else "/systemone"
+    base, model, key = e.base_url or "", e.served_name(e.models[0]), e.api_key
+    endpoint = "/decisions"
     criteria = routable_roles(cfg, exclude={cfg.studio.chief_role, cfg.studio.review.role})
     cases = pick(n)
 

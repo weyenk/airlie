@@ -189,17 +189,13 @@ async def test_tool_call_stream_assembles_by_index(tmp_path: Path) -> None:
     assert json.loads(res.tool_calls[0].arguments)
 
 
-async def test_raw_output_is_not_reparsed_on_mlx_vlm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def boom(*_a: object, **_k: object) -> None:
-        raise AssertionError("parse_output must not run on mlx_vlm")
-
-    monkeypatch.setattr("airlie.engine.http_engine.parse_output", boom)
+async def test_raw_output_is_left_as_the_server_sent_it(tmp_path: Path) -> None:
     cfg = config(tmp_path)
-    cfg.models["small"].tool_call_parser = "atem"  # an mlx-vlm name vllm-mlx's registry does not know
+    cfg.models["small"].tool_call_parser = "atem"  # the server parses; airlie does not read the name here
     rec = Recorder({"stream": (FIX / "plain.sse").read_bytes()})
     eng = cli._http_engine(cfg, "main", transport=httpx.MockTransport(rec))
     res = await eng.generate(plain_request())
-    assert res.text  # unchanged
+    assert res.text and res.tool_calls == []  # unchanged
 
 
 async def test_health_reads_loaded_models(tmp_path: Path) -> None:

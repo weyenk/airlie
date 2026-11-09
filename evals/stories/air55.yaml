@@ -22,7 +22,7 @@ request: |-
   5. Check `/health` on 8090 after the restart. Pass: reopen (unpause the line, accept work, let the bridge claim). Fail at any step: roll back to the previous tag, restart again, reopen, and record the failed update so the tick does not retry the same tag on a loop.
 
   ## Also
-  - Restart the vllm-mlx engine (8080) only when the engine code or its config changed between the two tags; most updates leave the loaded model alone.
+  - Restart the mlx-vlm engine (8080) only when the engine code or its config changed between the two tags; most updates leave the loaded model alone.
   - Status shows a pending update ("update vX pending, waiting for idle") on the line row and the web app, plus the last update's result.
   - `task update` does the same thing by hand: it still waits for idle (or `--now` after asking), and it uses the same code path.
   - Every update and rollback goes to the line's events log.

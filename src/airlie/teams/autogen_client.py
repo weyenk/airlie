@@ -1,24 +1,18 @@
-"""AutoGen model client wrapper: repairs tool-call arguments and drops duplicates before AutoGen parses them.
+"""AutoGen model client wrapper: repairs tool-call arguments before AutoGen parses them.
 
-vllm-mlx 0.5.0 emits each tool call twice on the stream (same index, two ids; see tests/fixtures/vllm_mlx) and
-its qwen3_coder parser can append a stray brace to JSON arguments. AutoGen executes whatever it receives, so
-both are fixed at the client boundary.
-
-The server runs one tool parser for every model it serves, so a model with its own format (Muse) comes back as
-text; with its `model_spec` set, the client applies the model's parsers as HTTPEngine does (`parse_output`),
-and a call on a request that offered no tools (AutoGen's reflection) is asked again once for the answer."""
+A tool parser can append a stray brace to JSON arguments (see `repair_json_args`). AutoGen executes whatever
+it receives, so it is fixed at the client boundary. A reply that offered no tools (AutoGen's reflection) is
+told so up front."""
 
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import Any
 
 from autogen_core import CancellationToken, FunctionCall
 from autogen_core.models import (
-    AssistantMessage,
     CreateResult,
     FunctionExecutionResultMessage,
     LLMMessage,
@@ -27,9 +21,6 @@ from autogen_core.models import (
 from autogen_core.tools import Tool, ToolSchema
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
-from airlie.config import ModelSpec
-from airlie.engine.output_parse import parse_output
-from airlie.engine.types import GenResult
 from airlie.prompts import entry
 from airlie.scheduler import SlotScheduler
 from airlie.tools.jsonargs import repair_json_args
@@ -52,25 +43,6 @@ def repair_create_result(result: CreateResult) -> CreateResult:
     return result
 
 
-_BARE_HEADERS = re.compile(r"\bto=\w+")
-"""A channel header with nothing after it (Muse's bare `to=user`, run 6, 2026-10-26) is no answer."""
-
-
-def parsed_text(model: ModelSpec, result: CreateResult) -> GenResult | None:
-    """The model's parsers over a reply the server left as text; None when it is already calls."""
-    if not isinstance(result.content, str):
-        return None
-    gen = GenResult(
-        text=result.content,
-        reasoning=result.thought or "",
-        tool_calls=[],
-        finish_reason="stop",
-        prompt_tokens=0,
-        completion_tokens=0,
-    )
-    return parse_output(model, gen)
-
-
 class RepairingOpenAIClient(OpenAIChatCompletionClient):
     """Also takes a generation slot from the SlotScheduler for each model call (spec 04 §2), and remembers how
     the latest reply ended: AutoGen's agent does not pass that on."""
@@ -79,8 +51,6 @@ class RepairingOpenAIClient(OpenAIChatCompletionClient):
     team_id: str = ""
     last_finish_reason: str = ""
     """How the latest reply ended; "length" means max_tokens cut it off."""
-    model_spec: ModelSpec | None = None
-    """The served model's catalog entry, whose parsers read a reply the server left as text."""
     reflection_note: str = ""
     """Said after the no-tools note on AutoGen's reflection request: what the caller's answer must hold (the
     meeting's verdict). Empty: nothing more."""
@@ -120,37 +90,8 @@ class RepairingOpenAIClient(OpenAIChatCompletionClient):
                 UserMessage(content=f"{note}\n\n{self.reflection_note}".strip(), source="airlie"),
             ]
         res = await ask(messages)
-        if self.model_spec is not None:
-            res = await self._parsed(res, messages, offered=bool(tools), ask=ask)
         self.last_finish_reason = res.finish_reason
         return repair_create_result(res)
-
-    async def _parsed(
-        self, res: CreateResult, messages: Sequence[LLMMessage], *, offered: bool, ask: Any
-    ) -> Any:
-        assert self.model_spec is not None
-        gen = parsed_text(self.model_spec, res)
-        if gen is None:
-            return res
-        empty = not gen.tool_calls and not _BARE_HEADERS.sub("", gen.text).strip()
-        if (gen.tool_calls and not offered) or empty:  # nothing it calls can run, or no answer: once, ask
-            retry = entry("empty-reply" if empty else "last-turn-retry").body.strip()
-            again = await ask(
-                [
-                    *messages,
-                    AssistantMessage(content=res.content, source="assistant"),
-                    UserMessage(content=retry, source="airlie"),
-                ]
-            )
-            gen = parsed_text(self.model_spec, again) or gen
-            res = again
-        res.thought = gen.reasoning or res.thought
-        if gen.tool_calls and offered:
-            res.content = [FunctionCall(id=c.id, name=c.name, arguments=c.arguments) for c in gen.tool_calls]
-            res.finish_reason = "function_calls"
-        else:
-            res.content = gen.text if _BARE_HEADERS.sub("", gen.text).strip() else ""
-        return res
 
     async def create_stream(
         self,

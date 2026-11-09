@@ -31,11 +31,8 @@ def plan_pulls(cfg: AirlieConfig, only: Sequence[str] = ()) -> list[PullPlan]:
             continue
         if m.path is not None:
             continue
-        file = (m.file,) if m.file else ()
-        plans.append(
-            PullPlan(name, m.repo, m.revision, ("hf", "download", m.repo, *file, "--revision", m.revision))
-        )
-        if m.mtp is not None:  # the head served beside it (engine/mtp.py)
+        plans.append(PullPlan(name, m.repo, m.revision, ("hf", "download", m.repo, "--revision", m.revision)))
+        if m.mtp is not None:  # the head served beside it as the draft model
             r = m.mtp
             plans.append(
                 PullPlan(

@@ -24,7 +24,7 @@ def has_tests(layer_dir: Path) -> bool:
 
 
 def mac_only() -> list[str]:
-    """The unit tests that need vllm-mlx or mlx (tests/unit/conftest.py): the modules and the single tests."""
+    """The unit tests that need mlx (tests/unit/conftest.py): the modules and the single tests."""
     sys.path.insert(0, str(ROOT))
     from tests.unit.conftest import MAC_ONLY, MAC_ONLY_TESTS
 

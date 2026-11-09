@@ -5,9 +5,12 @@ every client sends and matches it. Prefix-cache settings are environment only (`
 
 from __future__ import annotations
 
-from airlie.config import AirlieConfig, ModelSpec
-from airlie.engine.registry import SnapshotResolver
+from collections.abc import Callable
+from pathlib import Path
 
+from airlie.config import AirlieConfig, ModelSpec
+
+SnapshotResolver = Callable[[ModelSpec], Path]
 MLX_VLM_ENTRY = ["python", "-m", "mlx_vlm.server"]
 
 

@@ -16,7 +16,7 @@ topology:
         k: 1
       lts:
         enabled: false
-    studio:                        # chief + Kev router + specialists (design 2026-10-13); engines come from the base config
+    studio:                        # chief + decision-model router + specialists (design 2026-10-13); engines come from the base config
       teams:
         k: 1
         max_steps: 40

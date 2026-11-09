@@ -5,7 +5,7 @@
 Same matrix, role, sampling and corpus as `task bench:models` (src/airlie/cli.py bench_models), but only for
 `--model` (default generalist), so the bench engines' big models are not loaded, and the JSON goes to `--out`
 instead of the checkout's docs/bench. The config is the current directory's airlie.yaml, so run from the home
-checkout it measures vllm-mlx and from this worktree it measures mlx-vlm.
+checkout it measures that checkout's engines.
 """
 
 from __future__ import annotations
