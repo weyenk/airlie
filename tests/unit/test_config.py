@@ -57,6 +57,13 @@ def test_role_referencing_unknown_model_fails_with_named_error(tmp_path: Path) -
         load_config(write(tmp_path, data))
 
 
+def test_a_workflow_check_naming_a_run_outside_the_story_catalog_fails_at_load(tmp_path: Path) -> None:
+    """validate_references holds every workflow to the story's catalog (rule 9); without it this passes."""
+    wf = {"nodes": {"c": {"type": "check", "run": "story.nothing_like_this"}}}
+    with pytest.raises(ConfigError, match=r"node c: run 'story\.nothing_like_this' is not in the catalog"):
+        load_config(write(tmp_path, {**MINIMAL, "workflows": {"w": wf}}))
+
+
 def test_engine_serving_unknown_model_fails(tmp_path: Path) -> None:
     data = {**MINIMAL, "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["ghost"]}}}
     with pytest.raises(ConfigError, match=r"engines\.main\.models.*'ghost'"):
