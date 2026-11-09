@@ -700,6 +700,15 @@ is commented when its set of mutants changes instead of filed again. Approve a c
 draft PR; once that is merged and deployed the card is `done`, as any fix card. A run that could not mutate files
 nothing and says so once in the line's log. `line.mutation_cards: false` stops the harvest.
 
+The whole-project run, which also mutates the modules that are not enrolled and prints the backlog score table, is
+not in CI: a launchd agent on the Mac runs it every Sunday at 01:00 (`scripts/mutate_local.py`, `task mutate:local`
+by hand). It waits for the planning and build lanes to be free, polling every ten minutes and giving the week up at
+06:00 (the line event `mutation_project_skipped`), then mutates a fresh worktree of `origin/main` under
+`~/.local/state/airlie/mutation/` and writes `<date>.md` beside it (the newest twelve are kept) and the line event
+`mutation_project` with mutmut's exit code. The exit is 0 whatever mutmut found. The log is
+`~/.local/state/airlie/mutation-weekly.log`. `task mutate:launchd:install` loads the agent from this checkout and
+`task mutate:launchd:uninstall` removes it.
+
 ## From OpenCode
 
 `/story <issue key, issue link or request>` in OpenCode (it runs on the `chief` agent; see `local-agents.md`). The
