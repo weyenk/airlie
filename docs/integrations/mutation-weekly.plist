@@ -3,11 +3,13 @@
 <!-- airlie's whole-project mutation run, weekly: Sunday at 01:00 it waits for the line's lanes to be free, mutates all
      of src/airlie in a fresh worktree of origin/main (`scripts/mutate_local.py`, the script `task mutate:local`
      runs) and writes the backlog report to ~/.local/state/airlie/mutation/<date>.md. launchd runs a slot missed
-     while the Mac slept when it wakes; caffeinate keeps it awake for the run. A template: `task
-     mutate:launchd:install` fills in __AIRLIE_DIR__ (the checkout) and __HOME__, writes it to
+     while the Mac slept when it wakes; the script starts `caffeinate -w` on itself to keep it awake for the run. A
+     template: `task mutate:launchd:install` fills in __AIRLIE_DIR__ (the checkout) and __HOME__, writes it to
      ~/Library/LaunchAgents and loads it. It does not run `task`: launchd stops a job with SIGTERM, go-task does
-     not pass that signal on, and uv does, so the script can remove its worktree. The login shell (zsh -l) puts uv
-     and gh on PATH, and exec makes caffeinate (which runs uv as its child) the process launchd owns. -->
+     not pass that signal on, and uv does. The login shell (zsh -l) puts uv and gh on PATH, and exec makes uv the
+     process launchd owns, so the SIGTERM reaches the script, which stops the running step's process group and
+     removes its worktree. ExitTimeOut (launchd's SIGKILL after its SIGTERM) leaves room for the step's 30 s grace
+     and the removal. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>dev.airlie.mutation-weekly</string>
@@ -15,7 +17,7 @@
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>cd "__AIRLIE_DIR__" &amp;&amp; exec caffeinate -i uv run --quiet python scripts/mutate_local.py</string>
+    <string>cd "__AIRLIE_DIR__" &amp;&amp; exec uv run --quiet python scripts/mutate_local.py</string>
   </array>
   <key>StartCalendarInterval</key>
   <dict>
@@ -23,6 +25,7 @@
     <key>Hour</key><integer>1</integer>
     <key>Minute</key><integer>0</integer>
   </dict>
+  <key>ExitTimeOut</key><integer>120</integer>
   <key>StandardOutPath</key><string>__HOME__/.local/state/airlie/mutation-weekly.log</string>
   <key>StandardErrorPath</key><string>__HOME__/.local/state/airlie/mutation-weekly.log</string>
 </dict>

@@ -705,7 +705,11 @@ not in CI: a launchd agent on the Mac runs it every Sunday at 01:00 (`scripts/mu
 by hand). It waits for the planning and build lanes to be free, polling every ten minutes and giving the week up at
 06:00 (the line event `mutation_project_skipped`), then mutates a fresh worktree of `origin/main` under
 `~/.local/state/airlie/mutation/` and writes `<date>.md` beside it (the newest twelve are kept) and the line event
-`mutation_project` with mutmut's exit code. The exit is 0 whatever mutmut found. The log is
+`mutation_project` with mutmut's exit code (`stale_base: true` when `git fetch` failed and it ran on the last
+fetched `origin/main`). A `git worktree add` or `uv sync` that fails stops it before mutmut, as the event
+`mutation_project_failed` with the step. The script keeps the Mac awake (`caffeinate -w` on itself) and runs each
+step in its own process group: launchd's SIGTERM stops the running step's group, SIGKILL after 30 s, and the
+worktree is removed. The exit is 0 whatever mutmut found. The log is
 `~/.local/state/airlie/mutation-weekly.log`. `task mutate:launchd:install` loads the agent from this checkout and
 `task mutate:launchd:uninstall` removes it.
 
