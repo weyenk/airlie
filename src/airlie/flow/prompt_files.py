@@ -12,13 +12,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING
 
 from airlie.prompts import hub
 from airlie.prompts.hub import PromptError, PromptText
-
-if TYPE_CHECKING:
-    pass
 
 PREFIX = "prompt:"
 FEEDBACK = "feedback"

@@ -328,7 +328,9 @@ What differs from the text above, and what was added, in plain words.
   design's `each` box is gone.
 - **Conditions.** `expr := term (("and"|"or") term)*; term := "not" term | "(" expr ")" | atom;
   atom := path "exists" | path ("=="|"!=") literal | path`. Literals are a quoted string, a number, `true`,
-  `false` or a bare word. `and` binds tighter than `or`. A missing path is false.
+  `false` or a bare word. `and` binds tighter than `or`. A missing path is false. A bool equals only a bool
+  (`true` never matches 1). No part of a path, here or in a placeholder, may start with `_`, and a path
+  descends only through mapping keys, pydantic fields and dataclass fields, never an attribute.
 - **Field kinds.** `text | number | bool | list of <kind> | one of a | b`, optional with a trailing `?` on the
   outermost kind.
 - **Prompt placeholders.** `{name}`, `{name.field}`, `{config.a.b}`, `{feedback}`, `{item}`, optional blocks
@@ -336,12 +338,14 @@ What differs from the text above, and what was added, in plain words.
 - **The done set.** `StoryState.nodes_done` (omitted from the file when empty): it skips only output-less
   nodes; a node with outputs is skipped only by its outputs. A restart drops every entry.
 - **Transient outputs.** `OutputSpec.transient` and `Check.transient` mark computed inputs and condition
-  booleans as run memory, recomputed every run. `Check.every_run` marks (intake, costed_*, planned, build_done,
-  layer_start) never enter the done set.
+  booleans as run memory, recomputed every run. `Check.every_run` marks (intake, `story.costed` (the
+  `costed_*` nodes), planned, build_done, layer_start) never enter the done set.
 - **When a node runs.** An input is satisfied when its artifact is present or its producer is done; a line
   fires when its source finishes; a dead line counts as done; a `Stalled` error names what a run waits for.
-- **Loops.** A loop line re-runs its target and everything downstream and clears their outputs, also inside
-  bundles (done names are scoped `<bundle>/<node>@<item>`).
+- **Loops.** A loop line re-runs its target, everything downstream and every node that ran and reads an
+  output of those (transitively, line or no line), and clears their outputs, also inside bundles (done
+  names are scoped `<bundle>/<node>@<item>`); a name a finished node outside the loop also writes keeps its
+  latest value. A blocking node's loop line must go back to a node upstream of it.
 - **The `output-format` rule.** The hub rule is never auto-appended to an ask; it exists for the builder and
   for the team's two rules, `team-assign` and `team-handback`.
 - **Events.** Legacy events declared per node (`events: {done, failed}`) carry exactly the driver's fields.
@@ -354,10 +358,17 @@ What differs from the text above, and what was added, in plain words.
   children inherit the parent's lines (their own wiring is a problem); `each` becomes a bundle; `loose`
   becomes inputs. A node that named code is marked "write this node's prompt" and is unrunnable. Drafts
   upgrade where they are read.
-- **Adopting the current workflow.** A changed node is treated like a loop target (cleared with its
-  downstream); the card is held meanwhile; the note is posted first.
+- **Adopting the current workflow.** A changed node (its definition, or the text of a draft prompt file it
+  names) is treated like a loop target (cleared with its downstream); one that runs a stage-gated operation
+  (refine, the layer split, the meeting, the build's end, the publish) also clears the stages from that
+  point on, as a restart from there does. The card is held meanwhile; the note, posted first, names every
+  node that will run again.
+- **Checks.** A check declares the `args` its function requires (`story.costed`: `stages`); rule 9 holds a
+  node to them and to each output's declared format. A bundle workflow's nodes write only its `outputs`
+  (memory heads and sessions aside). A meeting runs the amigos protocol only: seats product, architect,
+  tester, reading story and layers (the catalog route's `meetings`).
 - **The team node.** Readers or writers, by the worker's tools; writers hand back diffs the supervisor applies
-  with `git apply --3way`; the cap is 5; diffs are capped for the supervisor; a worker's prompt may name
+  with `git apply --3way`; the cap is 5 (at least 1); diffs are capped for the supervisor; a worker's prompt may name
   `{assignment}`.
 - **The builder.** The live Vue builder cannot open the v2 files until plan 2 (unknown type `bundle`); its
   tests read frozen v1 copies; plans 1 and 2 merge together.
