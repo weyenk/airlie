@@ -81,7 +81,9 @@ function rename(e: Event) {
 
 // inputs: what the box may read (the workflow's inputs, the other boxes' outputs), and anything it reads already
 const inputs = computed(() => inputsOf(spec.value));
-const readableNames = computed(() => [...new Set([...readable(props.graph, props.node.id), ...inputs.value])]);
+const readableNames = computed(() => [...new Set([...readable(props.graph, props.node.id), ...inputs.value, ...(type.value === "meeting" ? (meeting.value?.inputs ?? []) : [])])]);
+/** A meeting's input the protocol fixes: listed, it cannot be unchecked (the protocol reads it). */
+const fixedInput = (name: string) => type.value === "meeting" && (meeting.value?.inputs ?? []).includes(name);
 function toggleInput(name: string, on: boolean) {
   const next = on ? [...inputs.value.filter((n) => n !== name), name] : inputs.value.filter((n) => n !== name);
   set("inputs", next);
@@ -119,16 +121,29 @@ const teamRole = computed(() => (isRecord(spec.value.role) ? spec.value.role : {
 function setTeamRole(seat: "supervisor" | "worker", value: string) {
   set("role", { supervisor: text(teamRole.value.supervisor), worker: text(teamRole.value.worker), [seat]: value });
 }
+// a meeting: the protocol's seats and inputs are fixed (listed, never taken off); the box may read more
 const meeting = computed(() => props.catalog.meetings[0] ?? null);
-const seated = computed(() => {
+const meetingRoles = computed(() => (Array.isArray(spec.value.role) ? spec.value.role.filter((r): r is string => typeof r === "string") : []));
+const roleChoices = computed(() => [...new Set([...(meeting.value?.roles ?? []), ...meetingRoles.value])]);
+const fixedRole = (r: string) => (meeting.value?.roles ?? []).includes(r);
+/** The protocol's roles and inputs the box does not list. */
+const unseated = computed(() => {
   const m = meeting.value;
-  if (!m) return true;
-  const roles = Array.isArray(spec.value.role) ? spec.value.role : [];
-  return JSON.stringify(roles) === JSON.stringify(m.roles) && JSON.stringify(inputs.value) === JSON.stringify(m.inputs);
+  if (!m) return [];
+  return [...m.roles.filter((r) => !meetingRoles.value.includes(r)), ...m.inputs.filter((i) => !inputs.value.includes(i))];
 });
+/** Add the protocol's missing roles and inputs, after what the box lists (nothing it lists goes). */
 function seat() {
   const m = meeting.value;
-  if (m) emitUpdate({ ...spec.value, role: [...m.roles], inputs: [...m.inputs] });
+  if (!m) return;
+  emitUpdate({
+    ...spec.value,
+    role: [...meetingRoles.value, ...m.roles.filter((r) => !meetingRoles.value.includes(r))],
+    inputs: [...inputs.value, ...m.inputs.filter((i) => !inputs.value.includes(i))],
+  });
+}
+function toggleRole(r: string, on: boolean) {
+  set("role", on ? [...meetingRoles.value.filter((x) => x !== r), r] : meetingRoles.value.filter((x) => x !== r));
 }
 
 // session: a session output upstream that a box of this box's role wrote
@@ -214,13 +229,16 @@ function renameOut(old: string, to: string) {
 
 // check and gate: the catalog's check, its args, and the inputs it declares that the box lacks
 const check = computed(() => props.catalog.checks.find((c) => c.name === text(spec.value.run)) ?? null);
+/** A check picked: the one set already changes nothing. Another keeps the outputs it still offers as the box
+ * declares them (fields and all), adds the ones it offers that the box lacks, and drops the rest; every arg stays
+ * (one the check does not declare is marked so by its field). */
 function pick(c: CheckDef) {
+  if (c.name === text(spec.value.run)) return;
   const next: NodeSpec = { ...spec.value, run: c.name };
-  next.outputs = Object.fromEntries(c.outputs.map((o) => [o, specValue({ format: c.formats[o] ?? "text", ...(c.transient.includes(o) ? { transient: true } : {}) })]));
-  const had = isRecord(spec.value.args) ? spec.value.args : {};
-  const args = Object.fromEntries(Object.entries(had).filter(([k]) => c.args.includes(k)));
-  if (Object.keys(args).length) next.args = args;
-  else delete next.args;
+  const had = isRecord(spec.value.outputs) ? spec.value.outputs : {};
+  next.outputs = Object.fromEntries(
+    c.outputs.map((o) => [o, Object.hasOwn(had, o) ? had[o] : specValue({ format: c.formats[o] ?? "text", ...(c.transient.includes(o) ? { transient: true } : {}) })]),
+  );
   emitUpdate(next);
 }
 const missing = computed(() => (check.value ? check.value.inputs.filter((i) => !inputs.value.includes(i)) : []));
@@ -271,12 +289,15 @@ function setEvent(outcome: "done" | "failed", e: Event) {
   set("events", Object.keys(next).length ? next : undefined);
 }
 
-/** Close, once the field being typed in has committed (a blur's change never comes once it is gone). */
+/** Close, once the field being typed in has committed (a blur's change never comes once it is gone). Fields text
+ * that does not read keeps the modal open, the error said by the field, so it is never dropped unsaid. */
 const form = ref<HTMLFormElement | null>(null);
+const outputsEditor = ref<InstanceType<typeof OutputsEditor> | null>(null);
 function close() {
   const el = document.activeElement;
   const typing = el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && el.type !== "checkbox");
   if (typing && form.value?.contains(el)) el.dispatchEvent(new Event("change"));
+  if (outputsEditor.value?.held()) return;
   emit("update:open", false);
 }
 
@@ -372,7 +393,9 @@ const label = "text-muted-foreground";
                   <span>reads {{ ports.inputs.join(", ") || "nothing" }}</span>
                   <span>hands back {{ ports.outputs.join(", ") || "nothing" }}</span>
                 </template>
-                <span v-else class="font-sans text-muted-foreground">{{ text(spec.workflow) ? `The ports of ${text(spec.workflow)} show once it is opened on the canvas.` : "Pick a bundle to see what it reads and hands back." }}</span>
+                <span v-else data-bundle-ports-unknown class="font-sans text-muted-foreground">{{
+                  text(spec.workflow) ? `What ${text(spec.workflow)} reads and hands back is still loading, or the workflow could not be read.` : "Pick a bundle to see what it reads and hands back."
+                }}</span>
               </div>
             </template>
           </section>
@@ -395,12 +418,24 @@ const label = "text-muted-foreground";
                 </select>
               </label>
             </div>
-            <div v-if="type === 'meeting'" data-meeting-fixed class="flex flex-col gap-1 rounded-md border border-border p-2">
-              <span :class="label">the meeting's seats and inputs (fixed by the protocol)</span>
-              <span class="font-mono text-xs">roles: {{ meeting?.roles.join(", ") ?? "unknown" }}</span>
-              <span class="font-mono text-xs">inputs: {{ meeting?.inputs.join(", ") ?? "unknown" }}</span>
-              <Button v-if="!seated" type="button" size="xs" variant="outline" data-meeting-seat class="self-start" @click="seat">Use the protocol's roles and inputs</Button>
-            </div>
+            <fieldset v-if="type === 'meeting'" data-meeting-fixed data-form-field="role" class="flex flex-col gap-1 rounded-md border border-border p-2">
+              <legend :class="[label, 'mb-1']">seats (the protocol's are fixed)</legend>
+              <div class="flex flex-wrap gap-x-3 gap-y-1 font-mono text-xs">
+                <label v-for="r in roleChoices" :key="r" class="inline-flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    :data-meeting-role="r"
+                    :data-fixed="fixedRole(r) ? 'true' : undefined"
+                    :checked="meetingRoles.includes(r)"
+                    :disabled="fixedRole(r) && meetingRoles.includes(r)"
+                    @change="toggleRole(r, ($event.target as HTMLInputElement).checked)"
+                  />{{ r }}<span v-if="fixedRole(r)" class="font-sans text-muted-foreground">(protocol)</span>
+                </label>
+              </div>
+              <span v-if="!meeting" class="text-xs text-muted-foreground">The catalog did not say the protocol's seats and inputs.</span>
+              <span v-else class="text-xs text-muted-foreground">The protocol reads {{ meeting.inputs.join(", ") }}; the box may read more (its inputs below).</span>
+              <Button v-if="unseated.length" type="button" size="xs" variant="outline" data-meeting-seat class="self-start" @click="seat">Add the protocol's {{ unseated.join(", ") }}</Button>
+            </fieldset>
 
             <label v-if="['ask', 'conversation', 'write'].includes(type)" data-form-field="session" class="flex flex-col gap-1">
               <span :class="label">session (continue a conversation)</span>
@@ -415,12 +450,19 @@ const label = "text-muted-foreground";
               <input data-input="advisor" :value="text(spec.advisor)" :class="[control, 'font-mono']" @change="setText('advisor', $event)" />
             </label>
 
-            <fieldset v-if="type !== 'meeting'" data-form-field="inputs" class="flex flex-col gap-1">
+            <fieldset data-form-field="inputs" class="flex flex-col gap-1">
               <legend :class="[label, 'mb-1']">inputs</legend>
               <p v-if="!readableNames.length" class="text-muted-foreground">Nothing to read yet: give a box outputs, or the workflow inputs.</p>
               <div class="flex flex-wrap gap-x-3 gap-y-1 font-mono text-xs">
                 <label v-for="n in readableNames" :key="n" class="inline-flex items-center gap-1.5">
-                  <input type="checkbox" :data-input-name="n" :checked="inputs.includes(n)" @change="toggleInput(n, ($event.target as HTMLInputElement).checked)" />{{ n }}
+                  <input
+                    type="checkbox"
+                    :data-input-name="n"
+                    :data-fixed="fixedInput(n) ? 'true' : undefined"
+                    :checked="inputs.includes(n)"
+                    :disabled="fixedInput(n) && inputs.includes(n)"
+                    @change="toggleInput(n, ($event.target as HTMLInputElement).checked)"
+                  />{{ n }}<span v-if="fixedInput(n)" class="font-sans text-muted-foreground">(protocol)</span>
                 </label>
               </div>
             </fieldset>
@@ -434,7 +476,10 @@ const label = "text-muted-foreground";
             <div v-if="isCode && argNames.length" data-form-field="args" class="flex flex-col gap-1.5">
               <span :class="label">args</span>
               <label v-for="a in argNames" :key="a" class="flex flex-col gap-0.5">
-                <span class="font-mono text-xs">{{ a }}{{ check?.args.includes(a) ? " (required)" : "" }}</span>
+                <span class="font-mono text-xs">
+                  {{ a }}{{ check?.args.includes(a) ? " (required)" : "" }}
+                  <span v-if="check && !check.args.includes(a)" :data-arg-undeclared="a" class="font-sans text-muted-foreground">not declared by {{ check.name }}</span>
+                </span>
                 <input :data-arg="a" :value="argText(args[a])" :class="[control, 'font-mono']" placeholder="a value, or [a, b] for a list" @change="setArg(a, $event)" />
               </label>
             </div>
@@ -442,7 +487,7 @@ const label = "text-muted-foreground";
             <div data-form-field="outputs" class="flex flex-col gap-1">
               <span :class="label">outputs</span>
               <p v-if="refusal" data-rename-refused="output" role="alert" class="text-xs text-danger-foreground">{{ refusal }}</p>
-              <OutputsEditor :outputs="outputs" :kinds="catalog.kinds" :formats="catalog.formats" @update="setOutputs" @rename="renameOut" />
+              <OutputsEditor ref="outputsEditor" :key="node.id" :outputs="outputs" :kinds="catalog.kinds" :formats="catalog.formats" @update="setOutputs" @rename="renameOut" />
             </div>
 
             <label v-if="isModel" data-form-field="steps" class="flex flex-col gap-1">

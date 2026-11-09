@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive } from "vue";
+import { computed, reactive, ref } from "vue";
 import { Button } from "@/components/ui/button";
 import { fieldLines, parseFieldLines } from "./fields";
 import { FORMATS } from "./graph";
@@ -9,7 +9,9 @@ defineOptions({ name: "AirlieBuilderOutputsEditor" });
 
 /** A box's outputs, a row each: its name, its format, for a json answer its fields (one `name: kind` per line, held
  * to the server's kind grammar), and transient. A change hands up the whole new outputs; a new name is asked for as
- * a rename, since the lines and readers of the old name must follow it (the parent does that through the graph). */
+ * a rename, since the lines and readers of the old name must follow it (the parent does that through the graph).
+ * Fields text that does not read is held here, unsaved, with what is wrong; `held()` says so to a parent that is
+ * closing, and the field then says it is not saved. */
 const props = defineProps<{ outputs: Record<string, OutputSpec>; kinds: string[]; formats: string[] }>();
 const emit = defineEmits<{ update: [outputs: Record<string, OutputSpec>]; rename: [old: string, to: string] }>();
 
@@ -22,6 +24,14 @@ const formatsOf = (current: string) => {
 /** A fields text being typed that does not read yet, by output name, and what is wrong with it. */
 const typing = reactive<Record<string, string>>({});
 const errors = reactive<Record<string, string[]>>({});
+/** A close was tried while some fields text did not read: the field says it is not saved. */
+const tried = ref(false);
+/** Whether some fields text typed does not read (and so is not saved); a closing parent stays open on it. */
+function held(): boolean {
+  tried.value = Object.keys(errors).length > 0;
+  return tried.value;
+}
+defineExpose({ held });
 
 function put(name: string, spec: OutputSpec) {
   emit("update", Object.fromEntries(rows.value.map(([n, s]) => [n, n === name ? spec : s])));
@@ -98,6 +108,7 @@ const control = "h-8 min-w-0 rounded-md border border-input bg-background px-2 t
           @change="setFields(name, spec, ($event.target as HTMLTextAreaElement).value)"
         />
         <span v-if="errors[name]" data-fields-error class="text-xs text-danger-foreground">{{ errors[name].join("; ") }}</span>
+        <span v-if="tried && errors[name]" data-fields-unsaved role="alert" class="text-xs text-danger-foreground">These fields are not saved: fix them, or clear the text, to close.</span>
       </label>
       <label class="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
         <input type="checkbox" data-output-transient :checked="!!spec.transient" @change="setTransient(name, spec, ($event.target as HTMLInputElement).checked)" />

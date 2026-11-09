@@ -1,9 +1,11 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { CATALOG } from "@/test-utils/catalog";
-import { fromWorkflow } from "./graph";
+import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
+import { fromWorkflow, withBundle } from "./graph";
 import type { Graph, NodeSpec, NodeType } from "./graph";
 import NodeModal from "./NodeModal.vue";
 import OutputsEditor from "./OutputsEditor.vue";
+import { parseWorkflow } from "./yaml";
 
 // A workflow with one box of each kind the modal draws: `plan` reads `survey` through a prompt file that names it.
 const graph: Graph = fromWorkflow("t", {
@@ -129,6 +131,29 @@ test("a check picked from the catalog sets run, fills its outputs, and shows the
   expect(lastUpdate(w)!.inputs).toEqual(["card", "repo"]);
 });
 
+test("picking the check already set changes nothing; another merges: offered outputs kept as declared, the rest dropped, every arg kept and marked", async () => {
+  const layer = shipped(LAYER_YAML);
+  const w = mountIn(layer, "package");
+  await flushPromises();
+  $<HTMLButtonElement>("[data-check='story.ready_package']")!.click();
+  await flushPromises();
+  expect(w.emitted("update")).toBeUndefined();
+  const before = layer.nodes.find((n) => n.id === "package")!.spec;
+  // the box's own satisfied.{item} has fields: a check that still offers it keeps them
+  const fielded = { ...before, outputs: { "package.{item}": "json", "satisfied.{item}": { format: "json", fields: { why: "text" } } } };
+  await w.setProps({ node: { ...layer.nodes.find((n) => n.id === "package")!, spec: fielded } });
+  $<HTMLButtonElement>("[data-check='story.covered']")!.click();
+  await flushPromises();
+  const picked = lastUpdate(w)!;
+  expect(picked.run).toBe("story.covered");
+  expect(picked.outputs).toEqual({ "satisfied.{item}": { format: "json", fields: { why: "text" } } });
+  expect(picked.args).toEqual({ session: "drafts_session" });
+  expect(picked.inputs).toEqual(before.inputs);
+  await w.setProps({ node: { ...layer.nodes.find((n) => n.id === "package")!, spec: picked } });
+  expect($("[data-arg-undeclared=session]")!.textContent).toBe("not declared by story.covered");
+  expect($<HTMLInputElement>("[data-arg=session]")!.value).toBe("drafts_session");
+});
+
 test("a check's args are fields of their own", async () => {
   const w = mountModal("base");
   await flushPromises();
@@ -152,23 +177,65 @@ test("a team has a supervisor and a worker role, and its worker text offers {ass
   expect($("[data-input=workers]")).not.toBeNull();
 });
 
-test("a meeting shows its roles and inputs fixed by the protocol", async () => {
-  mountModal("amigos");
+const shipped = (text: string) => {
+  const { name, spec, layout } = parseWorkflow(text);
+  return fromWorkflow(name, spec, layout);
+};
+const mountIn = (g: Graph, id: string) =>
+  mount(NodeModal, { props: { open: true, node: g.nodes.find((n) => n.id === id)!, graph: g, catalog: CATALOG, prompts: {}, bundles: ["layer"] }, attachTo: document.body });
+const box = (sel: string) => $<HTMLInputElement>(sel)!;
+
+test("a meeting shows the node's own seats and inputs: the protocol's fixed, an extra one (the shipped amigos's base) editable", async () => {
+  const story = shipped(STORY_YAML);
+  const w = mountIn(story, "amigos");
   await flushPromises();
-  const fixed = $("[data-meeting-fixed]")!;
-  expect(fixed.textContent).toContain("product, architect, tester");
-  expect(fixed.textContent).toContain("story, layers");
   expect($("select[data-input=role]")).toBeNull();
-  expect($("[data-input-name]")).toBeNull();
-  expect($("[data-input=prompt]")!.tagName).toBe("TEXTAREA");
+  for (const r of ["product", "architect", "tester"]) {
+    expect(box(`[data-meeting-role=${r}]`).checked).toBe(true);
+    expect(box(`[data-meeting-role=${r}]`).disabled).toBe(true);
+  }
+  for (const i of ["story", "layers"]) {
+    expect(box(`[data-input-name=${i}]`).checked).toBe(true);
+    expect(box(`[data-input-name=${i}]`).disabled).toBe(true);
+    expect(box(`[data-input-name=${i}]`).dataset.fixed).toBe("true");
+  }
+  expect(box("[data-input-name=base]").checked).toBe(true);
+  expect(box("[data-input-name=base]").disabled).toBe(false);
+  expect(box("[data-input-name=base]").dataset.fixed).toBeUndefined();
+  // nothing of the protocol is missing: no button to seat it
+  expect($("[data-meeting-seat]")).toBeNull();
+  expect($("[data-input=prompt]")).toBeNull(); // amigos's prompt is a prompt file
+  box("[data-input-name=base]").click();
+  await flushPromises();
+  expect(lastUpdate(w)!.inputs).toEqual(["story", "layers"]);
 });
 
-test("a bundle picks its workflow, runs once per item of a list input, and shows the bundle's ports", async () => {
-  mountModal("each");
+test("a meeting missing a protocol input or seat offers to add it, after what it lists, never replacing the list", async () => {
+  const story = shipped(STORY_YAML);
+  const amigos = story.nodes.find((n) => n.id === "amigos")!;
+  const g: Graph = { ...story, nodes: story.nodes.map((n) => (n.id === "amigos" ? { ...n, spec: { ...amigos.spec, role: ["architect"], inputs: ["base", "story"] } } : n)) };
+  const w = mountIn(g, "amigos");
+  await flushPromises();
+  // a missing one is listed unchecked and may be checked
+  expect(box("[data-input-name=layers]").checked).toBe(false);
+  expect(box("[data-input-name=layers]").disabled).toBe(false);
+  expect(box("[data-meeting-role=product]").checked).toBe(false);
+  expect($("[data-meeting-seat]")!.textContent).toContain("product, tester, layers");
+  $<HTMLButtonElement>("[data-meeting-seat]")!.click();
+  await flushPromises();
+  expect(lastUpdate(w)).toMatchObject({ role: ["architect", "product", "tester"], inputs: ["base", "story", "layers"] });
+});
+
+test("a bundle picks its workflow, runs once per item of a list input, and shows the bundle's ports once they are known", async () => {
+  const w = mountModal("each");
   await flushPromises();
   expect($<HTMLSelectElement>("select[data-input=workflow]")!.value).toBe("layer");
   expect([...$<HTMLSelectElement>("select[data-input=each]")!.options].map((o) => o.value)).toEqual(["", "layers"]);
-  expect($("[data-bundle-ports]")).not.toBeNull();
+  expect($("[data-bundle-ports-unknown]")!.textContent).toContain("still loading");
+  const known = withBundle(graph, "layer", { inputs: ["card", "layers"], outputs: ["built.{item}"] });
+  await w.setProps({ graph: known, node: known.nodes.find((n) => n.id === "each")! });
+  expect($("[data-bundle-ports]")!.textContent).toContain("reads card, layers");
+  expect($("[data-bundle-ports]")!.textContent).toContain("hands back built.{item}");
 });
 
 test("an output rename the graph refuses lists the boxes that read it", async () => {
@@ -273,4 +340,30 @@ test("workers is at least one", async () => {
   n.value = "3";
   n.dispatchEvent(new Event("change"));
   expect(lastUpdate(w)?.workers).toBe(3);
+});
+
+test("closing with fields text that does not read keeps the modal open and says so by the field", async () => {
+  const w = mountModal("plan");
+  await flushPromises();
+  const area = typeInto("[data-output-fields]", "verdict: maybe so");
+  expect(document.activeElement).toBe(area);
+  $<HTMLButtonElement>("[data-node-done]")!.click();
+  await flushPromises();
+  expect(w.emitted("update:open")).toBeUndefined();
+  expect($("[data-fields-error]")!.textContent).toContain("invalid field kind");
+  expect($("[data-fields-unsaved]")!.textContent).toContain("not saved");
+  escape();
+  await flushPromises();
+  expect(w.emitted("update:open")).toBeUndefined();
+  // fixed: it saves, and the modal closes
+  area.value = "verdict: pass | fail";
+  area.dispatchEvent(new Event("input"));
+  area.dispatchEvent(new Event("change"));
+  area.blur(); // the parent would hand the saved fields back; here the props stay as they were
+  await flushPromises();
+  expect($("[data-fields-unsaved]")).toBeNull();
+  expect(lastUpdate(w)!.outputs).toEqual({ plan: { format: "json", fields: { verdict: "pass | fail" } } });
+  $<HTMLButtonElement>("[data-node-done]")!.click();
+  await flushPromises();
+  expect(w.emitted("update:open")).toEqual([[false]]);
 });
