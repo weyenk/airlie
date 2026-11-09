@@ -37,6 +37,10 @@ class SystemProbe(Protocol):
     def tool_version(self, name: str) -> str | None: ...
     def model_config(self, repo: str, revision: str) -> dict[str, Any] | None: ...
     def http_ok(self, url: str) -> bool: ...
+    def http_status(self, url: str, headers: dict[str, str] | None = None) -> int | None:
+        """The HTTP status `url` answers with (sending `headers`), None when nothing answers."""
+        return 200 if self.http_ok(url) else None
+
     def all_process_args(self, marker: str) -> list[list[str]] | None:
         return None
 
@@ -115,10 +119,13 @@ class RealProbe:
         return obj if isinstance(obj, dict) else None
 
     def http_ok(self, url: str) -> bool:
+        return self.http_status(url) == 200
+
+    def http_status(self, url: str, headers: dict[str, str] | None = None) -> int | None:
         try:
-            return httpx.get(url, timeout=3.0).status_code == 200
+            return httpx.get(url, timeout=3.0, headers=headers).status_code
         except httpx.HTTPError:
-            return False
+            return None
 
     def all_process_args(self, marker: str) -> list[list[str]] | None:
         """The arguments of every running process whose command line holds `marker` (mlx-vlm runs one
@@ -437,8 +444,19 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
             managed_models.update(e.models)
             results.append(_mlx_vlm_binary_check(ename, e.entry, probe))
             health_url = f"{(e.base_url or '').removesuffix('/v1')}/health"
-            if probe.http_ok(health_url):
+            auth = {"Authorization": f"Bearer {e.api_key}"} if e.api_key else None
+            code = probe.http_status(health_url, auth)
+            if code == 200:
                 results.append(CheckResult(f"engine:{ename}:health", "ok", f"{health_url} answers"))
+            elif code in (401, 403) and e.api_key:
+                results.append(
+                    CheckResult(
+                        f"engine:{ename}:health",
+                        "warn",
+                        f"{health_url} answers {code}: engines.{ename}.api_key is not the key the running "
+                        "engine was started with",
+                    )
+                )
             else:
                 results.append(
                     CheckResult(

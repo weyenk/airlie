@@ -91,6 +91,9 @@ class _FakeProbe:
     def http_ok(self, url: str) -> bool:
         return False
 
+    def http_status(self, url: str, headers=None):
+        return None
+
     def package_version(self, dist: str):
         return None
 

@@ -711,3 +711,34 @@ def test_a_managed_engines_health_row_is_ok_when_it_answers_and_names_the_start_
     cfg.engines["main"].autostart = False
     by_hand = by_name(run_checks(cfg, HealthProbe({}, snapshots={"org/model@r1"})))["engine:main:health"]
     assert "uv run airlie engine up main" in by_hand.detail
+
+
+class KeyedProbe(HealthProbe):
+    """A host whose engine answers /health only to the right Bearer key."""
+
+    def __init__(self, key: str | None, **kw) -> None:
+        super().__init__({}, **kw)
+        self._key = key
+        self.sent: list[dict[str, str] | None] = []
+
+    def http_status(self, url: str, headers: dict[str, str] | None = None) -> int | None:
+        self.sent.append(headers)
+        if self._key is None:
+            return None
+        return 200 if headers == {"Authorization": f"Bearer {self._key}"} else 401
+
+
+def test_a_keyed_engines_health_row_sends_its_key_and_blames_a_wrong_one(tmp_path: Path) -> None:
+    cfg = managed(tmp_path)
+    cfg.engines["main"].api_key = "sekret"
+    snaps = {"snapshots": {"org/model@r1"}}
+    right = KeyedProbe("sekret", **snaps)
+    assert by_name(run_checks(cfg, right))["engine:main:health"].status == "ok"
+    assert right.sent == [{"Authorization": "Bearer sekret"}]
+    wrong = by_name(run_checks(cfg, KeyedProbe("other", **snaps)))["engine:main:health"]
+    assert wrong.status == "warn" and "api_key" in wrong.detail and "not running" not in wrong.detail
+    down = by_name(run_checks(cfg, KeyedProbe(None, **snaps)))["engine:main:health"]
+    assert down.status == "warn" and "not running" in down.detail and "run: task restart" in down.detail
+    cfg.engines["main"].api_key = None  # no key set: a 401 is only "not answering well", never a key blame
+    keyless = by_name(run_checks(cfg, KeyedProbe("other", **snaps)))["engine:main:health"]
+    assert "not running" in keyless.detail
