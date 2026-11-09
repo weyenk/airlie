@@ -1,0 +1,126 @@
+# Mutation testing of every enrolled module, nightly, in shards. A pull request's pipeline mutates only the
+# enrolled functions its change touched, and leaves a change to the mutation setup (pyproject.toml,
+# tests/unit/conftest.py) to this run: that is why the sweep is nightly, so a setup change is checked the day
+# after it lands. Enrolled modules must have every mutant caught (the run fails otherwise); `merge` also
+# uploads the surviving mutants as `mutation-survivors` (survivors.json), which airlie's line reads and files
+# as fix cards (`airlie.story.mutation_cards`).
+# The whole project (the modules that are not enrolled too) is no longer run here: it took 5 macOS shards of up
+# to 4 hours each, so it moved to a weekly run on the Mac (task mutate:local), which keeps the backlog table.
+name: mutation-nightly
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-nightly
+  cancel-in-progress: false
+
+jobs:
+  # mutmut needs a green suite; run it once here, not in every shard
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: task test:unit
+
+  # mutmut's map of which unit tests run which function, built once with the suite split over the runner's
+  # CPUs and handed with the generated mutants to the 8 shards, which otherwise each build it serially before
+  # their first mutant (scripts/mutate_changed.py --build-map; pipeline.yml's mutation-map job does the same).
+  # A shard whose map is missing or not for its runner builds its own (--map); the mac job maps its own.
+  mutation-map:
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Map the unit tests to the functions they run
+        run: task mutate -- --build-map "$RUNNER_TEMP/mutation-map"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mutation-map
+          path: ${{ runner.temp }}/mutation-map/
+          if-no-files-found: ignore
+          compression-level: 0 # the mutants are gzipped already
+          retention-days: 1
+
+  mutation:
+    needs: [unit, mutation-map]
+    # a failed map job leaves each shard to build its own map (and fail the same way if a test is red)
+    if: ${{ !cancelled() && needs.unit.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        continue-on-error: true # no map (the map job failed): --map builds one here
+        with:
+          name: mutation-map
+          path: ${{ runner.temp }}/mutation-map
+      - name: Mutation-test shard ${{ matrix.shard }} of 8 of the enrolled modules
+        run: >-
+          task mutate -- --max-children 3 --map "$RUNNER_TEMP/mutation-map" --shard ${{ matrix.shard }}/8
+          --results mutation/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-shard-${{ matrix.shard }}
+          path: mutation/
+          if-no-files-found: ignore
+
+  # The enrolled sources that import mlx, on Apple Silicon. No `needs`: a macOS runner is the longest wait.
+  mutation-mac:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Mutation-test the mac-only sources
+        run: task mutate -- --max-children 3 --mac-only --split-map --results mutation/shard-mac.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-shard-mac # mutation-shard-*: the merge waits for it with the 8 Linux shards
+          path: mutation/
+          if-no-files-found: ignore
+
+  merge:
+    needs: [mutation, mutation-mac]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutation-shard-*
+          path: shards
+      - name: Merge the shards and gate
+        run: >-
+          task mutate:merge -- --merge shards --expect 9 --report mutation-report.md
+          --survivors survivors.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report
+          path: mutation-report.md
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-survivors
+          path: survivors.json
+          if-no-files-found: ignore

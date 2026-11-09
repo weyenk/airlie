@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -83,6 +84,7 @@ def test_macos_only_functions_go_to_the_mac_job_and_the_rest_of_their_file_stays
     (tmp_path / "src" / "airlie" / "v.py").write_text("import mlx\n\n\ndef f(a):\n    return a\n")
     monkeypatch.setattr(mc, "mac_functions", lambda: ["airlie.m:plain"])
     monkeypatch.setattr(mc, "enrolled_files", lambda: [plain_file, "src/airlie/v.py"])
+    monkeypatch.setattr(mc, "equivalents", dict)
 
     def globs(argv: list[str], has_mlx: bool) -> set[str]:
         fake = FakeMutmut()
@@ -331,14 +333,19 @@ def test_the_mutmut_config_copies_what_the_tests_read_outside_src() -> None:
     assert "ops" in cfg["tool"]["mutmut"]["also_copy"]
 
 
-def run_main(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> FakeMutmut:
-    fake = FakeMutmut()
+def run_main(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    changed: set[str] | None = None,
+    fake: FakeMutmut | None = None,
+    stats: dict[str, object] | None = None,
+) -> FakeMutmut:
+    fake = fake or FakeMutmut()
     monkeypatch.setattr(mc, "mutmut", fake.run)
     monkeypatch.setattr(mc, "mutmut_out", fake.out)
     monkeypatch.setattr(mc, "enrolled_files", lambda: SCOPE)
-    monkeypatch.setattr(
-        mc, "changed_files", lambda base: {"src/airlie/engine/sse.py", "tests/unit/test_new.py"}
-    )
+    files = changed or {"src/airlie/engine/sse.py", "tests/unit/test_new.py"}
+    monkeypatch.setattr(mc, "changed_files", lambda base: files)
     monkeypatch.setattr(mc, "changed_tests", lambda changed: ["tests/unit/test_new.py"])
     monkeypatch.setattr(mc, "mutation_ignored_tests", lambda: [])
     monkeypatch.setattr(mc, "merge_base_of", lambda base: "base")
@@ -346,10 +353,49 @@ def run_main(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> FakeMutmut:
     touched = ({"airlie.engine.sse.x_iter_sse__mutmut_*": 20}, ["- src/airlie/engine/sse.py: iter_sse"])
     monkeypatch.setattr(mc, "changed_functions", lambda merge_base, paths: touched)
     monkeypatch.setattr(mc, "probe_mutant", lambda files: "airlie.engine.sse.x_iter_sse__mutmut_1")
-    monkeypatch.setattr(mc, "read_stats", lambda: STATS)
+    monkeypatch.setattr(mc, "read_stats", lambda: stats or STATS)
     monkeypatch.setattr(mc.sys, "argv", ["mutate_changed.py", *argv])
     mc.main()
     return fake
+
+
+SSE = "airlie.engine.sse.x_iter_sse__mutmut_"
+
+
+class ShowingMutmut(FakeMutmut):
+    """mutmut whose run ends with two enrolled survivors, a killed one and a survivor outside the enrolled
+    modules (a function the changed test runs), and whose `show` answers with each mutant's diff."""
+
+    def out(self, *args: str) -> str:
+        if args[0] == "show":
+            return f"--- a\n+++ b\n-    old\n+    new {args[1]}\n"
+        return f"{SSE}1: killed\n{SSE}2: survived\n{SSE}3: survived\nairlie.cli.x_main__mutmut_1: survived\n"
+
+
+NEW_TEST_RUNS_CLI = {"tests_by_mangled_function_name": {"airlie.cli.x_main": ["tests/unit/test_new.py::t"]}}
+
+
+def test_a_shards_record_carries_the_diff_of_each_gating_mutant_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    out = tmp_path / "shard-1.json"
+    monkeypatch.setattr(mc, "equivalents", lambda: {})
+    run_main(monkeypatch, ["--results", str(out)], fake=ShowingMutmut(), stats=NEW_TEST_RUNS_CLI)
+    record = json.loads(out.read_text())
+    assert record["status"] == "ran" and "airlie.cli.x_main__mutmut_1" in record["results"]
+    # the enrolled survivors' diffs; none for the killed mutant or the one outside the enrolled modules
+    assert record["shown"] == {f"{SSE}{i}": f"--- a\n+++ b\n-    old\n+    new {SSE}{i}\n" for i in (2, 3)}
+
+
+def test_the_failure_output_shows_the_gating_mutants_not_the_listed_equivalents(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    listed = {f"{SSE}2": {"mutant": f"{SSE}2", "line": f"new {SSE}2", "reason": "a log line"}}
+    monkeypatch.setattr(mc, "equivalents", lambda: listed)
+    run_main(monkeypatch, ["--gate-only"], fake=ShowingMutmut())
+    out = capsys.readouterr().out
+    assert f"\n## {SSE}3\n" in out
+    assert f"\n## {SSE}2\n" not in out  # listed: reported as equivalent, not shown as a failure
 
 
 def test_by_default_the_functions_the_changed_tests_run_are_mutated_too(
@@ -384,6 +430,29 @@ def test_gate_only_with_no_enrolled_change_has_nothing_to_mutate(
     monkeypatch.setattr(mc.sys, "argv", ["mutate_changed.py", "--gate-only"])
     assert mc.main() == 0
     assert fake.runs == [] and "nothing to mutate" in capsys.readouterr().out
+
+
+SETUP_CHANGE = {"tests/unit/conftest.py", "src/airlie/engine/sse.py"}
+
+
+def test_defer_setup_mutates_the_touched_functions_but_not_every_module(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = run_main(monkeypatch, ["--gate-only", "--defer-setup"], SETUP_CHANGE)
+    out = capsys.readouterr().out
+    assert "left to the nightly run" in out and "tests/unit/conftest.py" in out
+    # only the function the change touched, in the one enrolled file it changed: not every module, whole
+    assert fake.runs == [("run", "airlie.engine.sse.x_iter_sse__mutmut_*")]
+    assert "1 changed function(s) in 1 enrolled file(s)" in out
+
+
+def test_without_defer_setup_a_setup_change_still_mutates_every_enrolled_module(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_main(monkeypatch, ["--gate-only", "--list"], SETUP_CHANGE)
+    out = capsys.readouterr().out
+    assert "left to the nightly run" not in out
+    assert f"{len(SCOPE)} source file(s):" in out
 
 
 # ---- sharding: a matrix of runs, then one merge ----
@@ -875,3 +944,109 @@ def test_a_run_started_from_a_map_reads_the_changed_tests_functions_without_a_pr
     code, fake = run_mapped(monkeypatch, ["--map", str(tmp_path)], MapCalls())
     assert code == 0 and len(fake.runs) == 1  # no stats probe, only the run
     assert fake.runs[0][:2] == ("run", "airlie.engine.sse.x_iter_sse__mutmut_*")
+
+
+EQ_MUTANT = "airlie.engine.sse.x_parse__mutmut_3"
+EQ_LISTED = {EQ_MUTANT: {"mutant": EQ_MUTANT, "line": "return  None", "reason": "same value"}}
+
+
+def test_mutated_line_is_the_plus_line_of_the_diff() -> None:
+    diff = '--- src/a.py\n+++ src/a.py\n@@ -1 +1 @@\n-    if c in "*?[":\n+    if c in "XX*?[XX":\n'
+    assert mc.mutated_line(diff) == 'if c in "XX*?[XX":'
+    assert mc.mutated_line("--- a\n+++ a\n") is None
+
+
+def test_a_listed_equivalent_mutant_does_not_gate() -> None:
+    shown = {EQ_MUTANT: "+++ x\n+    return  None\n"}
+    report, code = mc.verdict({EQ_MUTANT: "survived"}, {"airlie.engine.sse"}, "changed", shown, EQ_LISTED)
+    assert code == 0 and any("equivalent (listed" in r for r in report)
+
+
+def test_an_equivalent_entry_whose_line_changed_is_stale_and_still_gates() -> None:
+    shown = {EQ_MUTANT: "+    x = 2\n"}
+    report, code = mc.verdict({EQ_MUTANT: "survived"}, {"airlie.engine.sse"}, "changed", shown, EQ_LISTED)
+    assert code == 1 and any("stale equivalent" in r for r in report)
+
+
+def test_a_caught_listed_mutant_is_a_stale_entry() -> None:
+    report, code = mc.verdict({EQ_MUTANT: "killed"}, {"airlie.engine.sse"}, "changed", {}, EQ_LISTED)
+    assert code == 0 and any("stale equivalent" in r for r in report)
+
+
+def test_write_results_carries_the_shown_diffs(tmp_path: Path) -> None:
+    out = tmp_path / "s" / "shard-1.json"
+    mc.write_results(out, "ran", {EQ_MUTANT: "survived"}, "1/1", "changed", {EQ_MUTANT: "+ x\n"})
+    assert mc.json.loads(out.read_text())["shown"] == {EQ_MUTANT: "+ x\n"}
+
+
+def test_merge_applies_the_equivalent_list_to_the_shards_diffs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    record = {
+        "status": "ran",
+        "shard": "1/1",
+        "scope": "changed",
+        "results": {EQ_MUTANT: "survived"},
+        "shown": {EQ_MUTANT: "+    return  None\n"},
+    }
+    (tmp_path / "shard-1.json").write_text(mc.json.dumps(record))
+    monkeypatch.setattr(mc, "equivalents", lambda: EQ_LISTED)
+    assert mc.merge(tmp_path, 1, None, {"airlie.engine.sse"}) == 0
+    assert "equivalent (listed in pyproject.toml)" in capsys.readouterr().out
+
+
+def test_function_of_a_mutant_is_its_functions_glob() -> None:
+    assert mc.function_of("airlie.a.xǁCǁm__mutmut_4") == "airlie.a.xǁCǁm__mutmut_*"
+    assert mc.function_of("airlie.a.x_f__mutmut_12") == "airlie.a.x_f__mutmut_*"
+
+
+def shard_record(where: Path, n: int, results: dict[str, str], shown: dict[str, str]) -> None:
+    mc.write_results(where / f"shard-{n}.json", "ran", results, f"{n}/2", "changed", shown)
+
+
+def test_merge_writes_the_gating_survivors_with_their_diffs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kept, listed, other = "airlie.engine.sse.x_a__mutmut_3", EQ_MUTANT, "airlie.cli.x_b__mutmut_1"
+    shard_record(
+        tmp_path, 1, {kept: "survived", listed: "survived"}, {kept: "+ a\n", listed: "+    return  None\n"}
+    )
+    shard_record(
+        tmp_path, 2, {other: "survived", "airlie.engine.sse.x_c__mutmut_1": "killed"}, {other: "+ b\n"}
+    )
+    monkeypatch.setattr(mc, "equivalents", lambda: EQ_LISTED)
+    out = tmp_path / "out" / "survivors.json"
+    assert mc.merge(tmp_path, 2, None, {"airlie.engine.sse"}, out) == 1
+    assert mc.json.loads(out.read_text()) == {
+        "status": "ran",
+        "survivors": [
+            {
+                "mutant": kept,
+                "status": "survived",
+                "function": "airlie.engine.sse.x_a__mutmut_*",
+                "diff": "+ a\n",
+            }
+        ],
+    }
+
+
+def test_merge_writes_an_empty_survivors_list_when_nothing_ran(tmp_path: Path) -> None:
+    mc.write_results(tmp_path / "shard-1.json", "nothing", {}, "1/1", "changed")
+    out = tmp_path / "survivors.json"
+    assert mc.merge(tmp_path, 1, None, ENROLLED, out) == 0
+    assert mc.json.loads(out.read_text()) == {"status": "ran", "survivors": []}
+
+
+def test_merge_writes_a_survivors_file_when_a_shard_could_not_run(tmp_path: Path) -> None:
+    shard_record(tmp_path, 1, {"airlie.engine.sse.x_a__mutmut_1": "killed"}, {})
+    out = tmp_path / "survivors.json"
+    assert mc.merge(tmp_path, 2, None, ENROLLED, out) == mc.COULD_NOT_RUN
+    assert mc.json.loads(out.read_text()) == {"status": "could_not_run", "survivors": []}
+    mc.write_results(tmp_path / "shard-2.json", "could_not_run", {}, "2/2", "changed")
+    out.unlink()
+    assert mc.merge(tmp_path, 2, None, ENROLLED, out) == mc.COULD_NOT_RUN
+    assert mc.json.loads(out.read_text())["status"] == "could_not_run"
+
+
+def test_the_committed_equivalent_list_parses() -> None:
+    assert all({"mutant", "line", "reason"} <= e.keys() for e in mc.equivalents().values())

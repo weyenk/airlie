@@ -527,12 +527,33 @@ tasks:
       - '{{.RUN}} python scripts/mutate_changed.py --scope changed {{.CLI_ARGS}}'
 
   mutate:project:
-    desc: "Mutation-test all of src/airlie (the weekly run): enrolled modules gate, the rest is the backlog table"
+    desc: "Mutation-test all of src/airlie, weekly on the Mac (task mutate:local); enrolled modules gate, the rest is the backlog table; CI runs --scope enrolled nightly"
     cmds:
       - '{{.RUN}} python scripts/mutate_changed.py --scope project {{.CLI_ARGS}}'
 
+  mutate:local:
+    desc: "The weekly whole-project mutation run by hand: waits for the line's lanes, mutates a fresh worktree of origin/main, writes ~/.local/state/airlie/mutation/<date>.md (task mutate:local -- --max-children 4; docs/integrations/story.md)"
+    cmds:
+      - '{{.RUN}} python scripts/mutate_local.py {{.CLI_ARGS}}'
+
+  mutate:launchd:install:
+    desc: "Load the launchd agent that runs task mutate:local's run every Sunday at 01:00 from this checkout (log ~/.local/state/airlie/mutation-weekly.log; docs/integrations/story.md)"
+    cmds:
+      - mkdir -p ~/Library/LaunchAgents ~/.local/state/airlie
+      - sed -e 's|__AIRLIE_DIR__|{{.ROOT_DIR}}|g' -e "s|__HOME__|$HOME|g" docs/integrations/mutation-weekly.plist > ~/Library/LaunchAgents/dev.airlie.mutation-weekly.plist
+      - plutil -lint ~/Library/LaunchAgents/dev.airlie.mutation-weekly.plist
+      - launchctl bootout gui/$(id -u)/dev.airlie.mutation-weekly 2>/dev/null || true
+      - launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.airlie.mutation-weekly.plist
+      - echo "loaded; the log is ~/.local/state/airlie/mutation-weekly.log"
+
+  mutate:launchd:uninstall:
+    desc: "Unload the weekly mutation launchd agent and remove its plist"
+    cmds:
+      - launchctl bootout gui/$(id -u)/dev.airlie.mutation-weekly 2>/dev/null || true
+      - rm -f ~/Library/LaunchAgents/dev.airlie.mutation-weekly.plist
+
   mutate:merge:
-    desc: "Gate on the --results files of sharded mutation runs (task mutate:merge -- --merge shards/ --expect 5)"
+    desc: "Gate on the --results files of sharded mutation runs (task mutate:merge -- --merge shards/ --expect 9)"
     cmds:
       - '{{.RUN}} python scripts/mutate_changed.py {{.CLI_ARGS}}'
 

@@ -8,6 +8,7 @@ governs:
 yields_to:
   - context-pressure
   - one-step-left
+  - write-demand
 why: |
   What the architect is told to start each later round.
 

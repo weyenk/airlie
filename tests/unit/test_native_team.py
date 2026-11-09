@@ -2083,7 +2083,12 @@ async def test_an_advised_repeat_still_reports_the_hub_id(tmp_path: Path) -> Non
     fixed = text("repeated", n=3, tool="read_file")
     assert f"{fixed}\n\n{SUPERVISOR}\nStop reading a; write the test." in user_said(engine)
     assert [(s["id"], s["step"]) for s in steers(events)] == [
+        ("same-call", 2),  # the same read of a missing file: answered from step 1 (AIR-66, 2026-11-09)
+        ("same-call", 3),
         ("repeated", 3),
+        ("same-call", 4),
+        ("same-call", 5),
+        ("same-call", 6),
         ("repeat-write-only", 6),
         ("read-refused", 7),
         ("read-refused", 8),
@@ -2334,3 +2339,104 @@ async def test_a_role_red_for_red_limit_runs_in_a_row_stops_for_the_architect(tm
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "red_limit" and not result.ok
     assert result.steps == 2 * RED_LIMIT and f"failed {RED_LIMIT} runs in a row" in result.final_text
+
+
+# ---- a writer cut again under the write-only hold writes; it is not ended empty (AIR-66, 2026-11-09) ----
+
+
+def cut_grep(tag: str, pattern: str = "archived") -> FakeReply:
+    """A grep whose thinking ran to the 8-token budget: the same call whatever `tag` says."""
+    return FakeReply(
+        reasoning=thought(8, tag),
+        tool_calls=[ToolCall(f"g-{tag}", "grep", json.dumps({"pattern": pattern, "path": "."}))],
+    )
+
+
+def write_t(cid: str = "w") -> FakeReply:
+    return FakeReply(tool_calls=[ToolCall(cid, "write_file", json.dumps({"path": "t.py", "content": "x\n"}))])
+
+
+def held_cuts() -> list[FakeReply]:
+    """Two cut reads (the hold), then two more (cut again under it), then a write and the answer."""
+    return [cut_read("a"), cut_read("b", "b"), cut_read("c", "c"), cut_read("d", "d"), write_t()]
+
+
+async def test_an_unwritten_writer_cut_again_under_the_hold_is_told_to_write_and_its_write_lands(
+    tmp_path: Path,
+) -> None:
+    """AIR-66 layer 01 (2026-11-09): the architect drafting a tool-written package was cut on three reads,
+    held to writing, then cut on three more of its held reads; the branch for a writer that has written took
+    it, and the run ended with nothing written (stop answer_after_cuts, the package unusable). Cut again
+    under the hold, it is told to write now, with its last reasoning, no reads left and the write tools kept;
+    its write lands and the run goes on to its answer."""
+    engine = FakeEngine({"coder": [*held_cuts(), FakeReply(text="Done.")]})
+    team, ctx = answering_team(tmp_path, engine, tool_names=("write_file", "read_file"), max_steps=20)
+    ctx.emit = events = Events()
+    result = await team.run(ctx, Recorder())
+    assert (result.ok, result.stop_reason, result.steps) == (True, "done", 5)
+    assert (ctx.worktree / "t.py").read_text() == "x\n"
+    demand = engine.requests[4]
+    assert {"write_file"} <= {t.name for t in demand.tools or []}
+    assert str(demand.messages[-1].content) == text("write-demand", tail=thought(8, "d"))
+    after = [
+        {k: v for k, v in e.items() if k != "kind"} for e in events.records if e["kind"] == "write_after_cuts"
+    ]
+    assert after == [
+        {"team_id": "team-1", "role": "coder", "step": 2},
+        {"team_id": "team-1", "role": "coder", "step": 4, "again": True},
+    ]
+    assert not [e for e in events.records if e["kind"] == "answer_after_cuts"]
+
+
+async def test_a_writer_that_still_writes_nothing_after_the_demand_stops_unwritten_after_cuts(
+    tmp_path: Path,
+) -> None:
+    """One bounded escalation: after the demand its reads are refused, and READS_UNDER_HOLD steps on with
+    nothing written the run ends (unwritten_after_cuts), not at max_steps or in an endless hold."""
+    engine = FakeEngine({"coder": [cut_read(t, t) for t in "abcdefghij"]})
+    team, ctx = answering_team(tmp_path, engine, tool_names=("write_file", "read_file"), max_steps=20)
+    rec = Recorder()
+    result = await team.run(ctx, rec)
+    assert (result.ok, result.stop_reason, result.steps) == (False, "unwritten_after_cuts", 7)
+    assert [s.o_t == REFUSED for s in rec.steps][4:] == [True, True, True]
+    assert "written" in result.final_text
+
+
+async def test_the_answer_turn_of_a_writer_told_to_write_keeps_the_write_tools(tmp_path: Path) -> None:
+    """The tool-less answer turn is never how a tool-written deliverable is asked for: a writer told to write
+    that reaches max_steps is offered its write tools on the last turn, as the conversation it was (not in
+    text), and its write there runs; the turn after, written, is the tool-less answer."""
+    engine = FakeEngine({"coder": [*held_cuts(), FakeReply(text="Done.")]})
+    team, ctx = answering_team(tmp_path, engine, tool_names=("write_file", "read_file"), max_steps=4)
+    result = await team.run(ctx, Recorder())
+    assert (result.ok, result.stop_reason) == (True, "done")
+    assert (ctx.worktree / "t.py").read_text() == "x\n"
+    assert {t.name for t in engine.requests[4].tools or []} == {"write_file"}
+    assert any(m.role == "tool" for m in engine.requests[4].messages)
+    assert engine.requests[5].tools is None
+
+
+async def test_the_same_call_with_the_same_result_is_answered_from_the_earlier_one_at_no_read(
+    tmp_path: Path,
+) -> None:
+    """AIR-66 layer 01 (2026-11-09): under the hold the architect sent the identical grep three times, each
+    served as one of its held reads; the count each held read appends made every observation different, so
+    the repeat guard never saw a repeat. The same call with the same result is answered from the earlier
+    step, costs no held read, and counts toward the repeat guard as the earlier one."""
+    read_f = FakeReply(tool_calls=[ToolCall("r", "read_file", json.dumps({"path": "f"}))])
+    engine = FakeEngine(
+        {"coder": [cut_grep("a"), cut_grep("b"), cut_grep("c"), read_f, write_t(), FakeReply(text="Done.")]}
+    )
+    team, ctx = answering_team(
+        tmp_path, engine, tool_names=("write_file", "read_file", "grep"), nudge_stuck=True, max_steps=20
+    )
+    ctx.emit = events = Events()
+    rec = Recorder()
+    result = await team.run(ctx, rec)
+    assert result.ok and result.stop_reason == "done"
+    assert rec.steps[1].o_t == text("same-call", step=1)
+    assert rec.steps[2].o_t == text("same-call-held", step=1)
+    assert rec.steps[3].o_t.endswith(text("read-left", k=2))  # the only held read that counted
+    assert [s["id"] for s in steers(events)].count("repeated") == 1
+    assert requests_saying(engine, text("repeated", n=3, tool="grep"))[0] == 4
+    assert [e["step"] for e in events.records if e["kind"] == "call_repeated"] == [2, 3]
