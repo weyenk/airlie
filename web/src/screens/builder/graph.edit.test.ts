@@ -1,188 +1,203 @@
-// The graph's editing functions (graph.ts): each produces the spec keys its move means, and the wires are what
-// the composer would walk from those keys.
-import { addNode, canRemove, connect, emptyGraph, fromWorkflow, isChild, moveNode, removeEdge, removeNode, renameNode, toWorkflow, updateNode } from "./graph";
+// The graph's editing functions (graph.ts) on schema v2: a line is a `to` entry, what it carries is what its source
+// writes and its target reads, and every edit keeps the node fields and the lines in step.
+import { addNode, connect, emptyGraph, fromWorkflow, moveNode, readable, removeEdge, removeNode, renameNode, renameOutput, toWorkflow, updateNode } from "./graph";
 import type { Graph } from "./graph";
 import { parseWorkflow } from "./yaml";
 
-/** Three checks a > b > c in a row, 160 px apart, falling through in canvas order. */
-const ROW3 = `workflows:
+/** a writes notes and verdict and goes on to b (which reads notes); c reads nothing yet; d writes notes too. */
+const SMALL = `workflows:
   w:
-    start: a
+    inputs: [card]
     nodes:
-      a: {type: check, run: x.a, outputs: {verdict: text, notes: markdown}}
-      b: {type: check, run: x.b}
+      a: {type: check, run: x.a, inputs: [card], outputs: {verdict: text, notes: markdown}, to: [b]}
+      b: {type: ask, role: coder, prompt: "Fix {notes}; {?notes}again {notes.why}{/notes}", inputs: [notes]}
       c: {type: check, run: x.c}
+      d: {type: check, run: x.d, outputs: {notes: markdown}}
     layout:
       a: {x: 0, y: 0}
       b: {x: 160, y: 0}
       c: {x: 320, y: 0}
+      d: {x: 0, y: 90}
 `;
 const graphOf = (text: string): Graph => {
   const { name, spec, layout } = parseWorkflow(text);
   return fromWorkflow(name, spec, layout);
 };
-const row3 = () => graphOf(ROW3);
+const small = () => graphOf(SMALL);
 const specOf = (g: Graph, id: string) => g.nodes.find((n) => n.id === id)!.spec;
-const wires = (g: Graph) => g.edges.map((e) => `${e.kind}:${e.from}>${e.to}${e.label ? `[${e.label}]` : ""}`);
+const lineOf = (g: Graph, from: string, to: string) => g.edges.filter((e) => e.from === from && e.to === to);
 
-test("addNode names a box <type>-N with the smallest free N, gives its type's default fields and places it", () => {
-  let g = addNode(row3(), "check", 480, 0);
-  expect(g.nodes.find((n) => n.id === "check-1")).toMatchObject({ type: "check", spec: { run: "" }, x: 480, y: 0, placed: true });
-  expect(wires(g)).toContain("sequence:c>check-1"); // a box dropped after the last one is what it falls through to
-  g = addNode(g, "ask", 640, 0);
-  expect(specOf(g, "ask-1")).toEqual({ role: "", prompt: "", outputs: {} });
-  g = addNode(addNode(g, "check", 800, 0), "check", 960, 0);
-  g = removeNode(g, "check-2");
-  expect(addNode(g, "check", 1120, 0).nodes.map((n) => n.id)).toContain("check-2");
+test("connect draws the line and adds each artifact it carries to the target's inputs", () => {
+  const g = connect(small(), "a", "c", { artifacts: ["verdict"] });
+  expect(lineOf(g, "a", "c")).toEqual([{ from: "a", to: "c", artifacts: ["verdict"] }]);
+  expect(specOf(g, "c").inputs).toEqual(["verdict"]);
+  expect(toWorkflow(g).spec.nodes.a.to).toEqual(["b", "c"]);
 });
 
-test("addNode can bring fields of its own (an each box from a bundle)", () => {
-  expect(specOf(addNode(row3(), "each", 480, 0, { workflow: "layer" }), "each-1")).toEqual({ over: "", workflow: "layer" });
+test("connect adds an input once: a second line between the same nodes replaces the first", () => {
+  let g = connect(small(), "a", "c", { artifacts: ["verdict"] });
+  g = connect(g, "a", "c", { artifacts: ["verdict", "notes"], when: "verdict == yes" });
+  expect(specOf(g, "c").inputs).toEqual(["verdict", "notes"]);
+  expect(lineOf(g, "a", "c")).toEqual([{ from: "a", to: "c", artifacts: ["verdict", "notes"], when: "verdict == yes" }]);
+  // b reads notes already: no second input, no second line
+  g = connect(g, "a", "b", { artifacts: ["notes"] });
+  expect(specOf(g, "b").inputs).toEqual(["notes"]);
+  expect(lineOf(g, "a", "b")).toHaveLength(1);
+  expect(g.edges.map((e) => `${e.from}>${e.to}`)).toEqual(["a>b", "a>c"]); // the replaced line keeps its place
 });
 
-test("addNode on an empty canvas makes the box the start", () => {
-  const g = addNode(emptyGraph("new"), "gate", 0, 0);
-  expect(g.start).toBe("gate-1");
-  expect(toWorkflow(g).spec.start).toBe("gate-1");
+test("connect with no artifacts draws an ordering line; a loop line keeps its bound", () => {
+  let g = connect(small(), "c", "d", {});
+  expect(lineOf(g, "c", "d")).toEqual([{ from: "c", to: "d", artifacts: [] }]);
+  expect(specOf(g, "d")).not.toHaveProperty("inputs");
+  g = connect(g, "b", "a", { loop: { max: 3, carry: "notes" } });
+  expect(lineOf(g, "b", "a")).toEqual([{ from: "b", to: "a", artifacts: [], loop: { max: 3, carry: "notes" } }]);
+  expect(toWorkflow(g).spec.nodes.b.to).toEqual([{ node: "a", loop: { max: 3, carry: "notes" } }]);
 });
 
-test("addNode dropped between two boxes changes no wire it lands on: it goes last in the file", () => {
-  const g = addNode(row3(), "check", 80, 90);
-  expect(g.nodes.map((n) => n.id)).toEqual(["a", "b", "c", "check-1"]);
-  expect(wires(g)).toEqual(["sequence:a>b", "sequence:b>c", "sequence:c>check-1"]);
-  expect(specOf(g, "a")).not.toHaveProperty("next");
+test("connect refuses an artifact its source does not write, a loop without its max, a box that is not there", () => {
+  expect(() => connect(small(), "c", "b", { artifacts: ["notes"] })).toThrow(/c writes no notes/);
+  expect(() => connect(small(), "b", "a", { loop: { max: "" } })).toThrow(/max/);
+  expect(() => connect(small(), "b", "a", { loop: { max: "  " } })).toThrow(/max/);
+  expect(() => connect(small(), "a", "zz", {})).toThrow(/zz/);
 });
 
-test("connect sequence to the box that follows on the canvas sets no next; to another box it does", () => {
-  expect(specOf(connect(row3(), "a", "b", "sequence"), "a")).not.toHaveProperty("next");
-  const g = connect(row3(), "a", "c", "sequence");
-  expect(specOf(g, "a").next).toBe("c");
-  expect(wires(g)).toContain("sequence:a>c");
-  expect(wires(g)).not.toContain("sequence:a>b");
-  // back to the follower drops the next again
-  expect(specOf(connect(g, "a", "b", "sequence"), "a")).not.toHaveProperty("next");
+test("removeEdge drops the line and the inputs it alone carried", () => {
+  let g = connect(small(), "a", "c", { artifacts: ["verdict", "notes"] });
+  g = updateNode(g, "c", { ...specOf(g, "c"), inputs: ["card", "verdict", "notes"] });
+  g = connect(g, "d", "c", { artifacts: ["notes"] });
+  g = removeEdge(g, lineOf(g, "a", "c")[0]);
+  expect(lineOf(g, "a", "c")).toEqual([]);
+  // verdict went with the line; notes still comes from d; card is the workflow's input, no line's
+  expect(specOf(g, "c").inputs).toEqual(["card", "notes"]);
+  g = removeEdge(g, lineOf(g, "d", "c")[0]);
+  expect(specOf(g, "c").inputs).toEqual(["card"]);
 });
 
-test("connect parallel creates a parallel box between source and target holding the target, then reuses it", () => {
-  let g = connect(row3(), "a", "c", "parallel");
-  const p = g.nodes.find((n) => n.type === "parallel")!;
-  expect(p.id).toBe("parallel-1");
-  expect(p.spec.nodes).toEqual(["c"]);
-  expect(wires(g)).toEqual(expect.arrayContaining(["sequence:a>parallel-1", "parallel:parallel-1>c", "parallel:c>b"]));
-  expect(wires(g)).not.toContain("sequence:a>b");
-  g = connect(g, "a", "b", "parallel");
-  expect(specOf(g, "parallel-1").nodes).toEqual(["c", "b"]);
-  expect(g.nodes.filter((n) => n.type === "parallel")).toHaveLength(1);
+test("removeEdge of an ordering line touches no input", () => {
+  const g = connect(small(), "c", "b", {});
+  expect(specOf(removeEdge(g, lineOf(g, "c", "b")[0]), "b").inputs).toEqual(["notes"]);
 });
 
-test("a parallel child drops its next, loop and branch: a child may carry none", () => {
-  let g = connect(row3(), "c", "a", "loop", { loop: { max: 2 } });
-  g = updateNode(g, "c", { ...specOf(g, "c"), next: "a", on: "verdict", branch: { yes: "b" } });
-  g = connect(g, "a", "c", "parallel");
-  expect(specOf(g, "c")).toEqual({ run: "x.c" });
-  expect(isChild(g, "c")).toBe(true);
-  expect(isChild(g, "a")).toBe(false);
+test("renameOutput renames the output, the lines that carry it and its readers' inputs and placeholders", () => {
+  const before = connect(small(), "a", "c", { artifacts: ["notes"] });
+  const g = renameOutput(before, "a", "notes", "remarks");
+  if ("refused" in g) throw new Error("refused");
+  expect(specOf(g, "a").outputs).toEqual({ verdict: "text", remarks: "markdown" });
+  expect(Object.keys(specOf(g, "a").outputs as object)).toEqual(["verdict", "remarks"]); // in place
+  expect(lineOf(g, "a", "b")[0].artifacts).toEqual(["remarks"]);
+  expect(lineOf(g, "a", "c")[0].artifacts).toEqual(["remarks"]);
+  expect(specOf(g, "b").inputs).toEqual(["remarks"]);
+  expect(specOf(g, "c").inputs).toEqual(["remarks"]);
+  expect(specOf(g, "b").prompt).toBe("Fix {remarks}; {?remarks}again {remarks.why}{/remarks}");
+  // d's own notes is another writer's: untouched
+  expect(specOf(g, "d").outputs).toEqual({ notes: "markdown" });
 });
 
-test("connect parallel from a parallel box adds the target to its nodes", () => {
-  const g = connect(connect(row3(), "a", "c", "parallel"), "parallel-1", "b", "parallel");
-  expect(specOf(g, "parallel-1").nodes).toEqual(["c", "b"]);
+test("renameOutput refuses when a reader's prompt file names it, listing the readers", () => {
+  const g = updateNode(small(), "b", { ...specOf(small(), "b"), prompt: "prompt:fix-brief" });
+  expect(renameOutput(g, "a", "notes", "remarks")).toEqual({ refused: ["b"] });
+  // a prompt file known not to name it is no reason to refuse
+  const ok = renameOutput(g, "a", "notes", "remarks", { "fix-brief": ["card"] });
+  expect("refused" in ok).toBe(false);
+  expect(renameOutput(g, "a", "notes", "remarks", { "fix-brief": ["notes"] })).toEqual({ refused: ["b"] });
 });
 
-test("connect loop sets loop {to, max, when, carry} on the source", () => {
-  const g = connect(row3(), "c", "a", "loop", { loop: { max: "story.layer_attempts", when: "x.again", carry: "notes" } });
-  expect(specOf(g, "c").loop).toEqual({ to: "a", max: "story.layer_attempts", when: "x.again", carry: "notes" });
-  expect(g.edges.filter((e) => e.kind === "loop")).toEqual([{ from: "c", to: "a", kind: "loop", loop: { max: "story.layer_attempts", when: "x.again", carry: "notes" } }]);
-  expect(specOf(connect(row3(), "c", "a", "loop", { loop: { max: 3 } }), "c").loop).toEqual({ to: "a", max: 3 });
+test("renameOutput follows a reader that names it as its session or a bundle's each, not in its inputs", () => {
+  const text = `workflows:
+  w:
+    nodes:
+      p: {type: check, run: x.p, outputs: {plan: session, items: list}, to: [c, b]}
+      c: {type: write, role: architect, prompt: "go on", session: plan}
+      b: {type: bundle, workflow: layer, each: items}
+`;
+  let g = renameOutput(graphOf(text), "p", "plan", "talk");
+  if ("refused" in g) throw new Error("refused");
+  expect(specOf(g, "c")).toEqual({ role: "architect", prompt: "go on", session: "talk" });
+  g = renameOutput(g, "p", "items", "layers");
+  if ("refused" in g) throw new Error("refused");
+  expect(specOf(g, "b")).toEqual({ workflow: "layer", each: "layers" });
 });
 
-test("connect branch sets on and branch[value] on the source, adding to the values it has", () => {
-  let g = connect(row3(), "a", "c", "branch", { branch: { on: "verdict", value: "yes" } });
-  expect(specOf(g, "a")).toMatchObject({ on: "verdict", branch: { yes: "c" } });
-  g = connect(g, "a", "b", "branch", { branch: { on: "verdict", value: "no" } });
-  expect(specOf(g, "a").branch).toEqual({ yes: "c", no: "b" });
-  expect(wires(g)).toEqual(expect.arrayContaining(["branch:a>c[yes]", "branch:a>b[no]"]));
+test("renameOutput refuses a name taken or an output that is not there", () => {
+  expect(() => renameOutput(small(), "a", "notes", "verdict")).toThrow(/already/);
+  expect(() => renameOutput(small(), "a", "nope", "x")).toThrow(/nope/);
 });
 
-test("connect each sets the each box's workflow and wires to it", () => {
-  let g = addNode(row3(), "each", 480, 0);
-  g = connect(g, "c", "each-1", "each", { each: { workflow: "layer" } });
-  expect(specOf(g, "each-1")).toMatchObject({ workflow: "layer" });
-  expect(wires(g)).toContain("sequence:c>each-1");
-  expect(() => connect(row3(), "a", "b", "each", { each: { workflow: "layer" } })).toThrow(/each/);
+test("renameOutput of a bundle workflow's declared output renames it there too", () => {
+  const g = renameOutput({ ...small(), outputs: ["notes"] }, "a", "notes", "remarks");
+  if ("refused" in g) throw new Error("refused");
+  expect(g.outputs).toEqual(["remarks"]);
 });
 
-test("a move missing its fields is refused", () => {
-  expect(() => connect(row3(), "c", "a", "loop")).toThrow(/max/);
-  expect(() => connect(row3(), "a", "b", "branch", { branch: { on: "", value: "yes" } })).toThrow(/on/);
+test("addNode gives each type its default fields, names it <type>-N and puts it last, with no line", () => {
+  let g = addNode(small(), "check", 480, 0);
+  expect(g.nodes.at(-1)).toMatchObject({ id: "check-1", type: "check", spec: { run: "", inputs: [], outputs: {} }, x: 480, y: 0, placed: true });
+  expect(g.edges).toEqual(small().edges);
+  const blank = (type: Parameters<typeof addNode>[1]) => specOf(addNode(emptyGraph("w"), type, 0, 0), `${type}-1`);
+  expect(blank("ask")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });
+  expect(blank("conversation")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });
+  expect(blank("write")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });
+  expect(blank("meeting")).toEqual({ role: [], prompt: "", inputs: [], outputs: {} });
+  expect(blank("team")).toEqual({ role: { supervisor: "", worker: "" }, prompt: "", worker: "", inputs: [], outputs: {} });
+  expect(blank("gate")).toEqual({ run: "", inputs: [], outputs: {} });
+  expect(blank("bundle")).toEqual({ workflow: "", inputs: [], outputs: {} });
+  // the caller hands in what the catalog says (a meeting's seats and inputs, a bundle's workflow)
+  g = addNode(emptyGraph("w"), "meeting", 0, 0, { role: ["product", "architect", "tester"], inputs: ["story", "layers"] });
+  expect(specOf(g, "meeting-1")).toEqual({ role: ["product", "architect", "tester"], prompt: "", inputs: ["story", "layers"], outputs: {} });
+  g = addNode(addNode(addNode(g, "check", 0, 0), "check", 0, 0), "check", 0, 0);
+  expect(addNode(removeNode(g, "check-2"), "check", 0, 0).nodes.map((n) => n.id)).toEqual(["meeting-1", "check-1", "check-3", "check-2"]);
 });
 
-test("removeEdge drops what made the wire: a next, a branch value, a loop, a parallel child", () => {
-  let g = connect(row3(), "a", "c", "sequence");
-  g = removeEdge(g, g.edges.find((e) => e.from === "a")!);
-  expect(specOf(g, "a")).not.toHaveProperty("next");
-  g = connect(row3(), "a", "c", "branch", { branch: { on: "verdict", value: "yes" } });
-  g = removeEdge(g, g.edges.find((e) => e.kind === "branch")!);
-  expect(specOf(g, "a")).not.toHaveProperty("branch");
-  expect(specOf(g, "a")).not.toHaveProperty("on");
-  g = connect(row3(), "c", "a", "loop", { loop: { max: 2 } });
-  g = removeEdge(g, g.edges.find((e) => e.kind === "loop")!);
-  expect(specOf(g, "c")).not.toHaveProperty("loop");
-  g = connect(row3(), "a", "c", "parallel");
-  g = removeEdge(g, g.edges.find((e) => e.from === "parallel-1" && e.to === "c")!);
-  expect(specOf(g, "parallel-1").nodes).toEqual([]);
-  // the canvas order is not a field: a fall-through wire stays
-  const plain = row3();
-  expect(canRemove(plain, plain.edges[0])).toBe(false);
-  expect(removeEdge(plain, plain.edges[0]).edges).toEqual(plain.edges);
+test("removeNode drops the box and every line into or out of it", () => {
+  let g = connect(small(), "c", "a", {});
+  g = removeNode(g, "a");
+  expect(g.nodes.map((n) => n.id)).toEqual(["b", "c", "d"]);
+  expect(g.edges).toEqual([]);
 });
 
-test("removeNode drops the box, its wires and every reference to it", () => {
-  let g = connect(row3(), "c", "b", "loop", { loop: { max: 2 } });
-  g = connect(g, "a", "b", "branch", { branch: { on: "verdict", value: "yes" } });
-  g = removeNode(g, "b");
-  expect(g.nodes.map((n) => n.id)).toEqual(["a", "c"]);
-  expect(g.edges.some((e) => e.from === "b" || e.to === "b")).toBe(false);
-  expect(specOf(g, "c")).not.toHaveProperty("loop");
-  expect(specOf(g, "a")).not.toHaveProperty("branch");
-  expect(removeNode(g, "a").start).toBe("c");
-});
-
-test("moveNode moves and places a box and nothing else: the wires and fields stay though it sits elsewhere", () => {
-  const before = row3();
-  const g = moveNode(before, "c", 80, 90); // c now sits between a and b
-  expect(g.nodes.find((n) => n.id === "c")).toMatchObject({ x: 80, y: 90, placed: true });
-  expect(wires(g)).toEqual(wires(before));
-  expect(g.nodes.map((n) => n.spec)).toEqual(before.nodes.map((n) => n.spec));
-  expect(g.nodes.map((n) => n.id)).toEqual(["a", "b", "c"]);
-});
-
-test("updateNode replaces a box's fields and the wires follow them", () => {
-  const g = updateNode(row3(), "a", { run: "x.a", next: "c" });
-  expect(specOf(g, "a")).toEqual({ run: "x.a", next: "c" });
-  expect(wires(g)).toContain("sequence:a>c");
-});
-
-test("renameNode renames a box and every reference to it", () => {
-  let g = connect(row3(), "c", "a", "loop", { loop: { max: 2, carry: "notes" } });
-  g = updateNode(g, "b", { ...specOf(g, "b"), inputs: ["feedback.a"] });
+test("renameNode renames a box, its lines and a feedback.<id> input", () => {
+  let g = connect(small(), "b", "a", { loop: { max: 2, carry: "notes" } });
+  g = updateNode(g, "c", { run: "x.c", inputs: ["feedback.a"] });
   g = renameNode(g, "a", "first");
-  expect(g.start).toBe("first");
-  expect(specOf(g, "c").loop).toMatchObject({ to: "first" });
-  expect(specOf(g, "b").inputs).toEqual(["feedback.first"]);
+  expect(g.nodes.map((n) => n.id)).toEqual(["first", "b", "c", "d"]);
+  expect(g.edges.map((e) => `${e.from}>${e.to}`)).toEqual(["first>b", "b>first"]);
+  expect(lineOf(g, "first", "b")[0].artifacts).toEqual(["notes"]);
+  expect(specOf(g, "c").inputs).toEqual(["feedback.first"]);
   expect(() => renameNode(g, "b", "c")).toThrow(/already/);
 });
 
-test("toWorkflow: the spec in the file's order with its layout; no start until a box exists", () => {
-  const { spec, layout } = toWorkflow(moveNode(row3(), "a", 480, 0));
-  expect(Object.keys(spec.nodes)).toEqual(["a", "b", "c"]);
-  expect(spec.nodes.a).toMatchObject({ type: "check", run: "x.a" });
-  expect(layout).toEqual({ a: { x: 480, y: 0 }, b: { x: 160, y: 0 }, c: { x: 320, y: 0 } });
-  expect(toWorkflow(emptyGraph("new")).spec).not.toHaveProperty("start");
+test("moveNode moves and places a box and nothing else", () => {
+  const before = small();
+  const g = moveNode(before, "c", 80, 90);
+  expect(g.nodes.find((n) => n.id === "c")).toMatchObject({ x: 80, y: 90, placed: true });
+  expect(g.edges).toEqual(before.edges);
+  expect(g.nodes.map((n) => n.spec)).toEqual(before.nodes.map((n) => n.spec));
+  expect(toWorkflow(g).spec).toEqual(toWorkflow(before).spec);
 });
 
-test("a branch without on draws no branch wires and falls through", () => {
-  const g = graphOf("workflows:\n  w:\n    start: a\n    nodes:\n      a: {type: check, run: x.a, branch: {'*': c}}\n      b: {type: check, run: x.b}\n      c: {type: check, run: x.c}\n");
-  expect(g.edges.filter((e) => e.kind === "branch")).toEqual([]);
-  expect(wires(g)).toContain("sequence:a>b");
+test("updateNode replaces a box's fields and the lines' artifacts follow them", () => {
+  const g = updateNode(small(), "b", { role: "coder", prompt: "p", inputs: ["card"] });
+  expect(specOf(g, "b")).toEqual({ role: "coder", prompt: "p", inputs: ["card"] });
+  expect(lineOf(g, "a", "b")).toEqual([{ from: "a", to: "b", artifacts: [] }]);
+});
+
+test("readable: the workflow's inputs, the other boxes' outputs, and the feedback a loop line carries back to it", () => {
+  expect(readable(small(), "b")).toEqual(["card", "verdict", "notes"]);
+  expect(readable(small(), "d")).toEqual(["card", "verdict", "notes"]);
+  const g = connect(small(), "b", "a", { loop: { max: 2, carry: "notes" } });
+  expect(readable(g, "a")).toEqual(["card", "notes", "feedback.a"]);
+});
+
+test("toWorkflow: the inputs, outputs and nodes in the graph's order; a line is a bare name unless it has a when or a loop", () => {
+  let g = connect(small(), "a", "c", { when: "verdict == yes" });
+  g = moveNode(g, "a", 480, 0);
+  const { spec, layout } = toWorkflow(g);
+  expect(spec.inputs).toEqual(["card"]);
+  expect(spec.outputs).toEqual([]);
+  expect(Object.keys(spec.nodes)).toEqual(["a", "b", "c", "d"]);
+  expect(spec.nodes.a).toMatchObject({ type: "check", run: "x.a", to: ["b", { node: "c", when: "verdict == yes" }] });
+  expect(spec.nodes.c).not.toHaveProperty("to");
+  expect(layout.a).toEqual({ x: 480, y: 0 });
+  expect(toWorkflow(emptyGraph("new")).spec).toEqual({ inputs: ["card", "repo"], outputs: [], nodes: {} });
 });

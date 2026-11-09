@@ -45,14 +45,14 @@ const placeOf = (id: string, x: number, y: number) => (drag.value?.id === id ? {
 const at = computed(() => new Map(props.graph.nodes.map((n) => [n.id, ((p) => ({ x: p.x + PAD, y: p.y + PAD }))(placeOf(n.id, n.x, n.y))])));
 const size = computed(() => {
   const pts = [...at.value.values()];
-  const loops = props.graph.edges.some((e) => e.kind === "loop") ? 32 : 0;
+  const loops = props.graph.edges.some((e) => e.loop) ? 32 : 0;
   // room to drop past the last box when editing
   const room = props.readonly ? 0 : 160;
   return { width: Math.max(0, ...pts.map((p) => p.x - PAD)) + W + 2 * PAD + room, height: Math.max(0, ...pts.map((p) => p.y - PAD)) + H + 2 * PAD + loops + room / 2 };
 });
 
 type Wire = { key: string; edge: GEdge; d: string; selected: boolean; label?: { x: number; y: number; text: string } };
-const same = (a: GEdge, b: GEdge | null | undefined) => !!b && a.from === b.from && a.to === b.to && a.kind === b.kind && a.label === b.label;
+const same = (a: GEdge, b: GEdge | null | undefined) => !!b && a.from === b.from && a.to === b.to && a.when === b.when;
 const wires = computed<Wire[]>(() =>
   props.graph.edges.flatMap((edge, i) => {
     const a = at.value.get(edge.from);
@@ -63,15 +63,15 @@ const wires = computed<Wire[]>(() =>
     const tx = b.x;
     const ty = b.y + H / 2;
     let d: string;
-    if (edge.kind === "loop") {
+    if (edge.loop) {
       const low = Math.max(a.y, b.y) + H + 16;
       d = `M ${sx} ${sy} H ${sx + 12} V ${low} H ${tx - 12} V ${ty} H ${tx}`;
     } else {
       const dx = Math.max(24, Math.abs(tx - sx) / 2);
       d = `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`;
     }
-    const label = edge.kind === "branch" && edge.label !== undefined ? { x: (sx + tx) / 2, y: (sy + ty) / 2 - 5, text: edge.label } : undefined;
-    return [{ key: `${i}-${edge.kind}-${edge.from}-${edge.to}`, edge, d, selected: same(edge, props.selectedEdge), label }];
+    const label = edge.when !== undefined ? { x: (sx + tx) / 2, y: (sy + ty) / 2 - 5, text: `if ${edge.when}` } : undefined;
+    return [{ key: `${i}-${edge.from}-${edge.to}`, edge, d, selected: same(edge, props.selectedEdge), label }];
   }),
 );
 
@@ -205,15 +205,15 @@ function onDrop(e: DragEvent) {
       </defs>
       <g v-for="w in wires" :key="w.key" :class="w.selected ? 'text-primary' : undefined">
         <path
-          :data-edge="w.edge.kind"
+          :data-edge="w.edge.loop ? 'loop' : 'line'"
           :data-from="w.edge.from"
           :data-to="w.edge.to"
           :data-selected="w.selected ? 'true' : undefined"
           :d="w.d"
           fill="none"
           stroke="currentColor"
-          :stroke-width="w.selected ? 2.5 : w.edge.kind === 'parallel' ? 1 : 1.5"
-          :stroke-dasharray="w.edge.kind === 'loop' ? '5 4' : undefined"
+          :stroke-width="w.selected ? 2.5 : 1.5"
+          :stroke-dasharray="w.edge.loop ? '5 4' : undefined"
           :marker-end="`url(#${marker})`"
         />
         <path
@@ -229,7 +229,7 @@ function onDrop(e: DragEvent) {
           class="cursor-pointer"
           @click="emit('selectEdge', w.edge)"
         >
-          <title>{{ w.edge.kind }}: {{ w.edge.from }} → {{ w.edge.to }}{{ w.label ? ` (${w.label.text})` : "" }}</title>
+          <title>{{ w.edge.artifacts.join(", ") || "order" }}: {{ w.edge.from }} → {{ w.edge.to }}{{ w.label ? ` (${w.label.text})` : "" }}</title>
         </path>
         <text v-if="w.label" data-edge-label :x="w.label.x" :y="w.label.y" text-anchor="middle" class="fill-current font-mono text-[11px]">{{ w.label.text }}</text>
       </g>
