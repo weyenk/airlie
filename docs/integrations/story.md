@@ -688,6 +688,18 @@ never merges its fix. Once the fix's PRs are merged on GitHub the card gets one 
 a comment: the loop stops at one. With `story.board: jira` the card's text is a note on the issue and no label is
 written.
 
+### Mutation fix cards
+
+The nightly mutation sweep (`.github/workflows/mutation-nightly.yml`) mutates every enrolled module on main and
+uploads its surviving mutants as the artifact `mutation-survivors`. Each beat's bookkeeping asks GitHub for the
+newest completed run at most once an hour (`airlie.story.mutation_cards`) and files one card per function whose
+mutants survived: `todo`, labels `fix`, `repo:<line.home_repo>`, `signature:mutation:<function>` and `mutation`,
+with each mutant's diff, how to reproduce it, and the acceptance criteria (a test fails with each mutant applied,
+or the mutant gets an `equivalent` entry in `pyproject.toml` with its reason). An open card for the same function
+is commented when its set of mutants changes instead of filed again. Approve a card and the line builds it into a
+draft PR; once that is merged and deployed the card is `done`, as any fix card. A run that could not mutate files
+nothing and says so once in the line's log. `line.mutation_cards: false` stops the harvest.
+
 ## From OpenCode
 
 `/story <issue key, issue link or request>` in OpenCode (it runs on the `chief` agent; see `local-agents.md`). The

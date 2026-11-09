@@ -233,6 +233,7 @@ story:
 line:
   home_repo: null                  # owner/name where fix cards are built; null = the remote of the checkout the line runs from
   transient_retries: 2             # a story blocked by a fetch or engine failure is retried this often per signature
+  mutation_cards: true             # the nightly mutation sweep's survivors become todo fix cards, one per function
   tick_s: 60                       # task serve runs a beat of the line this often (the launchd agent is the belt, every 15 minutes)
   serve_ticks: true
   fanout: 4                        # short asks (consultations, surveys, reads, renders) run this wide beside the build's decode

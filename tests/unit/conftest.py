@@ -312,6 +312,18 @@ def _no_real_state_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(load, "_read_yaml_with_includes", own_state)
 
 
+@pytest.fixture(autouse=True)
+def _no_mutation_harvest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every beat's bookkeeping asks GitHub for the newest nightly mutation run (airlie.story.mutation_cards),
+    and a unit test runs from a real checkout: no unit test may reach GitHub, or put its answer in a beat's
+    line. test_story_mutation_cards.py overrides this fixture and asks a fake gh."""
+
+    async def nothing(*args: object, **kwargs: object) -> list[str]:
+        return []
+
+    monkeypatch.setattr("airlie.story.mutation_cards.harvest", nothing)
+
+
 @pytest.fixture
 def local_remotes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Publishing as you also reaches a remote on this machine: for a test that publishes to (or fetches from)
