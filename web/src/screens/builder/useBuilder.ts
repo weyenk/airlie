@@ -154,7 +154,11 @@ export function useBuilder(name: Ref<string>) {
       error.value = null;
       return true;
     } catch (e) {
-      if (e instanceof ApiError && (e.status === 409 || e.status === 422)) return { refused: e.message };
+      if (e instanceof ApiError) {
+        const users = usedBy(e);
+        if (users) return { refused: usedBySentence(as, users) };
+        if (e.status === 409 || e.status === 422) return { refused: e.message };
+      }
       error.value = e instanceof Error ? e : String(e);
       return false;
     } finally {
@@ -171,7 +175,10 @@ export function useBuilder(name: Ref<string>) {
       return true;
     } catch (e) {
       const users = e instanceof ApiError ? usedBy(e) : null;
-      if (users) return { refused: users };
+      if (users) {
+        error.value = usedBySentence(as, users); // replaces whatever was shown before
+        return { refused: users };
+      }
       error.value = e instanceof Error ? e : String(e);
       return false;
     }
@@ -238,6 +245,11 @@ export function useBuilder(name: Ref<string>) {
     save,
     publish,
   };
+}
+
+/** What a 409 naming the workflows that run draft `name` says to a person. */
+function usedBySentence(name: string, users: string[]): string {
+  return `${name} is used by ${users.join(", ")}: take it out of those first`;
 }
 
 /** The problems of a 422 publish: its detail is `{problems: [...]}`, which arrives as JSON text; anything else is

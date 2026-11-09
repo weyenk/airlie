@@ -5,6 +5,7 @@ and the catalog of registry ids the builder's dropdowns offer."""
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any, get_args
 
@@ -121,7 +122,7 @@ workflows:
       intake: {x: 10, y: 20}
     nodes:
       intake: {type: check, run: story.intake, next: gate}
-      gate: {type: gate, run: story.finish}
+      gate: {type: gate, run: story.finish, when: is_big}
 """
 
 
@@ -138,6 +139,20 @@ def test_an_old_schema_draft_is_read_upgraded_and_its_stored_text_is_untouched(t
     assert got["layout"] == {"intake": {"x": 10.0, "y": 20.0}}
     assert yaml.safe_load(got["yaml"])["workflows"]["old"]["layout"] == {"intake": {"x": 10, "y": 20}}
     assert s.draft("old").yaml == OLD
+    assert (
+        "workflow old: node gate: condition 'is_big' was code; write it as an expression" in got["problems"]
+    )
+
+
+def test_the_web_catalog_fixture_is_the_catalog_routes_answer(tmp_path: Path) -> None:
+    """web/src/test-utils/catalog.json is the contract the client types are checked against. When this fails
+    (a check, meeting, role or format changed), regenerate it: write `json.dumps(answer, indent=2) + "\n"` of
+    `GET /v1/workflows/catalog` (this file's `client(tmp_path)`) to that path."""
+    http, _ = client(tmp_path)
+    with http:
+        answer = http.get("/v1/workflows/catalog", headers=AUTH).json()
+    fixture = Path(__file__).parents[2] / "web" / "src" / "test-utils" / "catalog.json"
+    assert json.loads(fixture.read_text()) == answer
 
 
 def test_a_draft_naming_its_own_prompt_file_has_no_problems_and_one_naming_none_has_one(

@@ -138,8 +138,7 @@ async function deleteConfirmed() {
   const gone = detail.value?.name ?? name.value;
   const done = await b.remove(gone);
   if (typeof done === "object") {
-    error.value = `${gone} is used by ${done.refused.join(", ")}: take it out of those first`;
-    return;
+    return; // the hook said why (b.error)
   }
   if (!done) return;
   letGo = true; // the draft is gone: its unsaved changes with it

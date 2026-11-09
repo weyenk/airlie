@@ -1,7 +1,7 @@
 import { ApiError } from "@/api";
 import { callOf, stubJson } from "@/test-utils/fetch-stub";
 import catalogJson from "@/test-utils/catalog.json";
-import { adoptWorkflow, deleteDraft, EMPTY_CATALOG, getWorkflowDef, listWorkflowDefs, publishWorkflow, registryCatalog, saveDraft, usedBy, validateWorkflow } from "./workflow_defs";
+import { adoptWorkflow, deleteDraft, getWorkflowDef, listWorkflowDefs, publishWorkflow, registryCatalog, saveDraft, usedBy, validateWorkflow } from "./workflow_defs";
 import type { Catalog } from "./workflow_defs";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -38,14 +38,15 @@ test("validateWorkflow returns the problems, and sends the prompts only when giv
   expect(callOf(fetchMock, 1).body).toEqual({ yaml: "a: 1", prompts: { p: "x" } });
 });
 
-test("the catalog type is the shape the shipped server answers (a recorded payload)", async () => {
-  stubJson(catalogJson);
-  const got: Catalog = await registryCatalog();
-  expect(got).toEqual(catalogJson);
-  const keys = (o: object) => Object.keys(o).sort();
-  expect(keys(got)).toEqual(keys(EMPTY_CATALOG)); // the type's fields are the payload's
-  for (const c of got.checks) expect(keys(c)).toEqual(["args", "every_run", "formats", "inputs", "name", "outputs", "title", "transient"]);
-  for (const m of got.meetings) expect(keys(m)).toEqual(["inputs", "roles"]);
+test("the recorded server payload is a Catalog, and the client returns what the server sends", async () => {
+  // the payload's JSON widens each check's `formats` to a union of object shapes; as the maps they are, the
+  // fixture must satisfy `Catalog`, so a renamed or dropped field fails to compile here
+  const recorded = {
+    ...catalogJson,
+    checks: catalogJson.checks.map((c) => ({ ...c, formats: Object.fromEntries(Object.entries(c.formats)) as Record<string, string> })),
+  } satisfies Catalog;
+  stubJson(recorded);
+  const got = await registryCatalog();
   expect(got.formats.length).toBeGreaterThan(0);
   expect(got.kinds.length).toBeGreaterThan(0);
   const check = got.checks.find((c) => c.name === "story.intake")!;

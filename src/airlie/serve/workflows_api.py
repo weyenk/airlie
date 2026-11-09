@@ -113,31 +113,35 @@ def workflows_router(
         dumped = {"workflows": {name: spec.model_dump(mode="json", exclude_none=True)}}
         return yaml.safe_dump(dumped, sort_keys=False)
 
-    def current_yaml(draft: WorkflowDraft) -> str:
+    def current_yaml(draft: WorkflowDraft) -> tuple[str, list[str]]:
         """The draft's text in the current schema, so an old-schema draft draws in the builder: `upgrade_v1`'s
-        mapping through the dumper `file_text` uses, its layout kept. The stored text is untouched until the
-        person saves; a current-schema draft, or one that does not parse, is its own text."""
+        mapping through the dumper `file_text` uses, its layout kept, and the problems the upgrade leaves for
+        a person to fix. The stored text is untouched until the person saves; a current-schema draft, or one
+        that does not parse, is its own text with none."""
         try:
             name, body = draft_body(draft.yaml, draft.name)
         except WorkflowError:
-            return draft.yaml
+            return draft.yaml, []
         if not old_schema_problems(body):
-            return draft.yaml
-        upgraded, _ = upgrade_v1(body, catalog=STORY_CATALOG)
-        return yaml.safe_dump({"workflows": {name: upgraded}}, sort_keys=False)
+            return draft.yaml, []
+        upgraded, left = upgrade_v1(body, catalog=STORY_CATALOG)
+        text = yaml.safe_dump({"workflows": {name: upgraded}}, sort_keys=False)
+        return text, [f"workflow {name}: {p}" for p in left]
 
     def draft_detail(draft: WorkflowDraft) -> dict[str, Any]:
         try:
             layout = _layout(draft_spec(draft.name, draft.yaml))
         except WorkflowError:  # a draft that does not parse shows no positions; its problems say why
             layout = {}
+        text, left = current_yaml(draft)
+        found = problems(draft.name, {**texts(), draft.name: text}) if left else problems(draft.name)
         return {
             "name": draft.name,
             "type": draft.type,
             "source": "draft",
-            "yaml": current_yaml(draft),
+            "yaml": text,
             "layout": layout,
-            "problems": problems(draft.name),
+            "problems": found + [p for p in left if p not in found],
             "prompts": dict(draft.prompts),
             "pr": _pr(draft),
             "edits_file": edits_file(cfg, draft.name),

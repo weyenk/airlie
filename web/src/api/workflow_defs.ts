@@ -97,8 +97,11 @@ export function publishWorkflow(name: string): Promise<{ number: number; url: st
   return request<{ number: number; url: string }>(`/v1/workflows/${seg(name)}/publish`, { method: "POST" });
 }
 
+/** What adopting did: the story, the card's workflow, and the one it ran before and runs now. */
+export type Adopted = { key: string; name: string; from: string | null; to: string | null };
+
 /** The story's workflow moved to the one its card names (409: the story is running; 422: it cannot adopt it). */
-export function adoptWorkflow(key: string): Promise<{ key: string; name: string; from: string | null; to: string | null }> {
+export function adoptWorkflow(key: string): Promise<Adopted> {
   return request(`/v1/airlie/stories/${seg(key)}/adopt-workflow`, { method: "POST" });
 }
 
