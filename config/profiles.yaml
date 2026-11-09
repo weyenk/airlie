@@ -35,12 +35,3 @@ topology:
           model: qwen25_32b
           thinking: false
           max_tokens: 10240
-    studio-coder8:                 # the experiment: Qwen3-Coder 8-bit in the coder seat, everything else as studio
-      # (Noah 2026-10-18). Select it for one run with `--topology studio-coder8`, or for stories by setting
-      # `story.topology`; start its engine by hand first: `airlie engine up coder8`.
-      extends: studio
-      roles:
-        coder:
-          model: coder8
-          thinking: false
-          max_tokens: 10240

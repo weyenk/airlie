@@ -505,28 +505,22 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, unknown = project_memory_gb(studio, "main")
-    # 41.5 GB of weights (small, generalist, reviewer, Kev) + the build lane's one sequence at the coder's
-    # 65.536k × 64 MB/1k = 4.1 GB + 4 asks at 8.192k = 2.0 GB + 12 GB reserve = 59.6 GB, and the prefix caches
-    # the autostart mlx-vlm engines set aside (main 8 GB, reviewer 4, small 1: mlx-vlm sizes them per engine)
+    # 42.0 GB of weights (small, generalist, reviewer, decider-2b) + the build lane's one sequence at the
+    # coder's 65.536k × 64 MB/1k = 4.1 GB + 4 asks at 8.192k = 2.0 GB + 12 GB reserve = 59.6 GB, and the
+    # caches the autostart mlx-vlm engines set aside (main 8, reviewer 3.5, small 1)
     assert cache_memory_gb(studio.engines["main"]) == 8.0
     assert (round(projected, 1), unknown) == (72.6, [])
     assert projected < studio.memory.wired_limit_mb / 1024  # 104 GB
-    coder8 = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-coder8")
-    projected, unknown = project_memory_gb(coder8, "main")
-    # the lane's sequence is at the coder model's rate: coder8's 32.5 GB, 65.536k × 96 MB/1k = 6.1 GB
-    assert coder8.engines["main"].max_kv_size == 131072
-    # the bench engine a role's model sits on is resident too (started by hand): coder8's 32.5 GB counts, and
-    # beside the base's 131072-token generalist the experiment projects over the 104 GB wired limit
-    assert (round(projected, 1), unknown) == (107.2, [])
-    assert projected > coder8.memory.wired_limit_mb / 1024
     monkeypatch.setattr(
         "airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name
     )  # the profiles reload from the file
     base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    row = by_name(run_checks(base, FakeProbe()))["engine:main:memory_projection[studio-coder8]"]
-    assert row.status == "fail" and "107 GB" in row.detail
     qwen = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen25")
-    assert project_memory_gb(qwen, "main")[0] < qwen.memory.wired_limit_mb / 1024
+    projected, unknown = project_memory_gb(qwen, "main")
+    assert (round(projected, 1), unknown) == (103.9, [])
+    assert projected < qwen.memory.wired_limit_mb / 1024
+    row = by_name(run_checks(base, FakeProbe()))["engine:main:memory_projection[studio-qwen25]"]
+    assert row.status == "ok", row
 
 
 def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
@@ -544,7 +538,7 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
     wider = studio.model_copy(deep=True)
     wider.line.fanout = 8
     assert live_kv_gb(wider, e) > live_kv_gb(studio, e)  # more asks, more KV
-    assert "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 13 GB prefix cache" in projection_detail(
+    assert "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 12 GB prefix cache" in projection_detail(
         studio, e
     )
     teams = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="teams")
@@ -685,8 +679,8 @@ def test_the_story_line_gates_on_the_build_engines_config_not_a_profile(
     stale[stale.index("--max-num-seqs") + 1] = "2"
     bad = engine_matches_profile(cfg, MlxVlmProcesses([stale]), "studio")
     assert bad.status == "fail" and "--max-num-seqs 2 (config: 16)" in bad.detail
-    # the coder8 experiment builds on its own engine (port 8091), which nothing runs
-    assert engine_matches_profile(cfg, MlxVlmProcesses([main]), "studio-coder8").status == "warn"
+    # the qwen25 experiment builds on its own engine (port 8093), which nothing runs
+    assert engine_matches_profile(cfg, MlxVlmProcesses([main]), "studio-qwen25").status == "warn"
 
 
 def test_real_probe_lists_every_matching_process_and_process_args_keeps_the_serve_filter(
@@ -718,14 +712,14 @@ def test_a_bench_engine_mismatch_is_restarted_by_name_not_by_task_restart(
     from airlie.doctor import engine_matches_profile, start_command
 
     cfg = committed_cfg(monkeypatch)
-    coder8 = mlx_vlm_argv(cfg, "coder8")
-    stale = list(coder8)
+    qwen = mlx_vlm_argv(cfg, "qwen25_32b")
+    stale = list(qwen)
     stale[stale.index("--max-kv-size") + 1] = "4096"
-    bad = engine_matches_profile(cfg, MlxVlmProcesses([stale]), "studio-coder8")
-    assert bad.name == "engine:config[coder8]" and bad.status == "fail", bad
-    assert bad.detail.endswith("restart it: uv run airlie engine restart coder8"), bad.detail
+    bad = engine_matches_profile(cfg, MlxVlmProcesses([stale]), "studio-qwen25")
+    assert bad.name == "engine:config[qwen25_32b]" and bad.status == "fail", bad
+    assert bad.detail.endswith("restart it: uv run airlie engine restart qwen25_32b"), bad.detail
     assert "task restart" not in bad.detail
-    assert start_command(cfg.engines["coder8"], "coder8") == "uv run airlie engine up coder8"
+    assert start_command(cfg.engines["qwen25_32b"], "qwen25_32b") == "uv run airlie engine up qwen25_32b"
     assert start_command(cfg.engines["main"], "main") == "task restart"
 
 

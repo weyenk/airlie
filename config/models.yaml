@@ -4,18 +4,9 @@
 # spec's two models stay here, pinned, loadable on demand, and in `task bench:models`.
 # The team model is `generalist` (Qwen3.8-27B, hybrid attention): the engine's hybrid prefix cache (engine/patches/
 # hybrid_prefix_cache.py) keeps a resumed turn from re-prefilling its whole prompt. Qwen3-Coder was dropped as the
-# team model (Noah 2026-10-18: AIR-5 showed its 6-bit fidelity too low for the speed) and kept at 8-bit as `coder8`,
-# the coder seat of the `studio-coder8` profile below: an experiment, not the default (Noah 2026-10-18, after AIR-7
-# layer 02 took seven attempts on the non-thinking generalist). To swap the team model: change `roles.coder.model`.
+# team model (Noah 2026-10-18: AIR-5 showed its 6-bit fidelity too low for the speed).
+# To swap the team model: change `roles.coder.model`.
 models:
-  coder8:                          # Qwen3-Coder-30B-A3B at 8-bit: MoE (3B active), standard GQA attention, coding + tool use
-    repo: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit   # the 4-bit dropped `"` before `]` (HDS-5); 8-bit for fidelity
-    revision: 7c6ee1bbb5ee3051c4b3bc6553f24bdc2d01393a   # 2025-07-31
-    bench: true
-    tags: [modern, coder, moe]
-    estimated_memory_gb: 32.5
-    kv_mb_per_1k_tokens: 96
-    tool_call_parser: qwen3_coder  # mlx-vlm's parser name, sent per request
   llama70b:                        # spec 01 §1 / 02 §1 named model
     repo: mlx-community/Llama-3.3-70B-Instruct-4bit
     revision: de2dfaf56839b7d0e834157d2401dee02726874d   # 2024-12-06
@@ -59,7 +50,7 @@ models:
     file: Kev-4B-Q4_K_M.gguf
     preload: true
     estimated_memory_gb: 3
-  decider_2b:                      # decision-engine gate candidate (typed decisions on mlx-vlm's /v1/decisions)
+  decider_2b:                      # the decision model (router, decide tool) on mlx-vlm's /v1/decisions
     repo: nativ-community/decider-2b   # the repo mlx-vlm documents; Mapika/decider-2b fails to load on 0.7.12 and
                                        # clef-flash-4bit is no decision model there. LiquidAI/d1-3B is the documented
                                        # alternative, not in the catalog.

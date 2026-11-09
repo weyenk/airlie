@@ -359,31 +359,14 @@ def test_the_qwen25_experiment_is_a_profile_beside_the_default() -> None:
     assert cfg.roles["chief"].model == "generalist"
 
 
-def test_the_coder8_experiment_is_a_profile_beside_the_default() -> None:
-    """Noah 2026-10-18: Qwen3-Coder 8-bit in the coder seat as an experiment, the default unchanged."""
-    base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    coder8 = base.models["coder8"]
-    assert coder8.repo == "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit" and coder8.bench
-    assert base.engines["coder8"].autostart is False and base.engines["coder8"].models == ["coder8"]
-    assert base.roles["coder"].model == "generalist"
-    assert load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"].model == "generalist"
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-coder8")
-    coder = cfg.roles["coder"]
-    assert (coder.model, coder.thinking, coder.max_tokens) == ("coder8", False, 10240)
-    assert cfg.engines == base.engines and cfg.models == base.models
-    assert cfg.roles["security"].model == "generalist" and cfg.roles["chief"].model == "generalist"
-
-
-def test_committed_config_declares_four_autostart_engines_and_the_bench_and_gate_engines() -> None:
+def test_committed_config_declares_four_autostart_engines_and_the_bench_engines() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     kinds = {n: e.kind for n, e in cfg.engines.items()}
     assert kinds == {
         "main": "mlx_vlm",
         "reviewer": "mlx_vlm",
         "small": "mlx_vlm",
-        "decision": "llama_server",
-        "decision_mlx": "mlx_vlm",
-        "coder8": "mlx_vlm",
+        "decision": "mlx_vlm",
         "llama70b": "mlx_vlm",
         "qwen25_32b": "mlx_vlm",
     }
@@ -391,7 +374,8 @@ def test_committed_config_declares_four_autostart_engines_and_the_bench_and_gate
     assert autostart == ["main", "reviewer", "small", "decision"]
     assert cfg.engines["main"].models == ["generalist"] and cfg.engines["main"].port == 8080
     assert cfg.engines["main"].buffer_cache_mb is None  # mlx-vlm reads none
-    assert [n for n, e in cfg.engines.items() if e.decision] == ["decision_mlx"]
+    assert [n for n, e in cfg.engines.items() if e.decision] == ["decision"]
+    assert cfg.engines["decision"].port == 8081 and cfg.router.model == "decider_2b"  # the 4b gate's pick
     decider = cfg.models["decider_2b"]
     assert (decider.repo, decider.revision) == (
         "nativ-community/decider-2b",
@@ -403,7 +387,6 @@ def test_committed_config_declares_four_autostart_engines_and_the_bench_and_gate
         .endswith(f"models--mlx-community--Qwen3.8-27B-4bit/snapshots/{cfg.models['generalist'].revision}")
     )  # the HF-cache snapshot: the exact --model string
     assert cfg.models["generalist"].tool_call_parser == "qwen3_coder"
-    assert cfg.models["coder8"].tool_call_parser == "qwen3_coder"
     assert cfg.models["reviewer"].tool_call_parser == "atem"
     assert cfg.models["qwen25_32b"].tool_call_parser is None  # mlx-vlm has no `qwen` parser: inferred
     assert cfg.models["llama70b"].tool_call_parser is None  # nor `llama`; an unknown name is a 422
@@ -423,7 +406,6 @@ def test_catalog_kv_constants_follow_each_models_attention_geometry() -> None:
     profile's KV."""
     models = load_config(ROOT / "airlie.yaml", NO_LOCAL).models
     assert models["generalist"].kv_mb_per_1k_tokens == 64  # 16 full-attention layers × 4 heads × 256 dim
-    assert models["coder8"].kv_mb_per_1k_tokens == 96  # 48 layers × 4 heads × 128 dim
     assert models["small"].kv_mb_per_1k_tokens == 144  # 36 layers × 8 heads × 128 dim
     assert models["qwen25_32b"].kv_mb_per_1k_tokens == 256  # 64 layers × 8 heads × 128 dim
     assert models["llama70b"].kv_mb_per_1k_tokens == 320  # 80 layers × 8 heads × 128 dim

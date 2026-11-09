@@ -1,6 +1,6 @@
 """Phase 4b gate, Step 3: a text-only model answers `pong` through its mlx_vlm engine, by exact model path.
 
-uv run python scripts/gate_pong.py small coder8
+uv run python scripts/gate_pong.py small generalist
 """
 
 from __future__ import annotations

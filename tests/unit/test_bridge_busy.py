@@ -29,7 +29,15 @@ def _cfg(tmp_path: Path) -> Any:
         models=["small", "generalist", "reviewer"],
         base_url="http://127.0.0.1:8080/v1",
     )
-    cfg.engines = {"main": main, "decision": cfg.engines["decision"]}
+    kev = EngineSpec(
+        kind="llama_server",
+        host="127.0.0.1",
+        port=8081,
+        models=["kev4b"],
+        ctx_size=16384,
+        base_url="http://127.0.0.1:8081/v1",
+    )
+    cfg.engines = {"main": main, "decision": kev}
     return cfg
 
 

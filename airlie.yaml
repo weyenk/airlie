@@ -34,7 +34,7 @@ engines:
     max_kv_size: 65536
     kv_bits: 8
     prefix_cache: true
-    cache_memory_gb: 4
+    cache_memory_gb: 3.5
   small:
     kind: mlx_vlm
     port: 8083
@@ -43,16 +43,13 @@ engines:
     max_kv_size: 16384
     prefix_cache: true
     cache_memory_gb: 1
-  decision:                        # Kev on llama-server, unchanged until the phase 4b gate picks its replacement
-    kind: llama_server
-    host: 127.0.0.1
+  decision:                        # typed decisions (router, decide tool) on mlx-vlm's /v1/decisions; the phase 4b
+    kind: mlx_vlm                  # gate's pick over Kev: 20/20 the same choices on the routing briefs
     port: 8081
-    models: [kev4b]
-    ctx_size: 16384
-  # the decision gate candidate (nativ-community/decider-2b; LiquidAI/d1-3B is the documented alternative)
-  decision_mlx: { kind: mlx_vlm, port: 8084, model: decider_2b, decision: true, autostart: false, max_num_seqs: 4 }
+    model: decider_2b
+    decision: true
+    max_num_seqs: 4
   # bench engines: start one by hand with `airlie engine up <name>`
-  coder8: { kind: mlx_vlm, port: 8091, model: coder8, autostart: false, max_kv_size: 65536, kv_bits: 8 }
   llama70b: { kind: mlx_vlm, port: 8092, model: llama70b, autostart: false, max_kv_size: 65536, kv_bits: 8 }
   qwen25_32b: { kind: mlx_vlm, port: 8093, model: qwen25_32b, autostart: false, max_kv_size: 65536, kv_bits: 8 }
 
@@ -122,7 +119,7 @@ lts:
 # ---- Router (design 2026-10-13 §6) ------------------------------------------------------------------------------
 router:                            # jev | chief
   kind: jev
-  model: kev4b
+  model: decider_2b
   ambiguous_gap: 0.15
   min_confidence: 0.5
 
