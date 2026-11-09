@@ -1,47 +1,54 @@
-# The layer bundle: what the story workflow's build_layers node runs per layer.
-# Design: docs/superpowers/specs/2026-11-06-generic-nodes-design.md
+# The layer bundle, schema v2: what the story workflow's build_layers node runs once per layer. A layer built
+# or satisfied already runs none of its steps; layer 01's turn drafts every layer's package in one architect
+# conversation, which each layer's package step continues. Design:
+# docs/superpowers/specs/2026-11-08-nodes-are-config-design.md ("Bundles and isolation", D23). The drafts,
+# package and build steps are catalog operations until Part 2 splits them into model nodes.
 workflows:
   layer:
-    start: covered
-    loose: [card, story, layers, base, gate]
+    inputs: [card, repo, story, layers, base, gate, agreement]
+    outputs: [drafted, "built.{item}", "satisfied.{item}"]
     nodes:
-      covered:
+      start:  # the lines out of it say which of the layer's steps are still to run
+        type: check
+        run: story.layer_start
+        to:
+          - {node: covered, when: "not built.{item} exists and not satisfied.{item} exists"}
+          - costed_layer
+      covered:  # satisfied by the layers below, or else where it is built
         type: check
         run: story.covered
-        inputs: [story, layers]
+        inputs: [card, repo, story, layers]
         outputs: {"satisfied.{item}": json}
-        when: story.open_layer   # neither built nor satisfied: `_build` returns at once for either
-        on_fail: continue
-      drafts:
-        type: conversation
-        role: architect
-        prompt: story.drafts   # layer 01's package brief; a turn of story.package_steps steps
-        args: {turns: story.drafts_turns}   # a turn per layer, the critic's revision in it; ends at an unusable draft
-        inputs: [story, layers]
-        outputs: {drafted: bool, drafts_session: session}   # the session: held for the run, never saved
-        when: story.not_built
-      package:
-        type: ask
-        role: architect
-        prompt: story.ready_package   # spec.py needs a prompt on ask/write; same id as run
+        to:
+          - {node: drafts, when: "not satisfied.{item} exists and not drafted and not built"}
+          - {node: package, when: "not satisfied.{item} exists"}
+      drafts:  # the whole plan's packages, drafted once before the first layer is built
+        type: check
+        run: story.draft_packages
+        inputs: [repo, base, story, layers, agreement]
+        outputs: {drafted: bool, drafts_session: session}  # the session: held for the run, never saved
+        to: [package]
+      package:  # continues the drafting conversation while the run holds it, else asks afresh
+        type: check
         run: story.ready_package
-        inputs: [base, story, layers]
-        # the package, in memory (a run stopped before the build asks again), or the architect's satisfied
-        # reply: skipped by its outputs only with both present; `story.open_layer` skips it once either the
-        # build or the satisfaction is stored
+        inputs: [card, repo, story, layers, drafts_session]
+        args: {session: drafts_session}
+        # the package is kept in memory (a run stopped before the build asks again); a satisfied reply
+        # satisfies the layer and its build is skipped
         outputs: {"package.{item}": json, "satisfied.{item}": json}
-        when: story.open_layer
-        session: drafts_session
+        to:
+          - {node: build, when: "package.{item} exists and not satisfied.{item} exists"}
+          - costed_layer
       build:
-        type: write
-        role: coder
-        prompt: story.build_once   # spec.py needs a prompt on ask/write; same id as run
+        type: check
         run: story.build_once
-        inputs: ["package.{item}", story, layers]
+        inputs: [card, repo, "package.{item}", story, layers]
         outputs: {"built.{item}": json}
-        when: story.has_package
-        loop: {to: package, max: story.layer_attempts, carry: feedback}
+        to:
+          - {node: package, loop: {max: story.layer_attempts, carry: feedback}}  # red: back to the architect
+          - costed_layer
       costed_layer:
         type: check
         run: story.costed
+        inputs: [card]
         args: {stages: [package, layer, review]}

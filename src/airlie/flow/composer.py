@@ -1,33 +1,86 @@
-"""The composer: interprets a workflow of typed nodes over a store, one runner per node type.
+"""The composer: a dataflow scheduler over a workflow of typed nodes joined by lines, one runner per node type
+(nodes-are-config design: "The canvas", "Bundles and isolation", D4-D6, D15, D17, D23).
 
-The sequence rule: nodes run in order (or by `next`), a node whose outputs already exist is skipped, and every
-input must be present before a node runs. The wiring moves: `parallel` and `each` run other nodes, `branch`
-picks the next node by an output, `loop` (or a LoopSpec `on_fail`) re-runs from a node
-with carried feedback."""
+A line goes from the node that lists it in `to` to the node it names. A line with a `loop` bound is a loop
+line (drawn back to an earlier node); every other line is a forward line, and only forward lines decide
+when a node runs. The rules, as `_Run` implements them:
+
+- A line **fires** when its source finishes (succeeds, or fails with `on_fail: continue`) and its `when` is
+  absent or holds; it **dies** when its source finishes and its `when` does not hold, or when its source
+  dies. A node **dies** when it has forward lines in and every one of them died; a dead node emits
+  `node_skipped` and every line out of it dies, so nothing waits on a branch not taken.
+- A node is **ready** when every forward line into it has fired or died, at least one fired (when it has
+  any; a node with none is a start node), and every input is satisfied. An input is satisfied when it is
+  present (a session in the run's sessions, else `store.has`), when its name is carried feedback
+  (`feedback...`, absent on a first try), or when it has producers and every one of them that is neither
+  the node itself nor downstream of it has finished or died: an artifact a producer left empty (`[]`, `""`)
+  or never wrote (a failed survey, the alternative not taken) does not stall the node. A name nothing in
+  the workflow produces must be present.
+- A ready node is **skipped** (finished, `node_skipped`, recorded done) when it has outputs and they are
+  all present, or when it has none and its done name is in the store's done set: this is the resume. A
+  done name is `<node>`, `<node>@<item>` in a bundle item, behind the bundle node(s) it runs under
+  (`lay/build@01`). A node a loop sent back to is never skipped so. Every other ready node **runs**: it
+  leaves the done set as it starts, and all that are ready run at once, each as a task; one that raises
+  cancels the others at once and its error is raised. A node that succeeds is recorded done; a failed one is
+  not, so a resume runs it again.
+- When a node finishes, its loop lines are tried first, in order: one fires when its `when` holds (with no
+  `when`, when the node failed) and its bound (`max`, a count or a config path) is not spent. It puts its
+  `carry` under `feedback.<target>` (`.<item>` in a bundle item), cancels any of the target, the nodes
+  downstream of it (through forward lines) and the nodes that ran and read an output of those (line or no
+  line, transitively) still running, and sends them back to pending: out of the done set, their outputs
+  cleared (`store.put(name, None)`; a session popped; the memory heads kept, and a name a finished node
+  outside them also writes kept at its latest value) and the lines out of them unresolved; a bundle node
+  sent back forgets its items too (their done names, the bundle workflow's outputs, feedback and loop
+  counts), so each item runs again. Else a failed node with
+  `on_fail: block` raises `StoryBlocked`; else its forward lines fire or die by their conditions.
+- A `bundle` node runs its workflow once per item of its `each` list (`01`, `02`, ... in order), or once
+  without `each`, on a `BundleStore`: the parent's store read by name, written only under the bundle
+  workflow's declared outputs.
+- `until`: once the named node finishes (or is skipped), nothing new starts; the run returns its name
+  when the nodes still running end. A gate (`EndRun`) ends the run the same way, and inside a bundle it
+  ends the parent's run at the bundle node. A run where nothing can start and some node is still pending
+  raises `Stalled` naming the pending nodes and what each lacks. A condition reads `RunContext.lookup`: the
+  store, the card's fields, `config.<path>`; in a bundle item a path's `{item}` is the item
+  (`built.{item} exists`).
+- A bundle node is never skipped by its outputs or the done set: its items' nodes skip themselves, so a
+  resume reaches the item still open. Nor is a node whose outputs are all transient (held in the run's
+  memory, `OutputSpec.transient`), or one running a catalog check declared `every_run` (never recorded
+  done)."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import time
-from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable, Collection, Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
 
-from airlie.flow.prompt_files import PREFIX, prompt_builder
-from airlie.flow.spec import LoopSpec, NodeSpec, NodeType, WorkflowSpec
-from airlie.flow.store import Sessions, Store
+from pydantic import BaseModel
+
+from airlie.flow import conditions
+from airlie.flow.prompt_files import FEEDBACK
+from airlie.flow.spec import Line, NodeSpec, NodeType, WorkflowSpec
+from airlie.flow.store import MEMORY, BundleStore, Sessions, Store
 from airlie.prompts.hub import PromptText
 
 # airlie.config imports airlie.flow.spec, so this package cannot import the config (or the story) at load.
 if TYPE_CHECKING:
     from airlie.config import AirlieConfig
+    from airlie.flow.catalog import Catalog
 
 FAIL_KEY = "__fail__"
 
 
 class MissingInput(RuntimeError):
-    """A node was reached without an input it declares."""
+    """A catalog check was handed a context without an input it declares. The composer never starts a node
+    without its inputs (it waits, or raises `Stalled`); a check called another way raises this."""
+
+
+class Stalled(RuntimeError):
+    """Nothing in a workflow can run and some node has not: the message names each waiting node and what it
+    lacks."""
 
 
 class EndRun(Exception):
@@ -35,23 +88,21 @@ class EndRun(Exception):
 
 
 class Registry:
-    """Callables by id: brief builders, parsers, predicates, checks. An id `prompt:<id>` that was not added
-    is a prompt file's brief builder (`prompt_files.prompt_builder`): a draft's file from `prompts`, else
-    the hub's rule."""
+    """What a run's nodes name beyond their own fields: the checks a check or gate node's `run` names (the
+    `catalog`), and the drafts' prompt files a `prompt:<id>` may name beside the hub's rules (`prompts`)."""
 
-    def __init__(self, prompts: Mapping[str, PromptText] | None = None) -> None:
-        self._fns: dict[str, Callable[..., Any]] = {}
+    def __init__(
+        self, prompts: Mapping[str, PromptText] | None = None, *, catalog: Catalog | None = None
+    ) -> None:
         self.prompts: Mapping[str, PromptText] = dict(prompts or {})
+        self.catalog = catalog
 
-    def add(self, id: str, fn: Callable[..., Any]) -> None:
-        self._fns[id] = fn
-
-    def __getitem__(self, id: str) -> Callable[..., Any]:
-        if id in self._fns:
-            return self._fns[id]
-        if id.startswith(PREFIX):
-            return prompt_builder(id.removeprefix(PREFIX), self.prompts)
-        raise KeyError(f"registry has no '{id}'")
+    def check(self, run: str) -> Callable[..., Any]:
+        """The function a check or gate node's `run` names in the catalog; a KeyError naming it when the
+        catalog has none (or the registry has no catalog)."""
+        if self.catalog is None:
+            raise KeyError(f"registry has no catalog to find '{run}' in")
+        return self.catalog[run].fn
 
 
 @dataclass
@@ -62,10 +113,63 @@ class RunContext:
     registry: Registry
     workflow: str
     node: str
-    item: str | None  # the each-loop item, else None
+    item: str | None  # the bundle item, else None
     feedback: str | None  # the carried loop feedback for this node, else None
     held: contextlib.AsyncExitStack | None = None  # the run's: what nodes hold open for later ones
-    inputs: Collection[str] = ()  # the names the node reads: its inputs and its workflow's loose names
+    inputs: Collection[str] = ()  # the names the node reads: its inputs and its workflow's inputs
+    texts: Mapping[str, PromptText] = field(default_factory=dict)  # the drafts' prompt files, by id
+    formats: Mapping[str, str] = field(default_factory=dict)  # each output name of the workflow: its format
+
+    def lookup(self, path: str) -> Any:
+        """The value of a dotted path: `feedback` is the carried feedback; `config.<a>.<b>` is read on the
+        config; anything else on the store, the longest name it holds first (`verdict.decision` is the
+        `decision` of `verdict`; `card.title` the loose card's field). Below the head a path goes through a
+        mapping's keys, a pydantic model's fields and a dataclass's fields only (`_field`), and a part
+        starting with `_` is refused. A path with no value (missing, or None) is a KeyError."""
+        if path == FEEDBACK:
+            if self.feedback is None:
+                raise KeyError(path)
+            return self.feedback
+        parts = path.split(".")
+        if any(part.startswith("_") for part in parts):
+            raise KeyError(path)  # a path reads data, never what is behind it (`_field`)
+        if parts[0] == "config":
+            return _descend(self.cfg, parts[1:], path)
+        for cut in range(len(parts), 0, -1):
+            try:
+                found = self.store.get(".".join(parts[:cut]))
+            except KeyError:
+                continue
+            return _descend(found, parts[cut:], path)
+        raise KeyError(path)
+
+
+def _descend(value: Any, parts: list[str], path: str) -> Any:
+    for part in parts:
+        value = _field(value, part)
+        if value is _NONE:
+            raise KeyError(path)
+    if value is None:
+        raise KeyError(path)
+    return value
+
+
+_NONE = object()
+
+
+def _field(value: Any, part: str) -> Any:
+    """`part` of `value`: a mapping's key, a pydantic model's declared field or a dataclass's field, else
+    `_NONE`. Never an attribute beyond those (a method, a property, a dunder): a path reads data only, and a
+    part starting with `_` is never read at all."""
+    if part.startswith("_") or value is None:
+        return _NONE
+    if isinstance(value, Mapping):
+        return value.get(part, _NONE)
+    if isinstance(value, BaseModel):
+        return getattr(value, part) if part in type(value).model_fields else _NONE
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return getattr(value, part) if part in {f.name for f in dataclasses.fields(value)} else _NONE
+    return _NONE
 
 
 Runner = Callable[[NodeSpec, RunContext], Awaitable[Mapping[str, Any]]]
@@ -79,9 +183,9 @@ def resolve_count(cfg: AirlieConfig, value: int | str) -> int:
 
     found: Any = cfg
     for part in value.split("."):
-        if not hasattr(found, part):
+        found = _field(found, part)
+        if found is _NONE:
             raise ConfigError(f"count '{value}': config has no '{part}'")
-        found = getattr(found, part)
     return int(found)
 
 
@@ -95,6 +199,7 @@ class Composer:
         store: Store,
         sessions: Sessions,
         workflows: Mapping[str, WorkflowSpec] | None = None,
+        texts: Mapping[str, PromptText] | None = None,
     ) -> None:
         self.cfg = cfg
         self.workflows = workflows
@@ -102,13 +207,13 @@ class Composer:
         self.registry = registry
         self.store = store
         self.sessions = sessions
+        self.texts: Mapping[str, PromptText] = registry.prompts if texts is None else texts
         self.held: contextlib.AsyncExitStack | None = None
         """Open while `run` runs: a conversation a node holds for later nodes (a session) is entered on it,
         and closed, whatever ends the run, when `run` returns or raises. None outside a run, so a node that
         would hold a session there fails loudly instead of holding it on a stack nothing closes."""
-        self._loops: dict[
-            tuple[str, str | None, str, str], int
-        ] = {}  # (workflow, item, node, which) -> re-runs
+        self.loops: dict[tuple[str, str | None, str, str], int] = {}
+        """Re-runs a loop line has taken: (`<bundle scope>workflow`, item, source, target) -> count."""
 
     def spec(self, name: str) -> WorkflowSpec:
         """The workflow `name`: from the mapping the composer was given (the repo's workflows and drafts),
@@ -119,281 +224,455 @@ class Composer:
         return found[name]
 
     async def run(self, workflow: str, *, until: str | None = None, item: str | None = None) -> str:
-        """Run `workflow` from its start; stop after node `until` if given. Returns the last node reached.
-        What the run's nodes held open (`held`) is closed when it returns or raises."""
+        """Run `workflow` (the rules are the module's); stop once node `until` finishes, if given. Returns
+        the last node that finished (or was skipped by its outputs), or the gate that ended the run. What the
+        run's nodes held open (`held`) is closed when it returns or raises."""
         async with contextlib.AsyncExitStack() as held:
             self.held = held
             try:
-                return await self._walk(workflow, until, item, bundle=False)
+                return await _Run(self, workflow, item, self.store, until=until, bundle=False).go()
             finally:
                 self.held = None
 
-    async def _walk(self, workflow: str, until: str | None, item: str | None, *, bundle: bool) -> str:
-        spec = self.spec(workflow)
-        names = list(spec.nodes)
-        formats = {name: fmt for n in spec.nodes.values() for name, fmt in n.outputs.items()}
-        children = {c for n in spec.nodes.values() if n.type == "parallel" for c in n.nodes}
-        current: str | None = spec.start
-        forced = False  # arrived by a loop jump: redo the node even if its outputs exist
-        last = spec.start
-        while current is not None:
-            node = spec.nodes[current]
-            last = current
-            try:
-                result = await self._step(workflow, current, node, formats, item, force=forced)
-            except EndRun:
-                if bundle:
-                    raise
-                return current
-            target, forced = self._route(workflow, current, node, names, children, result, item)
-            if (
-                current == until and not forced
-            ):  # routed first so a spent loop blocks; a loop jump is not done yet
-                return current
-            current = target
-        return last
 
-    def _route(
+State = Literal["pending", "running", "finished", "dead"]
+LineId = tuple[str, int]  # (source node, index in its `to`)
+
+
+class _Run:
+    """One run of one workflow (one bundle item) over `store`."""
+
+    def __init__(
         self,
+        c: Composer,
         workflow: str,
-        name: str,
-        node: NodeSpec,
-        names: list[str],
-        children: set[str],
-        result: Mapping[str, Any],
         item: str | None,
-    ) -> tuple[str | None, bool]:
-        """The node after `name` and whether a loop jump forces it: a loop's target, a branch, `next`, else
-        dict order (stepping over parallel children, which run only through their parent)."""
-        failed = FAIL_KEY in result
-        if result:  # a skipped node (empty result) never loops
-            ctx = self._ctx(workflow, name, item)
-            if node.loop is not None:
-                loop = node.loop
-                if (self.registry[loop.when](ctx, result) if loop.when else failed) and self._again(
-                    workflow, name, "loop", loop, result, item
-                ):
-                    return loop.to, True
-            if (
-                failed
-                and isinstance(node.on_fail, LoopSpec)
-                and self._again(workflow, name, "on_fail", node.on_fail, result, item)
-            ):
-                return node.on_fail.to, True
-            if (
-                failed
-                and node.on_fail != "continue"
-                and (node.loop is not None or isinstance(node.on_fail, LoopSpec))
-            ):
-                from airlie.story.asking import StoryBlocked  # asking imports config, which imports flow.spec
+        store: Store,
+        *,
+        until: str | None,
+        bundle: bool,
+        scope: str = "",
+    ) -> None:
+        self.c, self.workflow, self.item, self.store = c, workflow, item, store
+        self.until, self.bundle = until, bundle
+        self.scope = scope  # `<bundle node>/` per level of bundle: the done names' prefix
+        self.spec = c.spec(workflow)
+        self.nodes = self.spec.nodes
+        self.names = list(self.nodes)
+        self.formats = {o: s.format for n in self.nodes.values() for o, s in n.outputs.items()}
+        self.producers: dict[str, set[str]] = {}
+        self.into: dict[str, list[LineId]] = {name: [] for name in self.names}
+        self.lines: dict[LineId, Line] = {}
+        for name, node in self.nodes.items():
+            for out in node.outputs:
+                self.producers.setdefault(out, set()).add(name)
+            for i, line in enumerate(node.to):
+                self.lines[(name, i)] = line
+                if line.loop is None:
+                    self.into[line.node].append((name, i))
+        self.state: dict[str, State] = dict.fromkeys(self.names, "pending")
+        self.line_state: dict[LineId, Literal["fired", "dead"] | None] = dict.fromkeys(self.lines)
+        self.forced: set[str] = set()  # sent back by a loop: run, never skipped by outputs
+        self.running: dict[asyncio.Task[Mapping[str, Any]], str] = {}
+        self.stopped: set[asyncio.Task[Mapping[str, Any]]] = set()  # cancelled here, as a sibling raised
+        self.last: str | None = None
+        self._below: dict[str, set[str]] = {}
+        self.items_run: dict[str, list[str | None]] = {}  # bundle node -> the items it ran this run
+        self._skipped = False  # settle skipped a node: save once
+        self._conditions: dict[str, conditions.Condition] = {}
 
-                raise StoryBlocked(str(result[FAIL_KEY]))
-        if node.branch is not None and node.on is not None:
-            value = result[node.on] if node.on in result else self.store.get(self._name(node.on, item))
-            target = node.branch.get(str(value), node.branch.get("*"))
-            if target is not None:
-                return target, False
-        if node.next is not None:
-            return node.next, False
-        rest = [n for n in names[names.index(name) + 1 :] if n not in children]
-        return (rest[0] if rest else None), False
+    # ---- names ----
 
-    def _again(
-        self,
-        workflow: str,
-        name: str,
-        which: str,
-        loop: LoopSpec,
-        result: Mapping[str, Any],
-        item: str | None,
-    ) -> bool:
-        """Count one re-run if the bound allows it, carrying feedback; False once the count is spent."""
-        key = (workflow, item, name, which)
-        if self._loops.get(key, 0) >= resolve_count(self.cfg, loop.max):
+    def name(self, name: str) -> str:
+        return name.replace("{item}", self.item) if self.item is not None else name
+
+    def done_name(self, node: str) -> str:
+        return _done_name(self.scope, node, self.item)
+
+    def feedback_name(self, node: str) -> str:
+        """Where the feedback carried to `node` is kept: per bundle item, so a layer's first try never reads
+        what the layer before it was told."""
+        return _feedback_name(node, self.item)
+
+    def fields(self, name: str) -> dict[str, Any]:
+        return {"node": name, "type": self.nodes[name].type, "workflow": self.workflow, "item": self.item}
+
+    # ---- the graph ----
+
+    def downstream(self, name: str) -> set[str]:
+        """Every node reached from `name` through forward lines, `name` excluded unless a cycle returns."""
+        if name not in self._below:
+            seen: set[str] = set()
+            todo = [ln.node for ln in self.nodes[name].to if ln.loop is None]
+            while todo:
+                at = todo.pop()
+                if at not in seen:
+                    seen.add(at)
+                    todo.extend(ln.node for ln in self.nodes[at].to if ln.loop is None)
+            self._below[name] = seen
+        return self._below[name]
+
+    def present(self, name: str) -> bool:
+        if self.formats.get(name) == "session":
+            return self.c.sessions.get(self.name(name)) is not None
+        return self.store.has(self.name(name))
+
+    def satisfied(self, node: str, name: str) -> bool:
+        if self.present(name) or name.partition(".")[0] == FEEDBACK:
+            return True
+        producers = self.producers.get(name)
+        if not producers:
             return False
-        self._loops[key] = self._loops.get(key, 0) + 1
-        if loop.carry is not None and loop.carry in result:
-            self.store.put(self._feedback(loop.to, item), result[loop.carry])
-        return True
+        before = producers - {node} - self.downstream(node)
+        return all(self.state[p] in ("finished", "dead") for p in before)
 
-    def _ctx(self, workflow: str, name: str, item: str | None) -> RunContext:
-        spec = self.spec(workflow)
+    def ready(self, name: str) -> bool:
+        lines = [self.line_state[ln] for ln in self.into[name]]
+        if None in lines or (lines and "fired" not in lines):
+            return False
+        return all(self.satisfied(name, x) for x in self.nodes[name].inputs)
+
+    def every_run(self, name: str) -> bool:
+        """The node runs a catalog check declared `every_run`: never recorded done, so never skipped."""
+        node, catalog = self.nodes[name], self.c.registry.catalog
+        if node.type not in ("check", "gate") or catalog is None or node.run is None:
+            return False
+        return node.run in catalog and catalog[node.run].every_run
+
+    def skippable(self, name: str) -> bool:
+        if name in self.forced or self.nodes[name].type == "bundle" or self.every_run(name):
+            return False  # a bundle's items skip their own nodes: a resume reaches the item still open
+        outs = self.nodes[name].outputs
+        if outs and all(o.transient for o in outs.values()):
+            return False  # held in the run's memory: what a resume finds there is this run's, so it runs
+        if outs:  # a node with outputs is done when they are all present, whatever the done set says
+            return all(self.present(o) for o in outs)
+        return self.store.done(self.done_name(name))
+
+    def holds(self, when: str | None, source: str) -> bool:
+        if when is None:
+            return True
+        if when not in self._conditions:
+            self._conditions[when] = conditions.parse(when)
+        lookup = self.ctx(source).lookup
+        return self._conditions[when].evaluate(lambda path: lookup(self.name(path)))
+
+    def fire(self, source: str) -> None:
+        for i, line in enumerate(self.nodes[source].to):
+            if line.loop is None:
+                self.line_state[(source, i)] = "fired" if self.holds(line.when, source) else "dead"
+
+    def settle(self) -> str | None:
+        """Kill the nodes every line into which died, and skip the ready nodes done already, until neither
+        changes anything; saved once if a node was skipped. Returns `until` when it was skipped (the run
+        stops there), else None."""
+        self._skipped = False
+        try:
+            return self._settle()
+        finally:
+            if self._skipped:
+                self.store.save()
+
+    def _settle(self) -> str | None:
+        changed = True
+        while changed:
+            changed = False
+            for name in self.names:
+                if self.state[name] != "pending":
+                    continue
+                lines = [self.line_state[ln] for ln in self.into[name]]
+                if lines and all(s == "dead" for s in lines):
+                    self.state[name] = "dead"
+                    for i, line in enumerate(self.nodes[name].to):
+                        if line.loop is None:
+                            self.line_state[(name, i)] = "dead"
+                    self.store.emit("node_skipped", **self.fields(name))
+                    changed = True
+                elif self.ready(name) and self.skippable(name):
+                    self.state[name] = "finished"
+                    self.store.mark_done(self.done_name(name))
+                    self.store.emit("node_skipped", **self.fields(name))
+                    self.fire(name)
+                    self.last = name
+                    self._skipped = changed = True
+                    if name == self.until:
+                        return name
+        return None
+
+    def stalled(self) -> Stalled:
+        pending = [n for n in self.names if self.state[n] == "pending"]
+        waiting = [n for n in pending if None not in (self.line_state[ln] for ln in self.into[n])] or pending
+        parts = []
+        for n in waiting:
+            lacks = [x for x in self.nodes[n].inputs if not self.satisfied(n, x)]
+            lacks += [f"the line from {src}" for src, i in self.into[n] if self.line_state[(src, i)] is None]
+            parts.append(f"{n}: {', '.join(lacks)}")
+        return Stalled(f"workflow {self.workflow}: nothing can run; waiting: {'; '.join(parts)}")
+
+    # ---- running ----
+
+    def ctx(self, name: str) -> RunContext:
+        fb = self.feedback_name(name)
         return RunContext(
-            cfg=self.cfg,
+            cfg=self.c.cfg,
             store=self.store,
-            sessions=self.sessions,
-            registry=self.registry,
-            workflow=workflow,
+            sessions=self.c.sessions,
+            registry=self.c.registry,
+            workflow=self.workflow,
             node=name,
-            item=item,
-            feedback=self.store.get(fb) if self.store.has(fb := self._feedback(name, item)) else None,
-            held=self.held,
-            inputs=frozenset(spec.nodes[name].inputs) | set(spec.loose),
+            item=self.item,
+            feedback=self.store.get(fb) if self.store.has(fb) else None,
+            held=self.c.held,
+            inputs=frozenset(self.nodes[name].inputs) | set(self.spec.inputs),
+            texts=self.c.texts,
+            formats=self.formats,
         )
 
-    async def _step(
-        self,
-        workflow: str,
-        name: str,
-        node: NodeSpec,
-        formats: Mapping[str, str],
-        item: str | None,
-        *,
-        force: bool = False,
-    ) -> Mapping[str, Any]:
-        if node.type not in ("parallel", "each"):
-            return await self._run_node(workflow, name, node, formats, item, force=force)
-        fields: dict[str, Any] = {"node": name, "type": node.type, "workflow": workflow, "item": item}
-        if node.when is not None and not self.registry[node.when](self._ctx(workflow, name, item)):
-            self.store.emit("node_skipped", **fields)
-            return {}
-        self.store.emit("node_started", **fields)
-        started = time.monotonic()
-        outcome = "failed"
+    def start(self, name: str) -> None:
+        self.state[name] = "running"
+        self.forced.discard(name)
+        self.store.clear_done(self.done_name(name))  # running again: not done until it finishes
+        self.store.emit("node_started", **self.fields(name))
+        self.running[asyncio.ensure_future(self.step(name))] = name
+
+    async def go(self) -> str:
+        stop: str | None = None
+        ended = False
         try:
-            if node.type == "parallel":
-                await self._parallel(workflow, node, formats, item)
-            else:
-                await self._each(node)
-            outcome = "done"
-        except EndRun:
-            outcome = "done"
-            raise
-        finally:
-            self.store.emit("node_finished", node=name, type=node.type, outcome=outcome, ms=self._ms(started))
-        return {}
-
-    async def _parallel(
-        self, workflow: str, node: NodeSpec, formats: Mapping[str, str], item: str | None
-    ) -> None:
-        """Every child at once, in the driver's order (`create_task(survey); await _refine`): the first runs
-        in this coroutine until it first waits, the rest as tasks that start then. Any failure stops the
-        rest and is raised: the first's cancels the tasks (one not started yet never takes a step); a later
-        child's cancels this coroutine, and so the first, at once, and is raised in place of the cancel."""
-        spec = self.spec(workflow)
-        first, *rest = node.nodes
-        parent = asyncio.current_task()
-        failed: list[BaseException] = []
-        inline = True  # the first child is still running here
-
-        def stop(task: asyncio.Future[Any]) -> None:
-            if task.cancelled() or (error := task.exception()) is None or failed:
-                return
-            failed.append(error)
-            if inline and parent is not None:
-                parent.cancel()
-
-        tasks = [
-            asyncio.ensure_future(self._run_node(workflow, child, spec.nodes[child], formats, item))
-            for child in rest
-        ]
-        for task in tasks:
-            task.add_done_callback(stop)
-        try:
-            await self._run_node(workflow, first, spec.nodes[first], formats, item)
-            inline = False
-            await asyncio.gather(*tasks)
-        except asyncio.CancelledError:
-            inline = False  # a child that turns this cancel into another error must not cancel us again
-            await self._cancel(tasks)
-            if failed and parent is not None and parent.uncancel() == 0:
-                raise failed[0] from None  # a later child failed: its error, not the cancel it caused
-            raise
+            while True:
+                if stop is None:
+                    stop = self.settle()
+                if stop is None:
+                    for name in self.names:
+                        if self.state[name] == "pending" and self.ready(name):
+                            self.start(name)
+                if not self.running:
+                    break
+                finished, _ = await asyncio.wait(set(self.running), return_when=asyncio.FIRST_COMPLETED)
+                order = {t: self.names.index(self.running[t]) for t in finished}
+                for task in sorted(finished, key=order.__getitem__):
+                    name = self.running.pop(task, "")
+                    if not name or task in self.stopped:
+                        continue  # sent back by a loop while it ran (or after it returned), or stopped
+                    if task.cancelled():  # cancelled from inside its node (a killed run): the run's own
+                        raise asyncio.CancelledError
+                    try:
+                        result = task.result()
+                    except EndRun:
+                        self.state[name] = "finished"
+                        self.last = stop = name
+                        ended = True
+                        continue
+                    await self.after(name, result)
+                    if name == self.until and self.state[name] == "finished":
+                        stop = name
         except BaseException:
-            inline = False
-            await self._cancel(tasks)
+            await self.cancel(list(self.running))
             raise
+        if ended and self.bundle:
+            raise EndRun()
+        if stop is not None:
+            return stop
+        if any(s == "pending" for s in self.state.values()):
+            raise self.stalled()
+        return self.last or (self.names[0] if self.names else self.workflow)
 
-    @staticmethod
-    async def _cancel(tasks: Sequence[asyncio.Future[Any]]) -> None:
+    async def cancel(self, tasks: list[asyncio.Task[Mapping[str, Any]]]) -> None:
         for task in tasks:
             task.cancel()
+            self.running.pop(task, None)
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _each(self, node: NodeSpec) -> None:
-        assert node.over is not None and node.workflow is not None
-        for i in range(len(self.store.get(node.over))):
-            await self._walk(node.workflow, None, f"{i + 1:02d}", bundle=True)
-
-    @staticmethod
-    def _feedback(name: str, item: str | None) -> str:
-        """Where the feedback carried to node `name` is kept: per each-loop item, so a layer's first try
-        never reads what the layer before it was told."""
-        return f"feedback.{name}" if item is None else f"feedback.{name}.{item}"
-
-    @staticmethod
-    def _ms(started: float) -> int:
-        return int((time.monotonic() - started) * 1000)
-
-    def _name(self, name: str, item: str | None) -> str:
-        return name.replace("{item}", item) if item is not None else name
-
-    def _present(self, name: str, formats: Mapping[str, str], item: str | None) -> bool:
-        if formats.get(name) == "session":
-            return self.sessions.get(self._name(name, item)) is not None
-        return self.store.has(self._name(name, item))
-
-    async def _run_node(
-        self,
-        workflow: str,
-        name: str,
-        node: NodeSpec,
-        formats: Mapping[str, str],
-        item: str | None,
-        *,
-        force: bool = False,
-    ) -> Mapping[str, Any]:
-        """Run one node; returns the runner's full result mapping (empty when skipped)."""
-        fields: dict[str, Any] = {"node": name, "type": node.type, "workflow": workflow, "item": item}
-        ctx = self._ctx(workflow, name, item)
-        if not force and node.outputs and all(self._present(o, node.outputs, item) for o in node.outputs):
-            self.store.emit("node_skipped", **fields)
-            return {}
-        if node.when is not None and not self.registry[node.when](ctx):
-            self.store.emit("node_skipped", **fields)
-            return {}
-        for needed in node.inputs:
-            if not self._present(needed, formats, item):
-                raise MissingInput(f"workflow {workflow}: node {name}: missing input '{needed}'")
-
-        self.store.emit("node_started", **fields)
+    async def step(self, name: str) -> Mapping[str, Any]:
+        """Run one node: its runner (a bundle's items here), its declared outputs stored unless it failed,
+        `node_finished` with the outcome."""
+        node = self.nodes[name]
         started = time.monotonic()
         try:
-            result = await self.runners[node.type](node, ctx)
+            if node.type == "bundle":
+                result: Mapping[str, Any] = await self.bundle_items(name, node)
+            else:
+                result = await self.c.runners[node.type](node, self.ctx(name))
         except EndRun:  # a gate did its job
-            self.store.emit("node_finished", node=name, type=node.type, outcome="done", ms=self._ms(started))
+            self.finished(name, "done", started)
+            raise
+        except asyncio.CancelledError:
+            self.finished(name, "failed", started)
             raise
         except BaseException:
-            self.store.emit(
-                "node_finished", node=name, type=node.type, outcome="failed", ms=self._ms(started)
-            )
+            self.finished(name, "failed", started)
+            # the others stop now, not when the scheduler next wakes: a sibling one tick from its end (the
+            # survey beside a refine that blocks) is cancelled as the driver cancels it
+            for task, other in self.running.items():
+                if other != name and not task.done():
+                    task.cancel()
+                    self.stopped.add(task)
             raise
         failure = result.get(FAIL_KEY)
         # only the node's declared outputs land: a loop's carry key and FAIL_KEY are for routing, and any
         # other key a runner returns is not an artifact (a StateStore would keep it as an artifact)
-        for key, fmt in ({} if failure is not None else node.outputs).items():
-            target = self._name(key, item)
+        for key, out in ({} if failure is not None else node.outputs).items():
+            target = self.name(key)
             if key in result:
                 value = result[key]
             elif target in result:
                 value = result[target]
             else:
                 continue
-            if fmt == "session":
-                self.sessions.put(target, value)
+            if out.format == "session":
+                self.c.sessions.put(target, value)
             else:
                 self.store.put(target, value)
+        if failure is None and not self.every_run(name):
+            self.store.mark_done(self.done_name(name))  # a loop line that fires takes it out again
         self.store.save()
-        self.store.emit(
-            "node_finished",
-            node=name,
-            type=node.type,
-            outcome="failed" if failure is not None else "done",
-            ms=self._ms(started),
-        )
-        if failure is not None and node.on_fail == "block" and node.loop is None:
+        self.finished(name, "failed" if failure is not None else "done", started)
+        return result
+
+    def finished(self, name: str, outcome: str, started: float) -> None:
+        ms = int((time.monotonic() - started) * 1000)
+        self.store.emit("node_finished", node=name, type=self.nodes[name].type, outcome=outcome, ms=ms)
+
+    async def bundle_items(self, name: str, node: NodeSpec) -> Mapping[str, Any]:
+        assert node.workflow is not None  # spec.py: a bundle needs workflow
+        spec = self.c.spec(node.workflow)
+        items = self.items_of(node)
+        scope = f"{self.scope}{name}/"
+        self.items_run[name] = items
+        for item in items:
+            view = BundleStore(self.store, workflow=node.workflow, outputs=spec.outputs, item=item)
+            await _Run(self.c, node.workflow, item, view, until=None, bundle=True, scope=scope).go()
+        return {}
+
+    def items_of(self, node: NodeSpec) -> list[str | None]:
+        if node.each is None:
+            return [self.item]
+        listed = self.store.get(node.each) if self.store.has(node.each) else []
+        return [f"{i + 1:02d}" for i in range(len(listed))]
+
+    def forget(self, name: str) -> None:
+        """A bundle node sent back: what its items left (their done names, the bundle workflow's outputs,
+        feedback and loop counts, a nested bundle's in turn) is cleared, so every item runs again."""
+        node = self.nodes[name]
+        assert node.workflow is not None
+        items = dict.fromkeys([*self.items_run.get(name, []), *self.items_of(node)])
+        for item in items:
+            self._forget(node.workflow, f"{self.scope}{name}/", item)
+
+    def _forget(self, workflow: str, scope: str, item: str | None) -> None:
+        spec = self.c.spec(workflow)
+        for n, ns in spec.nodes.items():
+            self.store.clear_done(_done_name(scope, n, item))
+            self.store.put(_feedback_name(n, item), None)
+            for out, o in ns.outputs.items():
+                if o.format == "session":
+                    self.c.sessions.pop(_sub(out, item))
+            if ns.type == "bundle" and ns.workflow is not None:
+                listed = self.store.get(ns.each) if ns.each is not None and self.store.has(ns.each) else []
+                inner = [f"{i + 1:02d}" for i in range(len(listed))] if ns.each is not None else [item]
+                for it in inner:
+                    self._forget(ns.workflow, f"{scope}{n}/", it)
+        for out in spec.outputs:
+            if out.partition(".")[0] not in MEMORY:
+                with contextlib.suppress(KeyError):  # a name this level may not write was never written
+                    self.store.put(_sub(out, item), None)
+        for key in [k for k in self.c.loops if k[0] == f"{scope}{workflow}" and k[1] == item]:
+            del self.c.loops[key]
+
+    async def after(self, name: str, result: Mapping[str, Any]) -> None:
+        """Route a node that returned: a loop line that fires sends its target and what is downstream back;
+        else a failed blocking node blocks; else the node is finished and its forward lines fire or die."""
+        node = self.nodes[name]
+        failed = FAIL_KEY in result
+        self.last = name
+        for line in node.to:
+            if line.loop is None:
+                continue
+            if (self.holds(line.when, name) if line.when is not None else failed) and self.again(
+                name, line, result
+            ):
+                again = self.readers({line.node} | self.downstream(line.node))
+                if name not in again:
+                    self.state[name] = "finished"
+                    self.fire(name)
+                await self.send_back(again)
+                return
+        if failed and node.on_fail == "block":
             from airlie.story.asking import StoryBlocked  # asking imports config, which imports flow.spec
 
-            raise StoryBlocked(str(failure))
+            raise StoryBlocked(str(result[FAIL_KEY]))
+        self.state[name] = "finished"
+        self.fire(name)
 
-        return result
+    def again(self, name: str, line: Line, result: Mapping[str, Any]) -> bool:
+        """Count one re-run if the loop's bound allows it, carrying feedback; False once it is spent."""
+        assert line.loop is not None
+        key = (f"{self.scope}{self.workflow}", self.item, name, line.node)
+        if self.c.loops.get(key, 0) >= resolve_count(self.c.cfg, line.loop.max):
+            return False
+        self.c.loops[key] = self.c.loops.get(key, 0) + 1
+        if line.loop.carry is not None and line.loop.carry in result:
+            self.store.put(self.feedback_name(line.node), result[line.loop.carry])
+        return True
+
+    def readers(self, names: set[str]) -> set[str]:
+        """`names` and every node that has run (or is running) and reads, among its inputs, an output of
+        one of them, transitively: what read an output a loop clears runs again with the new one, line or
+        no line."""
+        again = set(names)
+        todo = list(again)
+        while todo:
+            outs = self.nodes[todo.pop()].outputs
+            for m in self.names:
+                if m in again or self.state[m] not in ("finished", "running"):
+                    continue
+                if any(_reads(i, o) for i in self.nodes[m].inputs for o in outs):
+                    again.add(m)
+                    todo.append(m)
+        return again
+
+    async def send_back(self, names: set[str]) -> None:
+        await self.cancel([t for t, n in self.running.items() if n in names])
+        # a name a finished node outside the loop also writes keeps its latest value: clearing it would
+        # leave a node in the loop that reads it nothing to read
+        kept = {
+            out
+            for m in self.names
+            if m not in names and self.state[m] == "finished"
+            for out in self.nodes[m].outputs
+        }
+        for n in names:
+            self.state[n] = "pending"
+            self.forced.add(n)
+            self.store.clear_done(self.done_name(n))
+            for out, spec in self.nodes[n].outputs.items():
+                if out.partition(".")[0] in MEMORY or out in kept:
+                    continue
+                if spec.format == "session":
+                    self.c.sessions.pop(self.name(out))
+                else:
+                    self.store.put(self.name(out), None)
+            for i in range(len(self.nodes[n].to)):
+                self.line_state[(n, i)] = None
+            if self.nodes[n].type == "bundle":
+                self.forget(n)
+        self.store.save()
+
+
+def _reads(name: str, output: str) -> bool:
+    """An input `name` reads `output`: the same name, or one inside the other (`verdict.decision` of
+    `verdict`)."""
+    return name == output or name.startswith(f"{output}.") or output.startswith(f"{name}.")
+
+
+def _sub(name: str, item: str | None) -> str:
+    return name.replace("{item}", item) if item is not None else name
+
+
+def _done_name(scope: str, node: str, item: str | None) -> str:
+    """`<node>`, `<node>@<item>` in a bundle item, behind the bundle nodes it runs under (`lay/build@01`)."""
+    return f"{scope}{node}" if item is None else f"{scope}{node}@{item}"
+
+
+def _feedback_name(node: str, item: str | None) -> str:
+    return f"feedback.{node}" if item is None else f"feedback.{node}.{item}"

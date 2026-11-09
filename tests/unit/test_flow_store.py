@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from airlie.flow.store import MemoryStore, Sessions, StateStore
+from airlie.flow.store import BundleStore, MemoryStore, Sessions, StateStore
 from airlie.story.state import StoryState
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 from tests.unit.test_story_pipeline import text_card
@@ -51,6 +51,30 @@ def test_feedback_and_packages_live_beside_the_state_and_are_never_saved(tmp_pat
     assert head not in json.loads((tmp_path / "AIR-1" / "state.json").read_text())
 
 
+def test_a_transient_output_is_held_in_memory_ahead_of_a_field_and_never_saved(tmp_path):
+    """A transient head (a condition's bool, a brief's computed input) is held by its whole name, never in
+    `artifacts` nor a state field of the same head, and a fresh store over the saved state has none."""
+    repo = repo_with_marker_tests(tmp_path)
+    st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    s = StateStore(st, loose={}, transient=("to_build", "sources", "survey"))
+    s.put("to_build", False)
+    s.put("sources.01", {"a.py": "x"})
+    s.put("survey", "held, not the state's")
+    assert s.get("to_build") is False and not s.has("to_build")  # False is held, and absent as ever
+    assert s.get("sources.01") == {"a.py": "x"} and s.has("sources.01") and not s.has("sources.02")
+    assert s.get("survey") == "held, not the state's" and st.survey is None
+    s.save()
+    saved = json.loads((tmp_path / "AIR-1" / "state.json").read_text())
+    assert "artifacts" not in saved and saved["survey"] is None
+    s.put("sources.01", None)
+    assert not s.has("sources.01")
+    again = StateStore(
+        StoryState.open(tmp_path / "AIR-1", text_card("x"), repo), loose={}, transient=["to_build"]
+    )
+    with pytest.raises(KeyError):
+        again.get("to_build")
+
+
 def test_a_name_that_is_no_field_is_a_workflow_artifact_saved_with_the_state(tmp_path):
     """D15: a workflow's own output (`repro`) lives in `st.artifacts`; `<name>.<key>` in the dict there."""
     repo = repo_with_marker_tests(tmp_path)
@@ -83,7 +107,8 @@ def test_a_dotted_name_under_a_plain_artifact_is_refused(tmp_path):
 def test_put_on_a_reserved_or_memory_head_is_refused(tmp_path):
     repo = repo_with_marker_tests(tmp_path)
     st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
-    for name in ("path", "path.x", "feedback", "package", "artifacts", "workflow", "workflow.name"):
+    names = ("path", "path.x", "feedback", "package", "artifacts", "workflow", "workflow.name", "nodes_done")
+    for name in names:
         with pytest.raises(KeyError):
             StateStore(st, loose={}).put(name, 1)
     assert st.artifacts == {}
@@ -119,3 +144,61 @@ def test_undeclared_outputs_land_in_artifacts(tmp_path):
     s.save()
     again = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
     assert again.artifacts["repro"] == {"steps": 3} and again.workflow is None
+
+
+def test_the_done_set_is_kept_in_memory_and_on_the_state(tmp_path):
+    m = MemoryStore()
+    m.mark_done("a")
+    m.mark_done("a")
+    m.mark_done("b@01")
+    assert m.done("a") and m.done("b@01") and not m.done("b")
+    m.clear_done("a")
+    assert not m.done("a")
+    repo = repo_with_marker_tests(tmp_path)
+    st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    s = StateStore(st, loose={})
+    s.mark_done("mark")
+    s.mark_done("mark")
+    s.save()
+    assert json.loads((tmp_path / "AIR-1" / "state.json").read_text())["nodes_done"] == ["mark"]
+    s.clear_done("mark")
+    assert not s.done("mark") and st.nodes_done == []
+
+
+def test_put_none_clears_a_field_to_its_default_an_artifact_and_a_key(tmp_path):
+    """What a loop re-run does to the outputs of the nodes it sends back."""
+    repo = repo_with_marker_tests(tmp_path)
+    st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    s = StateStore(st, loose={"card": "c"})
+    s.put("story", {"t": 1})
+    s.put("built.01", {"sha": "a"})
+    s.put("repro", "steps")
+    s.put("found.01", {"f": 1})
+    s.put("feedback.a", "red")
+    for name in ("story", "built.01", "repro", "found.01", "feedback.a", "drafts", "nope"):
+        s.put(name, None)
+    assert st.story is None and st.built == {} and st.drafts == {}
+    assert st.artifacts == {"found": {}} and not s.has("feedback.a")
+    with pytest.raises(KeyError):
+        s.get("repro")
+    with pytest.raises(KeyError):
+        s.put("card", None)
+    m = MemoryStore({"x": 1})
+    m.put("x", None)
+    with pytest.raises(KeyError):
+        m.get("x")
+
+
+def test_a_bundle_store_reads_the_parent_and_writes_only_its_outputs_and_memory():
+    parent = MemoryStore({"layers": [1], "card": "c"})
+    b = BundleStore(parent, workflow="layer", outputs=["built.{item}"], item="02")
+    assert b.get("layers") == [1] and b.has("card")
+    b.put("built.02", {"sha": "s"})
+    b.put("feedback.build.02", "red")
+    b.mark_done("build@02")
+    b.emit("node_started", node="build")
+    assert parent.get("built.02") == {"sha": "s"} and parent.get("feedback.build.02") == "red"
+    assert parent.done("build@02") and parent.events == [("node_started", {"node": "build"})]
+    for name in ("built.01", "story", "drafted"):
+        with pytest.raises(KeyError, match="bundle layer: '.+' is not one of its outputs"):
+            b.put(name, 1)

@@ -115,6 +115,10 @@ class StoryState:
     artifacts: dict[str, Any] = field(default_factory=dict)
     """Outputs of a workflow's nodes that are not fields of this state, by name (`artifacts.<name>` in the
     store). JSON-serialisable: they are saved with the state."""
+    nodes_done: list[str] = field(default_factory=list)
+    """The composer's done set (`StateStore.done`): the nodes of the card's workflow that finished, by name
+    (`<node>`, or `<node>@<item>` inside a bundle item), so a resume skips a node with no outputs (or whose
+    outputs are empty) that already ran. Not saved while empty, as `artifacts`."""
     workflow: dict[str, Any] | None = None
     """The workflow this card started on, snapshotted so a later edit does not change a running card:
     `{"name": str, "specs": {workflow name: WorkflowSpec.model_dump(mode="json")}, "prompts": {prompt id:
@@ -199,13 +203,15 @@ class StoryState:
 
     def save(self) -> None:
         """The new bytes are synced before the rename and the directory after it, so a crash leaves the old
-        state or the new one, never a short file. A story that ran no workflow saves no `artifacts` or
-        `workflow` key, so its file is the one airlie wrote before workflows existed (and opens there on a
-        rollback); both load through their defaults."""
+        state or the new one, never a short file. A story that ran no workflow saves no `artifacts`,
+        `nodes_done` or `workflow` key, so its file is the one airlie wrote before workflows existed (and
+        opens there on a rollback); all three load through their defaults."""
         data = asdict(self)
         del data["path"]
         if not data["artifacts"]:
             del data["artifacts"]
+        if not data["nodes_done"]:
+            del data["nodes_done"]
         if data["workflow"] is None:
             del data["workflow"]
         tmp = self.path / "state.json.tmp"

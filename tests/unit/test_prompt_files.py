@@ -14,7 +14,8 @@ from typing import Any, cast
 import pytest
 
 from airlie.flow.composer import Composer, Registry, RunContext
-from airlie.flow.prompt_files import PREFIX, parse_draft_prompts, render_value
+from airlie.flow.prompt_files import parse_draft_prompts, render_value
+from airlie.flow.render import prompt_source, render
 from airlie.flow.runners import ask_runner
 from airlie.flow.spec import NodeSpec, WorkflowSpec, check_workflows
 from airlie.flow.store import MemoryStore, Sessions
@@ -57,11 +58,16 @@ class FakeAsker:
     ) -> Any:
         self.briefs.append(brief(None))
         self.briefs.append(brief("that reply named no steps"))
-        return parse("steps: 1")
+        return parse('```json\n{"steps": 1}\n```')
 
     async def ask(self, st: Any, stage: str, role: str, brief: str, **kw: Any) -> str:
         self.briefs.append(brief)
         return "done"
+
+
+def brief(ctx: RunContext, id: str, feedback: str | None = None) -> str:
+    """The text a node naming `prompt:<id>` sends, rendered as the runners render it."""
+    return render(prompt_source(f"prompt:{id}", ctx.texts), ctx.lookup, feedback=feedback)
 
 
 def node(**kw: Any) -> NodeSpec:
@@ -79,22 +85,22 @@ def context(n: NodeSpec, registry: Registry, store: MemoryStore, loose: tuple[st
         item=None,
         feedback=None,
         inputs=frozenset(n.inputs) | set(loose),
+        texts=registry.prompts,
     )
 
 
 async def test_a_draft_prompt_file_renders_the_nodes_inputs_and_the_feedback() -> None:
     registry = Registry(prompts=parse_draft_prompts({"bug-reproduce": REPRODUCE}))
-    registry.add("bug.steps", lambda text: text)
-    n = node(inputs=["card"], parse="bug.steps", outputs={"steps": "text"})
+    n = node(inputs=["card"], outputs={"steps": {"format": "json", "fields": {"steps": "number"}}})
     asker = FakeAsker()
     out = await ask_runner(
         n, context(n, registry, MemoryStore({"card": "C1 title"})), asker=cast(Any, asker), st=cast(Any, None)
     )
     assert asker.briefs == ["Reproduce: C1 title\n\n", "Reproduce: C1 title\n\nthat reply named no steps"]
-    assert out == {"steps": "steps: 1"}
+    assert out == {"steps": {"steps": 1}}
 
 
-async def test_a_prompt_file_may_read_a_loose_name_and_a_registered_id_wins() -> None:
+async def test_a_prompt_file_renders_a_loose_name_its_context_reads() -> None:
     registry = Registry(prompts=parse_draft_prompts({"bug-reproduce": REPRODUCE}))
     n = node(outputs={"steps": "text"})
     asker = FakeAsker()
@@ -105,17 +111,17 @@ async def test_a_prompt_file_may_read_a_loose_name_and_a_registered_id_wins() ->
         st=cast(Any, None),
     )
     assert asker.briefs == ["Reproduce: C2\n\n"]
-    registry.add(f"{PREFIX}bug-reproduce", lambda ctx, feedback: "overridden")
-    assert registry[f"{PREFIX}bug-reproduce"](None, None) == "overridden"
 
 
-async def test_a_field_the_node_does_not_read_is_a_prompt_error_naming_the_node() -> None:
+async def test_a_field_with_no_value_is_a_prompt_error_naming_the_field() -> None:
+    """A field the store has no value for stops the brief (what a node may read is checked when the workflow
+    loads: `check_workflows`, below)."""
     registry = Registry(prompts=parse_draft_prompts({"bug-reproduce": REPRODUCE}))
-    n = node(outputs={"steps": "text"})
-    with pytest.raises(PromptError, match="reproduce.*card"):
+    n = node(inputs=["card"], outputs={"steps": "text"})
+    with pytest.raises(PromptError, match="'card', which has no value here"):
         await ask_runner(
             n,
-            context(n, registry, MemoryStore({"card": "C1"})),
+            context(n, registry, MemoryStore()),
             asker=cast(Any, FakeAsker()),
             st=cast(Any, None),
         )
@@ -124,12 +130,13 @@ async def test_a_field_the_node_does_not_read_is_a_prompt_error_naming_the_node(
 def test_a_hub_rule_is_found_without_a_draft() -> None:
     registry = Registry()
     n = NodeSpec(type="ask", role="architect", prompt="prompt:brief-survey-task")
-    brief = registry["prompt:brief-survey-task"](context(n, registry, MemoryStore()), None)
-    assert brief.startswith("Read the code this request touches")
+    assert brief(context(n, registry, MemoryStore()), "brief-survey-task").startswith(
+        "Read the code this request touches"
+    )
     with pytest.raises(PromptError, match="nope"):
-        Registry()["prompt:nope"]
-    with pytest.raises(KeyError, match="registry has no 'story.nope'"):
-        Registry()["story.nope"]
+        prompt_source("prompt:nope", {})
+    with pytest.raises(KeyError, match="registry has no catalog to find 'story.nope'"):
+        Registry().check("story.nope")
 
 
 def test_a_draft_prompt_that_does_not_parse_is_a_prompt_error() -> None:
@@ -139,7 +146,7 @@ def test_a_draft_prompt_that_does_not_parse_is_a_prompt_error() -> None:
 
 def bug(prompt: str, **kw: Any) -> Mapping[str, WorkflowSpec]:
     reproduce = NodeSpec(type="ask", role="tester", prompt=prompt, outputs={"steps": "text"}, **kw)
-    return {"bug": WorkflowSpec(start="reproduce", loose=["card"], nodes={"reproduce": reproduce})}
+    return {"bug": WorkflowSpec(inputs=["card"], nodes={"reproduce": reproduce})}
 
 
 def test_check_workflows_flags_an_unknown_prompt_file() -> None:
@@ -151,8 +158,13 @@ def test_check_workflows_flags_an_unknown_prompt_file() -> None:
 
 def test_check_workflows_flags_a_field_the_node_cannot_read() -> None:
     texts = parse_draft_prompts({"bug-reproduce": REPRODUCE})
-    assert check_workflows(bug("prompt:bug-reproduce"), prompts=texts) == []  # card is loose
-    lonely = {"bug": bug("prompt:bug-reproduce")["bug"].model_copy(update={"loose": []})}
+    assert check_workflows(bug("prompt:bug-reproduce", inputs=["card"]), prompts=texts) == []
+    # a workflow input the node does not list is not the node's to read, as for inline text
+    assert check_workflows(bug("prompt:bug-reproduce"), prompts=texts) == [
+        "workflow bug: node reproduce: prompt file 'bug-reproduce' reads 'card', "
+        "which is not an input of the node"
+    ]
+    lonely = {"bug": bug("prompt:bug-reproduce")["bug"].model_copy(update={"inputs": []})}
     assert check_workflows(lonely, prompts=texts) == [
         "workflow bug: node reproduce: prompt file 'bug-reproduce' reads 'card', "
         "which is not an input of the node"
@@ -187,15 +199,16 @@ async def test_a_loop_carry_reaches_the_feedback_field_on_the_re_run(tmp_path: P
         "prompt": "prompt:bug-write",
         "inputs": ["card"],
         "outputs": {"steps": "text"},
+        "to": ["judge"],
     }
     judged = {
         "type": "check",
         "run": "bug.judge",
         "inputs": ["steps"],
         "outputs": {"verdict": "text"},
-        "loop": {"to": "write", "max": 1, "carry": "note"},
+        "to": [{"node": "write", "loop": {"max": 1, "carry": "note"}}],
     }
-    spec = {"start": "write", "loose": ["card"], "nodes": {"write": write, "judge": judged}}
+    spec = {"inputs": ["card"], "nodes": {"write": write, "judge": judged}}
     workflows = {"bug": WorkflowSpec.model_validate(spec)}
     texts = parse_draft_prompts({"bug-write": WRITE})
     assert check_workflows(workflows, prompts=texts) == []
@@ -215,8 +228,7 @@ async def test_a_loop_carry_reaches_the_feedback_field_on_the_re_run(tmp_path: P
     registry = Registry(prompts=parse_draft_prompts({"bug-reproduce": REPRODUCE}))
     carried = context(node(inputs=["card"]), registry, MemoryStore({"card": "C1"}))
     carried.feedback = "make it shorter"
-    brief = registry["prompt:bug-reproduce"]
-    assert brief(carried, "no steps") == "Reproduce: C1\n\nno steps\n\nmake it shorter"
+    assert brief(carried, "bug-reproduce", "no steps") == "Reproduce: C1\n\nno steps\n\nmake it shorter"
 
 
 def test_a_card_renders_as_its_title_and_description_and_an_artifact_as_json() -> None:
@@ -228,7 +240,7 @@ def test_a_card_renders_as_its_title_and_description_and_an_artifact_as_json() -
     assert render_value("plain") == "plain" and render_value(3) == "3"
     registry = Registry(prompts=parse_draft_prompts({"bug-reproduce": REPRODUCE}))
     ctx = context(node(inputs=["card"]), registry, MemoryStore({"card": card}))
-    assert registry["prompt:bug-reproduce"](ctx, None) == "Reproduce: Fix the marker\n\nIt is red.\n\n"
+    assert brief(ctx, "bug-reproduce") == "Reproduce: Fix the marker\n\nIt is red.\n\n"
 
 
 def test_a_draft_prompt_named_like_a_hub_prompt_is_a_problem_and_the_hub_wins() -> None:
@@ -238,5 +250,5 @@ def test_a_draft_prompt_named_like_a_hub_prompt_is_a_problem_and_the_hub_wins() 
             closure_prompts({"bug": {id: clash}}, ["bug"])
     registry = Registry(prompts=parse_draft_prompts({"brief-survey-task": clash}))
     n = NodeSpec(type="ask", role="architect", prompt="prompt:brief-survey-task")
-    brief = registry["prompt:brief-survey-task"](context(n, registry, MemoryStore()), None)
-    assert brief.startswith("Read the code this request touches")  # the hub first, whatever a draft says
+    opening = brief(context(n, registry, MemoryStore()), "brief-survey-task")
+    assert opening.startswith("Read the code this request touches")  # the hub first, whatever a draft says

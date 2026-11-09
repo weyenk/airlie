@@ -18,19 +18,25 @@ from pydantic import BaseModel, ConfigDict
 from airlie.board.model import WorkflowDraft
 from airlie.board.store import BoardStore, BoardStoreError
 from airlie.config import AirlieConfig
-from airlie.flow.spec import NodeType, WorkflowSpec
+from airlie.flow.spec import MEETINGS, Format, NodeType, WorkflowSpec
 from airlie.prompts.hub import load as hub_prompts
-from airlie.story.flow import CATALOG
+from airlie.story.flow import STORY_CATALOG  # the catalog, with the story's checks declared on it
 from airlie.story.publish import PublishError
 from airlie.story.workflow_publish import NothingToPublish
 from airlie.story.workflows import (
     DraftPrompts,
     WorkflowError,
+    bundle_users,
     draft_body,
     draft_spec,
     edits_file,
+    used_by,
     workflow_problems,
 )
+
+KINDS = ("text", "number", "bool", "list of …", "one of …")
+"""The field kinds an output's field list may use (`airlie.flow.outputs.parse_kind`), as the builder offers
+them; any kind may end in `?` for an optional field."""
 
 RESERVED = frozenset({"catalog", "validate", "drafts"})
 """Names a draft may not take: the router's own paths under /v1/workflows, which `GET /{name}` would never
@@ -129,8 +135,18 @@ def workflows_router(
         except KeyError:
             raise HTTPException(404, f"no draft workflow {name!r}") from None
 
+    def in_use(name: str) -> None:
+        """Refuse (409, with the users) taking away draft `name` while another workflow's bundle node runs
+        it. A draft that edits a file goes freely: the file still serves its users."""
+        if not edits_file(cfg, name) and (users := used_by(cfg, texts(), name)):
+            raise HTTPException(409, {"used_by": users})
+
     @router.get("")
     async def list_workflows() -> dict[str, Any]:
+        rows = store.drafts()
+        drafts = {d.name: d.yaml for d in rows}
+        prompts = {d.name: d.prompts for d in rows}
+        users = bundle_users(cfg, drafts)
         files: list[dict[str, Any]] = [
             {
                 "name": name,
@@ -139,12 +155,10 @@ def workflows_router(
                 "bundle": spec.type is None,
                 "problems": [],
                 "pr": None,
+                "used_by": users.get(name, []),
             }
             for name, spec in cfg.workflows.items()
         ]
-        rows = store.drafts()
-        drafts = {d.name: d.yaml for d in rows}
-        prompts = {d.name: d.prompts for d in rows}
         listed = [
             {
                 "name": d.name,
@@ -155,6 +169,7 @@ def workflows_router(
                 "pr": _pr(d),
                 # an edit of a file waiting for its PR (or a merge the serve has not loaded): never run
                 "superseded": edits_file(cfg, d.name),
+                "used_by": users.get(d.name, []),
             }
             for d in rows
         ]
@@ -165,7 +180,10 @@ def workflows_router(
         return {
             "roles": sorted(cfg.roles),
             "types": list(get_args(NodeType)),
-            **{kind: list(ids) for kind, ids in CATALOG.items()},
+            "formats": list(get_args(Format)),
+            "kinds": list(KINDS),
+            "checks": STORY_CATALOG.describe(),
+            "meetings": [{"roles": list(m["roles"]), "inputs": list(m["inputs"])} for m in MEETINGS],
             "prompt_files": sorted(p.id for p in hub_prompts().values() if p.kind == "rule"),
         }
 
@@ -203,6 +221,9 @@ def workflows_router(
     @router.put("/drafts/{name}")
     async def save_draft(name: str, body: SaveDraft) -> dict[str, Any]:
         _not_reserved(name)  # a file's name is allowed: the draft is an edit of that file (`edits_file`)
+        with contextlib.suppress(WorkflowError):  # a save naming another workflow renames this one
+            if draft_body(body.yaml)[0] != name:
+                in_use(name)
         try:
             draft_body(body.yaml, name)
             saved = store.save_draft(name, type=body.type, yaml=body.yaml, prompts=body.prompts)
@@ -213,6 +234,8 @@ def workflows_router(
 
     @router.delete("/drafts/{name}", status_code=204)
     async def delete_draft(name: str) -> Response:
+        get_draft(name)  # 404 before anything else
+        in_use(name)
         try:
             store.delete_draft(name)
         except KeyError:

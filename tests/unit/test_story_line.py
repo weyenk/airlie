@@ -423,6 +423,9 @@ async def test_a_card_whose_workflow_has_a_problem_is_skipped_so_the_next_one_ru
         def drafts(self) -> dict[str, str]:
             return {d.name: d.yaml for d in rig.store.drafts()}
 
+        def draft_prompts(self) -> dict[str, dict[str, str]]:
+            return {d.name: dict(d.prompts) for d in rig.store.drafts()}
+
         async def plan(self, card: Card) -> StoryState:
             planned.append(card.key)
             return StoryState(path=Path("s"), card=card.to_dict(), repo="r", stage="layers")

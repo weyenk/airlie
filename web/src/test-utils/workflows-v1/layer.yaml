@@ -1,0 +1,48 @@
+# frozen copy of the pre-v2 file for the builder's tests until plan 2 (config/workflows/layer.yaml is schema v2)
+# The layer bundle: what the story workflow's build_layers node runs per layer.
+# Design: docs/superpowers/specs/2026-11-06-generic-nodes-design.md
+workflows:
+  layer:
+    start: covered
+    loose: [card, story, layers, base, gate]
+    nodes:
+      covered:
+        type: check
+        run: story.covered
+        inputs: [story, layers]
+        outputs: {"satisfied.{item}": json}
+        when: story.open_layer   # neither built nor satisfied: `_build` returns at once for either
+        on_fail: continue
+      drafts:
+        type: conversation
+        role: architect
+        prompt: story.drafts   # layer 01's package brief; a turn of story.package_steps steps
+        args: {turns: story.drafts_turns}   # a turn per layer, the critic's revision in it; ends at an unusable draft
+        inputs: [story, layers]
+        outputs: {drafted: bool, drafts_session: session}   # the session: held for the run, never saved
+        when: story.not_built
+      package:
+        type: ask
+        role: architect
+        prompt: story.ready_package   # spec.py needs a prompt on ask/write; same id as run
+        run: story.ready_package
+        inputs: [base, story, layers]
+        # the package, in memory (a run stopped before the build asks again), or the architect's satisfied
+        # reply: skipped by its outputs only with both present; `story.open_layer` skips it once either the
+        # build or the satisfaction is stored
+        outputs: {"package.{item}": json, "satisfied.{item}": json}
+        when: story.open_layer
+        session: drafts_session
+      build:
+        type: write
+        role: coder
+        prompt: story.build_once   # spec.py needs a prompt on ask/write; same id as run
+        run: story.build_once
+        inputs: ["package.{item}", story, layers]
+        outputs: {"built.{item}": json}
+        when: story.has_package
+        loop: {to: package, max: story.layer_attempts, carry: feedback}
+      costed_layer:
+        type: check
+        run: story.costed
+        args: {stages: [package, layer, review]}

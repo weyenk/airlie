@@ -44,6 +44,7 @@ from airlie.story.briefs import (
     refine_brief,
     render_brief,
     replan_brief,
+    request_section,
     revise_brief,
     survey_brief,
 )
@@ -134,6 +135,21 @@ def _package_brief(i: int, **kwargs: Any) -> str:
 
 
 CASES: dict[str, Callable[[], str]] = {
+    # --- flow/outputs.py: what a generic ask says about its reply
+    "output-format": lambda: text(
+        "output-format", fields="decision (one of agree | object), reasons (list of text)"
+    ),
+    # --- flow/team.py: the team node's supervisor
+    "team-assign": lambda: text("team-assign", workers=3, format="Reply with one ```json block."),
+    "team-handback": lambda: text(
+        "team-handback",
+        id="w2",
+        status="applied",
+        waiting="w1, w3",
+        not_started="w4",
+        format="Reply with one ```json block with fields: summary (text).",
+        result="added w2.txt",
+    ),
     # --- teams/native_team.py: steering the loop sends
     "malformed-call": lambda: text("malformed-call"),
     "no-tools": lambda: text("no-tools"),
@@ -236,6 +252,8 @@ CASES |= {
     ),
     "fn:briefs.survey_brief:bare": partial(survey_brief, CARD),
     "fn:briefs.survey_brief:described": partial(survey_brief, DESCRIBED),
+    # --- the story workflow's survey node: its prompt file, word for word the survey brief
+    "story-survey": lambda: text("story-survey", request=request_section(DESCRIBED)),
     "fn:briefs.layers_brief:plain": partial(layers_brief, STORY, 4),
     "fn:briefs.layers_brief:lessons": partial(
         layers_brief,

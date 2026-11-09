@@ -66,6 +66,11 @@ prompts_app = typer.Typer(
     "(docs/superpowers/specs/2026-10-22-prompt-hub-design.md).",
 )
 app.add_typer(prompts_app, name="prompts")
+workflows_app = typer.Typer(
+    no_args_is_help=True,
+    help="Workflows are nodes and lines (docs/superpowers/specs/2026-11-08-nodes-are-config-design.md).",
+)
+app.add_typer(workflows_app, name="workflows")
 board_app = typer.Typer(
     no_args_is_help=True, help="The local board (initiative → epic → story → subtask; served at /v1/board)."
 )
@@ -1454,6 +1459,35 @@ def story_restart(
     console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
+@story_app.command("adopt-workflow")
+def story_adopt_workflow(
+    ref: Annotated[str | None, typer.Argument(metavar="ISSUE", help="the story's key (AIR-7)")] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Have a story run the current workflow in place of the snapshot it started on: what the workflow files
+    and the board's drafts say now, for the workflow its label names. A step whose definition changed is run
+    again as a loop re-runs it: its outputs, and those of every step after it, are cleared. A new step runs
+    because it has no outputs; an unchanged one is skipped by the outputs the story holds. Everything else is
+    kept. The card waits out of the line meanwhile. A story that is running, has not started, or whose
+    workflow does not resolve now is refused, with nothing changed."""
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.model import StoryRunning, StorySetupError
+    from airlie.story.workflows import WorkflowError
+
+    if ref is None:
+        err.print("[red]pass the story's key (AIR-7)[/red]")
+        raise typer.Exit(2)
+    cfg = _story_cfg(config)
+    try:
+        done = _run_stoppable(factory.adopt_one(cfg, ref))
+    except (BoardError, StorySetupError, StoryRunning, WorkflowError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    line = f"{done.key} now runs the current {done.name} workflow ({done.after}, was {done.before})"
+    console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
 @story_app.command("pr-body")
 def story_pr_body(
     ref: Annotated[
@@ -2446,6 +2480,26 @@ def route_eval(
         console.print(f"saved {save(rep, out)}")
     if rep.accuracy < min_accuracy:
         raise typer.Exit(1)
+
+
+@workflows_app.command("catalog")
+def workflows_catalog() -> None:
+    """The checks a `check` or `gate` node may name in `run`, with what each reads and writes."""
+    from airlie.story.flow import STORY_CATALOG
+
+    table = Table("name", "title", "inputs", "outputs", "args", "transient", "every_run")
+    table.columns[0].no_wrap = True
+    for c in STORY_CATALOG.describe():
+        table.add_row(
+            escape(c["name"]),
+            escape(c["title"]),
+            escape(", ".join(c["inputs"])),
+            escape(", ".join(c["outputs"])),
+            escape(", ".join(c["args"])),
+            escape(", ".join(c["transient"])),
+            "yes" if c["every_run"] else "",
+        )
+    console.print(table)
 
 
 def main() -> None:

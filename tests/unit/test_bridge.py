@@ -521,7 +521,7 @@ def test_a_model_in_use_logs_once_however_its_age_moves_and_idle_logs_once(
 
     with caplog.at_level(logging.INFO, logger="airlie.serve.bridge.runner"):
         asyncio.run(go())
-    lines = [r.getMessage() for r in caplog.records]
+    lines = [r.getMessage() for r in caplog.records if r.name == "airlie.serve.bridge.runner"]
     assert lines == ["not claiming: model generalist used 14 s ago on engine main", "idle again, claiming"]
 
 
@@ -546,7 +546,7 @@ def test_an_outage_logs_once_and_recovery_logs_idle_again_claiming(
 
     with caplog.at_level(logging.INFO, logger="airlie.serve.bridge.runner"):
         asyncio.run(go())
-    lines = [r.getMessage() for r in caplog.records]
+    lines = [r.getMessage() for r in caplog.records if r.name == "airlie.serve.bridge.runner"]
     assert lines[0] == "not claiming: serve not answering at http://127.0.0.1:8090"
     assert lines.count(lines[0]) == 1
     assert "idle again, claiming" in lines
@@ -562,7 +562,7 @@ def test_no_idle_line_when_the_bridge_was_never_busy(
     runner = _runner(tmp_path, busy, FakeHub())
     with caplog.at_level(logging.INFO, logger="airlie.serve.bridge.runner"):
         asyncio.run(runner.tick())
-    assert caplog.records == []
+    assert [r for r in caplog.records if r.name == "airlie.serve.bridge.runner"] == []
 
 
 # ---- heartbeat: keep a running hub job leased ----

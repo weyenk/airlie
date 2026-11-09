@@ -31,7 +31,7 @@ from airlie.story.local_board import LocalBoard
 from airlie.story.model import PLANNED, StoryRunning, StorySetupError
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError
-from airlie.story.state import Lane, StoryState, lane_lock, lock_held
+from airlie.story.state import STAGES, Lane, StoryState, lane_lock, lock_held
 from airlie.teams.worktree import delete_branch, move_branches, remove_worktree, rev_parse
 
 FRESH = "refine"
@@ -218,7 +218,68 @@ def _cleared(
     st.base = base
     if layer is None or layer == 1:
         st.gate = None
-    if point in ("layers", "amigos"):
+    rewind(st, point)
+    if layer is None:
+        st.built, st.satisfied, st.drafts, st.drafted = {}, {}, {}, False
+    else:
+        st.built = {nn: b for nn, b in st.built.items() if int(nn) < layer}
+        st.satisfied = {nn: s for nn, s in st.satisfied.items() if int(nn) < layer}
+        for nn, sha in moved.items():
+            st.built[nn]["sha"] = sha
+        st.drafts = {nn: d for nn, d in st.drafts.items() if int(nn) < layer}
+    st.attempt = None
+    # st.workflow is kept: a restart from a step resumes node ids that only the snapshot names, so the
+    # snapshot must stay; a changed definition is picked up by a fresh card (a started card's workflow
+    # cannot change)
+    # the done set goes whole: a node with outputs is skipped by them, kept or cleared above; one with none
+    # runs again (a board note said twice is the price)
+    st.nodes_done = []
+    st.prs = []
+    st.blocked = None
+    st.save()
+
+
+_BEFORE = {FRESH: "intake", "layers": FRESH, "amigos": FRESH, "packages": PLANNED}
+"""The stage a story goes back to when it starts over from each point: the last one the point keeps."""
+
+OPERATIONS = {
+    "story.refine": FRESH,
+    "story.take_card_as_story": FRESH,
+    "story.plan_layers": "layers",
+    "story.agree_plain": "amigos",
+    "meeting": "amigos",  # a node of that type: the meeting's protocol (`_agree`) reads the stage
+    "story.build_done": "packages",
+    "story.publish": "packages",
+    "story.finish": "packages",
+}
+"""The operations a stage gates (a catalog check by its `run` id, the meeting by its node type): each reads
+the story's stage (or what a stage keeps) to skip what is done, so running it again needs the stages from
+its point on cleared (`rewind`). A node a card's new workflow changed (`adopt_current`) that runs one of
+these goes back to that point."""
+
+
+def rewind_point(nodes: Mapping[str, Any]) -> str | None:
+    """The earliest point (in `POINTS` order) of the `OPERATIONS` the nodes (name -> `NodeSpec`) run, else
+    None."""
+    found = {
+        OPERATIONS[key]
+        for n in nodes.values()
+        for key in (n.run, n.type)
+        if isinstance(key, str) and key in OPERATIONS
+    }
+    return next((p for p in POINTS if p in found), None)
+
+
+def rewind(st: StoryState, point: str) -> None:
+    """The stages from `point` (one of `POINTS`) on cleared on `st`, nothing saved: the stage goes back to the
+    last one the point keeps; from the layer split or the meeting the story (and for the meeting the plan)
+    go back to how they stood before the meeting, and the agreement and the meeting's state go; from refine
+    the story, the plan and all the meeting kept go too."""
+    if point == FRESH:
+        st.stage = _BEFORE[FRESH]
+        st.story = st.layers = st.refined_story = st.refined_layers = None
+        st.agreement = st.meeting = None
+    elif point in ("layers", "amigos"):
         st.stage = FRESH  # refined; the layer split and the meeting run again
         # the story (and for the meeting the plan) as they stood before the meeting: the agreement and a
         # reworded criterion had replaced them. A story that never met has them as they are.
@@ -232,21 +293,11 @@ def _cleared(
         st.meeting = None
     else:
         st.stage = PLANNED
-    if layer is None:
-        st.built, st.satisfied, st.drafts, st.drafted = {}, {}, {}, False
-    else:
-        st.built = {nn: b for nn, b in st.built.items() if int(nn) < layer}
-        st.satisfied = {nn: s for nn, s in st.satisfied.items() if int(nn) < layer}
-        for nn, sha in moved.items():
-            st.built[nn]["sha"] = sha
-        st.drafts = {nn: d for nn, d in st.drafts.items() if int(nn) < layer}
-    st.attempt = None
-    # st.workflow is kept: a restart from a step resumes node ids that only the snapshot names, so the
-    # snapshot must stay; a changed definition is picked up by a fresh card (a started card's workflow
-    # cannot change)
-    st.prs = []
-    st.blocked = None
-    st.save()
+
+
+def past(st: StoryState, point: str) -> bool:
+    """`st` has finished a stage past the one `point` keeps: starting over from there changes its stage."""
+    return STAGES.index(st.stage) > STAGES.index(_BEFORE[point])
 
 
 async def _nothing() -> None:

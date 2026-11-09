@@ -885,10 +885,12 @@ def opening_message(
     conventions_text: str,
     lessons: Sequence[Lesson],
     dossier: Mapping[str, str] | None = None,
+    purpose: str | None = None,
 ) -> str:
-    """The meeting's first message, which every agent reads: its purpose and rules (`amigos-opening`), the
-    story as product refined it, the architect's split, the repository's testing conventions, the lessons
-    recorded for the repository when there are any, and the contracts each part and the verdict travel in."""
+    """The meeting's first message, which every agent reads: its purpose and rules (`amigos-opening`, or a
+    meeting node's `purpose` text in its place), the story as product refined it, the architect's split, the
+    repository's testing conventions, the lessons recorded for the repository when there are any, and the
+    contracts each part and the verdict travel in."""
     from airlie.story.briefs import (  # as in _lessons_text
         STORY_CONTRACT,
         dossier_section,
@@ -897,7 +899,7 @@ def opening_message(
 
     split = json.dumps({"layers": [x.to_dict() for x in layers]}, indent=1)
     parts = [
-        hub_text("amigos-opening"),
+        hub_text("amigos-opening") if purpose is None else purpose,
         "## Product's story: the requirements as they stand\n" + story_text(story),
         "## The architect's split: the changes as they stand\n```json\n" + split + "\n```",
         "## The proof\nThe tester has not posted it yet: its first turn proposes the proof plan. Only the "
@@ -978,6 +980,9 @@ class Meeting:
         self.before_turn: Callable[[], Awaitable[Any]] | None = None
         """Awaited before each turn of a role (not the checker's): the planning lane's long turns wait for
         the build lane's gap here (planning-line P5b, D2)."""
+        self.turn_text: str | None = None
+        """What each seat's system message says of a turn in place of the hub's `amigos-turn` (a meeting
+        node's `turn` text); None: the hub's."""
 
     def _agent(self, role: str) -> tuple[AssistantAgent, ChatCompletionClient]:
         spec = self.cfg.roles[role]
@@ -989,7 +994,12 @@ class Meeting:
         registry = self.tools(role) if self.tools is not None and self.tool_iterations > 0 else None
         tools = build_function_tools(registry) if registry is not None else []
         system = "\n\n".join(
-            [prompt_text(spec.prompt), hub_text("amigos-turn"), VERDICT_CONTRACT, hub_text(f"amigos-{role}")]
+            [
+                prompt_text(spec.prompt),
+                hub_text("amigos-turn") if self.turn_text is None else self.turn_text,
+                VERDICT_CONTRACT,
+                hub_text(f"amigos-{role}"),
+            ]
         )
         agent = AssistantAgent(
             role,

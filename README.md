@@ -310,6 +310,9 @@ guidelines with `summary:` frontmatter, routed by Kev), `knowledge` (a directory
 indexes with BM25), `vision` (receives the run's images) and `max_steps`. Unknown keys are errors, and every
 error names the key path.
 
+A workflow is nodes and lines: a node's `to` names the nodes its outputs feed, a model node's `prompt` is text or
+`prompt:<id>`, and a `check`/`gate` node's `run` comes from the catalog that `airlie workflows catalog` prints.
+
 A role that thinks (`thinking: true` with a `thinking_budget`) needs `max_tokens` larger than the budget: `max_tokens`
 caps the thinking and the answer together, so the config is refused otherwise, naming the role and both numbers.
 A reply the engine cuts off at `max_tokens` ends an agent's turn as `cut_off`, never as a finished answer; the

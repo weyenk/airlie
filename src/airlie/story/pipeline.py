@@ -1247,7 +1247,14 @@ class StoryPipeline:
         return Hold(cfg=self.cfg, state=st.meeting, **self._meeting_parts(st))
 
     async def _agree(
-        self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...], hold: Hold | None = None
+        self,
+        st: StoryState,
+        card: Card,
+        story: Story,
+        layers: tuple[Layer, ...],
+        hold: Hold | None = None,
+        *,
+        opening: str | None = None,
     ) -> Agreement:
         """The story meeting (P2, 2026-10-24): product, the architect and the tester agree the requirements,
         the changes and the proof, then the stored agreement replaces the story and the layers. Skipped, and
@@ -1263,7 +1270,8 @@ class StoryPipeline:
 
         The meeting is held through `hold` (the meeting runner's, over the team state its store saved), by
         default `_hold`'s over the state's own: the stored-agreement and plain-split branches are
-        `kept_agreement` and `agree_plain`, which the composer's `agree_plain` check and `_restore` call."""
+        `kept_agreement` and `agree_plain`, which the composer's `agree_plain` check and `_restore` call.
+        `opening` is a meeting node's text in place of the hub's `amigos-opening` (`opening_message`)."""
         if (kept := kept_agreement(st)) is not None:
             return kept
         if st.done("layers") or not self.s.amigos.enabled:
@@ -1285,6 +1293,7 @@ class StoryPipeline:
             conventions_text(found, self.commands),
             self.lessons.recent(),
             self._dossier(st, sha),
+            purpose=opening,
         )
         tree = st.path / "meeting-tree"
         remove_worktree(self.repo, tree)  # one a killed run left behind
