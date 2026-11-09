@@ -178,7 +178,9 @@ def build_model_client(
     )
     client.slot_scheduler = scheduler
     client.team_id = team_id
-    client.model_spec = model  # its parsers read what the server left as text (Muse's calls)
+    client.model_spec = (
+        model if dialect == "vllm_mlx" else None
+    )  # its parsers read what the server left as text (Muse's calls)
     return client
 
 

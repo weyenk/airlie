@@ -97,14 +97,18 @@ class HTTPEngine:
         except httpx.HTTPError as e:
             return EngineHealth(ok=False, models={}, detail=f"{type(e).__name__}: {e}")
         ok = h.status_code == 200 and m.status_code == 200
-        ids: list[str] = []
+        models: dict[str, ModelState] = {}
         if m.status_code == 200:
-            ids = [str(x.get("id")) for x in m.json().get("data", [])]
-        models: dict[str, ModelState] = dict.fromkeys(ids, "ready")
+            for x in m.json().get("data", []):
+                # mlx-vlm lists every model in the HF cache and flags the resident one; vllm-mlx has no flag
+                models[str(x.get("id"))] = "ready" if x.get("loaded", True) else "lazy"
         detail = ""  # pragma: no mutate  (None is just as falsy for the fallback below)
         if h.status_code == 200:
             hj = h.json()
-            detail = f"{hj.get('status', '?')} engine={hj.get('engine_type', '?')}"
+            engine = hj.get("engine_type") or (
+                f"loaded_model={hj['loaded_model']}" if hj.get("loaded_model") else "?"
+            )
+            detail = f"{hj.get('status', '?')} engine={engine}"
         return EngineHealth(ok=ok, models=models, detail=detail or f"health {h.status_code}")
 
     # ---- generation ----
@@ -191,17 +195,25 @@ class HTTPEngine:
                             drafts = int(meta["mtp_drafts"])
                     if isinstance(frame.get("airlie_ttft_ms"), int | float):
                         engine_ttft_ms = float(frame["airlie_ttft_ms"])
+                    timings = frame.get("timings")  # mlx-vlm: draft counts, null without a drafter
+                    if isinstance(timings, dict):
+                        if isinstance(timings.get("draft_n_accepted"), int | float):
+                            accepted = int(timings["draft_n_accepted"])
+                        if isinstance(timings.get("draft_n"), int | float):
+                            drafts = int(timings["draft_n"])
                     usage = frame.get("usage")
                     if isinstance(usage, dict):
-                        prompt_tokens = int(usage.get("prompt_tokens", prompt_tokens))
-                        completion_tokens = int(usage.get("completion_tokens", completion_tokens))
+                        prompt_tokens = int(usage.get("prompt_tokens") or prompt_tokens)
+                        completion_tokens = int(usage.get("completion_tokens") or completion_tokens)
                         details = usage.get("prompt_tokens_details")
                         if isinstance(details, dict) and details.get("cached_tokens") is not None:
                             cached = int(details["cached_tokens"])
                     for choice in frame.get("choices") or []:
                         delta = choice.get("delta") or {}
                         now = time.monotonic()
-                        if rc := delta.get("reasoning_content"):
+                        if rc := delta.get("reasoning_content") or delta.get(
+                            "reasoning"
+                        ):  # mlx-vlm sends both, same text
                             t_first = t_first or now
                             t_last = now
                             reasoning.append(rc)
@@ -216,7 +228,7 @@ class HTTPEngine:
                         for tc in delta.get("tool_calls") or []:
                             t_first = t_first or now
                             t_last = now
-                            idx = int(tc.get("index", 0))
+                            idx = int(tc.get("index") or 0)
                             slot = calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
                             fn = tc.get("function") or {}
                             if tc.get("id"):
@@ -272,7 +284,7 @@ class HTTPEngine:
             decode_tps=(completion_tokens / span) if completion_tokens > 1 else 0.0,
             raw_finish=finish,
         )
-        if self._model is not None:
+        if self._model is not None and self._dialect == "vllm_mlx":  # mlx-vlm parses on the server
             res = parse_output(self._model(req.role), res)
         return res
 

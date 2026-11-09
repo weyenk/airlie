@@ -395,3 +395,15 @@ def test_each_message_carries_its_speaker_in_its_text(tmp_path: Path) -> None:
     assert client._add_name_prefixes is True
     said = to_oai_type(UserMessage(content="I post the proof.", source="product"), prepend_name=True)
     assert said[0]["content"] == "product said:\nI post the proof."
+
+
+def test_model_client_parses_only_for_vllm_mlx(tmp_path: Path) -> None:
+    (tmp_path / "p.md").write_text("x")
+    role = RoleSpec(prompt=tmp_path / "p.md", model="base")
+    spec = ModelSpec(repo="o/m", revision="r", tool_call_parser="qwen3_coder")
+    mlx = build_model_client("http://127.0.0.1:1/v1", "/m", role, api_key=None, model=spec, dialect="mlx_vlm")
+    assert mlx.model_spec is None  # mlx-vlm parses tool calls and reasoning itself
+    vllm = build_model_client(
+        "http://127.0.0.1:1/v1", "base", role, api_key=None, model=spec, dialect="vllm_mlx"
+    )
+    assert vllm.model_spec is spec
