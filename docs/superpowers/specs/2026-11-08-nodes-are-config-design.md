@@ -379,13 +379,26 @@ The Vue builder reads and writes the v2 files. What differs from the design text
 
 - **Ports.** A box has a port per output, and one edge port for lines that only order. A line from an output
   port carries that artifact; artifacts are encoded as the target's inputs (a `to` entry is node, `when`, `loop`
-  and nothing else).
+  and nothing else). A bundle box's ports are its bundle's declared outputs, read (with its inputs) when the
+  canvas loads and when the box is placed or its workflow changes; they are never written to the YAML.
+- **The canvas.** The pane keeps an always-drawn thin scrollbar and fades at its right edge while more of the
+  layout is off-screen. A line's label sits above it with a halo when the room between its boxes takes it, and
+  otherwise shows only while the line is hovered or selected.
 - **Editing.** A single click selects a box and shows a small card; a double-click (or the card's Edit) opens
   the node modal. A bundle opens in place on a double-click, and the card's Edit opens the modal, which has an
   Open button. The node modal commits pending text on Escape and on the backdrop.
-- **The wire modal.** An artifact also brought to the target by another source shows checked and disabled;
-  removing one the target's prompt reads asks first. A loop's `carry` is a single name (radios). `connect`
-  merges a second artifact into an existing line rather than adding another.
+- **The wire modal.** An artifact the target reads that any other box writes (or the workflow's inputs) shows
+  checked, disabled and says who: the input is the target's, so unchecking it would cut every path in. Removing
+  one the target's prompt reads asks first. A loop's `carry` is typed, with the source's outputs offered, since
+  it is any key of the result (layer's `carry: feedback`). `connect` merges a second artifact into an existing
+  line rather than adding another.
+- **The node modal.** A meeting lists its own seats and inputs, the protocol's fixed and any extra (amigos's
+  `base`) editable; a button adds a missing protocol name. Picking the check already set changes nothing;
+  another keeps the outputs it still offers and every arg, marking one it does not declare. Fields text that
+  does not parse keeps the modal open. Renaming an output follows it into the lines' `when`s and the readers'
+  `args`.
+- **Saving a file.** Save is off while a file's workflow is as the file has it; saving an edit regenerates the
+  text, so the file's comments go.
 - **The output-format sentence** is inserted by a button, never automatically. A meeting's prompt is required
   (an engine rule).
 - **Bundles in place.** Opening a bundle puts `?parent=` beside `?from=`; a breadcrumb leads back and restores
