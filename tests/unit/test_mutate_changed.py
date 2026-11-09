@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import subprocess
 from pathlib import Path
@@ -545,3 +546,332 @@ def test_only_the_functions_a_change_touched_are_selected(
         "airlie.m.xǁToolǁmake__mutmut_*",
         "airlie.m.xǁToolǁrun__mutmut_*",
     ]
+
+
+# ---- the map of tests to functions: built once, split across processes, loaded by every shard ----
+
+
+def _source_of(module: str) -> ast.Module:
+    """The installed mutmut module's source, parsed, not imported: mutmut.__main__ sets the multiprocessing
+    start method when imported, and mutmut's state is process-wide."""
+    spec = importlib.util.find_spec(module)
+    assert spec and spec.origin
+    return ast.parse(Path(spec.origin).read_text())
+
+
+def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
+    [found] = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name]
+    return found
+
+
+def test_the_stats_file_keys_are_the_installed_mutmuts() -> None:
+    """The merge writes mutmut's own stats file: an upgrade that changes its keys must fail here, loudly, not
+    leave shards loading a file mutmut reads differently (load_stats asserts it consumed every key)."""
+    import importlib.metadata
+
+    stats = _source_of("mutmut.stats")
+    saved = {
+        kw.arg
+        for node in ast.walk(_function(stats, "save_stats"))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "dict"
+        for kw in node.keywords
+    }
+    loaded = {
+        node.args[0].value
+        for node in ast.walk(_function(stats, "load_stats"))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "pop"
+        and isinstance(node.args[0], ast.Constant)
+    }
+    assert saved == loaded == mc.STATS_KEYS
+    assert importlib.metadata.version("mutmut") == mc.MUTMUT_VERSION
+    assert f'"mutmut=={mc.MUTMUT_VERSION}"' in (mc.ROOT / "pyproject.toml").read_text()
+
+
+def test_the_map_steps_call_what_mutmut_run_calls() -> None:
+    """The map steps run mutmut's generation and stats steps themselves: those must still exist, and the
+    stats step must set up what run_stats_collection sets up (its environment and the mutant name)."""
+    main = _source_of("mutmut.__main__")
+    names = {n.name for n in main.body if isinstance(n, ast.FunctionDef)}
+    imported = {a.asname or a.name for n in main.body if isinstance(n, ast.ImportFrom) for a in n.names}
+    assert {"store_lines_covered_by_tests", "create_mutants", "_refresh_change_detection_baseline"} <= names
+    assert {"copy_src_dir", "copy_also_copy_files", "setup_source_paths", "set_mutant_under_test"} <= imported
+    assert "get_mutant_runner" in imported
+    collect = ast.unparse(_function(main, "run_stats_collection"))
+    for line in (
+        "set_mutant_under_test('stats')",
+        "os.environ['PY_IGNORE_IMPORTMISMATCH'] = '1'",
+        "os.environ['MUTMUT_DEPENDENCY_DEPTH'] = str(depth)",
+        "runner.collect_stats(tests)",
+    ):
+        assert line in collect, line
+
+
+TESTS = [
+    "tests/unit/test_a.py::test_1",
+    "tests/unit/test_a.py::test_2",
+    "tests/unit/test_a.py::test_3",
+    "tests/unit/test_b.py::test_1",
+    "tests/unit/test_b.py::test_2",
+    "tests/unit/test_c.py::test_1",
+    "tests/unit/test_d.py::test_x[1]",
+]
+FILES = sorted({t.split("::")[0] for t in TESTS})
+
+
+def test_the_map_is_split_into_whole_test_files_dealt_out_by_test_count() -> None:
+    assert mc.map_slices(TESTS, 3) == [[FILES[0]], [FILES[1]], [FILES[2], FILES[3]]]
+    assert sorted(f for part in mc.map_slices(TESTS, 2) for f in part) == FILES  # each file once
+    assert len(mc.map_slices(TESTS, 16)) == 4  # no more parts than files, none empty
+    assert mc.map_slices(TESTS, 0) == [FILES]
+
+
+BASE: dict[str, object] = {
+    "function_hashes": {"airlie.m.x_f": "abc"},
+    "config_fingerprint": {"test_execution": "1", "test_selection": "2", "timeout": "3", "type_check": "4"},
+    "watched_file_hashes": {"uv.lock": "def"},
+    "git_commit": "c0ffee",
+}
+
+
+def part(
+    durations: dict[str, float], by_function: dict[str, list[str]], seconds: float = 1.0
+) -> dict[str, object]:
+    return {
+        "tests_by_mangled_function_name": by_function,
+        "duration_by_test": durations,
+        "function_dependencies": {"airlie.m.x_g": ["airlie.m.x_f"]},
+        "stats_time": seconds,
+    }
+
+
+def test_the_parts_merge_into_one_stats_file_in_mutmuts_format() -> None:
+    one = part({"t.py::a": 0.5, "t.py::b": 0.1}, {"airlie.m.x_f": ["t.py::a"], "airlie.m.x_g": ["t.py::b"]})
+    two = part({"u.py::c": 0.2}, {"airlie.m.x_f": ["u.py::c"]}, seconds=2.0)
+    merged = mc.merge_stats(BASE, [one, two], ["t.py::a", "t.py::b", "u.py::c"])
+    assert merged.keys() == mc.STATS_KEYS
+    assert merged["tests_by_mangled_function_name"] == {
+        "airlie.m.x_f": ["t.py::a", "u.py::c"],
+        "airlie.m.x_g": ["t.py::b"],
+    }
+    assert merged["duration_by_test"] == {"t.py::a": 0.5, "t.py::b": 0.1, "u.py::c": 0.2}
+    assert merged["function_dependencies"] == {"airlie.m.x_g": ["airlie.m.x_f"]}
+    assert merged["stats_time"] == 3.0
+    for key in ("function_hashes", "config_fingerprint", "watched_file_hashes", "git_commit"):
+        assert merged[key] == BASE[key]
+
+
+def test_a_partial_or_overlapping_or_empty_map_is_refused() -> None:
+    """A shard trusts the map it loads as whole: one missing a test, or with one test twice, is refused."""
+    one = part({"t.py::a": 0.5}, {"airlie.m.x_f": ["t.py::a"]})
+    with pytest.raises(mc.MapFailed, match="1 collected test"):
+        mc.merge_stats(BASE, [one], ["t.py::a", "u.py::c"])
+    with pytest.raises(mc.MapFailed, match="two parts"):
+        mc.merge_stats(BASE, [one, one], ["t.py::a"])
+    with pytest.raises(mc.MapFailed, match="no test reached"):
+        mc.merge_stats(BASE, [part({"t.py::a": 0.5}, {})], ["t.py::a"])
+
+
+KEY = {"mutmut": "3.8.0", "platform": "linux", "mlx": False, "python": "3.12", "tree": "t"}
+
+
+def write_map(where: Path, manifest: dict[str, object], stats: dict[str, object]) -> None:
+    where.mkdir(parents=True, exist_ok=True)
+    (where / mc.MAP_MANIFEST).write_text(mc.json.dumps(manifest))
+    (where / mc.STATS_FILE).write_text(mc.json.dumps(stats))
+
+
+def test_a_map_is_used_only_where_it_was_built_and_in_mutmuts_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mc, "map_key", lambda: KEY)
+    monkeypatch.setattr(mc, "mutmut_fingerprint", lambda: BASE["config_fingerprint"])
+    stats = {k: BASE.get(k, {}) for k in mc.STATS_KEYS}
+    assert mc.map_problem(tmp_path / "none") == f"no map at {tmp_path / 'none'}"
+    write_map(tmp_path / "ok", {**KEY, "tests": 3}, stats)
+    assert mc.map_problem(tmp_path / "ok") is None
+    write_map(tmp_path / "mac", {**KEY, "platform": "darwin"}, stats)
+    assert "platform 'darwin'" in str(mc.map_problem(tmp_path / "mac"))
+    write_map(tmp_path / "edited", {**KEY, "tree": "older"}, stats)
+    assert "tree 'older'" in str(mc.map_problem(tmp_path / "edited"))
+    write_map(tmp_path / "format", KEY, {**stats, "new_key": 1})
+    assert "format of mutmut" in str(mc.map_problem(tmp_path / "format"))
+    write_map(tmp_path / "config", KEY, {**stats, "config_fingerprint": {"test_execution": "other"}})
+    assert "fingerprint" in str(mc.map_problem(tmp_path / "config"))
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / mc.MAP_MANIFEST).write_text("{")
+    (tmp_path / "broken" / mc.STATS_FILE).write_text("{}")
+    assert "does not read" in str(mc.map_problem(tmp_path / "broken"))
+
+
+def test_the_map_key_changes_with_any_tracked_file_in_the_working_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def run(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    run("init", "-q", "-b", "main")
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "roles.yaml").write_text("a: 1\n")
+    run("add", ".")
+    monkeypatch.setattr(mc, "ROOT", tmp_path)
+    first = mc.map_key()
+    assert first["mutmut"] == mc.MUTMUT_VERSION and first["platform"] == mc.sys.platform
+    (tmp_path / "untracked.txt").write_text("not part of it")
+    assert mc.map_key() == first
+    (tmp_path / "config" / "roles.yaml").write_text("a: 2\n")  # uncommitted, outside src/ and tests/
+    assert mc.map_key()["tree"] != first["tree"]
+
+
+def test_the_mutants_travel_with_the_map_newer_than_this_checkouts_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mutmut regenerates a mutant whose source is newer, and a shard checks out after the map job wrote
+    it."""
+    built, shard = tmp_path / "built", tmp_path / "shard"
+    mutated = built / "mutants" / "src" / "airlie"
+    (mutated / "__pycache__").mkdir(parents=True)
+    (mutated / "m.py").write_text("mutated")
+    (mutated / "m.py.meta").write_text("{}")
+    (mutated / "__pycache__" / "m.pyc").write_text("x")
+    mc.os.utime(mutated / "m.py", (1, 1))
+    monkeypatch.setattr(mc, "ROOT", built)
+    mc.pack_mutants(tmp_path / mc.MUTANTS_ARCHIVE)
+    (shard / "src" / "airlie").mkdir(parents=True)
+    (shard / "src" / "airlie" / "m.py").write_text("source")
+    monkeypatch.setattr(mc, "ROOT", shard)
+    assert mc.unpack_mutants(tmp_path / mc.MUTANTS_ARCHIVE)
+    copy = shard / "mutants" / "src" / "airlie"
+    assert (copy / "m.py").read_text() == "mutated" and (copy / "m.py.meta").exists()
+    assert (copy / "__pycache__" / "m.pyc").exists()  # compiled once, in the map job
+    assert (copy / "m.py").stat().st_mtime >= (shard / "src" / "airlie" / "m.py").stat().st_mtime
+    assert not mc.unpack_mutants(tmp_path / "missing.tar.gz")
+
+
+def test_the_mutants_bytecode_is_checked_by_hash_so_a_new_file_time_keeps_it_and_a_new_source_does_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.util as iu
+
+    source = tmp_path / "mutants" / "src" / "airlie" / "m.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("X = 1\n")
+    monkeypatch.setattr(mc, "ROOT", tmp_path)
+    mc.compile_mutants(1)
+    pyc = Path(iu.cache_from_source(str(source)))
+    flags = int.from_bytes(pyc.read_bytes()[4:8], "little")
+    assert flags == 0b11  # hash-based, and checked against the source on import
+    assert pyc.read_bytes()[8:16] == iu.source_hash(source.read_bytes())
+
+
+class MapCalls:
+    """The map steps stood in for: what main asked of them."""
+
+    def __init__(self, problem: str | None = None, fails: bool = False) -> None:
+        self.problem, self.fails = problem, fails
+        self.built: list[Path | None] = []
+        self.installed: list[Path] = []
+        self.statuses: list[str] = []
+
+    def build(self, workers: int, out: Path | None = None) -> dict[str, object]:
+        self.built.append(out)
+        if self.fails:
+            raise mc.MapFailed("a part's stats run failed")
+        return {"tests": 3, "functions": 2, "parts": workers, "generate_seconds": 1, "stats_seconds": 2}
+
+    def install(self, where: Path) -> bool:
+        self.installed.append(where)
+        return True
+
+    def results(self, path: Path | None, status: str, *rest: object) -> None:
+        self.statuses.append(status)
+
+
+def run_mapped(monkeypatch: pytest.MonkeyPatch, argv: list[str], calls: MapCalls) -> tuple[int, FakeMutmut]:
+    monkeypatch.setattr(mc, "map_problem", lambda where: calls.problem)
+    monkeypatch.setattr(mc, "build_map", calls.build)
+    monkeypatch.setattr(mc, "install_map", calls.install)
+    monkeypatch.setattr(mc, "write_results", calls.results)
+    fake = FakeMutmut()
+    monkeypatch.setattr(mc, "mutmut", fake.run)
+    monkeypatch.setattr(mc, "mutmut_out", fake.out)
+    monkeypatch.setattr(mc, "enrolled_files", lambda: SCOPE)
+    changed = {"src/airlie/engine/sse.py", "tests/unit/test_new.py"}
+    monkeypatch.setattr(mc, "changed_files", lambda base: changed)
+    monkeypatch.setattr(mc, "changed_tests", lambda changed: ["tests/unit/test_new.py"])
+    monkeypatch.setattr(mc, "mutation_ignored_tests", lambda: [])
+    monkeypatch.setattr(mc, "merge_base_of", lambda base: "base")
+    touched = ({"airlie.engine.sse.x_iter_sse__mutmut_*": 20}, ["- src/airlie/engine/sse.py: iter_sse"])
+    monkeypatch.setattr(mc, "changed_functions", lambda merge_base, paths: touched)
+    monkeypatch.setattr(mc, "probe_mutant", lambda files: "airlie.engine.sse.x_iter_sse__mutmut_1")
+    monkeypatch.setattr(mc, "read_stats", lambda: STATS)
+    argv = ["mutate_changed.py", "--base", "origin/main", "--map-workers", "4", *argv]
+    monkeypatch.setattr(mc.sys, "argv", argv)
+    return mc.main(), fake
+
+
+def test_the_map_job_builds_the_map_and_runs_no_mutant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = MapCalls()
+    code, fake = run_mapped(monkeypatch, ["--gate-only", "--build-map", str(tmp_path)], calls)
+    assert code == 0 and calls.built == [tmp_path] and fake.runs == []
+    assert "mapped 3 test(s) to 2 function(s) over 4 process(es)" in capsys.readouterr().out
+
+
+def test_a_map_job_that_cannot_map_could_not_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    code, _ = run_mapped(monkeypatch, ["--gate-only", "--build-map", str(tmp_path)], MapCalls(fails=True))
+    assert code == mc.COULD_NOT_RUN
+
+
+def test_a_shard_starts_from_a_map_that_fits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = MapCalls()
+    code, fake = run_mapped(monkeypatch, ["--gate-only", "--map", str(tmp_path)], calls)
+    assert code == 0 and calls.installed == [tmp_path] and calls.built == []
+    assert fake.runs == [("run", "airlie.engine.sse.x_iter_sse__mutmut_*")]
+    assert "started from the map of tests to functions and the mutants" in capsys.readouterr().out
+
+
+def test_a_shard_whose_map_is_missing_or_stale_builds_its_own_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = MapCalls(problem="it was built for tree 'a', this runner has 'b'")
+    code, fake = run_mapped(monkeypatch, ["--gate-only", "--map", str(tmp_path)], calls)
+    assert code == 0 and calls.installed == [] and calls.built == [None]
+    assert fake.runs == [("run", "airlie.engine.sse.x_iter_sse__mutmut_*")]
+    said = capsys.readouterr().out
+    assert (
+        "the map was not used: it was built for tree 'a', this runner has 'b'; building this runner's own"
+        in said
+    )
+
+
+def test_a_shard_that_cannot_map_could_not_run_and_runs_no_mutant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = MapCalls(problem="no map", fails=True)
+    code, fake = run_mapped(monkeypatch, ["--gate-only", "--map", str(tmp_path)], calls)
+    assert code == mc.COULD_NOT_RUN and fake.runs == [] and calls.statuses == ["could_not_run"]
+
+
+def test_a_shard_with_nothing_to_run_builds_no_map(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = MapCalls(problem="no map")
+    code, fake = run_mapped(monkeypatch, ["--gate-only", "--map", str(tmp_path), "--shard", "2/2"], calls)
+    assert code == 0 and calls.built == [] and fake.runs == [] and calls.statuses == ["nothing"]
+
+
+def test_the_mac_job_splits_its_own_map(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = MapCalls()
+    code, fake = run_mapped(monkeypatch, ["--gate-only", "--split-map"], calls)
+    assert code == 0 and calls.built == [None] and calls.installed == [] and len(fake.runs) == 1
+
+
+def test_a_run_started_from_a_map_reads_the_changed_tests_functions_without_a_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code, fake = run_mapped(monkeypatch, ["--map", str(tmp_path)], MapCalls())
+    assert code == 0 and len(fake.runs) == 1  # no stats probe, only the run
+    assert fake.runs[0][:2] == ("run", "airlie.engine.sse.x_iter_sse__mutmut_*")

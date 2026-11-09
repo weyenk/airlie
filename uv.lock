@@ -156,7 +156,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "mutmut", specifier = ">=3.8.0" },
+    { name = "mutmut", specifier = "==3.8.0" },
     { name = "mypy", specifier = ">=1.14" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-asyncio", specifier = ">=0.25" },
