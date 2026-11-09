@@ -105,23 +105,20 @@ function dropWire() {
   closeWire();
 }
 
-// the modal's changes, to the box it shows (live: the graph holds each as it is made)
-function updateBox(spec: NodeSpec) {
-  const id = editing.value!;
+// the modal's changes (live: the graph holds each as it is made), each to the box it names, so a change that
+// lands as the modal closes (editing already null) still reaches its box
+function updateBox(spec: NodeSpec, id: string) {
   b.edit((g) => updateNode(g, id, spec));
 }
-function renameBox(to: string) {
-  const id = editing.value!;
-  if (b.edit((g) => renameNode(g, id, to))) {
-    editing.value = to;
-    selected.value = to;
-  }
+function renameBox(to: string, id: string) {
+  if (!b.edit((g) => renameNode(g, id, to))) return;
+  if (editing.value === id) editing.value = to;
+  if (selected.value === id) selected.value = to;
 }
-function renameBoxOutput(old: string, to: string) {
-  b.renameOutput(editing.value!, old, to);
+function renameBoxOutput(old: string, to: string, id: string) {
+  b.renameOutput(id, old, to);
 }
-function removeBox() {
-  const id = editing.value!;
+function removeBox(id: string) {
   b.edit((g) => removeNode(g, id));
   editing.value = null;
   selected.value = null;

@@ -47,7 +47,7 @@ export function formatSentence(fields: Record<string, string>): string {
       return `${name} (${kindText(k)}${k.optional ? ", optional" : ""})`;
     })
     .join(", ");
-  return OUTPUT_FORMAT_RULE.replace("{fields}", listing);
+  return OUTPUT_FORMAT_RULE.replace("{fields}", () => listing); // a function: `$&` in a field is text
 }
 
 /** A fields text, one `name: kind` per line (blank lines skipped), as the fields it names and what is wrong. */

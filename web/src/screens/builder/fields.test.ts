@@ -32,6 +32,8 @@ test("formatSentence is the output-format rule's sentence for the fields, kinds 
     "Reply with one ```json block with fields: verdict (one of pass | fail), notes (list of text, optional).",
   );
   expect(kindText(kind("list of a | b"))).toBe("list of one of a | b");
+  // as typed, never a replacement pattern
+  expect(formatSentence({ "$&": "one of $$ | $' | b" })).toBe("Reply with one ```json block with fields: $& (one of $$ | $' | b).");
 });
 
 test("a fields text is one name: kind per line; a bad line says which", () => {

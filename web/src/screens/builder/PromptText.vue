@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { nextTick, ref, watch } from "vue";
 
 defineOptions({ name: "AirlieBuilderPromptText" });
 
 /** One of a box's texts (its prompt, a conversation's turn, a team's worker): a text area, and beside it a chip per
- * name the box reads, which writes `{name}` at the caret. The text is handed up when the area loses focus, when a
- * chip writes into it, and when the modal closes with it unsaved. */
+ * name the box reads, which writes `{name}` at the caret. The text is handed up when the area loses focus (the
+ * modal sends that change itself when it closes with the area focused) and when a chip writes into it. */
 const props = defineProps<{ field: string; label: string; value: string; names: string[]; grow?: boolean; placeholder?: string }>();
 const emit = defineEmits<{ commit: [text: string] }>();
 
@@ -34,7 +34,6 @@ async function insert(name: string) {
     el.setSelectionRange(at + put.length, at + put.length);
   }
 }
-onBeforeUnmount(commit);
 const brace = (name: string) => `{${name}}`;
 </script>
 
@@ -56,7 +55,7 @@ const brace = (name: string) => `{${name}}`;
         :class="['w-full min-w-0 resize-none rounded-md border border-input bg-background px-2.5 py-2 font-mono text-[13px] leading-relaxed outline-none focus-visible:ring-2 focus-visible:ring-ring', grow ? 'min-h-[200px] flex-1' : 'min-h-[72px]']"
         @change="commit"
       />
-      <div v-if="names.length" class="flex flex-none flex-wrap content-start gap-1 sm:w-36 sm:flex-col sm:flex-nowrap sm:overflow-y-auto" :aria-label="`Insert into ${label}`">
+      <div v-if="names.length" class="flex flex-none flex-wrap content-start gap-1 sm:w-36 sm:flex-col sm:flex-nowrap sm:overflow-y-auto" role="group" :aria-label="`Insert into ${label}`">
         <button
           v-for="n in names"
           :key="n"

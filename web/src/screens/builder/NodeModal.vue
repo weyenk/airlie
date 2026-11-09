@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import CatalogPicker from "./CatalogPicker.vue";
 import { formatSentence, outputSpecs, specValue } from "./fields";
-import { inputsOf, readable, renameOutput } from "./graph";
+import { inputsOf, readable, renameNode, renameOutput } from "./graph";
 import type { GNode, Graph, NodeSpec, OutputSpec } from "./graph";
 import OutputsEditor from "./OutputsEditor.vue";
 import { promptFieldsOf } from "./promptFile";
@@ -19,14 +19,16 @@ defineOptions({ name: "AirlieBuilderNodeModal" });
  * each fed by the catalog and the graph. Live edit: every committed change (a text on blur, a select or a box at
  * once) hands up the box's whole new fields, and the graph, through `update`, stays the one source of truth; the
  * modal holds no copy to apply later. An output's new name is asked for as `renameOutput`, after the graph has
- * said it can be made (a reader through a prompt file refuses it, and the modal says which). */
+ * said it can be made (a reader through a prompt file refuses it, and the modal says which). Every change carries
+ * the id of the box it is for, so a change that lands while the modal closes still finds its box; closing (Done,
+ * Escape, a click outside) first commits the field being typed in. */
 const props = defineProps<{ open: boolean; node: GNode; graph: Graph; catalog: Catalog; prompts: Record<string, string>; bundles: string[] }>();
 const emit = defineEmits<{
   "update:open": [open: boolean];
-  update: [spec: NodeSpec];
-  rename: [id: string];
-  renameOutput: [old: string, to: string];
-  remove: [];
+  update: [spec: NodeSpec, id: string];
+  rename: [to: string, id: string];
+  renameOutput: [old: string, to: string, id: string];
+  remove: [id: string];
   createPrompt: [id: string, text: string];
 }>();
 
@@ -48,15 +50,31 @@ function set(key: string, value: unknown) {
   const next: NodeSpec = { ...spec.value };
   if (value === undefined) delete next[key];
   else next[key] = value;
-  emit("update", next);
+  emitUpdate(next);
 }
+const emitUpdate = (next: NodeSpec) => emit("update", next, props.node.id);
+/** A text's new value: an empty one removes the key (the YAML holds no `prompt: ''`). */
+const setTextValue = (key: string, t: string) => set(key, t.trim() ? t : undefined);
 const setText = (key: string, e: Event) => set(key, valueOf(e).trim() || undefined);
 
+/** Why the last box name was refused (taken, empty), said by the name; the graph is asked first. */
+const nameRefusal = ref<string | null>(null);
 function rename(e: Event) {
   const input = e.target as HTMLInputElement;
   const to = input.value.trim();
   input.value = props.node.id; // the box, handed back renamed, shows the new name
-  if (to && to !== props.node.id) emit("rename", to);
+  if (to === props.node.id) {
+    nameRefusal.value = null;
+    return;
+  }
+  try {
+    renameNode(props.graph, props.node.id, to);
+  } catch (err) {
+    nameRefusal.value = `${to || "An empty name"} cannot be used: ${err instanceof Error ? err.message : String(err)}`;
+    return;
+  }
+  nameRefusal.value = null;
+  emit("rename", to, props.node.id);
 }
 
 // inputs: what the box may read (the workflow's inputs, the other boxes' outputs), and anything it reads already
@@ -67,11 +85,27 @@ function toggleInput(name: string, on: boolean) {
   set("inputs", next);
 }
 
-// what the other boxes write, by name: the producer and its format
+/** The boxes upstream of this one: those that reach it along forward lines (a loop line goes back, not down). */
+const upstream = computed(() => {
+  const seen = new Set<string>();
+  const todo = [props.node.id];
+  while (todo.length) {
+    const at = todo.pop()!;
+    for (const e of props.graph.edges) {
+      if (e.to !== at || e.loop || seen.has(e.from)) continue;
+      seen.add(e.from);
+      todo.push(e.from);
+    }
+  }
+  seen.delete(props.node.id);
+  return seen;
+});
+
+// what the boxes upstream write, by name: the producer and its format
 const written = computed(() => {
   const out = new Map<string, { node: GNode; format: string }[]>();
   for (const n of props.graph.nodes) {
-    if (n.id === props.node.id) continue;
+    if (!upstream.value.has(n.id)) continue;
     for (const [name, o] of Object.entries(outputSpecs(n.spec.outputs))) out.set(name, [...(out.get(name) ?? []), { node: n, format: o.format }]);
   }
   return out;
@@ -92,7 +126,7 @@ const seated = computed(() => {
 });
 function seat() {
   const m = meeting.value;
-  if (m) emit("update", { ...spec.value, role: [...m.roles], inputs: [...m.inputs] });
+  if (m) emitUpdate({ ...spec.value, role: [...m.roles], inputs: [...m.inputs] });
 }
 
 // session: a session output upstream that a box of this box's role wrote
@@ -103,7 +137,7 @@ const sessionChoices = computed(() => [...new Set(sessions.value.filter((s) => r
 const sessionReason = computed(() => {
   if (sessionChoices.value.length) return null;
   if (!role.value) return "Pick a role first: a session continues only between boxes of the same role.";
-  if (!sessions.value.length) return "No other box writes a session.";
+  if (!sessions.value.length) return "No box upstream writes a session.";
   return `No session here was written by a ${role.value} box: a session continues only between boxes of the same role.`;
 });
 
@@ -112,10 +146,14 @@ const PROMPT_FILE = "prompt:";
 const NEW = "__new__";
 const prompt = computed(() => text(spec.value.prompt));
 const fileMode = ref(false);
+const refusal = ref<string | null>(null);
+// another box: its prompt's own mode, and no refusal said of the last one
 watch(
   () => props.node.id,
   () => {
     fileMode.value = prompt.value.startsWith(PROMPT_FILE);
+    refusal.value = null;
+    nameRefusal.value = null;
   },
   { immediate: true },
 );
@@ -156,13 +194,6 @@ const outputs = computed(() => outputSpecs(spec.value.outputs));
 function setOutputs(next: Record<string, OutputSpec>) {
   set("outputs", Object.fromEntries(Object.entries(next).map(([k, o]) => [k, specValue(o)])));
 }
-const refusal = ref<string | null>(null);
-watch(
-  () => props.node.id,
-  () => {
-    refusal.value = null;
-  },
-);
 function renameOut(old: string, to: string) {
   let done: Graph | { refused: string[] };
   try {
@@ -176,7 +207,7 @@ function renameOut(old: string, to: string) {
     return;
   }
   refusal.value = null;
-  emit("renameOutput", old, to);
+  emit("renameOutput", old, to, props.node.id);
 }
 
 // check and gate: the catalog's check, its args, and the inputs it declares that the box lacks
@@ -188,7 +219,7 @@ function pick(c: CheckDef) {
   const args = Object.fromEntries(Object.entries(had).filter(([k]) => c.args.includes(k)));
   if (Object.keys(args).length) next.args = args;
   else delete next.args;
-  emit("update", next);
+  emitUpdate(next);
 }
 const missing = computed(() => (check.value ? check.value.inputs.filter((i) => !inputs.value.includes(i)) : []));
 const addInput = (name: string) => set("inputs", [...inputs.value, name]);
@@ -226,7 +257,8 @@ function setTools(e: Event) {
 }
 function setWorkers(e: Event) {
   const v = valueOf(e).trim();
-  set("workers", /^\d+$/.test(v) ? Number(v) : undefined);
+  // at least one worker (the validator's floor): 0 or less clears the cap
+  set("workers", /^\d+$/.test(v) && Number(v) >= 1 ? Number(v) : undefined);
 }
 const events = computed(() => (isRecord(spec.value.events) ? spec.value.events : {}));
 function setEvent(outcome: "done" | "failed", e: Event) {
@@ -235,6 +267,15 @@ function setEvent(outcome: "done" | "failed", e: Event) {
   if (v) next[outcome] = v;
   else delete next[outcome];
   set("events", Object.keys(next).length ? next : undefined);
+}
+
+/** Close, once the field being typed in has committed (a blur's change never comes once it is gone). */
+const form = ref<HTMLFormElement | null>(null);
+function close() {
+  const el = document.activeElement;
+  const typing = el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && el.type !== "checkbox");
+  if (typing && form.value?.contains(el)) el.dispatchEvent(new Event("change"));
+  emit("update:open", false);
 }
 
 /** Phone first: a sheet pinned to the bottom edge; from `sm` (640px) up, centred and most of the window. */
@@ -248,15 +289,16 @@ const label = "text-muted-foreground";
 </script>
 
 <template>
-  <Dialog :open="open" @update:open="(v) => emit('update:open', v)">
+  <Dialog :open="open" @update:open="(v) => (v ? emit('update:open', true) : close())">
     <DialogContent data-node-modal :class="SHEET">
-      <form data-node-form class="flex min-h-0 flex-1 flex-col gap-3 text-[13px]" @submit.prevent>
+      <form ref="form" data-node-form class="flex min-h-0 flex-1 flex-col gap-3 text-[13px]" @submit.prevent>
         <div class="flex items-center gap-2 pr-8">
           <DialogTitle class="sr-only">Edit the box {{ node.id }}</DialogTitle>
           <input :value="node.id" data-input="id" aria-label="Box name" :class="[control, 'max-w-xs font-mono font-semibold']" @change="rename" />
           <span data-node-type class="flex-none rounded-full bg-chip px-2 py-px text-xs font-semibold text-chip-foreground">{{ node.type }}</span>
           <DialogDescription class="truncate text-xs text-muted-foreground max-sm:sr-only">Changes apply as you make them.</DialogDescription>
         </div>
+        <p v-if="nameRefusal" data-rename-refused="box" role="alert" class="-mt-1 text-xs text-danger-foreground">{{ nameRefusal }}</p>
 
         <div class="grid min-h-0 flex-1 gap-4 overflow-y-auto sm:grid-cols-[minmax(0,1fr)_320px] sm:overflow-hidden">
           <!-- the main column: the prompt (model boxes), the catalog (checks and gates), the bundle -->
@@ -274,20 +316,20 @@ const label = "text-muted-foreground";
               <PromptText
                 v-else
                 field="prompt"
-                :label="type === 'meeting' ? 'prompt (optional)' : 'prompt'"
+                label="prompt"
                 :value="promptText"
                 :names="inputs"
                 grow
                 placeholder="What the box is asked; {name} reads one of its inputs"
-                @commit="(t) => set('prompt', t)"
+                @commit="(t) => setTextValue('prompt', t)"
               >
                 <template #actions>
                   <Button v-if="sentence" type="button" size="xs" variant="outline" data-insert-format title="Add the sentence that says how to reply with the output's fields" @click="insertFormat">Add the reply format</Button>
                   <Button type="button" size="xs" variant="ghost" data-prompt-use-file @click="fileMode = true">Use a prompt file…</Button>
                 </template>
               </PromptText>
-              <PromptText v-if="type === 'conversation' || type === 'meeting'" field="turn" :label="type === 'meeting' ? 'turn (optional)' : 'turn'" :value="text(spec.turn)" :names="inputs" @commit="(t) => set('turn', t || undefined)" />
-              <PromptText v-if="type === 'team'" field="worker" label="worker (each worker's brief)" :value="text(spec.worker)" :names="[...inputs, 'assignment']" @commit="(t) => set('worker', t)" />
+              <PromptText v-if="type === 'conversation' || type === 'meeting'" field="turn" :label="type === 'meeting' ? 'turn (optional)' : 'turn'" :value="text(spec.turn)" :names="inputs" @commit="(t) => setTextValue('turn', t)" />
+              <PromptText v-if="type === 'team'" field="worker" label="worker (each worker's brief)" :value="text(spec.worker)" :names="[...inputs, 'assignment']" @commit="(t) => setTextValue('worker', t)" />
             </template>
 
             <template v-else-if="isCode">
@@ -388,7 +430,7 @@ const label = "text-muted-foreground";
 
             <div data-form-field="outputs" class="flex flex-col gap-1">
               <span :class="label">outputs</span>
-              <p v-if="refusal" data-rename-refused role="alert" class="text-xs text-danger-foreground">{{ refusal }}</p>
+              <p v-if="refusal" data-rename-refused="output" role="alert" class="text-xs text-danger-foreground">{{ refusal }}</p>
               <OutputsEditor :outputs="outputs" :kinds="catalog.kinds" :formats="catalog.formats" @update="setOutputs" @rename="renameOut" />
             </div>
 
@@ -422,9 +464,9 @@ const label = "text-muted-foreground";
         </div>
 
         <div class="flex items-center gap-2 border-t border-border pt-3">
-          <Button type="button" size="sm" variant="destructive" data-remove-node @click="emit('remove')">Remove box</Button>
+          <Button type="button" size="sm" variant="destructive" data-remove-node @click="emit('remove', node.id)">Remove box</Button>
           <span class="grow" />
-          <Button type="button" size="sm" data-node-done @click="emit('update:open', false)">Done</Button>
+          <Button type="button" size="sm" data-node-done @click="close">Done</Button>
         </div>
       </form>
 

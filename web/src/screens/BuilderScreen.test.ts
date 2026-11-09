@@ -123,6 +123,40 @@ test("a click on a box selects it; its card's Edit opens its fields in the modal
   expect(document.body.querySelector("[data-node-modal]")).toBeNull();
 });
 
+/** The fix box's modal open, its prompt focused and typed into (no blur yet). */
+async function typingInFix() {
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  const opened = await open("/workflows/build/fix");
+  await opened.w.get("[data-box][data-node=fix]").trigger("dblclick");
+  await flushPromises();
+  const area = document.body.querySelector("[data-node-modal] [data-input=prompt]") as HTMLTextAreaElement;
+  area.focus();
+  type(area, "Fix it {repro}.");
+  return opened;
+}
+async function expectFixPromptSaved(w: Awaited<ReturnType<typeof open>>["w"]) {
+  expect(document.body.querySelector("[data-node-modal]")).toBeNull();
+  expect(w.find("[role=alert]").exists()).toBe(false); // no error banner (it once said "no box null")
+  await w.get("[data-tab=yaml]").trigger("click");
+  expect(w.get("[data-yaml]").text()).toContain("prompt: Fix it {repro}.");
+}
+
+test("Escape after typing in the prompt keeps the text, and closes with no error", async () => {
+  const { w } = await typingInFix();
+  document.body.querySelector("[data-node-modal]")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await flushPromises();
+  await expectFixPromptSaved(w);
+});
+
+test("a click outside after typing in the prompt keeps the text, and closes with no error", async () => {
+  const { w } = await typingInFix();
+  // reka's outside-pointer check registers a tick after opening
+  await new Promise((r) => setTimeout(r, 0));
+  document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+  await flushPromises();
+  await expectFixPromptSaved(w);
+});
+
 test("an output renamed in the modal is renamed in its readers too", async () => {
   api.getWorkflowDef.mockResolvedValue(fixDraft());
   const { w } = await open("/workflows/build/fix");

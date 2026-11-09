@@ -12,9 +12,10 @@ const graph: Graph = fromWorkflow("t", {
   nodes: {
     survey: { type: "ask", role: "architect", prompt: "Survey {card}.", inputs: ["card"], outputs: { survey: "markdown" }, to: ["plan"] },
     plan: { type: "ask", role: "architect", prompt: "prompt:plan-brief", inputs: ["survey"], outputs: { plan: { format: "json", fields: { verdict: "pass | fail", notes: "list of text?" } } } },
-    talk: { type: "conversation", role: "architect", prompt: "Talk.", turn: "Go on.", inputs: [], outputs: { chat: "session", layers: "list" } },
+    talk: { type: "conversation", role: "architect", prompt: "Talk.", turn: "Go on.", inputs: [], outputs: { chat: "session", layers: "list" }, to: ["more", "other"] },
     other: { type: "conversation", role: "coder", prompt: "x", outputs: { coder_chat: "session" } },
-    more: { type: "conversation", role: "architect", prompt: "More.", inputs: ["chat"], outputs: {} },
+    more: { type: "conversation", role: "architect", prompt: "More.", inputs: ["chat"], outputs: {}, to: ["later"] },
+    later: { type: "conversation", role: "architect", prompt: "Later.", outputs: { later_chat: "session" } },
     loner: { type: "conversation", role: "qa", prompt: "y", outputs: {} },
     crew: { type: "team", role: { supervisor: "chief", worker: "coder" }, prompt: "Split it.", worker: "Do {assignment}.", inputs: ["plan"], outputs: {} },
     amigos: { type: "meeting", role: ["product", "architect", "tester"], inputs: ["story", "layers"], outputs: { agreement: "json" } },
@@ -99,13 +100,17 @@ test("a conversation has a turn text area; its session is one a box of its role 
   await flushPromises();
   expect($("[data-input=turn]")!.tagName).toBe("TEXTAREA");
   const session = $<HTMLSelectElement>("select[data-input=session]")!;
-  expect([...session.options].map((o) => o.value)).toEqual(["", "chat"]); // not coder_chat: a coder's
+  expect([...session.options].map((o) => o.value)).toEqual(["", "chat"]); // not coder_chat (a coder's), not later_chat (downstream)
   expect(session.disabled).toBe(false);
   document.body.innerHTML = "";
-  mountModal("loner");
+  mountModal("other"); // a coder after an architect's session
   await flushPromises();
   expect($<HTMLSelectElement>("select[data-input=session]")!.disabled).toBe(true);
-  expect($("[data-session-reason]")!.textContent).toContain("qa");
+  expect($("[data-session-reason]")!.textContent).toContain("written by a coder box");
+  document.body.innerHTML = "";
+  mountModal("loner"); // nothing upstream
+  await flushPromises();
+  expect($("[data-session-reason]")!.textContent).toBe("No box upstream writes a session.");
 });
 
 test("a check picked from the catalog sets run, fills its outputs, and shows the inputs it lacks to add with a click", async () => {
@@ -179,7 +184,7 @@ test("an output rename the graph refuses lists the boxes that read it", async ()
   await flushPromises();
   t.findComponent(OutputsEditor).vm.$emit("rename", "layers", "parts");
   await flushPromises();
-  expect(t.emitted("renameOutput")).toEqual([["layers", "parts"]]);
+  expect(t.emitted("renameOutput")).toEqual([["layers", "parts", "talk"]]);
   expect($("[data-rename-refused]")).toBeNull();
 });
 
@@ -202,7 +207,70 @@ test("rename, remove and done hand up what the person did", async () => {
   $<HTMLButtonElement>("[data-remove-node]")!.click();
   $<HTMLButtonElement>("[data-node-done]")!.click();
   await flushPromises();
-  expect(w.emitted("rename")).toEqual([["scan"]]);
-  expect(w.emitted("remove")).toHaveLength(1);
+  expect(w.emitted("rename")).toEqual([["scan", "survey"]]);
+  expect(w.emitted("remove")).toEqual([["survey"]]);
   expect(w.emitted("update:open")).toEqual([[false]]);
+});
+
+const typeInto = (sel: string, value: string) => {
+  const el = $<HTMLTextAreaElement | HTMLInputElement>(sel)!;
+  el.focus();
+  el.value = value;
+  el.dispatchEvent(new Event("input"));
+  return el;
+};
+const escape = () => $("[data-node-modal]")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+test("Escape commits the text being typed, then closes, each change naming its box", async () => {
+  const w = mountModal("survey");
+  await flushPromises();
+  typeInto("[data-input=prompt]", "Survey {card} again.");
+  escape();
+  await flushPromises();
+  expect(w.emitted("update")).toEqual([[{ ...nodeOf("survey").spec, prompt: "Survey {card} again." }, "survey"]]);
+  expect(w.emitted("update:open")).toEqual([[false]]);
+});
+
+test("Escape commits a conversation's turn being typed", async () => {
+  const w = mountModal("talk");
+  await flushPromises();
+  typeInto("[data-input=turn]", "Go on, then.");
+  escape();
+  await flushPromises();
+  expect(lastUpdate(w)?.turn).toBe("Go on, then.");
+  expect(w.emitted("update:open")).toEqual([[false]]);
+});
+
+test("a cleared text removes its key; a meeting's prompt is required", async () => {
+  const w = mountModal("survey");
+  await flushPromises();
+  const area = typeInto("[data-input=prompt]", "  ");
+  area.dispatchEvent(new Event("change"));
+  await flushPromises();
+  expect(lastUpdate(w)).not.toHaveProperty("prompt");
+  document.body.innerHTML = "";
+  mountModal("amigos");
+  await flushPromises();
+  expect($("[data-form-field=prompt] label")!.textContent).toBe("prompt");
+});
+
+test("a box name the graph refuses is said in the modal, by the name", async () => {
+  const w = mountModal("survey");
+  await flushPromises();
+  const id = typeInto("[data-input=id]", "plan");
+  id.dispatchEvent(new Event("change"));
+  await flushPromises();
+  expect($("[data-rename-refused=box]")!.textContent).toContain("a box is already called plan");
+  expect(w.emitted("rename")).toBeUndefined();
+});
+
+test("workers is at least one", async () => {
+  const w = mountModal("crew");
+  await flushPromises();
+  const n = typeInto("[data-input=workers]", "0");
+  n.dispatchEvent(new Event("change"));
+  expect(lastUpdate(w)).not.toHaveProperty("workers");
+  n.value = "3";
+  n.dispatchEvent(new Event("change"));
+  expect(lastUpdate(w)?.workers).toBe(3);
 });
