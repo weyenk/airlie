@@ -21,20 +21,35 @@ export function problemEdge(problem: string): { from: string; to: string } | nul
 /** The key a line is known by in `problemsByEdge`. */
 export const edgeKey = (from: string, to: string): string => `${from}>${to}`;
 
-/** The problems that name a line, by `edgeKey`, each as its `<what>`. */
-export function problemsByEdge(problems: string[]): Record<string, string[]> {
+/** The workflow a problem is about (`workflow <w>: ...`), or null when it names none. */
+export function problemWorkflow(problem: string): string | null {
+  return /^workflow ([^:]+): /.exec(problem)?.[1] ?? null;
+}
+
+/** Whether a problem belongs to `workflow`: the server checks a bundle's children with the parent, and a child's
+ * node or line of the same name is not the parent's. A problem that names no workflow is kept. */
+function about(problem: string, workflow: string | undefined): boolean {
+  const named = problemWorkflow(problem);
+  return workflow === undefined || named === null || named === workflow;
+}
+
+/** The problems that name a line, by `edgeKey`, each as its `<what>`; with `workflow`, only that workflow's. */
+export function problemsByEdge(problems: string[], workflow?: string): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   for (const p of problems) {
+    if (!about(p, workflow)) continue;
     const e = problemEdge(p);
     if (e) (out[edgeKey(e.from, e.to)] ??= []).push(p.replace(NODE, ""));
   }
   return out;
 }
 
-/** The problems that name a node, by node, each as its `<what>` (the box shows what is wrong with it). */
-export function problemsByNode(problems: string[]): Record<string, string[]> {
+/** The problems that name a node, by node, each as its `<what>` (the box shows what is wrong with it); with
+ * `workflow`, only that workflow's. */
+export function problemsByNode(problems: string[], workflow?: string): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   for (const p of problems) {
+    if (!about(p, workflow)) continue;
     const id = problemNode(p);
     if (id === null) continue;
     const what = p.replace(NODE, "");

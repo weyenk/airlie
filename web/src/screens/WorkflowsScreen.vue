@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ChevronDown, ChevronLeft, ChevronRight, ListFilter, Search, X } from "lucide-vue-next";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 import { listStories, STAGES } from "@/api/workflows";
 import type { Stage, StoryQuery } from "@/api/workflows";
 import { chipSpec } from "@/components/statusTable";
@@ -181,11 +181,15 @@ const selectClass =
 
 <template>
   <div class="mx-auto flex max-w-[1160px] flex-col gap-[18px] px-5 pt-6 pb-10 max-[640px]:gap-3.5 max-[640px]:px-3 max-[640px]:pt-4">
-    <h1 class="text-[22px] font-bold tracking-[-0.01em] max-[640px]:text-xl">Workflows</h1>
+    <div class="flex items-center gap-3">
+      <h1 class="text-[22px] font-bold tracking-[-0.01em] max-[640px]:text-xl">Workflows</h1>
+      <span class="grow" />
+      <RouterLink to="/workflows/build/new" data-new-workflow class="inline-flex h-[34px] items-center rounded-md border border-input bg-background px-3 text-[13px] font-medium hover:bg-muted">New workflow</RouterLink>
+    </div>
 
     <ErrorBanner v-if="store.runningError" :error="store.runningError" />
     <RunningCard :rows="store.running" />
-    <DefinitionsTable :defs="definitions.defs.value" :failed="definitions.failed.value" @retry="definitions.reload" />
+    <DefinitionsTable :defs="definitions.defs.value" :failed="definitions.failed.value" @retry="definitions.reload" @deleted="definitions.reload" />
 
     <section aria-label="Stories" class="rounded-xl border border-border bg-card shadow-sm">
       <div class="flex items-center gap-2.5 border-b border-border px-[18px] py-3.5">

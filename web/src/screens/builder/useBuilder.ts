@@ -51,8 +51,11 @@ export function useBuilder(name: Ref<string>) {
   const state = () => `${toYaml(graph.value)}\n${JSON.stringify(prompts.value)}`;
   const saved = ref("");
   const dirty = computed(() => !broken.value && state() !== saved.value);
-  const byNode = computed(() => problemsByNode(problems.value));
-  const byEdge = computed(() => problemsByEdge(problems.value));
+  // only this workflow's own problems mark its boxes and lines: a bundle's child is checked with it, and a child's
+  // node or line of the same name is not this one's
+  const own = computed(() => (isNew.value ? UNNAMED : graph.value.name));
+  const byNode = computed(() => problemsByNode(problems.value, own.value));
+  const byEdge = computed(() => problemsByEdge(problems.value, own.value));
   /** The draft came back upgraded from an older schema: its text is not the stored text until a save. */
   const upgraded = computed(() => detail.value?.upgraded === true); // a save answers with the stored text: false
   /** What Save would send (the text itself only when it could not be drawn). */
@@ -100,6 +103,17 @@ export function useBuilder(name: Ref<string>) {
     }
     saved.value = state();
     checked.value = saved.value;
+  }
+
+  /** Put back a canvas held while its bundle was open (builder_state.ts): its graph and prompt files over the
+   * definition `load` just read, so the differences show as unsaved changes. Nothing when it is another
+   * workflow's. */
+  function restore(held: { name: string; graph: Graph; prompts: Record<string, string> }): void {
+    if (held.name !== name.value || broken.value) return;
+    graph.value = held.graph;
+    prompts.value = { ...held.prompts };
+    selected.value = null;
+    selectedEdge.value = null;
   }
 
   /** Apply an edit; one graph.ts refuses (a name taken, a move missing a field) shows as the error. */
@@ -246,6 +260,7 @@ export function useBuilder(name: Ref<string>) {
     stale: computed(() => checked.value !== null && checked.value !== state()),
     byNode,
     byEdge,
+    own,
     upgraded,
     catalog,
     catalogFailed,
@@ -258,6 +273,7 @@ export function useBuilder(name: Ref<string>) {
     dirty,
     yamlText,
     load,
+    restore,
     edit,
     place,
     renameOutput: renameOutputOf,

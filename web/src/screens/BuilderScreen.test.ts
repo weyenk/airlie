@@ -5,7 +5,7 @@ import { createMemoryHistory, createRouter, RouterView } from "vue-router";
 import { ApiError } from "@/api";
 import type { Catalog, WorkflowDef, WorkflowDetail } from "@/api/workflow_defs";
 import { type CreateForm, useCardDraftStore } from "@/stores/card_draft";
-import { STORY_YAML } from "@/test-utils/workflow-yaml";
+import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
 import BuilderScreen from "./BuilderScreen.vue";
 
 const api = vi.hoisted(() => ({ getWorkflowDef: vi.fn(), listWorkflowDefs: vi.fn(), registryCatalog: vi.fn(), publishWorkflow: vi.fn(), saveDraft: vi.fn(), validateWorkflow: vi.fn(), deleteDraft: vi.fn() }));
@@ -884,4 +884,85 @@ test("a draft that was not upgraded shows no cue", async () => {
   api.getWorkflowDef.mockResolvedValue(lined());
   const { w } = await open("/workflows/build/fix");
   expect(w.find("[data-upgraded]").exists()).toBe(false);
+});
+
+// bundles in place: a bundle box opens the workflow it runs, and the breadcrumb comes back with the canvas as it was
+const withLayer = () =>
+  api.getWorkflowDef.mockImplementation(async (n: string) => (n === "layer" ? detail({ name: "layer", type: null, yaml: LAYER_YAML }) : detail()));
+const crumb = (w: Awaited<ReturnType<typeof open>>["w"]) => w.find("[data-breadcrumb]");
+
+test("a double-click on a bundle box opens its workflow with a token, and the breadcrumb names the parent", async () => {
+  withLayer();
+  const { w, router } = await open();
+  expect(crumb(w).exists()).toBe(false); // not inside a bundle
+  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await flushPromises();
+  const at = router.currentRoute.value;
+  expect(at.name).toBe("builder");
+  expect(at.params.name).toBe("layer");
+  expect(typeof at.query.from).toBe("string");
+  expect(at.query.from).not.toBe("");
+  expect(document.body.querySelector("[data-node-modal]")).toBeNull(); // no node modal for a bundle box
+  expect(w.get("h1").text()).toBe("layer");
+  expect(crumb(w).text()).toContain("story");
+});
+
+test("the card's Edit on a bundle box opens the bundle too", async () => {
+  withLayer();
+  const { w, router } = await open();
+  await w.get("[data-box][data-node=build_layers]").trigger("click");
+  await w.get("[data-box-card][data-node=build_layers] [data-box-edit]").trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("layer");
+});
+
+test("the breadcrumb returns to the parent with its unsaved edits", async () => {
+  withLayer();
+  const { w, router } = await open();
+  await w.get("[data-palette-type=gate]").trigger("click"); // an unsaved box in the story
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
+  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await flushPromises();
+  expect(dialog()).toBeNull(); // leaving for the bundle is not leaving the edits behind: nothing asked
+  await crumb(w).trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("story");
+  expect(w.get("h1").text()).toBe("story");
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
+  expect(w.get("[data-dirty]").text()).toContain("Unsaved");
+  expect(crumb(w).exists()).toBe(false);
+  expect(router.currentRoute.value.query).toEqual({}); // the token is spent
+});
+
+test("a breadcrumb whose token is gone still goes back, and the parent loads from the server", async () => {
+  withLayer();
+  const { w, router } = await open();
+  await w.get("[data-palette-type=gate]").trigger("click");
+  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await flushPromises();
+  sessionStorage.clear(); // expired
+  await crumb(w).trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("story");
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(22);
+  expect(w.find("[data-dirty]").exists()).toBe(false);
+  expect(w.find("[role=alert]").exists()).toBe(false);
+});
+
+test("a bundle that names nothing that exists only selects its box", async () => {
+  const yaml = STORY_YAML.replace("workflow: layer", "workflow: gone");
+  api.getWorkflowDef.mockResolvedValue(detail({ yaml }));
+  const { w, router } = await open();
+  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe("/workflows/build/story");
+  expect(w.get("[data-box][data-node=build_layers]").attributes("aria-pressed")).toBe("true");
+});
+
+test("a bundle child's problem does not mark the parent's box of the same name", async () => {
+  api.getWorkflowDef.mockResolvedValue(detail({ problems: ["workflow layer: node survey: bad", "workflow story: node intake: worse"] }));
+  const { w } = await open();
+  expect(w.findAll("[data-problem-node]").map((b) => b.attributes("data-problem-node"))).toEqual(["intake"]); // the child's row names no box here
+  expect(w.findAll("[data-problem-list] [data-problem]")).toHaveLength(2); // but it is still listed
+  expect(w.get("[data-box][data-node=survey]").text()).not.toContain("bad"); // and the child's survey box is not this one's
 });

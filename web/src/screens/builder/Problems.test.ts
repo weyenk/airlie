@@ -23,6 +23,10 @@ test("a problem naming a line is about that line; a click on it asks for the lin
   expect(problemEdge("workflow w: node a: the loop line to 'b' goes to a node that does not reach this one through forward lines")).toEqual({ from: "a", to: "b" });
   expect(problemEdge("workflow w: node fix: input 'repro' is not produced by any node and not loose")).toBeNull();
   expect(problemsByEdge([cond, "workflow w: node a: other"])).toEqual({ "a>b": ["line to b: condition names 'zzz', which nothing produces"] });
+  // with the workflow given, a bundle child's line of the same name is not this one's
+  expect(problemsByEdge([cond, cond.replace("workflow w", "workflow child")], "w")).toEqual({ "a>b": ["line to b: condition names 'zzz', which nothing produces"] });
+  expect(problemsByEdge([cond.replace("workflow w", "workflow child")], "w")).toEqual({});
+  expect(problemsByNode(["workflow child: node fix: a", "workflow w: node fix: b"], "w")).toEqual({ fix: ["b"] });
   const w = mount(Problems, { props: { problems: [cond] } });
   await w.get("[data-problem-edge='a>b']").trigger("click");
   expect(w.emitted("focusEdge")).toEqual([["a", "b"]]);

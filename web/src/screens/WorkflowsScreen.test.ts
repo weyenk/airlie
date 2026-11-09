@@ -52,6 +52,19 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
+test("New workflow opens the builder on an empty canvas", async () => {
+  const { w, router } = await open();
+  await w.get("[data-new-workflow]").trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe("/workflows/build/new");
+});
+
+test("the table shows who uses a bundle", async () => {
+  defsApi.listWorkflowDefs.mockResolvedValue([DEFS[0], { ...DEFS[1], used_by: ["story"] }, DEFS[2]]);
+  const { w } = await open();
+  expect(w.get("[data-def=layer] [data-def-used-by]").text()).toBe("story");
+});
+
 test("the first page asks for 25 and shows the count", async () => {
   const { w } = await open();
   expect(lastPageCall()).toEqual({ page: 1, size: 25 });

@@ -107,6 +107,11 @@ export function adoptWorkflow(key: string): Promise<Adopted> {
   return request(`/v1/airlie/stories/${seg(key)}/adopt-workflow`, { method: "POST" });
 }
 
+/** The workflows that use a draft, as a refusal reads them: "used by: story, layer". */
+export function usedByText(users: string[]): string {
+  return `used by: ${users.join(", ")}`;
+}
+
 /** The workflows a 409 names as using the draft (its detail is `{used_by: [...]}`, which arrives as JSON text);
  * null when the error is not that. */
 export function usedBy(e: ApiError): string[] | null {

@@ -10,7 +10,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useCardDraftStore } from "@/stores/card_draft";
 import { useWorkflowDefs } from "./board/workflow";
 import Canvas from "./builder/Canvas.vue";
-import { connect, moveNode, removeEdge, removeNode, renameNode, updateEdge, updateNode } from "./builder/graph";
+import { holdGraph, takeGraph } from "./builder/builder_state";
+import { connect,moveNode, removeEdge, removeNode, renameNode, updateEdge, updateNode } from "./builder/graph";
 import type { GEdge, LineOpts, LoopBound, NodeSpec } from "./builder/graph";
 import NodeModal from "./builder/NodeModal.vue";
 import Palette from "./builder/Palette.vue";
@@ -31,10 +32,43 @@ const b = useBuilder(name);
 const { detail, graph, error, selected, selectedEdge, problems, catalog } = b;
 const tab = ref<"diagram" | "yaml">("diagram");
 
-// the address moving off the builder (a link out, a 401 to sign in) leaves the loaded workflow alone
-watch(name, (n) => {
-  if (route.name === "builder") void b.load(n);
+// the address moving off the builder (a link out, a 401 to sign in) leaves the loaded workflow alone; arriving by a
+// bundle's breadcrumb (`?back=<token>`) puts the canvas held at the bundle's door back over what loaded
+watch(name, async (n) => {
+  if (route.name !== "builder") return;
+  const back = typeof route.query.back === "string" ? route.query.back : null;
+  await b.load(n);
+  if (back === null || route.name !== "builder") return;
+  const held = takeGraph(back); // missing or expired: the server's copy stands, no error
+  if (held) b.restore(held);
+  letGo = true;
+  try {
+    await router.replace({ query: held?.up ? { from: held.up.from, parent: held.up.parent } : {} });
+  } finally {
+    letGo = false;
+  }
 }, { immediate: true });
+
+// a bundle opened from here (`?from=<token>&parent=<name>`): the breadcrumb goes back to the workflow it was
+// opened from, with its unsaved canvas
+const parentName = computed(() => (typeof route.query.parent === "string" && route.query.parent ? route.query.parent : null));
+const parentToken = computed(() => (typeof route.query.from === "string" && route.query.from ? route.query.from : null));
+async function crumbBack() {
+  if (parentName.value === null) return;
+  await router.push({ name: "builder", params: { name: parentName.value }, query: parentToken.value ? { back: parentToken.value } : {} });
+}
+/** A bundle box opens the workflow it runs, in place: this canvas is held (edits and all) and the breadcrumb
+ * brings it back. */
+async function enterBundle(target: string) {
+  const up = parentName.value !== null && parentToken.value !== null ? { from: parentToken.value, parent: parentName.value } : undefined;
+  const token = holdGraph(name.value, graph.value, b.prompts.value, up);
+  letGo = true; // leaving for the bundle with edits is not leaving them behind
+  try {
+    await router.push({ name: "builder", params: { name: target }, query: { from: token, parent: name.value } });
+  } finally {
+    letGo = false;
+  }
+}
 
 const { defs, failed, reload } = useWorkflowDefs();
 const bundles = computed(() => defs.value.map((d) => d.name).filter((n) => n !== name.value));
@@ -61,9 +95,16 @@ function pick(id: string) {
 /** Edit on a box's card, or a double-click: its fields, in the modal. */
 function openBox(id: string) {
   selected.value = id;
-  editing.value = id;
   selectedEdge.value = null;
   closeWire();
+  const node = nodeOf(id);
+  if (node?.type === "bundle") {
+    // a bundle box opens the workflow it runs; one naming nothing that exists only selects
+    const target = node.spec.workflow;
+    if (typeof target === "string" && defs.value.some((d) => d.name === target)) void enterBundle(target);
+    return;
+  }
+  editing.value = id;
 }
 
 // a wire: a drag draws the line at once (the modal is for what it carries, says and bounds); a click selects it, and
@@ -258,6 +299,7 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
 <template>
   <div class="flex flex-col gap-4 px-5 pt-6 pb-10 max-[640px]:gap-3 max-[640px]:px-3 max-[640px]:pt-4 min-[901px]:h-[calc(100dvh-var(--header-h))] min-[901px]:pb-5">
     <section class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card px-[18px] py-3.5 shadow-sm">
+      <button v-if="parentName" type="button" data-breadcrumb class="inline-flex items-center gap-1 font-mono text-[13px] text-muted-foreground hover:underline" @click="crumbBack"><ChevronLeft class="size-4" />{{ parentName }}</button>
       <RouterLink to="/workflows" class="inline-flex items-center gap-1 text-[13px] text-muted-foreground"><ChevronLeft class="size-4" />Workflows</RouterLink>
       <h1 class="font-mono text-lg font-bold">{{ title }}</h1>
       <span v-if="typeLabel" data-workflow-type class="rounded-full bg-chip px-2 py-px text-xs font-semibold text-chip-foreground">{{ typeLabel }}</span>
@@ -287,7 +329,7 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       <button type="button" class="underline" @click="b.loadCatalog">Retry</button>
     </p>
     <template v-if="count || b.validated.value">
-      <Problems :problems="problems" @focus="focus" @focus-edge="focusEdge" />
+      <Problems :problems="problems" :workflow="b.own.value" @focus="focus" @focus-edge="focusEdge" />
       <p v-if="b.stale.value" data-problems-stale class="-mt-2 text-xs text-muted-foreground">Edited since this check: Validate again to see where it stands.</p>
     </template>
 
