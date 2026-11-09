@@ -19,6 +19,8 @@ const props = defineProps<{
   selectedEdge?: GEdge | null;
   /** What validation says of each box, by node id. */
   problems?: Record<string, string[]>;
+  /** What validation says of each line, by `edgeKey` (`from>to`); a line with a problem has its label marked. */
+  edgeProblems?: Record<string, string[]>;
   readonly?: boolean;
 }>();
 const emit = defineEmits<{
@@ -291,7 +293,14 @@ function onDrop(e: DragEvent) {
         >
           <title>{{ w.label.text }}: {{ w.edge.from }} → {{ w.edge.to }}</title>
         </path>
-        <text data-edge-label :x="w.label.x" :y="w.label.y" text-anchor="middle" class="fill-current font-mono text-[11px]">{{ w.label.text }}</text>
+        <text
+          data-edge-label
+          :data-edge-problem="edgeProblems?.[`${w.edge.from}>${w.edge.to}`]?.length ? 'true' : undefined"
+          :x="w.label.x"
+          :y="w.label.y"
+          text-anchor="middle"
+          :class="['font-mono text-[11px]', edgeProblems?.[`${w.edge.from}>${w.edge.to}`]?.length ? 'fill-destructive font-semibold' : 'fill-current']"
+        ><title v-if="edgeProblems?.[`${w.edge.from}>${w.edge.to}`]?.length">{{ edgeProblems[`${w.edge.from}>${w.edge.to}`].join("; ") }}</title>{{ w.label.text }}</text>
       </g>
       <path v-if="draft" data-wire-draft :d="draftPath" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 3" class="text-primary" />
     </svg>
@@ -326,7 +335,7 @@ function onDrop(e: DragEvent) {
           @pointerdown.stop.prevent="(e: PointerEvent) => startWire(n.id, p.artifact, e)"
         >
           <span class="size-3 flex-none rounded-full border border-primary bg-card group-hover:bg-primary"></span>
-          <span class="pointer-events-none absolute right-full mr-1 max-w-[100px] truncate rounded-sm bg-card/80 px-0.5 font-mono text-muted-foreground">{{ p.label }}</span>
+          <span data-port-label class="pointer-events-none absolute right-full mr-1 hidden max-w-[160px] truncate rounded-sm bg-card px-0.5 font-mono text-muted-foreground group-hover:block">{{ p.label }}</span>
         </span>
         <span
           data-port="edge"
@@ -345,6 +354,21 @@ function onDrop(e: DragEvent) {
         @edit="emit('open', n.id)"
       />
     </template>
+    <div
+      v-for="w in wires.filter((x) => x.selected && !readonly)"
+      :key="`card-${w.key}`"
+      data-edge-card
+      :data-from="w.edge.from"
+      :data-to="w.edge.to"
+      class="absolute z-30 flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs shadow-md"
+      :style="{ left: `${Math.max(0, Math.min(w.label.x - 90, size.width - CARD_W))}px`, top: `${Math.max(0, Math.min(w.label.y + 8, size.height - CARD_H))}px` }"
+      @pointerdown.stop
+      @click.stop
+      @dblclick.stop
+    >
+      <span class="max-w-[140px] truncate font-mono font-semibold">{{ w.edge.from }} → {{ w.edge.to }}</span>
+      <button type="button" data-edge-edit class="rounded-md border border-border px-2 py-0.5 text-xs font-medium hover:bg-muted" @click="emit('openEdge', w.edge)">Edit</button>
+    </div>
     <p v-if="!graph.nodes.length" class="absolute top-6 left-6 text-[13px] text-muted-foreground">
       No boxes yet.<template v-if="!readonly"> Drag a node type here from the palette.</template>
     </p>

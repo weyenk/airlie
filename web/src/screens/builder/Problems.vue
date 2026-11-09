@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { problemNode } from "./problems";
+import { edgeKey, problemEdge, problemNode } from "./problems";
 
 defineOptions({ name: "AirlieBuilderProblems" });
 
-/** What the composer's checks say of the workflow: a row each; one that names a box is a button that shows it. */
+/** What the composer's checks say of the workflow: a row each; one that names a box is a button that shows it, and one that names a line opens that line. */
 defineProps<{ problems: string[] }>();
-const emit = defineEmits<{ focus: [nodeId: string] }>();
+const emit = defineEmits<{ focus: [nodeId: string]; focusEdge: [from: string, to: string] }>();
 </script>
 
 <template>
@@ -15,7 +15,16 @@ const emit = defineEmits<{ focus: [nodeId: string] }>();
       <li v-for="(p, i) in problems" :key="i" data-problem class="flex items-start gap-2">
         <span class="mt-1.5 size-1.5 flex-none rounded-full bg-danger" aria-hidden="true"></span>
         <button
-          v-if="problemNode(p)"
+          v-if="problemEdge(p)"
+          type="button"
+          :data-problem-edge="edgeKey(problemEdge(p)!.from, problemEdge(p)!.to)"
+          class="text-left font-mono text-xs break-words underline-offset-2 hover:underline"
+          @click="emit('focusEdge', problemEdge(p)!.from, problemEdge(p)!.to)"
+        >
+          {{ p }}
+        </button>
+        <button
+          v-else-if="problemNode(p)"
           type="button"
           :data-problem-node="problemNode(p)"
           class="text-left font-mono text-xs break-words underline-offset-2 hover:underline"

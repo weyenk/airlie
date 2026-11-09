@@ -143,6 +143,40 @@ test("a click on a wire selects it, and the selected wire is marked", async () =
   expect(w.get("[data-edge][data-from=intake][data-to=base]").attributes("data-selected")).toBe("true");
 });
 
+test("the selected wire shows a card whose Edit opens it; no card on a readonly canvas or an unselected wire", async () => {
+  const graph = graphOf(STORY_YAML);
+  const edge = graph.edges.find((e) => e.from === "intake" && e.to === "base")!;
+  const w = editable(graph);
+  expect(w.find("[data-edge-card]").exists()).toBe(false);
+  await w.setProps({ selectedEdge: edge });
+  expect(w.get("[data-edge-card]").text()).toContain("intake → base");
+  await w.get("[data-edge-card] [data-edge-edit]").trigger("click");
+  expect(w.emitted("openEdge")).toEqual([[edge]]);
+  const ro = mountCanvas(graph);
+  await ro.setProps({ selectedEdge: edge });
+  expect(ro.find("[data-edge-card]").exists()).toBe(false);
+});
+
+test("a wire with a problem has its label marked", () => {
+  const graph = graphOf(STORY_YAML);
+  const w = editable(graph, { edgeProblems: { "intake>base": ["line to base: condition names 'x', which nothing produces"] } });
+  const marked = w.findAll("[data-edge-label][data-edge-problem]");
+  expect(marked).toHaveLength(1);
+  expect(marked[0].element.parentElement!.querySelector("[data-edge][data-from=intake][data-to=base]")).not.toBeNull();
+});
+
+test("an out-port's label is hidden until the port is hovered and then capped, so it never sits over the box's id or sub text", () => {
+  const w = editable(graphOf(STORY_YAML));
+  const labels = w.findAll("[data-port-label]");
+  expect(labels.length).toBeGreaterThan(0);
+  for (const l of labels) {
+    expect(l.classes()).toContain("hidden");
+    expect(l.classes()).toContain("group-hover:block");
+    expect(l.classes()).toContain("truncate");
+    expect(l.classes()).toContain("max-w-[160px]");
+  }
+});
+
 test("a box with problems is outlined and says them on hover", () => {
   const w = editable(graphOf(STORY_YAML), { problems: { base: ["check needs run"] } });
   const base = w.get("[data-box][data-node=base]");
