@@ -654,8 +654,9 @@ tasks:
     cmds:
       - '{{if eq .ENGINE "container"}}container system start --disable-kernel-install > /dev/null{{else}}true{{end}}'
       - mkdir -p .task
-      # the build's log, not -q: container 1.5.0's quiet build can hang with no output
-      - '{{.ENGINE}} build --progress plain -t airlie-test -f ops/test/Containerfile . > .task/test-image-build.log 2>&1 || { tail -40 .task/test-image-build.log; exit 1; }'
+      # the build's log, not -q: container 1.5.0's quiet build can hang with no output. TEST_IMAGE_LOADED=1
+      # (CI's layer jobs, which `docker load` the image the test-image job built) uses the loaded one as it is.
+      - '{{if .TEST_IMAGE_LOADED}}true{{else}}{{.ENGINE}} build --progress plain -t airlie-test -f ops/test/Containerfile . > .task/test-image-build.log 2>&1 || { tail -40 .task/test-image-build.log; exit 1; }{{end}}'
       - >-
         {{.ENGINE}} run --rm --init --network none {{.SIZE}}
         --mount type=bind,source={{.ROOT_DIR}},target=/src,readonly {{.GIT_MOUNT}}
