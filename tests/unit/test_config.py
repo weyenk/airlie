@@ -1464,3 +1464,12 @@ def test_a_role_on_an_mlx_vlm_engine_may_only_pass_known_template_arguments(tmp_
                 }
             },
         )
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("kv_bits", 0), ("cache_memory_gb", 0), ("cache_checkpoints", -1), ("cache_checkpoint_interval", 0)],
+)
+def test_mlx_vlm_engine_refuses_out_of_range_cache_settings(tmp_path: Path, field: str, value: float) -> None:
+    with pytest.raises(ConfigError, match=f"engines.main.{field}"):
+        mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", field: value}})

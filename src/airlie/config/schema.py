@@ -137,11 +137,15 @@ class EngineSpec(Strict):
         description="mlx_vlm: the model is a typed-decision model, started with --decision-model and asked "
         "through /v1/decisions",
     )
-    kv_bits: int | None = Field(default=None, description="mlx_vlm: KV cache quantization bits; None = off")
+    kv_bits: int | None = Field(
+        default=None, ge=1, description="mlx_vlm: KV cache quantization bits; None = off"
+    )
     prefix_cache: bool = Field(default=False, description="mlx_vlm: the automatic prefix cache (APC_*)")
-    cache_memory_gb: float = Field(default=1.0, description="mlx_vlm: APC_MEMORY_GB")
-    cache_checkpoints: int = Field(default=4, description="mlx_vlm: APC checkpoints per sequence")
-    cache_checkpoint_interval: int = Field(default=2048, description="mlx_vlm: tokens between checkpoints")
+    cache_memory_gb: float = Field(default=1.0, gt=0, description="mlx_vlm: APC_MEMORY_MAX_GB")
+    cache_checkpoints: int = Field(default=4, ge=0, description="mlx_vlm: APC checkpoints per sequence")
+    cache_checkpoint_interval: int = Field(
+        default=2048, ge=1, description="mlx_vlm: tokens between checkpoints"
+    )
     max_image_px: int | None = Field(default=None, description="mlx_vlm: longest image side, in pixels")
     env: dict[str, str] = Field(default_factory=dict, description="mlx_vlm: extra environment variables")
     entry: list[str] | None = Field(
