@@ -98,9 +98,16 @@ class LTSObserver:
         task.add_done_callback(self._pending.discard)
 
     async def drain(self) -> None:
-        """Wait for every in-flight admission; safe to call repeatedly."""
+        """Wait for every in-flight admission; safe to call repeatedly.
+
+        The tasks waited on are removed here, not left to their done callbacks: gather over tasks that are all
+        done completes without yielding to the loop (Python 3.12), so callbacks still queued never ran and a
+        loop waiting for them to empty the set spun forever. An admission started meanwhile is the next
+        round's."""
         while self._pending:
-            await asyncio.gather(*list(self._pending), return_exceptions=True)
+            batch = list(self._pending)
+            await asyncio.gather(*batch, return_exceptions=True)
+            self._pending.difference_update(batch)
 
     async def _admit(self, step: StepRecord) -> None:
         async with self._sem:
