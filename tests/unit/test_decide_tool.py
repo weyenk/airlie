@@ -246,3 +246,13 @@ async def test_attach_decide_wires_thresholds_and_transport_from_the_config(tmp_
     assert attach_decide(reg2, strict, transport=httpx.MockTransport(handler)) is True
     res = await reg2.call(ToolCall(id="2", name="decide", arguments=json.dumps(ARGS)))
     assert json.loads(res.output)["decision"] == "low-confidence"
+
+
+def test_decide_tool_attaches_for_an_mlx_vlm_decision_engine(tmp_path: Path) -> None:
+    from airlie.tools.decide import attach_decide
+    from tests.unit.test_router import _decision_cfg
+
+    reg = ToolRegistry([], ToolContext(worktree=tmp_path))
+    assert attach_decide(reg, _decision_cfg(tmp_path, decision=True)) is True and reg.names() == ["decide"]
+    reg = ToolRegistry([], ToolContext(worktree=tmp_path))
+    assert attach_decide(reg, _decision_cfg(tmp_path, decision=False)) is False and reg.names() == []

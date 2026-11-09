@@ -85,7 +85,7 @@ class Decide:
 def attach_decide(
     registry: ToolRegistry, cfg: AirlieConfig, *, transport: httpx.AsyncBaseTransport | None = None
 ) -> bool:
-    """Add `decide` when a llama_server engine serves router.model; False (and no tool) otherwise."""
+    """Add `decide` when a llama_server or decision mlx_vlm engine serves router.model; else False."""
     m = cfg.router.model
     # `and` here is an equivalent mutant: the KeyError below also ends in False
     if m is None or m not in cfg.models:  # pragma: no mutate
@@ -94,7 +94,7 @@ def attach_decide(
         e = cfg.engines[cfg.engine_for_model(m)]
     except KeyError:
         return False
-    if e.kind != "llama_server":
+    if not (e.kind == "llama_server" or (e.kind == "mlx_vlm" and e.decision)):
         return False
     registry.add(
         Decide(

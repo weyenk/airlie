@@ -77,7 +77,9 @@ def test_jev_router_needs_a_catalog_model_served_by_llama_server(tmp_path: Path)
     data["router"] = {"kind": "jev", "model": "ghost"}
     assert problems(data) == ["router.model must name a catalog model when router.kind is jev (got 'ghost')"]
     data["router"] = {"kind": "jev", "model": "team"}
-    assert problems(data) == ["router.model 'team' must be served by a llama_server engine"]
+    assert problems(data) == [
+        "router.model 'team' must be served by a llama_server engine or an mlx_vlm engine with decision: true"
+    ]
     data["router"] = {"kind": "chief", "model": "ghost"}
     assert problems(data) == []  # only the jev router needs a decision model
 

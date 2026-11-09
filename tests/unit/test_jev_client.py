@@ -174,3 +174,49 @@ async def test_clear_decision_reports_every_field() -> None:
 def test_only_slashes_are_stripped_from_the_base_url() -> None:
     assert JevClient("http://k/v1X").base_url == "http://k/v1X"
     assert JevClient("http://k/v1X//").base_url == "http://k/v1X"
+
+
+def mlx_vlm_payload(**ans: Any) -> dict[str, Any]:
+    return {
+        "model": "/models/clef",
+        "answers": {
+            "role": {"type": "choice", "value": "coder", "probabilities": {"coder": 0.8, "qa": 0.2}, **ans}
+        },
+        "usage": {"input_tokens": 42},
+    }
+
+
+async def test_ask_reads_an_mlx_vlm_decision_answer() -> None:
+    transport, seen = answering(mlx_vlm_payload(metadata={"confidence": 0.8}))
+    client = JevClient("http://d/v1", model="/models/clef", transport=transport, endpoint="/decisions")
+    ans = await client.ask("state", "role", "which seat", {"coder": "writes", "qa": "tests"})
+    assert (ans.choice, ans.confidence, ans.input_tokens) == ("coder", 0.8, 42)
+    assert ans.probabilities == {"coder": 0.8, "qa": 0.2}
+    assert seen[0].url.path == "/v1/decisions" and json.loads(seen[0].content)["model"] == "/models/clef"
+
+
+async def test_an_mlx_vlm_answer_without_metadata_takes_the_top_probability() -> None:
+    transport, _ = answering(mlx_vlm_payload())
+    client = JevClient("http://d/v1", transport=transport, endpoint="/decisions")
+    ans = await client.ask("s", "role", "i", CRITERIA)
+    assert ans.confidence == 0.8
+
+
+async def test_input_tokens_fall_back_to_prompt_tokens() -> None:
+    payload = mlx_vlm_payload()
+    payload["usage"] = {"prompt_tokens": 7}
+    transport, _ = answering(payload)
+    client = JevClient("http://d/v1", transport=transport, endpoint="/decisions")
+    assert (await client.ask("s", "role", "i", CRITERIA)).input_tokens == 7
+
+
+async def test_decisions_errors_name_the_decisions_endpoint() -> None:
+    transport, _ = answering({}, status=400, text="bad")
+    client = JevClient("http://d/v1", transport=transport, endpoint="/decisions")
+    with pytest.raises(httpx.HTTPStatusError) as ei:
+        await client.ask("s", "role", "i", CRITERIA)
+    assert str(ei.value) == "decisions returned 400: bad"
+    transport, _ = answering({"answers": {}})
+    client = JevClient("http://d/v1", transport=transport, endpoint="/decisions")
+    with pytest.raises(ValueError, match="decisions answered without 'role'"):
+        await client.ask("s", "role", "i", CRITERIA)

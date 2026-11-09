@@ -549,7 +549,8 @@ class MemorySpec(Strict):
 
 class RouterSpec(Strict):
     kind: Literal["jev", "chief"] = Field(
-        default="chief", description="jev = /v1/systemone on a llama_server engine"
+        default="chief",
+        description="jev = /v1/systemone on a llama_server engine, /v1/decisions on an mlx_vlm decision one",
     )
     model: str | None = Field(default=None, description="catalog name of the decision model (jev)")
     ambiguous_gap: float = Field(default=0.15, ge=0.0, le=1.0)
@@ -1064,9 +1065,16 @@ class AirlieConfig(Strict):
                     f"router.model must name a catalog model when router.kind is jev (got {rm!r})"
                 )
             else:
-                hosts = [n for n, e in self.engines.items() if rm in e.models and e.kind == "llama_server"]
+                hosts = [
+                    n
+                    for n, e in self.engines.items()
+                    if rm in e.models and (e.kind == "llama_server" or (e.kind == "mlx_vlm" and e.decision))
+                ]
                 if not hosts:
-                    problems.append(f"router.model '{rm}' must be served by a llama_server engine")
+                    problems.append(
+                        f"router.model '{rm}' must be served by a llama_server engine "
+                        "or an mlx_vlm engine with decision: true"
+                    )
         for rname, r in self.roles.items():
             if r.on_context_full not in ("stop", "trim"):
                 problems.append(f"roles.{rname}.on_context_full must be one of: stop, trim")

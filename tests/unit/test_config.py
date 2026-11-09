@@ -1473,3 +1473,23 @@ def test_a_role_on_an_mlx_vlm_engine_may_only_pass_known_template_arguments(tmp_
 def test_mlx_vlm_engine_refuses_out_of_range_cache_settings(tmp_path: Path, field: str, value: float) -> None:
     with pytest.raises(ConfigError, match=f"engines.main.{field}"):
         mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", field: value}})
+
+
+def test_router_model_may_be_served_by_an_mlx_vlm_decision_engine(tmp_path: Path) -> None:
+    def data(decision: bool) -> dict:
+        return {
+            **MINIMAL,
+            "engines": {
+                **MINIMAL["engines"],
+                "dec": {"kind": "mlx_vlm", "port": 8084, "model": "clef", "decision": decision},
+            },
+            "models": {
+                **MINIMAL["models"],
+                "clef": {"repo": "org/c", "revision": "r", "path": "/models/clef"},
+            },
+            "router": {"kind": "jev", "model": "clef"},
+        }
+
+    assert load_config(write(tmp_path, data(True))).router.model == "clef"
+    with pytest.raises(ConfigError, match="llama_server engine or an mlx_vlm engine with decision: true"):
+        load_config(write(tmp_path, data(False)))

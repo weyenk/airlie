@@ -13,12 +13,16 @@ from airlie.router.protocol import ROLE_QUESTION, RouteDecision, Router
 
 
 def jev_client(cfg: AirlieConfig, *, transport: httpx.AsyncBaseTransport | None = None) -> JevClient:
-    """The client for the llama_server engine that serves router.model."""
+    """The client for the llama_server or mlx_vlm decision engine that serves router.model."""
     if cfg.router.model is None:
         raise ValueError("router.model is not set")
     e = cfg.engines[cfg.engine_for_model(cfg.router.model)]
     return JevClient(
-        e.base_url or "", model=e.served_name(cfg.router.model), transport=transport, api_key=e.api_key
+        e.base_url or "",
+        model=e.served_name(cfg.router.model),
+        transport=transport,
+        api_key=e.api_key,
+        endpoint="/decisions" if e.kind == "mlx_vlm" else "/systemone",
     )
 
 
