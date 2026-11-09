@@ -31,17 +31,23 @@ export type WorkflowDetail = {
   edits_file?: boolean;
 };
 
+export type CatalogCheck = {
+  name: string;
+  title: string;
+  inputs: string[];
+  outputs: string[];
+  formats: Record<string, string>;
+  transient: string[];
+  every_run: boolean;
+  args: string[];
+};
+
 /** What the builder's palette and forms may pick from. */
 export type Catalog = {
   roles: string[];
   types: string[];
-  prompts: string[];
-  parsers: string[];
-  checks: string[];
-  predicates: string[];
-  afters: string[];
-  turns: string[];
-  meetings: string[];
+  checks: CatalogCheck[];
+  meetings: { roles: string[]; inputs: string[] }[];
   prompt_files: string[];
 };
 

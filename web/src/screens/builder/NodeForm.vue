@@ -62,7 +62,22 @@ const options = (ids: readonly string[], current: unknown) => {
   return c && !ids.includes(c) ? [c, ...ids] : [...ids];
 };
 
-const runs = computed(() => (props.node.type === "meeting" ? props.catalog.meetings : props.catalog.checks));
+// Shim until the node forms are replaced: a check or gate picks a catalog check by name; a meeting's roles are fixed.
+const checkNames = computed(() => props.catalog.checks.map((c) => c.name));
+const checkTitle = (name: string) => props.catalog.checks.find((c) => c.name === name)?.title ?? name;
+const meetingRoles = computed(() => props.catalog.meetings[0]?.roles ?? []);
+function pickRun(e: Event) {
+  const name = valueOf(e);
+  const check = props.catalog.checks.find((c) => c.name === name);
+  const next: NodeSpec = { ...props.node.spec };
+  if (!check) delete next.run;
+  else {
+    next.run = name;
+    next.inputs = [...check.inputs];
+    next.outputs = Object.fromEntries(check.outputs.map((o) => [o, check.formats[o] ?? "text"]));
+  }
+  emit("update", next);
+}
 
 // prompt: a registry id, or prompt:<id> naming a hub rule or one of the draft's files
 const NEW = "__new__";
@@ -205,7 +220,7 @@ const label = "text-muted-foreground";
       <select data-input="prompt" :value="text(spec.prompt)" :class="control" @change="pickPrompt">
         <option value="">none</option>
         <optgroup label="Brief builders">
-          <option v-for="p in options(catalog.prompts.concat(promptFiles), spec.prompt).filter((x) => !x.startsWith('prompt:'))" :key="p" :value="p">{{ p }}</option>
+          <option v-for="p in options(promptFiles, spec.prompt).filter((x) => !x.startsWith('prompt:'))" :key="p" :value="p">{{ p }}</option>
         </optgroup>
         <optgroup label="Prompt files">
           <option v-for="p in options(promptFiles, spec.prompt).filter((x) => x.startsWith('prompt:'))" :key="p" :value="p">{{ p }}</option>
@@ -214,13 +229,25 @@ const label = "text-muted-foreground";
       </select>
     </label>
 
-    <template v-for="f in ['turn', 'parse', 'run', 'done', 'after', 'when'] as const" :key="f">
+    <label v-if="has('run') && node.type !== 'meeting'" data-form-field="run" class="flex flex-col gap-1">
+      <span :class="label">run</span>
+      <select data-input="run" :value="text(spec.run)" :class="control" @change="pickRun">
+        <option value="">none</option>
+        <option v-for="o in options(checkNames, spec.run)" :key="o" :value="o">{{ checkTitle(o) }}</option>
+      </select>
+    </label>
+    <div v-else-if="has('run')" data-form-field="run" class="flex flex-col gap-1">
+      <span :class="label">meeting roles (fixed)</span>
+      <span class="font-mono text-xs">{{ meetingRoles.join(", ") || "none" }}</span>
+    </div>
+
+    <template v-for="f in ['turn', 'parse', 'done', 'after', 'when'] as const" :key="f">
       <label v-if="has(f)" :data-form-field="f" class="flex flex-col gap-1">
         <span :class="label">{{ f }}</span>
         <select :data-input="f" :value="text(spec[f])" :class="control" @change="set(f, valueOf($event) || undefined)">
           <option value="">none</option>
           <option
-            v-for="o in options({ turn: catalog.turns, parse: catalog.parsers, run: runs, done: catalog.predicates, after: catalog.afters, when: catalog.predicates }[f], spec[f])"
+            v-for="o in options([], spec[f])"
             :key="o"
             :value="o"
           >
