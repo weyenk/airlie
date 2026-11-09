@@ -2,7 +2,8 @@
 # enrolled functions its change touched, and leaves a change to the mutation setup (pyproject.toml,
 # tests/unit/conftest.py) to this run: that is why the sweep is nightly, so a setup change is checked the day
 # after it lands. Enrolled modules must have every mutant caught (the run fails otherwise); `merge` also
-# uploads the surviving mutants as `mutation-survivors` (survivors.json), which the survivors job reads.
+# uploads the surviving mutants as `mutation-survivors` (survivors.json), which airlie's line reads and files
+# as fix cards (`airlie.story.mutation_cards`).
 # The whole project (the modules that are not enrolled too) is no longer run here: it took 5 macOS shards of up
 # to 4 hours each, so it moved to a weekly run on the Mac (task mutate:local), which keeps the backlog table.
 name: mutation-nightly

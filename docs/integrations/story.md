@@ -492,8 +492,8 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
   gets a `test_checks_skipped` event; its package is still parsed, linted and placed, and its tests locked.
 
 Mutation testing is the repository's CI's, on every PR, not a stage of the story: airlie's own pipeline runs
-`task mutate:changed -- --gate-only` over the functions the PR changed, in 5 shards and merges them (`task mutate:merge`); the
-weekly run covers the whole project. Before 2026-10-19 a story ran an `AGENTS.md` *Mutation gate* once and an
+`task mutate:changed -- --gate-only` over the functions the PR changed, in 8 shards and merges them (`task mutate:merge`);
+the nightly sweep covers every enrolled module and a weekly run on the Mac the whole project (see *Mutation fix cards*). Before 2026-10-19 a story ran an `AGENTS.md` *Mutation gate* once and an
 architect-planned *Harden the tests* layer built tests for the survivors; its tests failed the red check often
 for no fault in them, and it is gone. A state saved with its keys still opens.
 

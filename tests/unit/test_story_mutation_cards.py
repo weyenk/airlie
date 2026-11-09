@@ -295,7 +295,10 @@ def test_the_card_body_carries_each_diff_and_the_equivalent_way_out() -> None:
     assert "uv run python scripts/mutate_changed.py --scope enrolled --list" in body
     assert f"uv run mutmut run '{F}'" in body
     assert "a unit test fails" in body and "not the mutated literal" in body
-    assert "`equivalent` entry" in body and "changes to the code under test" in body
+    assert "changes to the code under test" in body
+    # the form pyproject.toml accepts: an inline table in `equivalent = [...]`, not an array-of-tables header
+    assert '`{ mutant = "...", line = "...", reason = "..." }`' in body and "`equivalent = [...]`" in body
+    assert "[[tool.airlie.mutation.equivalent]]" not in body
     assert RUN_URL in body
 
 

@@ -8,8 +8,8 @@ Scopes
   changed   Two sets of mutants, run together:
             1. every mutant of each function or method of an enrolled source file that the change touched
                since the merge base with --base (committed, staged, unstaged and untracked; a new file is
-               all touched). Code the change left alone is not held to the gate here: the weekly
-               `--scope project` run covers it. And
+               all touched). Code the change left alone is not held to the gate here: the nightly
+               `--scope enrolled` sweep covers it. And
             2. every mutant of any function that a changed or new test file exercises. A new test is
                only good if the mutants in the code it runs get caught, so the suite is asked to prove it.
             A change to the mutation setup (pyproject.toml, tests/unit/conftest.py) is not attributable to
@@ -18,7 +18,8 @@ Scopes
             change touched in enrolled sources.
             --gate-only drops set 2 (and the stats run it needs): only the enrolled functions a change
             touched are mutated. Set 2 is most of a story's mutants (AIR-5: 855 of 1,211) and none of them
-            can fail the run, so the pipeline leaves them to the weekly `--scope project` run.
+            can fail the run, so the pipeline leaves them to the nightly `--scope enrolled` sweep (the
+            enrolled ones) and the weekly `--scope project` run on the Mac (the rest).
   enrolled  Every mutant of every enrolled module.
   project   Every mutant in src/airlie. Enrolled modules gate; the rest is reported as the backlog.
 
@@ -32,12 +33,13 @@ Sharding (CI runs a matrix of these, then one merge)
   on all of them together, and writes the one report; --expect N fails it when fewer than N shards
   reported, so a shard that died before writing cannot pass. --survivors PATH (with --merge) writes the
   uncaught mutants that gate, after the equivalent list, as {"status": "ran" | "could_not_run", "survivors":
-  [{"mutant", "status", "function", "diff"}]}; the file exists on every path,
-  empty when a shard could not run.
+  [{"mutant", "status", "function", "diff"}]}; the file exists on every path, empty when a shard could not
+  run.
 
 Enrolment is `[tool.airlie.mutation].enrolled` in pyproject.toml. A mutant no test can catch (it changes
-nothing a caller can see) is listed in `[[tool.airlie.mutation.equivalent]]` with its `mutant` name, the
-mutated `line` (the `+` line of `mutmut show`) and a `reason`; it is then reported, not failed. An entry whose
+nothing a caller can see) is listed as an inline table in `equivalent = [...]` under `[tool.airlie.mutation]`,
+`{ mutant = "...", line = "...", reason = "..." }`: its name, the mutated line (the `+` line of `mutmut show`)
+and why; it is then reported, not failed. An entry whose
 mutant is now caught, or whose line no longer matches, is reported as stale. Every shard's record carries the
 `mutmut show` diff of each uncaught mutant, so --merge applies the list without the mutants directory.
 Exit 0 when every selected mutant of an enrolled module is caught (killed, or timed out) or listed; 1 when one

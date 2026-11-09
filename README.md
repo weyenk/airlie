@@ -144,9 +144,11 @@ Run `task` to list them. The ones that exist today:
 | `task static` | lint + typecheck: part of pipeline stage 1 and the pre-push gate (`task hooks:install`, run by `task setup`) |
 | `task test:unit` / `test:functional` / `test:contract` / `test:integration` / `test:e2e` / `test:journey` / `test:performance` / `test:security` | one layer of the test pyramid, `tests/<layer>/`; a layer with no tests yet succeeds |
 | `task mutate [-- --max-children 6]` / `task mutate:results` | mutation-test every enrolled module (`[tool.airlie.mutation].enrolled`); an uncaught mutant exits 1 |
-| `task mutate:changed [-- --base origin/main]` | mutants of the functions of enrolled files the change touched since the base ref, plus every function a changed or new test executes (`--list` previews); the pipeline runs it with `--gate-only`, in shards |
-| `task mutate:project` | mutation-test all of `src/airlie` (the weekly run): enrolled modules gate, the rest is printed as a score table, the backlog |
-| `task mutate:merge -- --merge DIR --expect N` | gate on the `--results` files of N sharded runs (`--shard I/N`) together: CI's matrix ends with this |
+| `task mutate:changed [-- --base origin/main]` | mutants of the functions of enrolled files the change touched since the base ref, plus every function a changed or new test executes (`--list` previews); the pipeline runs it with `--gate-only --defer-setup`, in shards |
+| `task mutate:project` | mutation-test all of `src/airlie` (the weekly run on the Mac): enrolled modules gate, the rest is printed as a score table, the backlog |
+| `task mutate:local [-- --max-children 4]` | the weekly whole-project run by hand: waits for the line's lanes, mutates a fresh worktree of `origin/main`, writes `~/.local/state/airlie/mutation/<date>.md` |
+| `task mutate:launchd:install` / `task mutate:launchd:uninstall` | load / remove the launchd agent that runs `task mutate:local`'s run every Sunday at 01:00 |
+| `task mutate:merge -- --merge DIR --expect N` | gate on the `--results` files of N sharded runs (`--shard I/N`) together: CI's matrix ends with this (`--survivors` writes the gating survivors as JSON) |
 | `task fmt` | auto-format and auto-fix lint |
 
 Coming per the roadmap: `task events`, `task trace`, `task bench:gaia` (M4b).
@@ -159,20 +161,24 @@ before it is green:
 1. **static**: `task static` (ruff + mypy; also the pre-push gate via `.githooks/pre-push`), then `task web:gate`
    (Vue typecheck, lint, tests and build) and `task hub:gate`.
 2. **lowest level**: `task test:unit`, then mutation testing of the functions of enrolled modules the change
-   touched (`task mutate:changed -- --gate-only`): a PR is held to the code it changed, and the weekly run to
-   the rest. It runs as a matrix of 8 shards (`--shard I/N`: whole functions, dealt out by size) and a
-   `mutation-gate` job merges them into one verdict (`task mutate:merge`); a survivor fails it. Mac-only unit
-   tests and mutants (`task test:mac`, `mutation-mac`) run beside the Linux matrix. A story airlie builds gets
-   mutation on each of its PRs, like any other change. Run `task mutate:changed` locally for the wider set: it
-   also mutates every function a changed or new test executes.
+   touched (`task mutate:changed -- --gate-only --defer-setup`): a PR is held to the code it changed, and a change
+   to the mutation setup (`pyproject.toml`, `tests/unit/conftest.py`) is left to the nightly sweep. It runs as a
+   matrix of 8 shards (`--shard I/N`: whole functions, dealt out by size) and a `mutation-gate` job merges them
+   into one verdict (`task mutate:merge`); a survivor fails it. Mac-only unit tests and mutants (`task test:mac`,
+   `mutation-mac`) run beside the Linux matrix. A story airlie builds gets mutation on each of its PRs, like any
+   other change. Run `task mutate:changed` locally for the wider set: it also mutates every function a changed or
+   new test executes.
 3. **units in concert**: functional, contract, integration (`tests/functional`, `tests/contract`, `tests/integration`).
 4. **behavioural**: e2e (the web app in a container), journey.
 5. **environmental**: performance, security.
 
 Stages 3 to 5 pass while their `tests/<layer>/` directory is empty and start enforcing as soon as it has tests.
-`.github/workflows/mutation-weekly.yml` runs `task mutate:project` every Monday over the whole project, in
-5 shards (one runner took more than its 4 hours), and uploads the merged per-module score table; enrolled modules must be clean, the other modules are the backlog. To
-enrol a module, add its path to `[tool.airlie.mutation].enrolled` once `task mutate:changed` is clean for it.
+`.github/workflows/mutation-nightly.yml` runs `task mutate` (`--scope enrolled`) every night over every enrolled
+module, in 8 Linux shards and a mac job for the sources that import mlx, and uploads the merged report and the
+surviving mutants; airlie's line turns those survivors into fix cards (`line.mutation_cards`). The whole project,
+the modules that are not enrolled too, is mutated weekly on the Mac by a launchd agent (`task
+mutate:launchd:install`), which writes the per-module score table: the backlog. To enrol a module,
+add its path to `[tool.airlie.mutation].enrolled` once `task mutate:changed` is clean for it.
 
 ## Using airlie from another client
 

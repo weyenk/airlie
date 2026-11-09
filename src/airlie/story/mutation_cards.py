@@ -97,8 +97,9 @@ def render_mutation_card(function: str, survivors: list[Survivor], run_url: str)
     acceptance = (
         "- With each mutant under Evidence applied, a unit test fails.\n"
         "- The tests assert what a caller sees, not the mutated literal.\n"
-        "- A mutant no test can catch (it changes nothing a caller can see) gets an `equivalent` entry in "
-        "pyproject.toml with its reason instead."
+        "- A mutant no test can catch (it changes nothing a caller can see) is listed instead: an inline "
+        'table `{ mutant = "...", line = "...", reason = "..." }` (the `+` line of `mutmut show`, and why) '
+        "in `equivalent = [...]` under `[tool.airlie.mutation]` in pyproject.toml."
     )
     body = "\n\n".join(
         [

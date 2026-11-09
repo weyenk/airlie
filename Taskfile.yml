@@ -553,7 +553,7 @@ tasks:
       - rm -f ~/Library/LaunchAgents/dev.airlie.mutation-weekly.plist
 
   mutate:merge:
-    desc: "Gate on the --results files of sharded mutation runs (task mutate:merge -- --merge shards/ --expect 5)"
+    desc: "Gate on the --results files of sharded mutation runs (task mutate:merge -- --merge shards/ --expect 9)"
     cmds:
       - '{{.RUN}} python scripts/mutate_changed.py {{.CLI_ARGS}}'
 
