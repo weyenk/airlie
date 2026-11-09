@@ -91,13 +91,16 @@ async def _models(http: httpx.AsyncClient, root: str, api_key: str | None) -> li
     return models if isinstance(models, list) else []
 
 
-async def _metrics(http: httpx.AsyncClient, root: str, api_key: str | None) -> dict[str, Any] | None:
-    """mlx-vlm's `summary`; {} when it answered without one; None when it did not answer at all."""
+async def _metrics(http: httpx.AsyncClient, root: str, api_key: str | None) -> dict[str, Any] | int | None:
+    """mlx-vlm's `summary`; {} when it answered without one; the status code on a 401 or 403 (a wrong or
+    rotated key must not read as idle); None when it did not answer at all."""
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
         r = await http.get(f"{root}/v1/metrics", headers=headers, timeout=STATUS_TIMEOUT_S)
     except httpx.TransportError:  # refused, reset, timed out
         return None
+    if r.status_code in (401, 403):
+        return r.status_code
     try:
         if r.status_code != 200:
             return {}
@@ -136,6 +139,8 @@ async def busy_reason(
             summary = await _metrics(http, root, key)
             if summary is None:
                 return f"engine {engine} not answering"
+            if isinstance(summary, int):
+                return f"engine {engine} not answering (HTTP {summary})"
             active = _number(summary.get("in_flight"))
             if active is not None and active > 0:
                 return f"engine {engine} has {int(active)} request(s) in flight"

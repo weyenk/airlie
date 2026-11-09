@@ -287,6 +287,8 @@ def test_mlx_vlm_metrics_probe_sends_the_engine_key(tmp_path: Path) -> None:
     t = FakeStatus(metrics=_metrics(1, NOW))
     assert _probe(_mlx_cfg(tmp_path, "k"), t) is not None
     assert t.auth["127.0.0.1:8080"] == "Bearer k"
-    denied = FakeStatus(metrics={"detail": "no"}, metrics_status=401)
-    assert _probe(_mlx_cfg(tmp_path, "k"), denied) is None
+    for code in (401, 403):  # a wrong or rotated key must not open the gate
+        denied = FakeStatus(metrics={"detail": "no"}, metrics_status=code)
+        assert _probe(_mlx_cfg(tmp_path, "k"), denied) == f"engine main not answering (HTTP {code})"
+    assert _probe(_mlx_cfg(tmp_path), FakeStatus(metrics={}, metrics_status=404)) is None
     assert _probe(_mlx_cfg(tmp_path), FakeStatus(error=True)) == "engine main not answering"
