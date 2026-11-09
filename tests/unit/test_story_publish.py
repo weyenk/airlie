@@ -1126,7 +1126,8 @@ async def test_a_publish_step_resolves_github_without_a_list_a_model_planted(
     repo = repo_on_github(tmp_path, URL)
     git(repo, "config", "http.curloptResolve", "github.com:443:127.0.0.3")  # where a listener would wait
     said = curl_said(repo, offline(both_ways(tmp_path, as_who), URL), "ls-remote", "origin")
-    assert "127.0.0.3" not in said and "Added github.com:443:127.0.0.1 to DNS cache" in said
+    # the connect address proves the resolve (curl builds differ on logging the "to DNS cache" line)
+    assert "127.0.0.3" not in said and "Trying 127.0.0.1:443" in said
     plain = curl_said(repo, offline(dict(os.environ), URL), "ls-remote", "origin")
     assert "127.0.0.3" in plain  # the control
 
