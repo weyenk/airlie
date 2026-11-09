@@ -44,6 +44,8 @@ export type GNode = { id: string; type: NodeType; spec: NodeSpec; x: number; y: 
 /** A line: `artifacts` are what it carries (none: an ordering line), `when` its condition, `loop` its bound when
  * it is drawn back to an earlier node. */
 export type GEdge = { from: string; to: string; artifacts: string[]; when?: string; loop?: LoopBound };
+/** What a bundle box's workflow is handed and hands back: its declared inputs and outputs. */
+export type Ports = { inputs: string[]; outputs: string[] };
 export type Graph = {
   name: string;
   type: string | null;
@@ -53,8 +55,9 @@ export type Graph = {
   outputs: string[];
   nodes: GNode[];
   edges: GEdge[];
-  /** The bundles a bundle box runs, loaded by name when opened. */
-  bundles: Record<string, Graph>;
+  /** The ports of the workflows the bundle boxes run, by name: fetched when the canvas loads and when a bundle box
+   * is placed or its workflow changes (useBuilder). Never written to the YAML: the bundle's own file holds them. */
+  bundles: Record<string, Ports>;
 };
 
 /** What a line drawn between two boxes may carry and say. */
@@ -265,6 +268,18 @@ export function outputsOfNode(graph: Graph, id: string): string[] {
   return [...new Set((run?.outputs ?? []).map((o) => o.replace(/\.\{item\}$/, "")))];
 }
 
+/** The names of the workflows the graph's bundle boxes run, each once. */
+export const bundleNames = (graph: Graph): string[] => [
+  ...new Set(graph.nodes.filter((n) => n.type === "bundle" && typeof n.spec.workflow === "string" && n.spec.workflow).map((n) => n.spec.workflow as string)),
+];
+/** A workflow's ports as a bundle box shows them: what it is handed and what it hands back. */
+export const portsOf = (spec: { inputs?: string[]; outputs?: string[] }): Ports => ({ inputs: [...(spec.inputs ?? [])], outputs: [...(spec.outputs ?? [])] });
+/** The graph knowing the ports of bundle `name`: a bundle box that runs it offers its outputs, and its lines carry
+ * them. Only the canvas reads them; the YAML is unchanged. */
+export function withBundle(graph: Graph, name: string, ports: Ports): Graph {
+  return relabel({ ...graph, bundles: { ...graph.bundles, [name]: portsOf(ports) } });
+}
+
 /** The graph with a line `from` → `to`: each of `artifacts` (outputs of `from`) joins the target's inputs if it
  * is not there yet, and `when` and `loop` say when the line is taken and its bound. A line already between the
  * two boxes is merged into, in place: the new artifacts join what it carries, and its `when` and `loop` stay
@@ -321,6 +336,14 @@ export function updateEdge(graph: Graph, from: string, to: string, patch: { arti
   return relabel({ ...g, edges });
 }
 
+/** Who else writes `name` for a box `to` that reads it: the boxes other than `from` and `to` that write it, then
+ * "the workflow's inputs" when the caller hands it in. A line carries whatever its source writes that its target
+ * reads, so an input is the target's, not one line's: the wire modal keeps such a name checked (graph-wide). */
+export function producersOf(graph: Graph, name: string, from: string, to: string): string[] {
+  const boxes = graph.nodes.filter((n) => n.id !== from && n.id !== to && outputsOfNode(graph, n.id).includes(name)).map((n) => n.id);
+  return graph.inputs.includes(name) ? [...boxes, "the workflow's inputs"] : boxes;
+}
+
 const sameLine = (a: GEdge, b: GEdge) => a.from === b.from && a.to === b.to && a.when === b.when;
 
 /** The graph without the line `edge`, and without the target's inputs that line alone carried: an artifact
@@ -347,9 +370,30 @@ function renamePlaceholders(text: string, old: string, to: string): string {
   return text.replace(new RegExp(`\\{([?/]?)${escape(old)}(?=[}.])`, "g"), (_m, mark: string) => `{${mark}${to}`);
 }
 
+const CONDITION_WORDS = new Set(["and", "or", "not", "exists"]);
+const CONDITION_TOKEN = /(==|!=|\(|\))|("[^"]*"|'[^']*')|([^\s()=!"']+)/g;
+/** A line's condition with every path headed by `old` (`old`, `old.field`) headed by `to` instead. The tokens are
+ * airlie.flow.conditions's, so a keyword, a quoted string and the literal after `==` / `!=` stay as they are. */
+export function renameInCondition(when: string, old: string, to: string): string {
+  let out = "";
+  let last = 0;
+  let afterCompare = false;
+  for (const m of when.matchAll(CONDITION_TOKEN)) {
+    out += when.slice(last, m.index);
+    last = m.index + m[0].length;
+    const word = m[3];
+    const path = word !== undefined && !afterCompare && !CONDITION_WORDS.has(word);
+    out += path && (word === old || word.startsWith(`${old}.`)) ? to + word.slice(old.length) : m[0];
+    afterCompare = m[1] === "==" || m[1] === "!=";
+  }
+  return out + when.slice(last);
+}
+
 /** The graph with box `id`'s output `old` called `to`, in place: the lines that carry it, every reader's inputs,
- * `session` and `each`, the `{old}` placeholders in a reader's own prompt text, a loop's `carry` from `id`, and the
- * workflow's declared outputs follow. A reader is a box a line from `id` brings it to, or, when `id` is its only
+ * `session` and `each`, a reader's `args` values that name it, the `{old}` placeholders in a reader's own prompt
+ * text, a loop's `carry` from `id`, the paths headed by `old` in the lines' conditions, and the workflow's declared
+ * outputs follow. The conditions of every line follow when `id` is the only box that writes `old`; else those on
+ * the lines out of `id` and out of its readers (another writer's `old` keeps its name). A reader is a box a line from `id` brings it to, or, when `id` is its only
  * writer, any box that reads it. A reader whose prompt (or a team's worker) is a prompt file that names it cannot
  * be rewritten here: the rename is refused with those readers. `promptFields` are the fields of the prompt files
  * the caller knows (id -> fields); a prompt file not in it is taken to name the output. Throws when `id` has no
@@ -363,7 +407,8 @@ export function renameOutput(graph: Graph, id: string, old: string, to: string, 
   if (to in outputs) throw new Error(`${id} already has an output ${to}`);
 
   // a box reads `old` by its inputs, or by the session it continues or the list a bundle runs over
-  const reads = (n: GNode) => inputsOf(n.spec).includes(old) || n.spec.session === old || n.spec.each === old;
+  const argsOf = (n: GNode) => (isRecord(n.spec.args) ? Object.values(n.spec.args) : []);
+  const reads = (n: GNode) => inputsOf(n.spec).includes(old) || n.spec.session === old || n.spec.each === old || argsOf(n).includes(old);
   const lined = new Set(graph.edges.filter((e) => e.from === id).map((e) => e.to));
   const only = !graph.nodes.some((n) => n.id !== id && outputsOf(n.spec).includes(old));
   const readers = graph.nodes.filter((n) => n.id !== id && reads(n) && (lined.has(n.id) || only));
@@ -382,15 +427,24 @@ export function renameOutput(graph: Graph, id: string, old: string, to: string, 
   g = editing(g, readers.map((n) => n.id), (s) => {
     if (Array.isArray(s.inputs)) s.inputs = s.inputs.map((i) => (i === old ? to : i));
     for (const key of ["session", "each"]) if (s[key] === old) s[key] = to;
+    if (isRecord(s.args)) s.args = Object.fromEntries(Object.entries(s.args).map(([k, v]) => [k, v === old ? to : v]));
     for (const key of ["prompt", "turn", "worker"]) {
       const text = s[key];
       if (typeof text === "string" && !text.startsWith(PROMPT_FILE)) s[key] = renamePlaceholders(text, old, to);
     }
   });
+  const conditioned = only ? null : new Set([id, ...readers.map((n) => n.id)]);
   return relabel({
     ...g,
     outputs: g.outputs.map((o) => (o === old ? to : o)),
-    edges: g.edges.map((e) => (e.from === id && e.loop?.carry === old ? { ...e, loop: { ...e.loop, carry: to } } : e)),
+    edges: g.edges.map((e) => {
+      let next = e.from === id && e.loop?.carry === old ? { ...e, loop: { ...e.loop, carry: to } } : e;
+      if (next.when !== undefined && (conditioned === null || conditioned.has(e.from))) {
+        const when = renameInCondition(next.when, old, to);
+        if (when !== next.when) next = { ...next, when };
+      }
+      return next;
+    }),
   });
 }
 
