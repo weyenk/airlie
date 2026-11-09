@@ -3,7 +3,7 @@
 #   1 static        lint + types (the same `task static` that runs on every push to origin), then the Vue app's
 #                   `task web:gate`: typecheck, lint, tests and the build
 #   2 lowest level  unit tests, then mutation testing of the enrolled functions the change touched, in shards
-#                   (the weekly run covers the whole project)
+#                   (the nightly run covers the enrolled modules, a weekly Mac run the whole project)
 #   3 units in concert   functional, contract, integration
 #   4 behavioural        end-to-end, journey
 #   5 environmental      performance, security
@@ -75,7 +75,7 @@ jobs:
         env:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before || 'origin/main' }}
         run: >-
-          task mutate:changed -- --base "$BASE" --gate-only --max-children 3
+          task mutate:changed -- --base "$BASE" --gate-only --defer-setup --max-children 3
           --shard ${{ matrix.shard }}/8 --results mutation/shard-${{ matrix.shard }}.json
       - uses: actions/upload-artifact@v4
         if: always()
@@ -97,8 +97,9 @@ jobs:
   # The mutants of the sources that import mlx (scripts/mutate_changed.py --mac-only), gated here.
   mutation-mac:
     runs-on: macos-15
-    # a setup-file change (pyproject.toml, tests/unit/conftest.py) runs the whole suite first, then every mac-only source
-    timeout-minutes: 180
+    # a setup-file change (pyproject.toml, tests/unit/conftest.py) is left to the nightly run (--defer-setup), so
+    # this only mutates the mac-only functions a change touched
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -108,7 +109,7 @@ jobs:
         env:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before || 'origin/main' }}
         run: >-
-          task mutate:changed -- --base "$BASE" --gate-only --max-children 3 --mac-only
+          task mutate:changed -- --base "$BASE" --gate-only --defer-setup --max-children 3 --mac-only
           --results mutation/shard-mac.json
       - name: Gate the mac-only mutants
         run: task mutate:merge -- --merge mutation --expect 1 --report mutation-mac-report.md

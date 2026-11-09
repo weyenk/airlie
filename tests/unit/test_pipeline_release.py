@@ -130,3 +130,41 @@ def test_each_merge_gets_a_tag_of_its_own(tmp_path: Path) -> None:
     first = _release_with(tmp_path / "a", "a" * 40)[2]
     second = _release_with(tmp_path / "b", "b" * 40)[2]
     assert first != second
+
+
+PIPELINE = WORKFLOW
+NIGHTLY = ROOT / ".github" / "workflows" / "mutation-nightly.yml"
+
+
+def run_text(job: dict) -> str:  # type: ignore[type-arg]
+    return " ".join(s.get("run", "") for s in job["steps"])
+
+
+def test_the_pipelines_mutation_jobs_defer_setup_changes() -> None:
+    jobs = yaml.safe_load(PIPELINE.read_text())["jobs"]
+    for name in ("mutation", "mutation-mac"):
+        assert "--defer-setup" in run_text(jobs[name])
+    assert jobs["mutation-mac"]["timeout-minutes"] == 90
+
+
+def test_the_nightly_sweeps_the_enrolled_modules_in_nine_shards_after_a_green_suite() -> None:
+    wf = yaml.safe_load(NIGHTLY.read_text())
+    jobs = wf["jobs"]
+    assert not (ROOT / ".github" / "workflows" / "mutation-weekly.yml").exists()
+    assert "workflow_dispatch" in (wf.get("on") or wf[True])  # PyYAML reads the key `on` as True
+    assert jobs["mutation"]["needs"] == "unit" and "test:unit" in run_text(jobs["unit"])
+    assert len(jobs["mutation"]["strategy"]["matrix"]["shard"]) == 8
+    assert "task mutate --" in run_text(jobs["mutation"]) and "--shard" in run_text(jobs["mutation"])
+    assert "--mac-only" in run_text(jobs["mutation-mac"]) and "needs" not in jobs["mutation-mac"]
+    mac_artifact = [s["with"]["name"] for s in jobs["mutation-mac"]["steps"] if "with" in s]
+    assert mac_artifact == ["mutation-shard-mac"]  # picked up by the merge's mutation-shard-* pattern
+
+
+def test_the_nightly_merges_nine_shards_and_uploads_the_survivors() -> None:
+    wf = yaml.safe_load(NIGHTLY.read_text())
+    steps = wf["jobs"]["merge"]["steps"]
+    run = run_text(wf["jobs"]["merge"])
+    assert "--expect 9" in run and "--survivors survivors.json" in run
+    uploads = {s["with"]["name"] for s in steps if "upload-artifact" in s.get("uses", "")}
+    assert uploads == {"mutation-report", "mutation-survivors"}
+    assert wf["jobs"]["merge"]["needs"] == ["mutation", "mutation-mac"]

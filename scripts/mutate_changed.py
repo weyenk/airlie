@@ -13,7 +13,9 @@ Scopes
             2. every mutant of any function that a changed or new test file exercises. A new test is
                only good if the mutants in the code it runs get caught, so the suite is asked to prove it.
             A change to the mutation setup (pyproject.toml, tests/unit/conftest.py) is not attributable to
-            one function and runs every enrolled module, whole, instead.
+            one function and runs every enrolled module, whole, instead. --defer-setup (the pipeline) leaves
+            that to the nightly `--scope enrolled` run: the run says so, and still mutates the functions the
+            change touched in enrolled sources.
             --gate-only drops set 2 (and the stats run it needs): only the enrolled functions a change
             touched are mutated. Set 2 is most of a story's mutants (AIR-5: 855 of 1,211) and none of them
             can fail the run, so the pipeline leaves them to the weekly `--scope project` run.
@@ -587,6 +589,11 @@ def main() -> int:
         action="store_true",
         help="changed scope: mutate the impacted enrolled modules only, not what the changed tests run",
     )
+    ap.add_argument(
+        "--defer-setup",
+        action="store_true",
+        help="changed scope: a setup change does not run every enrolled module (the nightly does)",
+    )
     ap.add_argument("--list", action="store_true", help="print what would be tested and stop")
     ap.add_argument("--report", type=Path, help="also append the markdown summary to this file")
     ap.add_argument("--shard", type=parse_shard, help="run only part I of N of the mutants (I/N, as 2/5)")
@@ -620,8 +627,11 @@ def main() -> int:
         sources = []
     else:
         changed = changed_files(args.base)
-        sources = impacted_sources(changed, scope_files)
-        whole = bool(changed & SETUP_FILES)  # the setup changed: every enrolled module, whole
+        if args.defer_setup:
+            sources = [f for f in scope_files if f in changed]  # the nightly run takes the setup change
+        else:
+            sources = impacted_sources(changed, scope_files)
+            whole = bool(changed & SETUP_FILES)  # the setup changed: every enrolled module, whole
         test_files = changed_tests(changed)
         skipped = [f for f in test_files if f in mutation_ignored_tests()]
         test_files = [f for f in test_files if f not in skipped]
@@ -629,8 +639,10 @@ def main() -> int:
         if skipped:
             out += ["changed tests kept out of mutation runs (not fork-safe):", *[f"- {f}" for f in skipped]]
         if changed & SETUP_FILES:
+            files = ", ".join(sorted(changed & SETUP_FILES))
             out.append(
-                f"mutation setup changed ({', '.join(sorted(changed & SETUP_FILES))}): every enrolled module"
+                f"mutation setup changed ({files}): every enrolled module"
+                + (" is left to the nightly run" if args.defer_setup else "")
             )
         unenrolled = sorted(
             f for f in changed if f.startswith("src/airlie/") and f.endswith(".py") and f not in scope_files

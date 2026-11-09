@@ -331,14 +331,13 @@ def test_the_mutmut_config_copies_what_the_tests_read_outside_src() -> None:
     assert "ops" in cfg["tool"]["mutmut"]["also_copy"]
 
 
-def run_main(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> FakeMutmut:
+def run_main(monkeypatch: pytest.MonkeyPatch, argv: list[str], changed: set[str] | None = None) -> FakeMutmut:
     fake = FakeMutmut()
     monkeypatch.setattr(mc, "mutmut", fake.run)
     monkeypatch.setattr(mc, "mutmut_out", fake.out)
     monkeypatch.setattr(mc, "enrolled_files", lambda: SCOPE)
-    monkeypatch.setattr(
-        mc, "changed_files", lambda base: {"src/airlie/engine/sse.py", "tests/unit/test_new.py"}
-    )
+    files = changed or {"src/airlie/engine/sse.py", "tests/unit/test_new.py"}
+    monkeypatch.setattr(mc, "changed_files", lambda base: files)
     monkeypatch.setattr(mc, "changed_tests", lambda changed: ["tests/unit/test_new.py"])
     monkeypatch.setattr(mc, "mutation_ignored_tests", lambda: [])
     monkeypatch.setattr(mc, "merge_base_of", lambda base: "base")
@@ -384,6 +383,29 @@ def test_gate_only_with_no_enrolled_change_has_nothing_to_mutate(
     monkeypatch.setattr(mc.sys, "argv", ["mutate_changed.py", "--gate-only"])
     assert mc.main() == 0
     assert fake.runs == [] and "nothing to mutate" in capsys.readouterr().out
+
+
+SETUP_CHANGE = {"tests/unit/conftest.py", "src/airlie/engine/sse.py"}
+
+
+def test_defer_setup_mutates_the_touched_functions_but_not_every_module(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = run_main(monkeypatch, ["--gate-only", "--defer-setup"], SETUP_CHANGE)
+    out = capsys.readouterr().out
+    assert "left to the nightly run" in out and "tests/unit/conftest.py" in out
+    # only the function the change touched, in the one enrolled file it changed: not every module, whole
+    assert fake.runs == [("run", "airlie.engine.sse.x_iter_sse__mutmut_*")]
+    assert "1 changed function(s) in 1 enrolled file(s)" in out
+
+
+def test_without_defer_setup_a_setup_change_still_mutates_every_enrolled_module(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_main(monkeypatch, ["--gate-only", "--list"], SETUP_CHANGE)
+    out = capsys.readouterr().out
+    assert "left to the nightly run" not in out
+    assert f"{len(SCOPE)} source file(s):" in out
 
 
 # ---- sharding: a matrix of runs, then one merge ----

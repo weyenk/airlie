@@ -527,7 +527,7 @@ tasks:
       - '{{.RUN}} python scripts/mutate_changed.py --scope changed {{.CLI_ARGS}}'
 
   mutate:project:
-    desc: "Mutation-test all of src/airlie (the weekly run): enrolled modules gate, the rest is the backlog table"
+    desc: "Mutation-test all of src/airlie, weekly on the Mac (task mutate:local); enrolled modules gate, the rest is the backlog table; CI runs --scope enrolled nightly"
     cmds:
       - '{{.RUN}} python scripts/mutate_changed.py --scope project {{.CLI_ARGS}}'
 
