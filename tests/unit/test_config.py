@@ -57,6 +57,13 @@ def test_role_referencing_unknown_model_fails_with_named_error(tmp_path: Path) -
         load_config(write(tmp_path, data))
 
 
+def test_a_workflow_check_naming_a_run_outside_the_story_catalog_fails_at_load(tmp_path: Path) -> None:
+    """validate_references holds every workflow to the story's catalog (rule 9); without it this passes."""
+    wf = {"nodes": {"c": {"type": "check", "run": "story.nothing_like_this"}}}
+    with pytest.raises(ConfigError, match=r"node c: run 'story\.nothing_like_this' is not in the catalog"):
+        load_config(write(tmp_path, {**MINIMAL, "workflows": {"w": wf}}))
+
+
 def test_engine_serving_unknown_model_fails(tmp_path: Path) -> None:
     data = {**MINIMAL, "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["ghost"]}}}
     with pytest.raises(ConfigError, match=r"engines\.main\.models.*'ghost'"):
@@ -1493,3 +1500,28 @@ def test_router_model_may_be_served_by_an_mlx_vlm_decision_engine(tmp_path: Path
     assert load_config(write(tmp_path, data(True))).router.model == "clef"
     with pytest.raises(ConfigError, match="llama_server engine or an mlx_vlm engine with decision: true"):
         load_config(write(tmp_path, data(False)))
+
+
+def test_hf_snapshot_dir_defaults_to_the_home_huggingface_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.config.load import hf_snapshot_dir
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    m = load_config(write(tmp_path, MINIMAL)).models["team"]
+    got = hf_snapshot_dir(m, None)
+    assert (
+        got
+        == tmp_path
+        / ".cache/huggingface/hub"
+        / "models--mlx-community--Qwen3.8-27B-4bit"
+        / "snapshots/abc123"
+    )
+
+
+def test_hf_snapshot_dir_honours_an_explicit_cache(tmp_path: Path) -> None:
+    from airlie.config.load import hf_snapshot_dir
+
+    m = load_config(write(tmp_path, MINIMAL)).models["team"]
+    got = hf_snapshot_dir(m, tmp_path / "elsewhere")
+    assert got == tmp_path / "elsewhere" / "models--mlx-community--Qwen3.8-27B-4bit" / "snapshots" / "abc123"
