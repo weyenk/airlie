@@ -502,9 +502,14 @@ tasks:
       - '{{.RUN}} airlie bench compare {{.CLI_ARGS}}'
 
   test:
-    desc: Unit tests (no models, runs anywhere)
+    desc: Unit tests (no models, runs anywhere), in parallel as the AGENTS.md gate runs them (`-n 0` for serial)
     cmds:
-      - '{{.RUN}} pytest {{.CLI_ARGS}}'
+      - '{{.RUN}} pytest -n auto --maxprocesses 8 {{.CLI_ARGS}}'
+
+  test:quarantine:
+    desc: "Only the unit tests quarantined in tests/unit/quarantine.toml (over 500 ms, or on the real clock): they must still pass"
+    cmds:
+      - '{{.RUN}} python scripts/run_layer.py unit --quarantined only {{.CLI_ARGS}}'
 
   test:live:
     desc: Live tests against a running engine (Apple Silicon, after `task up`)

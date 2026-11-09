@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,65 @@ from airlie.story.model import ISSUE_KEY
 
 def store(tmp_path: Path, **kw: object) -> BoardStore:
     return BoardStore(tmp_path / "board.sqlite", **kw)  # type: ignore[arg-type]
+
+
+def _backdate_move_into_done(s: BoardStore, key: str, seconds: float) -> None:
+    """Set the item's most recent move into done to `seconds` before now (the age the store measures)."""
+    s._db.execute(  # noqa: SLF001
+        "UPDATE moves SET at = ? WHERE item_key = ? AND to_status = 'done'",
+        (time.time() - seconds, key),
+    )
+
+
+def _backdate_created(s: BoardStore, key: str, seconds: float) -> None:
+    s._db.execute(  # noqa: SLF001
+        "UPDATE items SET created_at = ? WHERE key = ?", (time.time() - seconds, key)
+    )
+
+
+def test_done_card_at_or_past_7_days_reads_archived_true_and_1s_under_reads_false(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    old_done = s.create(level="story", title="old done")
+    fresh_done = s.create(level="story", title="fresh done")
+    old_todo = s.create(level="story", title="old todo")
+    s.move(old_done.key, "done")
+    s.move(fresh_done.key, "done")
+    _backdate_move_into_done(s, old_done.key, 604800)
+    _backdate_move_into_done(s, fresh_done.key, 604799)
+    _backdate_created(s, old_todo.key, 604800)
+    by_key = {i.key: i for i in s.list()}
+    assert by_key[old_done.key].archived is True
+    assert by_key[fresh_done.key].archived is False
+    assert by_key[old_todo.key].archived is False
+
+
+def test_fresh_done_card_reads_archived_false_and_is_listed_in_done_column(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    card = s.create(level="story", title="fresh done")
+    s.move(card.key, "done")
+    done = s.list(status="done")
+    assert [i.key for i in done] == [card.key]
+    assert done[0].archived is False
+
+
+def test_non_done_card_however_old_reads_archived_false(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    card = s.create(level="story", title="old todo")
+    _backdate_created(s, card.key, 604800 + 86400)
+    by_key = {i.key: i for i in s.list()}
+    assert by_key[card.key].archived is False
+
+
+def test_archived_card_moved_out_of_done_reads_archived_false_in_new_column(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    card = s.create(level="story", title="was done")
+    s.move(card.key, "done")
+    _backdate_move_into_done(s, card.key, 604800)
+    assert s.get(card.key).archived is True  # archived before it moves out of done
+    s.move(card.key, "doing")
+    by_key = {i.key: i for i in s.list()}
+    assert by_key[card.key].archived is False
+    assert [i.key for i in s.list(status="doing")] == [card.key]
 
 
 def test_levels_and_parent_level() -> None:
@@ -167,6 +227,7 @@ def test_export_round_trips_every_field(tmp_path: Path) -> None:
         "created_at": item["created_at"],
         "updated_at": item["updated_at"],
         "created_by": "bot",
+        "archived": False,
     }
 
 

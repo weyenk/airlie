@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS workflow_drafts (
 _DRAFT_NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _DRAFT_FIELDS = "name, type, yaml, prompts_json, created_at, updated_at, published_pr, published_url"
 _FIELDS = "key, level, title, description, status, parent, labels_json, created_at, updated_at, created_by"
+ARCHIVE_AFTER_SECONDS = 7 * 24 * 3600
 
 
 def _an(level: str) -> str:
@@ -455,6 +456,14 @@ class BoardStore:
         comments = self._db.execute(
             "SELECT id, author, text, at FROM comments WHERE item_key = ? ORDER BY id", (row["key"],)
         ).fetchall()
+        archived = False
+        if row["status"] == "done":
+            since = self._db.execute(
+                "SELECT MAX(at) FROM moves WHERE item_key = ? AND to_status = 'done'", (row["key"],)
+            ).fetchone()[0]
+            if since is None:
+                since = row["created_at"]
+            archived = (time.time() - since) >= ARCHIVE_AFTER_SECONDS
         return Item(
             key=row["key"],
             level=cast(Level, row["level"]),
@@ -467,4 +476,5 @@ class BoardStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             created_by=row["created_by"],
+            archived=archived,
         )

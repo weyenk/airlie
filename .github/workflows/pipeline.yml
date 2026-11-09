@@ -47,7 +47,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      # The budget fails the job on a test whose call phase took over 500 ms and that tests/unit/quarantine.toml
+      # does not list (setup and teardown are not timed, so a worker's cold imports are not charged to its first
+      # test; tests/unit/conftest.py). No multiplier: these 2-worker runners are not slower per test than a
+      # Mac under -n 8 (2026-11-09: 4217 tests summed ~910 worker-seconds here against ~1770 locally).
       - run: task test:unit
+        env:
+          AIRLIE_TEST_BUDGET_MS: "500"
 
   # Mutation testing of the functions of enrolled modules this change touched, split over 5 runners (whole
   # functions, dealt out by size); `mutation-gate` merges the shards and is the one verdict. Free accounts get 5
