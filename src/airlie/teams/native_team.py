@@ -113,6 +113,8 @@ _TEST_NAME = re.compile(r"^(test_.+|.+_test\..+|.+\.(test|spec)\..+|conftest\.py
 
 WRITE_TOOLS_ONLY = frozenset({"write_file", "edit_file", "run_tests"})
 """The tools a role keeps once its reading is switched off."""
+FILE_WRITES = frozenset({"write_file", "edit_file"})
+"""The tools whose call is a write: what the answer turn of a role told to write (write-demand) keeps."""
 READS_UNDER_HOLD = 3
 """Reads a role may still make after a missed write deadline switches its reading off, each answered with how
 many remain (read-left), before reads are refused (read-refused): a role that needs one fact gets it, a role
@@ -298,6 +300,12 @@ def _offered(ctx: TeamContext) -> list[Any]:
     return list(ctx.tools.schemas())
 
 
+def _write_tools(ctx: TeamContext) -> list[Any]:
+    """The write tools alone (FILE_WRITES), for the last turn of a role told to write that has not: its
+    deliverable is the files, so the answer turn is not tool-less (AIR-66, 2026-11-09)."""
+    return [s for s in ctx.tools.schemas() if s.name in FILE_WRITES]
+
+
 def _steer(ctx: TeamContext, step: int, id: str, /, **fields: object) -> str:
     """The hub's steering text `id` with `fields` filled in, and a `steer` event saying it was sent: its id,
     the team, the role and the step it was sent after (for a reply that took no step, the step that reply
@@ -461,19 +469,35 @@ class NativeTeam:
         cuts = 0  # reads in a row whose thinking reached the budget (answer_after_cuts)
         answer_now = False  # answer_after_cuts reached: the next turn is the last one
         asked_back = False  # answer_after_cuts reached by a writer that has written: the run ends, unanswered
+        demanded_at: int | None = None  # the step a held writer, cut again with nothing written, was told
+        # to write now (write-demand): READS_UNDER_HOLD steps on, still unwritten, the run ends
+        # a call's (tool, arguments) -> (the step that ran it, its ok, its settled result): the same call with
+        # the same result is answered from that step (same-call), at no held read (AIR-66, 2026-11-09)
+        calls_seen: dict[tuple[str, str], tuple[int, bool, str]] = {}
         while True:
             step_num = steps + 1
             injected = await observer.before_step(ctx.team_id, step_num)
             if injected:
                 messages.append(Message(role="user", content=injected))
+            # a writer told to write (write-demand) that has not keeps its write tools on the last turn, once:
+            # its deliverable is the files, never a text answer (AIR-66, 2026-11-09)
+            keep_writes = (
+                last_turn
+                and demanded_at is not None
+                and can_write
+                and not (changed if continuing else wrote)
+                and steps <= ctx.max_steps
+            )
             req = GenRequest(
                 role=ctx.role_name,
                 # the answer turn answer_after_cuts asked for is the conversation as text, no tool calls in it
-                messages=_in_text(messages) if answer_now and last_turn else list(messages),
+                messages=_in_text(messages)
+                if answer_now and last_turn and not keep_writes
+                else list(messages),
                 sampling=ctx.role.sampling,
                 max_tokens=ctx.role.max_tokens,
                 stop=list(ctx.role.stop),
-                tools=None if last_turn or toolless else _offered(ctx),
+                tools=_write_tools(ctx) if keep_writes else None if last_turn or toolless else _offered(ctx),
                 # the tool-less last turn is cheap by default; its one retry, after a tool call, thinks
                 thinking=(
                     ctx.role.thinking and (ctx.role.last_turn_thinking or not last_turn or last_corrected)
@@ -581,7 +605,8 @@ class NativeTeam:
                     messages.append(Message(role="user", content=_steer(ctx, step_num, "malformed-call")))
                     continue
             corrected = False
-            if last_turn:  # it called a tool it was not offered: told once, then there is no answer
+            if last_turn and not (keep_writes and calls[0].name in FILE_WRITES):
+                # it called a tool it was not offered: told once, then there is no answer
                 if ctx.emit is not None:
                     ctx.emit(
                         "last_turn_tool_call",
@@ -610,6 +635,9 @@ class NativeTeam:
                     ctx.role.think_when_red and last_tests_ok is False and _read_path(call) in wrote_paths
                 )
                 held = ((reading_off or looped) and call.name not in WRITE_TOOLS_ONLY) or reread
+                # what the repeat guard compares for this call when its observation is not the tool's own
+                # result: the hold's count of reads left, or the earlier step a same call is answered from
+                observed: str | None = None
                 key = _read_key(call)
                 seen_at = reads_seen.get(key) if key is not None else None
                 if seen_at is not None and not held:
@@ -639,10 +667,34 @@ class NativeTeam:
                         tool_ms = (time.monotonic() - t1) * 1000.0
                     if key is not None and result.ok:
                         reads_seen[key] = (_read_path(call) or "", steps)
-                    if held:  # one of the few reads the hold still serves, and it says how many are left
-                        reads_left -= 1
-                        left = _steer(ctx, steps, "read-left", k=reads_left)
-                        result = replace(result, output=f"{result.output}\n\n{left}")
+                    same = (call.name, call.arguments)
+                    before = calls_seen.get(same)
+                    settled = _settled(result.output)
+                    if before is not None and before[1:] == (result.ok, settled):
+                        # the same call, the same result: it is in the conversation at that step already, and
+                        # costs no held read (AIR-66, 2026-11-09: one grep three times, each a held read, cut)
+                        said = "same-call-held" if held else "same-call"
+                        result = replace(result, output=_steer(ctx, steps, said, step=before[0]))
+                        observed = before[2]
+                        if ctx.emit is not None:
+                            ctx.emit(
+                                "call_repeated",
+                                team_id=ctx.team_id,
+                                role=ctx.role_name,
+                                step=steps,
+                                tool=call.name,
+                                same_as=before[0],
+                            )
+                    else:
+                        if call.name not in WRITE_TOOLS_ONLY:
+                            calls_seen[same] = (steps, result.ok, settled)
+                        if held:  # one of the few reads the hold still serves, and it says how many are left
+                            # the count is not the result: with it, one grep three times under the hold was
+                            # three observations, and the repeat guard never fired (AIR-66, 2026-11-09)
+                            observed = settled
+                            reads_left -= 1
+                            left = _steer(ctx, steps, "read-left", k=reads_left)
+                            result = replace(result, output=f"{result.output}\n\n{left}")
                     if ctx.role.think_when_red and call.name == "run_tests":
                         if result.ok:
                             red_runs = 0
@@ -683,7 +735,23 @@ class NativeTeam:
                     reading_off, reads_left, cuts = True, READS_UNDER_HOLD, 0
                     if ctx.emit is not None:
                         ctx.emit("write_after_cuts", team_id=ctx.team_id, role=ctx.role_name, step=steps)
-                elif cut_out and can_write:
+                elif cut_out and unwritten and demanded_at is None:
+                    # held, and cut again with nothing written: the branch below took it for a writer that
+                    # has written and ended the run empty (AIR-66 layer 01, 2026-11-09). It is told to write
+                    # now, with its last reasoning, and no read is served from here (reads_left 0)
+                    messages.append(
+                        Message(role="user", content=_steer(ctx, steps, "write-demand", tail=tail))
+                    )
+                    demanded_at, reads_left, cuts = steps, 0, 0
+                    if ctx.emit is not None:
+                        ctx.emit(
+                            "write_after_cuts",
+                            team_id=ctx.team_id,
+                            role=ctx.role_name,
+                            step=steps,
+                            again=True,
+                        )
+                elif cut_out and can_write and not unwritten:
                     # a writer that has written ends here, its last reasoning carried, and its caller asks
                     # for the answer in a turn of its own with tools (the package conversation's JSON-only
                     # turn): asked as text, it went on with the transcript (AIR-55, 2026-11-06, try 1)
@@ -700,7 +768,7 @@ class NativeTeam:
                             chars=len(res.reasoning.strip()),
                             ends_run=True,
                         )
-                elif cut_out:
+                elif cut_out and not can_write:
                     # the design began again on each cut turn: all of the last one goes back, and the
                     # next turn answers (AIR-54, AIR-55, AIR-59, 2026-11-04)
                     reasoning = res.reasoning.strip()
@@ -841,7 +909,7 @@ class NativeTeam:
                 if call.name == "run_tests":
                     last_test_output = result.output
                     last_tests_ok = result.ok
-                seen = _settled(result.output)
+                seen = _settled(result.output) if observed is None else observed
                 recent.append(
                     (call.name, call.arguments, seen)
                     if ctx.tools.distinct_by_arguments(call.name)
@@ -869,6 +937,18 @@ class NativeTeam:
             if asked_back:
                 final_text = f"stopped: thinking was cut at its budget on {cuts} reads in a row; answer asked"
                 stop = "answer_after_cuts"
+                break
+            if (
+                demanded_at is not None
+                and can_write
+                and not (changed if continuing else wrote)
+                and steps >= demanded_at + READS_UNDER_HOLD
+            ):
+                final_text = (
+                    f"stopped: told to write at step {demanded_at} after its thinking was cut at its budget, "
+                    f"and nothing written {steps - demanded_at} steps later"
+                )
+                stop = "unwritten_after_cuts"
                 break
             if answer_now and not last_turn:  # told to answer: the turn after is the tool-less last one
                 last_turn = True
