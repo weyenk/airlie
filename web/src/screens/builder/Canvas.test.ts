@@ -421,3 +421,50 @@ test("a cancelled pointer clears the wire being drawn: no preview line, no conne
   pointer("pointerup", to.x + 60, to.y + 20); // the listeners are gone
   expect(w.emitted("connect")).toBeUndefined();
 });
+
+// two boxes a line joins, `gap` px apart (a box is 120 px wide), the line carrying `v` when `v == yes`
+const pair = (gap: number): Graph =>
+  fromWorkflow(
+    "w",
+    {
+      inputs: [],
+      outputs: [],
+      nodes: {
+        a: { type: "check", run: "x.a", outputs: { v: "text" }, to: [{ node: "b", when: "v == yes" }] },
+        b: { type: "check", run: "x.b", inputs: ["v"] },
+      },
+    },
+    { a: { x: 0, y: 40 }, b: { x: 120 + gap, y: 120 } },
+  );
+const labelOfPair = (w: ReturnType<typeof editable>) => w.get("[data-edge-label]");
+
+test("a label the room between its boxes takes is drawn above the line, with a halo", () => {
+  const w = editable(pair(200)); // "if v == yes · v" is 15 characters, about 98 px
+  const label = labelOfPair(w);
+  expect(label.text()).toBe("if v == yes · v");
+  expect(label.attributes("data-label-fits")).toBe("true");
+  expect(label.classes()).not.toContain("hidden");
+  expect(label.classes()).toEqual(expect.arrayContaining(["[paint-order:stroke]", "[stroke:var(--card)]"]));
+  // above the line: higher than both of its ends
+  const nums = (w.get("[data-edge=line]").attributes("d") ?? "").match(/-?\d+(\.\d+)?/g)!.map(Number);
+  const [sy, ty] = [nums[1], nums[nums.length - 1]];
+  expect(Number(label.attributes("y"))).toBeLessThan(Math.min(sy, ty));
+  // centred in the room between the boxes
+  expect(Number(label.attributes("x"))).toBe(24 + 120 + 100);
+});
+
+test("a label the room does not take is hidden (still in the DOM), and shows on hover or while its line is selected", async () => {
+  const graph = pair(40);
+  const w = editable(graph);
+  const label = labelOfPair(w);
+  expect(label.text()).toBe("if v == yes · v");
+  expect(label.attributes("data-label-fits")).toBe("false");
+  expect(label.classes()).toEqual(expect.arrayContaining(["hidden", "group-hover:inline"]));
+  expect(label.element.parentElement!.classList.contains("group")).toBe(true);
+  await w.setProps({ selectedEdge: graph.edges[0] });
+  expect(labelOfPair(w).classes()).not.toContain("hidden");
+  // a read-only canvas keeps a hover band for it
+  const ro = mountCanvas(graph);
+  expect(ro.get("[data-edge-label]").classes()).toContain("hidden");
+  expect(ro.find("[data-edge-hover]").exists()).toBe(true);
+});

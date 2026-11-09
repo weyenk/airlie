@@ -84,7 +84,11 @@ const size = computed(() => {
   return { width: Math.max(0, ...pts.map((p) => p.x - PAD)) + W + 2 * PAD + room, height: bottom + 2 * PAD + loops + room / 2 + (props.readonly ? 0 : CARD_H) };
 });
 
-type Wire = { key: string; edge: GEdge; d: string; selected: boolean; label: { x: number; y: number; text: string } };
+/** A label's width, estimated: the 11 px mono face runs about 6.5 px a character. */
+const CHAR_W = 6.5;
+/** A label sits above its line, haloed, when the room between its boxes takes it (`fits`); otherwise it is hidden
+ * and shows while the line is hovered or selected (it stays in the DOM). */
+type Wire = { key: string; edge: GEdge; d: string; selected: boolean; label: { x: number; y: number; text: string; fits: boolean } };
 const same = (a: GEdge, b: GEdge | null | undefined) => !!b && a.from === b.from && a.to === b.to && a.when === b.when;
 /** What a line says: the condition first, then what it carries (or "order"), then its loop's bound. */
 const labelOf = (edge: GEdge) =>
@@ -99,17 +103,19 @@ const wires = computed<Wire[]>(() =>
     const tx = b.x;
     const ty = b.y + hOf(edge.to) / 2;
     let d: string;
-    let label: { x: number; y: number };
+    // the label goes above the line, in the room the line crosses between its boxes
+    let label: { x: number; y: number; room: number };
     if (edge.loop) {
       const low = Math.max(a.y + hOf(edge.from), b.y + hOf(edge.to)) + 16;
       d = `M ${sx} ${sy} H ${sx + 12} V ${low} H ${tx - 12} V ${ty} H ${tx}`;
-      label = { x: (sx + tx) / 2, y: low - 5 };
+      label = { x: (sx + tx) / 2, y: low - 5, room: Math.abs(sx - tx) + 24 };
     } else {
       const dx = Math.max(24, Math.abs(tx - sx) / 2);
       d = `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`;
-      label = { x: (sx + tx) / 2, y: (sy + ty) / 2 - 5 };
+      label = { x: (sx + tx) / 2, y: Math.min(sy, ty) - 6, room: tx - sx };
     }
-    return [{ key: `${i}-${edge.from}-${edge.to}`, edge, d, selected: same(edge, props.selectedEdge), label: { ...label, text: labelOf(edge) } }];
+    const text = labelOf(edge);
+    return [{ key: `${i}-${edge.from}-${edge.to}`, edge, d, selected: same(edge, props.selectedEdge), label: { x: label.x, y: label.y, text, fits: label.room >= text.length * CHAR_W } }];
   }),
 );
 
@@ -266,7 +272,7 @@ function onDrop(e: DragEvent) {
           <path d="M 0 0 L 8 4 L 0 8 z" fill="currentColor" />
         </marker>
       </defs>
-      <g v-for="w in wires" :key="w.key" :class="w.selected ? 'text-primary' : undefined">
+      <g v-for="w in wires" :key="w.key" :class="['group', w.selected ? 'text-primary' : undefined]">
         <path
           :data-edge="w.edge.loop ? 'loop' : 'line'"
           :data-from="w.edge.from"
@@ -295,13 +301,23 @@ function onDrop(e: DragEvent) {
         >
           <title>{{ w.label.text }}: {{ w.edge.from }} → {{ w.edge.to }}</title>
         </path>
+        <!-- a read-only canvas has no hit path: a line's own hover band, so a hidden label still shows on hover -->
+        <path v-else data-edge-hover :d="w.d" fill="none" stroke="transparent" stroke-width="12" pointer-events="stroke">
+          <title>{{ w.label.text }}: {{ w.edge.from }} → {{ w.edge.to }}</title>
+        </path>
         <text
           data-edge-label
           :data-edge-problem="edgeProblems?.[`${w.edge.from}>${w.edge.to}`]?.length ? 'true' : undefined"
+          :data-label-fits="w.label.fits ? 'true' : 'false'"
           :x="w.label.x"
           :y="w.label.y"
           text-anchor="middle"
-          :class="['font-mono text-[11px]', edgeProblems?.[`${w.edge.from}>${w.edge.to}`]?.length ? 'fill-destructive font-semibold' : 'fill-current']"
+          :class="[
+            // the halo: a card-coloured stroke painted under the glyphs, so a line or a neighbour under it never blurs it
+            'font-mono text-[11px] [paint-order:stroke] [stroke:var(--card)] [stroke-width:3px] [stroke-linejoin:round]',
+            edgeProblems?.[`${w.edge.from}>${w.edge.to}`]?.length ? 'fill-destructive font-semibold' : 'fill-current',
+            w.label.fits || w.selected ? undefined : 'hidden group-hover:inline',
+          ]"
         ><title v-if="edgeProblems?.[`${w.edge.from}>${w.edge.to}`]?.length">{{ edgeProblems[`${w.edge.from}>${w.edge.to}`].join("; ") }}</title>{{ w.label.text }}</text>
       </g>
       <path v-if="draft" data-wire-draft :d="draftPath" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 3" class="text-primary" />
