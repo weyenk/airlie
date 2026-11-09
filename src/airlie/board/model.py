@@ -71,6 +71,8 @@ class Item:
     created_at: float
     updated_at: float
     created_by: str
+    archived: bool = False
+    """Read-time-derived: True iff the card has sat in done for 7 days or more."""
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
