@@ -3,6 +3,7 @@ asked of GitHub at most once an hour (mutation-nightly Task 4)."""
 
 from __future__ import annotations
 
+import fcntl
 import json
 from pathlib import Path
 
@@ -169,6 +170,32 @@ async def test_harvest_asks_github_at_most_once_an_hour(tmp_path: Path, home: Pa
     clock.t += 2 * 60
     await mutation_cards.harvest(cfg, store, gh=gh, now=clock)
     assert gh.kinds() == ["list", "download", "list"]
+
+
+async def test_a_harvest_under_way_elsewhere_is_left_to_it(tmp_path: Path, home: Path) -> None:
+    store = BoardStore(tmp_path / "board.sqlite")
+    gh = FakeGh([run(7)])
+    (tmp_path / "state").mkdir()
+    with (tmp_path / "state" / mutation_cards.LOCK_FILE).open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)  # another beat is harvesting
+        assert await mutation_cards.harvest(cfg_for(tmp_path), store, gh=gh, now=Clock()) == []
+    assert gh.asked == [] and mutation_fixes(store) == []
+
+
+async def test_the_look_is_claimed_on_disk_before_github_is_asked(tmp_path: Path, home: Path) -> None:
+    store = BoardStore(tmp_path / "board.sqlite")
+    clock, gh = Clock(), FakeGh([run(7)])
+    seen: list[object] = []
+    answer = gh.__call__
+
+    async def claimed_first(args: list[str]) -> str:
+        if not seen:
+            state = json.loads((tmp_path / "state" / "mutation-harvest.json").read_text())
+            seen.append(state["checked_at"])
+        return await answer(args)
+
+    await mutation_cards.harvest(cfg_for(tmp_path), store, gh=claimed_first, now=clock)
+    assert seen == [clock.t] and gh.kinds() == ["list", "download"]
 
 
 async def test_a_run_already_harvested_is_not_downloaded_again(tmp_path: Path, home: Path) -> None:

@@ -16,6 +16,7 @@ board and never reaches a shell. What has been harvested is kept in `<state_dir>
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
@@ -37,6 +38,9 @@ MUTATION = "mutation"
 CHECK_EVERY_S = 3600
 """How often GitHub is asked for the newest nightly run."""
 STATE_FILE = "mutation-harvest.json"
+LOCK_FILE = "mutation-harvest.lock"
+"""Held (flock) for a whole harvest: two beats over the same state (serve's ticker and the launchd agent)
+never ask GitHub, or file a function's card, twice."""
 _NEWEST_RUN = [
     "gh", "run", "list", "--workflow", NIGHTLY, "--branch", "main", "--status", "completed", "--limit", "1",
     "--json", "databaseId,url,conclusion",
@@ -203,7 +207,9 @@ async def harvest(
     """The newest completed nightly run on main, once an hour and once per run: its survivors filed as cards
     (`file_mutation_cards`, event `mutation_cards_filed`), or one line saying it could not run. Nothing, and
     no gh call, when `line.mutation_cards` is off, when this airlie does not run from a checkout, or within
-    CHECK_EVERY_S of the last look. A download that fails is a line; the run is tried again next hour."""
+    CHECK_EVERY_S of the last look, or while another beat holds the harvest's lock. The look is claimed
+    (`checked_at` saved) before gh is asked. A download that fails is a line; the run is tried again next
+    hour."""
     if not cfg.line.mutation_cards:
         return []
     checkout = fixes.home_checkout()
@@ -211,15 +217,22 @@ async def harvest(
         return []
     state_dir = cfg.observability.state_dir.expanduser()
     path = state_dir / STATE_FILE
-    state = _load(path)
-    checked = state["checked_at"]
-    if isinstance(checked, int | float) and now() - checked < CHECK_EVERY_S:
-        return []
-    state["checked_at"] = now()
-    try:
-        lines = await _look(cfg, store, state, checkout, state_dir, gh=gh)
-    finally:
-        _save(path, state)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with (state_dir / LOCK_FILE).open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:  # another beat (serve's ticker, the launchd agent) is harvesting
+            return []
+        state = _load(path)  # read under the lock: the other beat may have just looked
+        checked = state["checked_at"]
+        if isinstance(checked, int | float) and now() - checked < CHECK_EVERY_S:
+            return []
+        state["checked_at"] = now()
+        _save(path, state)  # the claim, on disk before gh is asked
+        try:
+            lines = await _look(cfg, store, state, checkout, state_dir, gh=gh)
+        finally:
+            _save(path, state)
     return lines
 
 
