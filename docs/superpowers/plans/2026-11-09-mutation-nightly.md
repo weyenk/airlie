@@ -37,8 +37,8 @@ Decisions:
    (`--defer-setup`, in CI only; `task mutate:changed` on a laptop keeps today's behaviour). `mutation-mac`'s
    limit goes back from 180 to 90 minutes.
 2. **Nightly sweep:** `--scope enrolled` on `main` every day, on 8 Linux shards plus one macOS job for the
-   mac-only sources, merged into one verdict. The whole-project backlog run (`--scope project`) leaves CI;
-   `task mutate:project` still runs it by hand.
+   mac-only sources, merged into one verdict. The whole-project backlog run (`--scope project`) leaves CI
+   and runs weekly on Noah's Mac instead (decision 5).
 3. **Equivalent mutants:** `[[tool.airlie.mutation.equivalent]]` entries in `pyproject.toml` (`mutant`,
    `line`, `reason`). A listed mutant is skipped only while its diff's `+` line still equals `line`, so a
    renumbered mutant is never skipped by mistake; an entry that no longer matches is reported as stale.
@@ -47,6 +47,12 @@ Decisions:
    per function in `todo`, labelled `fix`, `mutation`, `repo:<home>` and `signature:mutation:<function glob>`.
    A person approves the card, the line builds it into a draft PR, and a person merges. The existing
    `release_after_fix` marks the card done once its PR is merged and deployed.
+5. **Whole project, locally (Noah, 2026-11-09, after #272 merged):** a launchd agent runs `--scope project`
+   every Sunday at 01:00 in a throwaway worktree of `origin/main`, never the home checkout. On the Mac,
+   vllm-mlx is installed, so the mac-only modules run with the rest, and there is no 4-hour limit. It waits
+   while a lane lock is held, keeps the Mac awake with `caffeinate -i`, and writes the score table to
+   `~/.local/state/airlie/mutation/<date>.md`. Its survivors are backlog, not cards: the enrolled modules
+   already get cards from the nightly sweep. (Task 6.)
 
 ## Global Constraints
 
@@ -56,6 +62,8 @@ Decisions:
 - Unit tests stay under 500 ms and use no wall clock: the hourly throttle takes an injected `now`.
 - Every change passes the AGENTS.md gate: `uv sync --frozen`, `ruff check`, `ruff format --check`, `mypy`,
   `pytest -q -n auto --maxprocesses 8`, `task web:gate`.
+- The weekly local run never writes in the home checkout (`~/git/airlie`): mutmut's `mutants/` tree lives in
+  its own worktree, and the line keeps running from the home checkout.
 - `--defer-setup` and the nightly sweep must not change what `task mutate:changed` does locally without the flag.
 - #270 also edits `.github/workflows/pipeline.yml` (the 180-minute `mutation-mac` limit). Whichever lands
   second rebases its edit onto the other's.
@@ -185,7 +193,7 @@ def test_merge_writes_a_survivors_file_when_a_shard_could_not_run(tmp_path: Path
   `mutation-mac` `timeout-minutes: 90`; header and job comments say "the nightly run")
 - Delete: `.github/workflows/mutation-weekly.yml`
 - Create: `.github/workflows/mutation-nightly.yml`
-- Modify: `Taskfile.yml` (`mutate:project` desc: "by hand; CI runs `--scope enrolled` nightly")
+- Modify: `Taskfile.yml` (`mutate:project` desc: "the whole project; weekly on the Mac (Task 6); CI runs `--scope enrolled` nightly")
 - Test: `tests/unit/test_mutate_changed.py`, `tests/unit/test_pipeline_release.py` (the file that already reads `pipeline.yml`)
 
 **Interfaces:**
@@ -305,3 +313,85 @@ def test_the_card_body_carries_each_diff_and_the_equivalent_way_out() -> None
 - [ ] **Step 5:** For `_read_yaml_with_includes__mutmut_27` and `validate_references__mutmut_4/6`, the repeat
   offenders: if the sweep still reports them, decide each one (a test, or an `equivalent` entry with a reason)
   and put the decisions on the PR for Noah.
+
+### Task 6: The whole-project run, weekly on the Mac
+
+**Files:**
+- Create: `scripts/mutate_local.py`
+- Create: `docs/integrations/mutation-weekly.plist` (label `dev.airlie.mutation-weekly`)
+- Modify: `Taskfile.yml` (`mutate:local`, `mutate:launchd:install`, `mutate:launchd:uninstall`)
+- Modify: `docs/integrations/story.md` (in Task 4's "Mutation fix cards" section: the weekly local run, where
+  its report lands, how to install and remove it)
+- Test: `tests/unit/test_mutate_local.py`
+
+**Interfaces:**
+- Consumes: `airlie.story.state.lock_held(stories_dir, lane)`, `airlie.story.factory.stories_dir(cfg)`,
+  `airlie.story.fixes.home_checkout()`, `airlie.story.fixes.line_event`, `airlie.config.load_config`;
+  `scripts/mutate_changed.py --scope project --max-children N --report PATH`.
+- Produces:
+  - `WAIT_UNTIL_H = 6`, `POLL_S = 600`, `KEEP_REPORTS = 12`.
+  - `lanes_busy(stories: Path) -> list[str]`: the lanes whose lock another holder has.
+  - `wait_for_lanes(stories: Path, *, now: Callable[[], datetime], sleep: Callable[[float], None]) -> bool`.
+    True once both lanes are free. It polls every `POLL_S`; False when the local time reaches
+    `WAIT_UNTIL_H`:00 first.
+  - `run_project(home: Path, out: Path, *, run: Callable[[list[str], Path], int], max_children: int, day: str) -> int`.
+    It fetches `origin main` in `home`. It removes `<out>/worktree` if left over from an interrupted run
+    (`worktree remove --force`, then `worktree prune`), then adds `<out>/worktree` detached at `origin/main`.
+    In that worktree it runs `uv sync --frozen`, then
+    `uv run python scripts/mutate_changed.py --scope project --max-children <n> --report <out>/<day>.md`.
+    It removes the worktree in a `finally` and returns mutmut's exit code. `run` is the seam tests replace.
+  - `prune_reports(out: Path, keep: int = KEEP_REPORTS) -> None`: removes all but the newest `keep` `*.md` files.
+  - `main() -> int`, with `out = ~/.local/state/airlie/mutation`. Without a home checkout it says so and
+    returns 2. If the lanes stay busy until 06:00, it records the line event `mutation_project_skipped` with
+    the busy lanes and returns 0. Otherwise it records `mutation_project` with `code` and `report` and
+    returns 0 whatever mutmut found, so launchd never respawns it. `--max-children` defaults to
+    `max(1, os.cpu_count() // 2)`.
+- The plist uses `StartCalendarInterval` `{Weekday: 0, Hour: 1, Minute: 0}` (launchd runs a missed slot on
+  wake). `ProgramArguments`:
+  `/bin/zsh -lc 'cd "__AIRLIE_DIR__" && exec caffeinate -i uv run --quiet python scripts/mutate_local.py'`.
+  The log is `__HOME__/.local/state/airlie/mutation-weekly.log`. Its comment says why it does not run `task`,
+  as `line-tick.plist`'s does.
+- The `Taskfile.yml` tasks copy `line:launchd:install`/`uninstall` (sed fill-in, `plutil -lint`, bootout then
+  bootstrap). `mutate:local` runs the script now, by hand.
+
+- [ ] **Step 1: Write the failing tests** (a `tmp_path` stories directory; a lane is held by entering
+  `lane_lock` in the test; `now` and `sleep` are fakes, with no real sleeping)
+
+```python
+def test_a_free_line_runs_at_once(tmp_path: Path) -> None:
+    assert ml.wait_for_lanes(tmp_path, now=clock(hour=1), sleep=no_sleep) is True
+
+def test_a_busy_lane_is_waited_for_until_it_frees(tmp_path: Path) -> None:
+    # the build lane is held for the first two polls -> True, after two sleeps of POLL_S
+
+def test_a_lane_still_busy_at_six_skips_the_week(tmp_path: Path) -> None:
+    # held throughout while the clock passes 06:00 -> False
+
+def test_the_run_uses_a_fresh_worktree_of_origin_main_and_always_removes_it(tmp_path: Path) -> None:
+    # the fake run records (args, cwd) and returns 1 for the mutate_changed.py call
+    assert ml.run_project(home, out, run=fake, max_children=4, day="2026-11-15") == 1
+    # recorded: worktree add --detach <out>/worktree origin/main before the mutmut call;
+    # the mutmut call has --scope project --max-children 4 --report <out>/2026-11-15.md, cwd <out>/worktree;
+    # the last call is the worktree remove
+
+def test_a_worktree_left_by_an_interrupted_run_is_removed_first(tmp_path: Path) -> None
+
+def test_reports_beyond_the_newest_twelve_are_pruned(tmp_path: Path) -> None
+
+def test_the_plist_runs_weekly_on_sunday_at_one_through_caffeinate() -> None:
+    plist = plistlib.loads(PLIST.read_bytes())
+    assert plist["Label"] == "dev.airlie.mutation-weekly"
+    assert plist["StartCalendarInterval"] == {"Weekday": 0, "Hour": 1, "Minute": 0}
+    assert "exec caffeinate -i uv run" in plist["ProgramArguments"][-1]
+```
+
+- [ ] **Step 2: Run them and see them fail** — `uv run pytest tests/unit/test_mutate_local.py -q`
+- [ ] **Step 3: Implement the script, the plist and the tasks**
+- [ ] **Step 4: Run the tests and the AGENTS.md gate** — PASS
+- [ ] **Step 5: Try it as the user:** run `task mutate:launchd:install`, then
+  `launchctl kickstart gui/$(id -u)/dev.airlie.mutation-weekly`. Watch
+  `~/.local/state/airlie/mutation-weekly.log` until mutmut starts, then
+  `launchctl kill TERM gui/$(id -u)/dev.airlie.mutation-weekly`. Check that `~/.local/state/airlie/mutation/worktree`
+  is gone and that the home checkout's worktree list no longer names it. Leave the agent installed only with
+  Noah's go; otherwise run `task mutate:launchd:uninstall`.
+- [ ] **Step 6: Commit** — `mutation: the whole-project run moves to a weekly launchd agent on the Mac`
