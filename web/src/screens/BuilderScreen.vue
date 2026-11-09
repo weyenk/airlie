@@ -10,9 +10,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useCardDraftStore } from "@/stores/card_draft";
 import { useWorkflowDefs } from "./board/workflow";
 import Canvas from "./builder/Canvas.vue";
-import { connect, moveNode, readable, removeEdge, removeNode, renameNode, updateNode } from "./builder/graph";
+import { connect, moveNode, removeEdge, removeNode, renameNode, updateNode } from "./builder/graph";
 import type { GEdge, LineOpts, NodeSpec } from "./builder/graph";
-import NodeForm from "./builder/NodeForm.vue";
+import NodeModal from "./builder/NodeModal.vue";
 import Palette from "./builder/Palette.vue";
 import Problems from "./builder/Problems.vue";
 import SaveDialog from "./builder/SaveDialog.vue";
@@ -22,7 +22,7 @@ import type { Move, MoveOpts } from "./builder/WireForm.vue";
 import WorkflowForm from "./builder/WorkflowForm.vue";
 
 /** The builder (`/workflows/build/<name>`, or `new` for an empty canvas): the palette, the workflow drawn as boxes
- * and wires, the selected box's or wire's form, and the YAML. Validate and Save draft run the server's checks, so
+ * and wires, a box's fields in a modal (its card's Edit, or a double-click), the wire's form, and the YAML. Validate and Save draft run the server's checks, so
  * the canvas is judged by the code that judges a hand-written file. */
 const route = useRoute();
 const router = useRouter();
@@ -42,18 +42,26 @@ const cardTypes = computed(() => [...new Set(defs.value.map((d) => d.type).filte
 
 const title = computed(() => detail.value?.name ?? name.value);
 const typeLabel = computed(() => (detail.value ? (detail.value.type ?? "bundle") : null));
-const node = computed(() => graph.value.nodes.find((n) => n.id === selected.value) ?? null);
 const nodeOf = (id: string) => graph.value.nodes.find((n) => n.id === id);
 
+/** The box whose fields the modal shows; null while it is closed. */
+const editing = ref<string | null>(null);
+const editNode = computed(() => graph.value.nodes.find((n) => n.id === editing.value) ?? null);
+watch(name, () => {
+  editing.value = null;
+});
+
+/** A click on a box selects it (its card shows); editing is the modal's. */
 function pick(id: string) {
   selected.value = selected.value === id ? null : id;
   selectedEdge.value = null;
   wire.value = null;
 }
 
-/** Edit on a box's card, or a double-click: its fields (the form beside, until the modal replaces it). */
+/** Edit on a box's card, or a double-click: its fields, in the modal. */
 function openBox(id: string) {
   selected.value = id;
+  editing.value = id;
   selectedEdge.value = null;
   wire.value = null;
 }
@@ -97,27 +105,36 @@ function dropWire() {
   closeWire();
 }
 
+// the modal's changes, to the box it shows (live: the graph holds each as it is made)
 function updateBox(spec: NodeSpec) {
-  const id = selected.value!;
+  const id = editing.value!;
   b.edit((g) => updateNode(g, id, spec));
 }
 function renameBox(to: string) {
-  const id = selected.value!;
-  if (b.edit((g) => renameNode(g, id, to))) selected.value = to;
+  const id = editing.value!;
+  if (b.edit((g) => renameNode(g, id, to))) {
+    editing.value = to;
+    selected.value = to;
+  }
+}
+function renameBoxOutput(old: string, to: string) {
+  b.renameOutput(editing.value!, old, to);
 }
 function removeBox() {
-  const id = selected.value!;
+  const id = editing.value!;
   b.edit((g) => removeNode(g, id));
+  editing.value = null;
   selected.value = null;
 }
 function addPrompt(id: string, text: string) {
   b.prompts.value = { ...b.prompts.value, [id]: text };
 }
-/** A problem's box, shown: the diagram, the box selected, its form open. */
+/** A problem's box, shown: the diagram, the box selected, its fields open. */
 function focus(id: string) {
   tab.value = "diagram";
   closeWire();
   selected.value = id;
+  editing.value = id;
 }
 
 // saving: in place for a draft, and for a file's workflow (a draft of the file's name is an edit of that file,
@@ -298,19 +315,6 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
           @remove="dropWire"
           @cancel="closeWire"
         />
-        <NodeForm
-          v-else-if="node"
-          :key="node.id"
-          :node="node"
-          :catalog="catalog"
-          :upstream="readable(graph, node.id)"
-          :prompts="b.prompts.value"
-          :bundles="bundles"
-          @update="updateBox"
-          @rename="renameBox"
-          @remove="removeBox"
-          @create-prompt="addPrompt"
-        />
         <WorkflowForm
           v-else
           :type="graph.type"
@@ -323,6 +327,21 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       </aside>
     </div>
 
+    <NodeModal
+      v-if="editNode"
+      :open="true"
+      :node="editNode"
+      :graph="graph"
+      :catalog="catalog"
+      :prompts="b.prompts.value"
+      :bundles="bundles"
+      @update:open="(v) => !v && (editing = null)"
+      @update="updateBox"
+      @rename="renameBox"
+      @rename-output="renameBoxOutput"
+      @remove="removeBox"
+      @create-prompt="addPrompt"
+    />
     <SaveDialog v-model:open="asking" :taken="taken" :files="files" :types="cardTypes" :type="graph.type" :reason="reason" @save="saveAs" />
     <Dialog :open="deleting" @update:open="(v) => !v && (deleting = false)">
       <DialogContent :show-close-button="false">

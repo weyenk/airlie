@@ -101,18 +101,37 @@ test("a saved layout places the boxes", async () => {
   expect(w.get("[data-box][data-node=intake]").attributes("style")).toContain("left: 664px");
 });
 
-test("a click on a box shows its fields in the side panel", async () => {
+test("a click on a box selects it; its card's Edit opens its fields in the modal", async () => {
   const { w } = await open();
-  expect(w.get("[data-fields]").text()).toContain("Select a box");
   await w.get("[data-box][data-node=survey]").trigger("click");
-  const panel = w.get("[data-fields]");
-  expect((panel.get("input[data-input=id]").element as HTMLInputElement).value).toBe("survey");
-  expect(panel.text()).toContain("ask");
-  expect((panel.get("select[data-input=role]").element as HTMLSelectElement).value).toBe("architect");
-  expect((panel.get("[data-input-name=request]").element as HTMLInputElement).checked).toBe(true); // v2: the survey reads the request
-  expect((panel.get("[data-output-row] input").element as HTMLInputElement).value).toBe("survey");
-  expect((panel.get("[data-output-row] select").element as HTMLSelectElement).value).toBe("markdown");
   expect(w.get("[data-box][data-node=survey]").attributes("aria-pressed")).toBe("true");
+  expect(document.body.querySelector("[data-node-modal]")).toBeNull(); // a click only selects
+  expect(w.find("[data-fields] [data-input=id]").exists()).toBe(false); // and the side panel holds no box's fields
+  await w.get("[data-box-card][data-node=survey] [data-box-edit]").trigger("click");
+  await flushPromises();
+  const modal = document.body.querySelector("[data-node-modal]")!;
+  expect((modal.querySelector("input[data-input=id]") as HTMLInputElement).value).toBe("survey");
+  expect(modal.querySelector("[data-node-type]")!.textContent).toBe("ask");
+  expect((modal.querySelector("select[data-input=role]") as HTMLSelectElement).value).toBe("architect");
+  expect((modal.querySelector("[data-input-name=request]") as HTMLInputElement).checked).toBe(true); // v2: the survey reads the request
+  expect((modal.querySelector("select[data-input=prompt-file]") as HTMLSelectElement).value).toBe("prompt:story-survey"); // the story names a prompt file
+  expect((modal.querySelector("[data-input='events.done']") as HTMLInputElement).value).toBe("survey_done");
+  expect((modal.querySelector("[data-output-row] [data-output-name]") as HTMLInputElement).value).toBe("survey");
+  expect((modal.querySelector("[data-output-row] [data-output-format]") as HTMLSelectElement).value).toBe("markdown");
+  (modal.querySelector("[data-node-done]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(document.body.querySelector("[data-node-modal]")).toBeNull();
+});
+
+test("an output renamed in the modal is renamed in its readers too", async () => {
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  const { w } = await open("/workflows/build/fix");
+  w.findComponent({ name: "AirlieBuilderCanvas" }).vm.$emit("open", "intake");
+  await flushPromises();
+  w.findComponent({ name: "AirlieBuilderOutputsEditor" }).vm.$emit("rename", "report", "findings");
+  await flushPromises();
+  await w.get("[data-tab=yaml]").trigger("click");
+  expect(w.get("[data-yaml]").text()).toContain("outputs: {findings: text}");
 });
 
 
@@ -425,11 +444,16 @@ test.skip("a wire drawn between two boxes opens the wire form; its move lands in
   expect(w.get("[data-yaml-notice]").text()).toContain("Saving regenerates the file");
 });
 
-test("a box's form edits the box", async () => {
+test("a box's modal edits the box as the change is made", async () => {
   api.getWorkflowDef.mockResolvedValue(fixDraft());
   const { w } = await open("/workflows/build/fix");
-  await w.get("[data-box][data-node=fix]").trigger("click");
-  await w.get("[data-fields] [data-input-name=report]").setValue(true);
+  await w.get("[data-box][data-node=fix]").trigger("dblclick");
+  await flushPromises();
+  const report = document.body.querySelector("[data-node-modal] [data-input-name=report]") as HTMLInputElement;
+  report.checked = true;
+  report.dispatchEvent(new Event("change"));
+  await flushPromises();
+  (document.body.querySelector("[data-node-done]") as HTMLButtonElement).click();
   await flushPromises();
   await w.get("[data-tab=yaml]").trigger("click");
   expect(w.get("[data-yaml]").text()).toContain("inputs: [repro, report]");

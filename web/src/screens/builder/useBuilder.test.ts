@@ -1,6 +1,8 @@
 import { flushPromises } from "@vue/test-utils";
 import { ref } from "vue";
 import { ApiError } from "@/api";
+import { CATALOG } from "@/test-utils/catalog";
+import { fromWorkflow } from "./graph";
 import { useBuilder } from "./useBuilder";
 
 const api = vi.hoisted(() => ({ getWorkflowDef: vi.fn(), registryCatalog: vi.fn(), deleteDraft: vi.fn(), saveDraft: vi.fn() }));
@@ -20,6 +22,36 @@ test("placing a bundle item adds a bundle node that runs it, with no each box", 
   expect(node.spec).toMatchObject({ workflow: "layer" });
   expect(b.graph.value.nodes.map((n) => n.type)).toEqual(["bundle"]);
   expect(b.selected.value).toBe(node.id);
+});
+
+test("a meeting is placed with the protocol's roles and inputs from the catalog", async () => {
+  api.registryCatalog.mockResolvedValueOnce(CATALOG);
+  const b = useBuilder(ref("new"));
+  await flushPromises();
+  b.place({ type: "meeting" });
+  expect(b.graph.value.nodes[0].spec).toMatchObject({ role: ["product", "architect", "tester"], inputs: ["story", "layers"] });
+});
+
+test("an output rename follows into its readers, or is refused through a draft prompt file that names it", async () => {
+  const b = useBuilder(ref("new"));
+  await flushPromises();
+  b.graph.value = fromWorkflow("t", {
+    inputs: [],
+    outputs: [],
+    nodes: {
+      survey: { type: "ask", outputs: { survey: "markdown" }, to: ["plan"] },
+      plan: { type: "ask", prompt: "Read {survey}.", inputs: ["survey"] },
+      brief: { type: "ask", prompt: "prompt:brief", inputs: ["plan"] },
+      planner: { type: "ask", outputs: { plan: "text" }, to: ["brief"] },
+    },
+  });
+  expect(b.renameOutput("survey", "survey", "findings")).toBe(true);
+  expect(b.graph.value.nodes.find((n) => n.id === "plan")!.spec).toMatchObject({ prompt: "Read {findings}.", inputs: ["findings"] });
+  b.prompts.value = { brief: "---\nkind: rule\nroles: [coder]\nfields: [plan]\nwhy: w\n---\n{plan}" };
+  expect(b.renameOutput("planner", "plan", "steps")).toBe(false);
+  expect(b.error.value).toBe("plan cannot be renamed: brief read it through a prompt file");
+  b.prompts.value = { brief: "---\nkind: rule\nroles: [coder]\nfields: []\nwhy: w\n---\nGo." };
+  expect(b.renameOutput("planner", "plan", "steps")).toBe(true);
 });
 
 test("removing a draft deletes it by name", async () => {

@@ -5,10 +5,11 @@ import type { Ref } from "vue";
 import { ApiError } from "@/api";
 import { deleteDraft, EMPTY_CATALOG, getWorkflowDef, publishWorkflow, registryCatalog, saveDraft, usedBy, validateWorkflow } from "@/api/workflow_defs";
 import type { Catalog, WorkflowDetail } from "@/api/workflow_defs";
-import { addNode, emptyGraph, freeId, fromWorkflow } from "./graph";
-import type { GEdge, Graph, NodeType } from "./graph";
+import { addNode, emptyGraph, freeId, fromWorkflow, renameOutput } from "./graph";
+import type { GEdge, Graph, NodeSpec, NodeType } from "./graph";
 import { autoLayout, COLUMN } from "./layout";
 import { problemsByNode } from "./problems";
+import { promptFieldsOf } from "./promptFile";
 import { parseWorkflow, toYaml } from "./yaml";
 
 /** The name the server checks a canvas not yet named under (`new` is the builder's address, not a name). */
@@ -116,10 +117,24 @@ export function useBuilder(name: Ref<string>) {
     const type: NodeType = "type" in item ? item.type : "bundle";
     const id = freeId(graph.value, type);
     const at = x !== undefined && y !== undefined ? { x, y } : { x: graph.value.nodes.length ? Math.max(...graph.value.nodes.map((n) => n.x)) + COLUMN : 0, y: 0 };
-    if (edit((g) => addNode(g, type, at.x, at.y, "bundle" in item ? { workflow: item.bundle } : {}))) {
+    // a meeting sits the protocol's roles and reads its inputs (the catalog's); a bundle box runs its bundle
+    const meeting = catalog.value.meetings[0];
+    const spec: NodeSpec = "bundle" in item ? { workflow: item.bundle } : type === "meeting" && meeting ? { role: [...meeting.roles], inputs: [...meeting.inputs] } : {};
+    if (edit((g) => addNode(g, type, at.x, at.y, spec))) {
       selected.value = id;
       selectedEdge.value = null;
     }
+  }
+
+  /** Box `id`'s output `old` called `to`, its lines and readers following (graph.ts `renameOutput`, told the
+   * fields of the draft's prompt files); a reader through a prompt file that names it refuses it, shown as the
+   * error. True once renamed. */
+  function renameOutputOf(id: string, old: string, to: string): boolean {
+    return edit((g) => {
+      const done = renameOutput(g, id, old, to, promptFieldsOf(prompts.value));
+      if ("refused" in done) throw new Error(`${old} cannot be renamed: ${done.refused.join(", ")} read it through a prompt file`);
+      return done;
+    });
   }
 
   async function validate(): Promise<void> {
@@ -240,6 +255,7 @@ export function useBuilder(name: Ref<string>) {
     load,
     edit,
     place,
+    renameOutput: renameOutputOf,
     remove,
     validate,
     save,
