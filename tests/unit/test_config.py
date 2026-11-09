@@ -64,6 +64,18 @@ def test_a_workflow_check_naming_a_run_outside_the_story_catalog_fails_at_load(t
         load_config(write(tmp_path, {**MINIMAL, "workflows": {"w": wf}}))
 
 
+def test_a_workflow_problem_and_a_missing_composer_workflow_are_both_reported(tmp_path: Path) -> None:
+    """The composer check adds to the workflow problems; replacing them would hide the first."""
+    wf = {"nodes": {"c": {"type": "check", "run": "story.nothing_like_this"}}}
+    data = {**MINIMAL, "workflows": {"w": wf}, "story": {"composer": True}}
+    with pytest.raises(ConfigError) as exc:
+        load_config(write(tmp_path, data))
+    text = str(exc.value)
+    assert "node c: run 'story.nothing_like_this' is not in the catalog" in text
+    assert "story.composer is on but workflows.story is missing" in text
+    assert "story.composer is on but workflows.layer is missing" in text
+
+
 def test_engine_serving_unknown_model_fails(tmp_path: Path) -> None:
     data = {**MINIMAL, "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["ghost"]}}}
     with pytest.raises(ConfigError, match=r"engines\.main\.models.*'ghost'"):
