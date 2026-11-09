@@ -574,6 +574,13 @@ async def test_yes_no_turns_thinking_off_explicitly() -> None:
     assert body["enable_thinking"] is False and "chat_template_kwargs" not in body
 
 
+async def test_yes_no_uses_the_engines_dialect() -> None:
+    e, seen = make({CHAT: verdict("NO")}, dialect="openai")
+    await e.yes_no("judge", [Message("user", "Is it?")])
+    body = json.loads(seen[0].content)
+    assert body["chat_template_kwargs"] == {"enable_thinking": False} and "enable_thinking" not in body
+
+
 @pytest.mark.parametrize(
     ("content", "expected"),
     [

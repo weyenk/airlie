@@ -33,6 +33,11 @@ YES_NO_SYSTEM = "Answer with exactly one word: YES or NO."
 HTTP_POST = "POST"  # a module constant: httpx upper-cases the method, so "post" would be an equivalent mutant
 
 
+_THINKING_OFF = (
+    False  # pragma: no mutate  (None is falsy too: bool(None) is False, so the value is equivalent)
+)
+
+
 class HTTPEngine:
     capabilities = EngineCapabilities(batching=True, prefix_cache=True, logprobs=False, native_tools=True)
 
@@ -271,7 +276,7 @@ class HTTPEngine:
             "temperature": 0.0,
             **thinking_fields(
                 dialect=self._dialect,
-                thinking=False,  # pragma: no mutate  (None is falsy too: bool(None) is False)
+                thinking=_THINKING_OFF,
                 budget=None,
                 chat_template_kwargs={},
             ),

@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, StorySpec, load_config, profile_configs
 from airlie.config.load import _yaml_problem
-from airlie.config.schema import MUTATING_TOOLS
+from airlie.config.schema import MUTATING_TOOLS, EngineSpec
 
 MINIMAL: dict = {
     "version": 1,
@@ -1435,6 +1435,14 @@ def test_an_mlx_vlm_engine_is_addressed_by_its_exact_model_path(tmp_path: Path) 
     )
     assert cfg.engines["main"].served_name("team") == "/models/team"  # models.team.path
     assert cfg.engines["other"].served_name("base").endswith("/models--org--base/snapshots/r1")  # HF cache
+
+
+def test_served_name_falls_back_to_the_model_key_itself() -> None:
+    e = EngineSpec(
+        kind="openai_http", base_url="http://h/v1", port=8080, models=["team"], served_names={"team": "alias"}
+    )
+    assert e.served_name("team") == "alias"
+    assert e.served_name("other") == "other"
 
 
 def test_an_mlx_vlm_engine_takes_no_served_alias(tmp_path: Path) -> None:

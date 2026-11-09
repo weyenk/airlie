@@ -142,6 +142,14 @@ async def test_errors_name_the_endpoint_without_its_slashes() -> None:
     assert str(ev.value).startswith("decisions answered without 'role'")
 
 
+async def test_only_slashes_are_stripped_from_the_endpoint_name() -> None:
+    transport, _ = answering({}, status=503, text="down")
+    client = JevClient("http://k/v1", endpoint="/Xdecisions/X", transport=transport)
+    with pytest.raises(httpx.HTTPStatusError) as ei:
+        await client.ask("s", "role", "i", CRITERIA)
+    assert str(ei.value) == "Xdecisions/X returned 503: down"
+
+
 def router(transport: httpx.MockTransport) -> JevRouter:
     return JevRouter(JevClient("http://k/v1", transport=transport), ambiguous_gap=0.15, min_confidence=0.5)
 
