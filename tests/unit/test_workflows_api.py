@@ -112,6 +112,34 @@ def test_a_draft_saved_is_read_back_with_its_prompts_and_told_to_the_feed(tmp_pa
     assert seen == [("workflows", "mini")]
 
 
+OLD = """\
+workflows:
+  old:
+    type: bug
+    start: intake
+    layout:
+      intake: {x: 10, y: 20}
+    nodes:
+      intake: {type: check, run: story.intake, next: gate}
+      gate: {type: gate, run: story.finish}
+"""
+
+
+def test_an_old_schema_draft_is_read_upgraded_and_its_stored_text_is_untouched(tmp_path: Path) -> None:
+    c = cfg(tmp_path)
+    s = store(c)
+    s.save_draft("old", type="bug", yaml=OLD)
+    http, _ = bare(c, s)
+    with http:
+        got = http.get("/v1/workflows/old").json()
+    nodes = yaml.safe_load(got["yaml"])["workflows"]["old"]["nodes"]
+    assert nodes["intake"]["to"] and "next" not in nodes["intake"]
+    assert "start" not in yaml.safe_load(got["yaml"])["workflows"]["old"]
+    assert got["layout"] == {"intake": {"x": 10.0, "y": 20.0}}
+    assert yaml.safe_load(got["yaml"])["workflows"]["old"]["layout"] == {"intake": {"x": 10, "y": 20}}
+    assert s.draft("old").yaml == OLD
+
+
 def test_a_draft_naming_its_own_prompt_file_has_no_problems_and_one_naming_none_has_one(
     tmp_path: Path,
 ) -> None:

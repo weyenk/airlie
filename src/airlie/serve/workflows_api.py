@@ -18,7 +18,8 @@ from pydantic import BaseModel, ConfigDict
 from airlie.board.model import WorkflowDraft
 from airlie.board.store import BoardStore, BoardStoreError
 from airlie.config import AirlieConfig
-from airlie.flow.spec import MEETINGS, Format, NodeType, WorkflowSpec
+from airlie.flow.spec import MEETINGS, Format, NodeType, WorkflowSpec, old_schema_problems
+from airlie.flow.upgrade import upgrade_v1
 from airlie.prompts.hub import load as hub_prompts
 from airlie.story.flow import STORY_CATALOG  # the catalog, with the story's checks declared on it
 from airlie.story.publish import PublishError
@@ -112,6 +113,19 @@ def workflows_router(
         dumped = {"workflows": {name: spec.model_dump(mode="json", exclude_none=True)}}
         return yaml.safe_dump(dumped, sort_keys=False)
 
+    def current_yaml(draft: WorkflowDraft) -> str:
+        """The draft's text in the current schema, so an old-schema draft draws in the builder: `upgrade_v1`'s
+        mapping through the dumper `file_text` uses, its layout kept. The stored text is untouched until the
+        person saves; a current-schema draft, or one that does not parse, is its own text."""
+        try:
+            name, body = draft_body(draft.yaml, draft.name)
+        except WorkflowError:
+            return draft.yaml
+        if not old_schema_problems(body):
+            return draft.yaml
+        upgraded, _ = upgrade_v1(body, catalog=STORY_CATALOG)
+        return yaml.safe_dump({"workflows": {name: upgraded}}, sort_keys=False)
+
     def draft_detail(draft: WorkflowDraft) -> dict[str, Any]:
         try:
             layout = _layout(draft_spec(draft.name, draft.yaml))
@@ -121,7 +135,7 @@ def workflows_router(
             "name": draft.name,
             "type": draft.type,
             "source": "draft",
-            "yaml": draft.yaml,
+            "yaml": current_yaml(draft),
             "layout": layout,
             "problems": problems(draft.name),
             "prompts": dict(draft.prompts),
