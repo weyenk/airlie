@@ -31,7 +31,11 @@ class FakeStatus(httpx.AsyncBaseTransport):
         error: bool = False,
         status: int = 200,
         health: int | str = 200,
+        metrics: Any = None,
+        metrics_status: int = 200,
     ) -> None:
+        self.metrics = metrics  # the /v1/metrics body (mlx-vlm)
+        self.metrics_status = metrics_status
         self.health = health  # an HTTP status, or "down" for a connection error
         self.health_calls = 0
         self.health_auth: str | None = None
@@ -58,6 +62,8 @@ class FakeStatus(httpx.AsyncBaseTransport):
         self.paths.append(request.url.path)
         if self.error:
             raise httpx.ConnectError("refused", request=request)
+        if request.url.path == "/v1/metrics":
+            return httpx.Response(self.metrics_status, json=self.metrics)
         assert request.url.path == "/v1/status"
         return httpx.Response(self.status, json={"model_manager": {"models": self.models}})
 
@@ -239,3 +245,48 @@ def test_a_trailing_slash_after_v1_is_the_same_root(tmp_path: Path) -> None:
     _probe(cfg, t)
     assert sorted(t.auth) == ["127.0.0.1:8080", "127.0.0.1:8081"]
     assert t.paths == ["/v1/status", "/v1/status"]
+
+
+def _mlx_cfg(tmp_path: Path, api_key: str | None = None) -> Any:
+    """The repo's config says vllm_mlx until phase 4a: one mlx_vlm engine serving `generalist`."""
+    cfg = _cfg(tmp_path)
+    spec = cfg.engines["main"].model_copy(
+        update={
+            "kind": "mlx_vlm",
+            "models": ["generalist"],
+            "api_key": api_key,
+            "base_url": "http://127.0.0.1:8080/v1",
+        }
+    )
+    cfg.engines = {"main": spec}
+    return cfg
+
+
+def _metrics(in_flight: int, last: float | None) -> dict[str, Any]:
+    return {"latest": None, "recent": [], "summary": {"in_flight": in_flight, "last_request_at": last}}
+
+
+def test_mlx_vlm_engine_in_flight_is_busy(tmp_path: Path) -> None:
+    t = FakeStatus(metrics=_metrics(1, NOW))
+    assert _probe(_mlx_cfg(tmp_path), t) == "engine main has 1 request(s) in flight"
+    assert t.paths == ["/v1/metrics"]
+
+
+def test_mlx_vlm_engine_recent_request_is_busy_old_or_null_is_idle(tmp_path: Path) -> None:
+    cfg = _mlx_cfg(tmp_path)
+    assert (
+        _probe(cfg, FakeStatus(metrics=_metrics(0, NOW - 14)))
+        == "model generalist used 14 s ago on engine main"
+    )
+    assert _probe(cfg, FakeStatus(metrics=_metrics(0, NOW - 121))) is None
+    assert _probe(cfg, FakeStatus(metrics=_metrics(0, None))) is None
+    assert _probe(cfg, FakeStatus(metrics=_metrics(0, NOW - 14)), own=NOW - 14) is None  # the bridge's own
+
+
+def test_mlx_vlm_metrics_probe_sends_the_engine_key(tmp_path: Path) -> None:
+    t = FakeStatus(metrics=_metrics(1, NOW))
+    assert _probe(_mlx_cfg(tmp_path, "k"), t) is not None
+    assert t.auth["127.0.0.1:8080"] == "Bearer k"
+    denied = FakeStatus(metrics={"detail": "no"}, metrics_status=401)
+    assert _probe(_mlx_cfg(tmp_path, "k"), denied) is None
+    assert _probe(_mlx_cfg(tmp_path), FakeStatus(error=True)) == "engine main not answering"

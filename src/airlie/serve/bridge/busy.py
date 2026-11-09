@@ -17,8 +17,13 @@ The owner wants airlie to run one thing at a time. Three signals say it is busy:
   the gaps between one request and the next. A use at or just after the bridge's own last job is the
   bridge's own and does not count. An engine without the patch (no `active_requests`) has only this rule.
 
-The probe sends each engine's `api_key`, as serve does: vllm-mlx checks it on `/v1/status`, and an engine
-that answers 401 (or anything but 200) reads as idle.
+An mlx-vlm engine has no `/v1/status`; the same two signals come from its `GET /v1/metrics`:
+`summary.in_flight` above zero is a request in flight, and `summary.last_request_at` (epoch seconds, null
+before the first request) is the last use, judged by the same idle and own-request rules, named after the
+engine's catalog model. Nothing reads `latest.*`: its `reasoning_tokens` is wrong upstream.
+
+The probe sends each engine's `api_key`, as serve does: vllm-mlx checks it on `/v1/status` and mlx-vlm on
+`/v1/metrics`, and an engine that answers 401 (or anything but 200) reads as idle.
 
 This is the one place GPU sharing would change: if jobs ever ran beside a story, this gate is what to relax.
 """
@@ -47,17 +52,17 @@ def reason_key(reason: str) -> str:
     return _AGE.sub(" used recently ", reason)
 
 
-def _engine_roots(cfg: AirlieConfig) -> list[tuple[str, str, str | None]]:
-    """(engine name, root URL, api key) per distinct root, in config order."""
+def _engine_roots(cfg: AirlieConfig) -> list[tuple[str, str, str | None, str]]:
+    """(engine name, root URL, api key, engine kind) per distinct root, in config order."""
     seen: set[str] = set()
-    out: list[tuple[str, str, str | None]] = []
+    out: list[tuple[str, str, str | None, str]] = []
     for name, spec in cfg.engines.items():
         if not spec.base_url:
             continue
         root = spec.base_url.rstrip("/").removesuffix("/v1").rstrip("/")
         if root not in seen:
             seen.add(root)
-            out.append((name, root, spec.api_key))
+            out.append((name, root, spec.api_key, spec.kind))
     return out
 
 
@@ -86,6 +91,22 @@ async def _models(http: httpx.AsyncClient, root: str, api_key: str | None) -> li
     return models if isinstance(models, list) else []
 
 
+async def _metrics(http: httpx.AsyncClient, root: str, api_key: str | None) -> dict[str, Any] | None:
+    """mlx-vlm's `summary`; {} when it answered without one; None when it did not answer at all."""
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        r = await http.get(f"{root}/v1/metrics", headers=headers, timeout=STATUS_TIMEOUT_S)
+    except httpx.TransportError:  # refused, reset, timed out
+        return None
+    try:
+        if r.status_code != 200:
+            return {}
+        summary = r.json()["summary"]
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return {}
+    return summary if isinstance(summary, dict) else {}
+
+
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
@@ -110,7 +131,21 @@ async def busy_reason(
             if lock_held(stories, lane):
                 return f"story {lane} lane is running"
     newest: tuple[float, str, str] | None = None
-    for engine, root, key in _engine_roots(cfg):
+    for engine, root, key, kind in _engine_roots(cfg):
+        if kind == "mlx_vlm":
+            summary = await _metrics(http, root, key)
+            if summary is None:
+                return f"engine {engine} not answering"
+            active = _number(summary.get("in_flight"))
+            if active is not None and active > 0:
+                return f"engine {engine} has {int(active)} request(s) in flight"
+            used = _number(summary.get("last_request_at"))
+            if used is None or now - used >= cfg.bridge.idle_s or used <= own_last_used + OWN_SLACK_S:
+                continue
+            if newest is None or used > newest[0]:
+                spec_models = cfg.engines[engine].models
+                newest = (used, spec_models[0] if spec_models else engine, engine)
+            continue
         models = await _models(http, root, key)
         if models is None:
             return f"engine {engine} not answering"
