@@ -1,17 +1,18 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, useId, watch } from "vue";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import { hasMax, outputsOfNode } from "./graph";
+import { hasMax, inputsOf, outputsOfNode, producersOf } from "./graph";
 import type { GEdge, GNode, Graph, LoopBound } from "./graph";
 
 defineOptions({ name: "AirlieBuilderWireModal" });
 
 /** A line between two boxes, in a dialog (a bottom sheet on a phone): what it carries (a checkbox per output of its
  * source; none checked is an ordering line), the condition it is taken on, and a loop bound when it runs back.
- * Nothing is applied until Apply; closing any other way (Escape, a click outside, Done) keeps what was typed, by
- * applying it when the form changed; a loop with no max keeps the dialog open and says why, so no text is lost. The graph judges the line (a source
- * that writes no such artifact, a loop without its max); the condition is judged by the server, on Validate. */
+ * Apply, or closing any other way (Escape, a click outside, Done), applies the form when it changed; a loop with no
+ * max keeps the dialog open and says why, so no text is lost. The graph judges the line (a source that writes no
+ * such artifact, a loop without its max); the condition is judged by the server, on Validate. A loop's carry is any
+ * key of the source's result (airlie.flow.spec LoopBound), so it is typed, with the source's outputs offered. */
 const props = defineProps<{ open: boolean; edge: GEdge | null; from: GNode; to: GNode; graph: Graph }>();
 const emit = defineEmits<{
   "update:open": [open: boolean];
@@ -20,6 +21,7 @@ const emit = defineEmits<{
 }>();
 
 const outputs = computed(() => outputsOfNode(props.graph, props.from.id));
+const carryList = `wire-carry-${useId()}`;
 const artifacts = ref<string[]>([]);
 const when = ref("");
 const loopOn = ref(false);
@@ -48,7 +50,8 @@ const bound = computed<LoopBound | null>(() => {
   const m = max.value.trim();
   if (!loopOn.value || !m) return null;
   const loop: LoopBound = { max: /^\d+$/.test(m) ? Number(m) : m };
-  if (carry.value) loop.carry = carry.value;
+  const c = carry.value.trim();
+  if (c) loop.carry = c;
   return loop;
 });
 const valid = computed(() => !loopOn.value || (bound.value !== null && hasMax(bound.value.max)));
@@ -71,12 +74,13 @@ const same = (a: ReturnType<typeof normal>, b: ReturnType<typeof normal>) =>
   a.when === b.when && a.max === b.max && a.carry === b.carry && a.artifacts.length === b.artifacts.length && a.artifacts.every((x, i) => x === b.artifacts[i]);
 const changed = computed(() => !same(normal(change.value), normal({ artifacts: props.edge?.artifacts ?? [], when: props.edge?.when, loop: props.edge?.loop })));
 
-/** Another source's line into the target that brings `name` in as well (or the workflow's own inputs): the
- * target keeps it whatever this line says, so the checkbox is shown checked and cannot be unchecked here. */
+/** Who else writes `name`, which the target reads (any other box in the graph, or the workflow's own inputs): the
+ * target's input is the target's, not this line's, so unchecking it here would take it from every path in. The
+ * checkbox is shown checked and cannot be unchecked; the names say why. */
 const sharedFrom = (name: string): string | null => {
-  const other = props.graph.edges.find((e) => e.to === props.to.id && e.from !== props.from.id && e.artifacts.includes(name));
-  if (other) return other.from;
-  return props.graph.inputs.includes(name) ? "the workflow's inputs" : null;
+  if (!inputsOf(props.to.spec).includes(name)) return null;
+  const others = producersOf(props.graph, name, props.from.id, props.to.id);
+  return others.length ? others.join(", ") : null;
 };
 /** Whether the target's own text or fields read `name`: `{name}`, `{name.field}`, `{?name}`, `{/name}`, or its `each` / `session`. */
 const readByPrompt = (name: string): boolean => {
@@ -173,17 +177,13 @@ const control = "h-8 w-full min-w-0 rounded-md border border-input bg-background
               <span class="text-muted-foreground">max (a count, or a config path)</span>
               <input v-model="max" data-wire-max :class="[control, 'font-mono']" placeholder="3 or config.story.layer_attempts" autocomplete="off" />
             </label>
-            <fieldset class="flex flex-col gap-1">
-              <legend class="mb-1 text-muted-foreground">carry (an output handed back as feedback.{{ to.id }})</legend>
-              <label class="flex items-center gap-2 text-xs">
-                <input v-model="carry" type="radio" name="wire-carry" value="" data-wire-carry-none />
-                <span>nothing</span>
-              </label>
-              <label v-for="o in outputs" :key="o" class="flex items-center gap-2 font-mono text-xs">
-                <input v-model="carry" type="radio" name="wire-carry" :value="o" :data-wire-carry="o" />
-                <span>{{ o }}</span>
-              </label>
-            </fieldset>
+            <label class="flex flex-col gap-1">
+              <span class="text-muted-foreground">carry (a key of {{ from.id }}'s result, handed back as feedback.{{ to.id }}; blank: nothing)</span>
+              <input v-model="carry" data-wire-carry :list="carryList" :class="[control, 'font-mono']" placeholder="feedback" autocomplete="off" />
+              <datalist :id="carryList" data-wire-carry-options>
+                <option v-for="o in outputs" :key="o" :value="o" />
+              </datalist>
+            </label>
             <p v-if="tried && !valid" data-wire-loop-max-missing class="text-xs text-danger-foreground">A loop needs its max: give a count or a config path, or turn the loop off.</p>
           </template>
         </fieldset>

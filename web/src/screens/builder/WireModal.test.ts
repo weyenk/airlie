@@ -1,7 +1,9 @@
 import { flushPromises, mount } from "@vue/test-utils";
+import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
 import { fromWorkflow } from "./graph";
 import type { Graph, NodeSpec, NodeType } from "./graph";
 import WireModal from "./WireModal.vue";
+import { parseWorkflow } from "./yaml";
 
 // `a` writes verdict and notes and goes on to `b` (which reads notes); `b` can loop back to `a`.
 const graph: Graph = fromWorkflow("t", {
@@ -66,7 +68,7 @@ test("a blank condition and no artifacts apply as an ordering line with neither 
   expect("loop" in got).toBe(false);
 });
 
-test("the loop toggle takes a count or a config path as max, and carry is one of the source's outputs", async () => {
+test("the loop toggle takes a count or a config path as max, and carry is typed with the source's outputs offered", async () => {
   const w = mountModal("a", "b");
   await flushPromises();
   expect($("[data-wire-max]")).toBeNull();
@@ -75,7 +77,10 @@ test("the loop toggle takes a count or a config path as max, and carry is one of
   // a loop without its max cannot be applied
   expect($<HTMLButtonElement>("[data-wire-apply]")!.disabled).toBe(true);
   type($("[data-wire-max]"), "2");
-  $<HTMLInputElement>("[data-wire-carry=verdict]")!.click();
+  const offered = [...document.body.querySelectorAll<HTMLOptionElement>("[data-wire-carry-options] option")].map((o) => o.value);
+  expect(offered).toEqual(["verdict", "notes"]);
+  expect($<HTMLInputElement>("[data-wire-carry]")!.getAttribute("list")).toBe($("[data-wire-carry-options]")!.id);
+  type($("[data-wire-carry]"), "verdict");
   await flushPromises();
   $<HTMLButtonElement>("[data-wire-apply]")!.click();
   expect(applied(w)!.loop).toEqual({ max: 2, carry: "verdict" });
@@ -90,7 +95,7 @@ test("an existing loop shows its bound, and turning the loop off applies without
   await flushPromises();
   expect($<HTMLInputElement>("[data-wire-loop]")!.checked).toBe(true);
   expect($<HTMLInputElement>("[data-wire-max]")!.value).toBe("2");
-  expect($<HTMLInputElement>("[data-wire-carry=fixed]")!.checked).toBe(true);
+  expect($<HTMLInputElement>("[data-wire-carry]")!.value).toBe("fixed");
   $<HTMLInputElement>("[data-wire-loop]")!.click();
   await flushPromises();
   $<HTMLButtonElement>("[data-wire-apply]")!.click();
@@ -237,4 +242,49 @@ test("closing an unchanged loop line applies nothing, whatever order its bound's
   await flushPromises();
   expect(w.emitted("apply")).toBeUndefined();
   expect(w.emitted("update:open")?.at(-1)).toEqual([false]);
+});
+
+const shipped = (text: string) => {
+  const { name, spec, layout } = parseWorkflow(text);
+  return fromWorkflow(name, spec, layout);
+};
+const mountShipped = (g: Graph, from: string, to: string) =>
+  mount(WireModal, {
+    props: { open: true, edge: g.edges.find((e) => e.from === from && e.to === to) ?? null, from: g.nodes.find((n) => n.id === from)!, to: g.nodes.find((n) => n.id === to)!, graph: g },
+    attachTo: document.body,
+  });
+
+test("a carry that is not a declared output shows as the YAML has it (layer's build -> package carries feedback), and another value typed saves", async () => {
+  const layer = shipped(LAYER_YAML);
+  const w = mountShipped(layer, "build", "package");
+  await flushPromises();
+  expect($<HTMLInputElement>("[data-wire-loop]")!.checked).toBe(true);
+  expect($<HTMLInputElement>("[data-wire-max]")!.value).toBe("story.layer_attempts");
+  expect($<HTMLInputElement>("[data-wire-carry]")!.value).toBe("feedback");
+  // closing untouched changes nothing
+  $<HTMLButtonElement>("[data-wire-done]")!.click();
+  await flushPromises();
+  expect(w.emitted("apply")).toBeUndefined();
+  document.body.innerHTML = "";
+  const again = mountShipped(layer, "build", "package");
+  await flushPromises();
+  type($("[data-wire-carry]"), "report");
+  await flushPromises();
+  $<HTMLButtonElement>("[data-wire-apply]")!.click();
+  expect(applied(again)!.loop).toEqual({ max: "story.layer_attempts", carry: "report" });
+  type($("[data-wire-carry]"), "  ");
+  await flushPromises();
+  $<HTMLButtonElement>("[data-wire-apply]")!.click();
+  expect(applied(again)!.loop).toEqual({ max: "story.layer_attempts" }); // empty: no carry
+});
+
+test("an artifact another box writes as well is kept, disabled and says who (story's amigos -> build_layers)", async () => {
+  mountShipped(shipped(STORY_YAML), "amigos", "build_layers");
+  await flushPromises();
+  const story = $<HTMLInputElement>("[data-wire-artifact=story]")!;
+  expect(story.checked).toBe(true);
+  expect(story.disabled).toBe(true);
+  // no line from refine or take_card_as_story reaches build_layers directly: they are producers all the same
+  expect($("[data-wire-artifact-shared=story]")!.textContent).toBe("also from take_card_as_story, refine");
+  expect($("[data-wire-artifact-shared=layers]")!.textContent).toBe("also from layers");
 });
