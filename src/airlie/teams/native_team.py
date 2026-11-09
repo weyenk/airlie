@@ -461,6 +461,9 @@ class NativeTeam:
         cuts = 0  # reads in a row whose thinking reached the budget (answer_after_cuts)
         answer_now = False  # answer_after_cuts reached: the next turn is the last one
         asked_back = False  # answer_after_cuts reached by a writer that has written: the run ends, unanswered
+        # a call's (tool, arguments) -> (the step that ran it, its ok, its settled result): the same call with
+        # the same result is answered from that step (same-call), at no held read (AIR-66, 2026-11-09)
+        calls_seen: dict[tuple[str, str], tuple[int, bool, str]] = {}
         while True:
             step_num = steps + 1
             injected = await observer.before_step(ctx.team_id, step_num)
@@ -610,6 +613,9 @@ class NativeTeam:
                     ctx.role.think_when_red and last_tests_ok is False and _read_path(call) in wrote_paths
                 )
                 held = ((reading_off or looped) and call.name not in WRITE_TOOLS_ONLY) or reread
+                # what the repeat guard compares for this call when its observation is not the tool's own
+                # result: the hold's count of reads left, or the earlier step a same call is answered from
+                observed: str | None = None
                 key = _read_key(call)
                 seen_at = reads_seen.get(key) if key is not None else None
                 if seen_at is not None and not held:
@@ -639,10 +645,34 @@ class NativeTeam:
                         tool_ms = (time.monotonic() - t1) * 1000.0
                     if key is not None and result.ok:
                         reads_seen[key] = (_read_path(call) or "", steps)
-                    if held:  # one of the few reads the hold still serves, and it says how many are left
-                        reads_left -= 1
-                        left = _steer(ctx, steps, "read-left", k=reads_left)
-                        result = replace(result, output=f"{result.output}\n\n{left}")
+                    same = (call.name, call.arguments)
+                    before = calls_seen.get(same)
+                    settled = _settled(result.output)
+                    if before is not None and before[1:] == (result.ok, settled):
+                        # the same call, the same result: it is in the conversation at that step already, and
+                        # costs no held read (AIR-66, 2026-11-09: one grep three times, each a held read, cut)
+                        said = "same-call-held" if held else "same-call"
+                        result = replace(result, output=_steer(ctx, steps, said, step=before[0]))
+                        observed = before[2]
+                        if ctx.emit is not None:
+                            ctx.emit(
+                                "call_repeated",
+                                team_id=ctx.team_id,
+                                role=ctx.role_name,
+                                step=steps,
+                                tool=call.name,
+                                same_as=before[0],
+                            )
+                    else:
+                        if call.name not in WRITE_TOOLS_ONLY:
+                            calls_seen[same] = (steps, result.ok, settled)
+                        if held:  # one of the few reads the hold still serves, and it says how many are left
+                            # the count is not the result: with it, one grep three times under the hold was
+                            # three observations, and the repeat guard never fired (AIR-66, 2026-11-09)
+                            observed = settled
+                            reads_left -= 1
+                            left = _steer(ctx, steps, "read-left", k=reads_left)
+                            result = replace(result, output=f"{result.output}\n\n{left}")
                     if ctx.role.think_when_red and call.name == "run_tests":
                         if result.ok:
                             red_runs = 0
@@ -841,7 +871,7 @@ class NativeTeam:
                 if call.name == "run_tests":
                     last_test_output = result.output
                     last_tests_ok = result.ok
-                seen = _settled(result.output)
+                seen = _settled(result.output) if observed is None else observed
                 recent.append(
                     (call.name, call.arguments, seen)
                     if ctx.tools.distinct_by_arguments(call.name)

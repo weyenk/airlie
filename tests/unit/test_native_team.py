@@ -2083,7 +2083,12 @@ async def test_an_advised_repeat_still_reports_the_hub_id(tmp_path: Path) -> Non
     fixed = text("repeated", n=3, tool="read_file")
     assert f"{fixed}\n\n{SUPERVISOR}\nStop reading a; write the test." in user_said(engine)
     assert [(s["id"], s["step"]) for s in steers(events)] == [
+        ("same-call", 2),  # the same read of a missing file: answered from step 1 (AIR-66, 2026-11-09)
+        ("same-call", 3),
         ("repeated", 3),
+        ("same-call", 4),
+        ("same-call", 5),
+        ("same-call", 6),
         ("repeat-write-only", 6),
         ("read-refused", 7),
         ("read-refused", 8),
@@ -2334,3 +2339,44 @@ async def test_a_role_red_for_red_limit_runs_in_a_row_stops_for_the_architect(tm
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "red_limit" and not result.ok
     assert result.steps == 2 * RED_LIMIT and f"failed {RED_LIMIT} runs in a row" in result.final_text
+
+
+# ---- the same call with the same result is answered from the earlier step (AIR-66, 2026-11-09) ----
+
+
+def cut_grep(tag: str, pattern: str = "archived") -> FakeReply:
+    """A grep whose thinking ran to the 8-token budget: the same call whatever `tag` says."""
+    return FakeReply(
+        reasoning=thought(8, tag),
+        tool_calls=[ToolCall(f"g-{tag}", "grep", json.dumps({"pattern": pattern, "path": "."}))],
+    )
+
+
+def write_t(cid: str = "w") -> FakeReply:
+    return FakeReply(tool_calls=[ToolCall(cid, "write_file", json.dumps({"path": "t.py", "content": "x\n"}))])
+
+
+async def test_the_same_call_with_the_same_result_is_answered_from_the_earlier_one_at_no_read(
+    tmp_path: Path,
+) -> None:
+    """AIR-66 layer 01 (2026-11-09): under the hold the architect sent the identical grep three times, each
+    served as one of its held reads; the count each held read appends made every observation different, so
+    the repeat guard never saw a repeat. The same call with the same result is answered from the earlier
+    step, costs no held read, and counts toward the repeat guard as the earlier one."""
+    read_f = FakeReply(tool_calls=[ToolCall("r", "read_file", json.dumps({"path": "f"}))])
+    engine = FakeEngine(
+        {"coder": [cut_grep("a"), cut_grep("b"), cut_grep("c"), read_f, write_t(), FakeReply(text="Done.")]}
+    )
+    team, ctx = answering_team(
+        tmp_path, engine, tool_names=("write_file", "read_file", "grep"), nudge_stuck=True, max_steps=20
+    )
+    ctx.emit = events = Events()
+    rec = Recorder()
+    result = await team.run(ctx, rec)
+    assert result.ok and result.stop_reason == "done"
+    assert rec.steps[1].o_t == text("same-call", step=1)
+    assert rec.steps[2].o_t == text("same-call-held", step=1)
+    assert rec.steps[3].o_t.endswith(text("read-left", k=2))  # the only held read that counted
+    assert [s["id"] for s in steers(events)].count("repeated") == 1
+    assert requests_saying(engine, text("repeated", n=3, tool="grep"))[0] == 4
+    assert [e["step"] for e in events.records if e["kind"] == "call_repeated"] == [2, 3]
