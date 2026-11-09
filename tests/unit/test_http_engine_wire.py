@@ -769,3 +769,17 @@ def test_finish_passes_known_values_through_unchanged() -> None:
         "cancelled",
         "stop",
     ]
+
+
+def test_an_openai_dialect_body_carries_only_chat_template_kwargs() -> None:
+    from airlie.config import ModelSpec
+
+    spec = role_spec(thinking=True, thinking_budget=100, chat_template_kwargs={"reasoning_strength": "low"})
+    e, _ = make(
+        spec=spec,
+        dialect="openai",
+        model_spec_for=lambda r: ModelSpec(repo="o/m", revision="r", tool_call_parser="atem"),
+    )
+    body = e._body(req(tools=[ToolSchema("f", "d", {"type": "object"})]), stream=False)
+    assert body["chat_template_kwargs"] == {"enable_thinking": True, "reasoning_strength": "low"}
+    assert not {"enable_thinking", "thinking_budget", "tool_parser", "reasoning_effort"} & set(body)

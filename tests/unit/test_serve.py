@@ -863,3 +863,16 @@ def test_the_line_events_tail(tmp_path: Path) -> None:
         assert [e["line"] for e in got] == ["beat 7", "beat 8", "beat 9"]  # the tail, oldest first
         assert len(client.get("/v1/airlie/line/events", headers=auth).json()["events"]) == 10
         assert client.get("/v1/airlie/line/events", params={"limit": 0}, headers=auth).status_code == 422
+
+
+def test_an_openai_http_role_gets_a_clients_template_kwargs_unchanged(tmp_path: Path) -> None:
+    up = FakeUpstream()
+    client = TestClient(create_app(cfg(tmp_path), transport=httpx.MockTransport(up)))
+    ask = {"messages": [{"role": "user", "content": "yo"}]}
+    kwargs = {"enable_thinking": False, "x": 1}
+    client.post("/v1/chat/completions", json={"model": "judge", "chat_template_kwargs": kwargs, **ask})
+    client.post("/v1/chat/completions", json={"model": "judge", "thinking_token_budget": 9, **ask})
+    first, second = (json.loads(r.content) for r in up.requests)
+    assert first["chat_template_kwargs"] == kwargs and "enable_thinking" not in first
+    assert second["thinking_token_budget"] == 9 and "thinking_budget" not in second
+    assert "tool_parser" not in first

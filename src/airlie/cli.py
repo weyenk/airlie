@@ -160,14 +160,14 @@ def models_list(config: ConfigOpt = None) -> None:
     """List catalog models, their pinned revisions and the engine serving each."""
     cfg = _load(config)
     table = Table(title="models")
-    for col in ("name", "repo", "revision", "engine", "preload"):
+    for col in ("name", "repo", "revision", "engine"):
         table.add_column(col)
     for name, m in cfg.models.items():
         try:
             engine = cfg.engine_for_model(name)
         except KeyError:
             engine = "-"
-        table.add_row(name, str(m.path or m.repo), m.revision[:12], engine, "yes")
+        table.add_row(name, str(m.path or m.repo), m.revision[:12], engine)
     console.print(table)
 
 

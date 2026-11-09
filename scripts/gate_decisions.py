@@ -1,7 +1,7 @@
 """Phase 4b gate, Step 6: airlie's role question over twenty recorded briefs through one decision engine.
 
-    uv run python scripts/gate_decisions.py ask decision_mlx --out mlx.json      # mlx_vlm (/v1/decisions)
-    uv run python scripts/gate_decisions.py compare kev.json mlx.json
+    uv run python scripts/gate_decisions.py ask decision --out decider.json      # /v1/decisions
+    uv run python scripts/gate_decisions.py compare a.json b.json
 
 The briefs are the labelled routing set (evals/routing.jsonl, the cases behind docs/bench/routing.json),
 twenty of them taken round-robin across the expected roles so every role is asked about. The criteria are the

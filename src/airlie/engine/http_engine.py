@@ -214,9 +214,8 @@ class HTTPEngine:
                             fn = tc.get("function") or {}
                             if tc.get("id"):
                                 if slot["id"] and str(tc["id"]) != slot["id"]:
-                                    slot["arguments"] = (
-                                        ""  # a finished call re-sent under a new id: keep it once
-                                    )
+                                    # a finished call re-sent under a new id: keep it once
+                                    slot["arguments"] = ""
                                 slot["id"] = slot["id"] or str(tc["id"])
                             if fn.get("name"):
                                 slot["name"] = str(fn["name"])

@@ -436,6 +436,17 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
         if e.kind == "mlx_vlm":
             managed_models.update(e.models)
             results.append(_mlx_vlm_binary_check(ename, e.entry, probe))
+            health_url = f"{(e.base_url or '').removesuffix('/v1')}/health"
+            if probe.http_ok(health_url):
+                results.append(CheckResult(f"engine:{ename}:health", "ok", f"{health_url} answers"))
+            else:
+                results.append(
+                    CheckResult(
+                        f"engine:{ename}:health",
+                        "warn",
+                        f"not running ({health_url}); run: {start_command(e, ename)}",
+                    )
+                )
             if e.autostart and not projected_once:  # one wired limit for every process: one projection
                 projected_once = True
                 results.extend(_projection_rows(cfg, variants, ename))

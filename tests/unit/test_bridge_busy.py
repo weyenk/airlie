@@ -248,3 +248,13 @@ def test_a_trailing_slash_after_v1_is_the_same_root(tmp_path: Path) -> None:
     _probe(cfg, t)
     assert sorted(t.auth) == ["127.0.0.1:8080", "127.0.0.1:8081"]
     assert t.paths == ["/v1/metrics", "/v1/metrics"]
+
+
+@pytest.mark.parametrize("code", [401, 403, 500])
+def test_an_openai_http_engine_that_denies_or_fails_the_probe_is_idle(tmp_path: Path, code: int) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.engines = {
+        "ext": EngineSpec(kind="openai_http", models=["generalist"], base_url="http://127.0.0.1:9000/v1")
+    }
+    assert _probe(cfg, FakeEngines({"detail": "no"}, status=code)) is None
+    assert _probe(cfg, FakeEngines(error=True)) == "engine ext not answering"

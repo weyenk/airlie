@@ -25,6 +25,20 @@ def test_mlx_vlm_fields_omit_what_is_unset() -> None:
     )
 
 
-def test_every_engine_kind_speaks_the_mlx_vlm_dialect() -> None:
+def test_the_dialect_follows_the_engine_kind() -> None:
     assert dialect_for("mlx_vlm") == "mlx_vlm"
-    assert {dialect_for(k) for k in ("mlx_vlm", "openai_http")} == {"mlx_vlm"}
+    assert dialect_for("openai_http") == "openai"
+
+
+def test_the_openai_dialect_sends_only_template_kwargs() -> None:
+    assert thinking_fields(
+        dialect="openai",
+        thinking=True,
+        budget=4096,
+        chat_template_kwargs={"reasoning_strength": "low"},
+        tool_parser="atem",
+        tools=True,
+    ) == {"chat_template_kwargs": {"enable_thinking": True, "reasoning_strength": "low"}}
+    assert thinking_fields(dialect="openai", thinking=False, budget=None, chat_template_kwargs={}) == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }

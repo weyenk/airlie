@@ -5,8 +5,8 @@ The owner wants airlie to run one thing at a time. Three signals say it is busy:
 - Serve or an engine is not answering. Claiming into an outage would fail every queued job in minutes
   (`serve unreachable`), so the bridge waits: serve's `GET /health` must answer 200, and each engine's
   `/v1/metrics` must answer at all. An HTTP answer that is not 200 (404 from an external server with no
-  `/v1/metrics`) is an answer and leaves that engine idle; a refused connection or a timeout is not. A 401
-  or 403 reads as not answering: a wrong or rotated key must not open the gate.
+  `/v1/metrics`) is an answer and leaves that engine idle; a refused connection or a timeout is not. On an
+  mlx-vlm engine a 401 or 403 reads as not answering: a wrong or rotated key must not open the gate.
 - A story lane lock (`build.lock`, `plan.lock` in the stories directory) is held. A story's whole run
   counts, gaps included: between two model calls (a test run, a git step, a pause for a human) no model
   is in use, yet the run is still going and a hub job taking the GPU then would slow it.
@@ -48,17 +48,17 @@ def reason_key(reason: str) -> str:
     return _AGE.sub(" used recently ", reason)
 
 
-def _engine_roots(cfg: AirlieConfig) -> list[tuple[str, str, str | None]]:
-    """(engine name, root URL, api key) per distinct root, in config order."""
+def _engine_roots(cfg: AirlieConfig) -> list[tuple[str, str, str | None, str]]:
+    """(engine name, root URL, api key, engine kind) per distinct root, in config order."""
     seen: set[str] = set()
-    out: list[tuple[str, str, str | None]] = []
+    out: list[tuple[str, str, str | None, str]] = []
     for name, spec in cfg.engines.items():
         if not spec.base_url:
             continue
         root = spec.base_url.rstrip("/").removesuffix("/v1").rstrip("/")
         if root not in seen:
             seen.add(root)
-            out.append((name, root, spec.api_key))
+            out.append((name, root, spec.api_key, spec.kind))
     return out
 
 
@@ -114,12 +114,14 @@ async def busy_reason(
             if lock_held(stories, lane):
                 return f"story {lane} lane is running"
     newest: tuple[float, str, str] | None = None
-    for engine, root, key in _engine_roots(cfg):
+    for engine, root, key, kind in _engine_roots(cfg):
         summary = await _metrics(http, root, key)
         if summary is None:
             return f"engine {engine} not answering"
-        if isinstance(summary, int):
+        if isinstance(summary, int) and kind == "mlx_vlm":
             return f"engine {engine} not answering (HTTP {summary})"
+        if isinstance(summary, int):  # an external server that denies the probe: it answered, so idle
+            continue
         active = _number(summary.get("in_flight"))
         if active is not None and active > 0:
             return f"engine {engine} has {int(active)} request(s) in flight"

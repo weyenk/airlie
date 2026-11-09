@@ -212,6 +212,15 @@ def test_real_probe_rejects_incomplete_download(tmp_path: Path) -> None:
 # ---- hybrid (linear/SSM) attention ----
 
 
+class HealthProbe(FakeProbe):
+    def __init__(self, health: dict[str, bool], **kw) -> None:
+        super().__init__(**kw)
+        self._health = health
+
+    def http_ok(self, url: str) -> bool:
+        return self._health.get(url, False)
+
+
 class ConfigProbe(FakeProbe):
     def __init__(self, configs: dict[str, dict], **kw) -> None:
         super().__init__(**kw)
@@ -688,3 +697,17 @@ def test_hybrid_attention_model_is_ok_because_the_prefix_cache_stores_checkpoint
     r = by_name(run_checks(cfg, probe))["model:base:attention"]
     assert r.status == "ok"
     assert "checkpoints" in r.detail and "patch" not in r.detail
+
+
+def test_a_managed_engines_health_row_is_ok_when_it_answers_and_names_the_start_command_when_not(
+    tmp_path: Path,
+) -> None:
+    cfg = managed(tmp_path)
+    up = HealthProbe({"http://127.0.0.1:8080/health": True}, snapshots={"org/model@r1"})
+    ok = by_name(run_checks(cfg, up))["engine:main:health"]
+    assert ok.status == "ok" and "8080/health" in ok.detail
+    down = by_name(run_checks(cfg, HealthProbe({}, snapshots={"org/model@r1"})))["engine:main:health"]
+    assert down.status == "warn" and "run: task restart" in down.detail
+    cfg.engines["main"].autostart = False
+    by_hand = by_name(run_checks(cfg, HealthProbe({}, snapshots={"org/model@r1"})))["engine:main:health"]
+    assert "uv run airlie engine up main" in by_hand.detail

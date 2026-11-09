@@ -6,15 +6,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal
 
-Dialect = Literal["mlx_vlm"]
+Dialect = Literal["mlx_vlm", "openai"]
 
 LATE_KEYS = ("thinking_budget", "tool_parser")
 """Fields HTTPEngine._body sets after the tools."""
 
 
 def dialect_for(kind: str) -> Dialect:
-    """The dialect an engine kind speaks: mlx-vlm's, for every kind."""
-    return "mlx_vlm"
+    """The dialect an engine kind speaks: mlx-vlm's, or plain OpenAI-compatible for an external server."""
+    return "mlx_vlm" if kind == "mlx_vlm" else "openai"
 
 
 def thinking_fields(
@@ -26,6 +26,8 @@ def thinking_fields(
     tool_parser: str | None = None,
     tools: bool = False,
 ) -> dict[str, Any]:
+    if dialect == "openai":  # an external server: only the template kwargs a generic one may read
+        return {"chat_template_kwargs": {"enable_thinking": bool(thinking), **chat_template_kwargs}}
     # mlx-vlm reads enable_thinking and (as reasoning_effort) the reasoning strength, no other template
     # argument; it names its budget thinking_budget and takes its tool parser per request
     out: dict[str, Any] = {"enable_thinking": bool(thinking)}

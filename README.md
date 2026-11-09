@@ -291,7 +291,7 @@ fragment is deep-merged in list order, then the root file's other keys merge on
 top, then `airlie.local.yaml` (deep-merged, gitignored, and **not** processed for `includes:`), then the selected
 topology profile. Role prompts, model paths, `story.repo`, and the like resolve against the **root** config file's
 directory (`airlie.yaml`'s parent), not the including fragment's directory. Copy `airlie.local.example.yaml` to
-`airlie.local.yaml` for local overrides. Every seam is a key there: engines (`mlx_vlm` managed process, one per model, a
+`airlie.local.yaml` for local overrides. Every seam is a key there: engines (`mlx_vlm` managed process, one per model,
 or any `openai_http` server), the model catalog (pinned
 Hugging Face revisions; `bench: true` entries are compared by `task bench:models`; `tool_call_parser`
 names mlx-vlm's parser for the model, sent per request: `qwen3_coder`, `atem`; unset lets the server infer it

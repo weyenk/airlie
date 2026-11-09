@@ -392,3 +392,15 @@ def test_each_message_carries_its_speaker_in_its_text(tmp_path: Path) -> None:
     assert client._add_name_prefixes is True
     said = to_oai_type(UserMessage(content="I post the proof.", source="product"), prepend_name=True)
     assert said[0]["content"] == "product said:\nI post the proof."
+
+
+def test_an_openai_dialect_client_sends_only_template_kwargs(tmp_path: Path) -> None:
+    (tmp_path / "p.md").write_text("x")
+    role = RoleSpec(
+        prompt=tmp_path / "p.md", model="base", thinking=True, thinking_budget=512, max_tokens=2000
+    )
+    spec = ModelSpec(repo="o/m", revision="r", tool_call_parser="qwen3_coder")
+    client = build_model_client("http://x/v1", "base", role, api_key=None, model=spec, dialect="openai")
+    extra = client._create_args["extra_body"]
+    assert extra["chat_template_kwargs"] == {"enable_thinking": True}
+    assert not {"enable_thinking", "thinking_budget", "tool_parser", "reasoning_effort"} & set(extra)
