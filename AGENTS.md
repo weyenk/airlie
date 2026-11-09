@@ -38,3 +38,5 @@ uv run mypy
 uv run pytest -q -n auto --maxprocesses 8
 task web:gate
 ```
+
+Unit tests over 500 ms or on the real clock are quarantined in [`tests/unit/quarantine.toml`](tests/unit/quarantine.toml) and left out of that run; `task test:quarantine` runs only them (they must still pass). CI's unit job sets `AIRLIE_TEST_BUDGET_MS=500` and fails on a new test over it: make it fast, or list it there with a `slow:` or `clock:` reason.
