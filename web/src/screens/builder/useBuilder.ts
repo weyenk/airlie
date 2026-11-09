@@ -113,9 +113,9 @@ export function useBuilder(name: Ref<string>) {
     }
   }
 
-  /** A box of `type` (or an each box running `bundle`) at (x, y), selected; without a place, right of the rest. */
+  /** A box of `type` (or a bundle box running `bundle`) at (x, y), selected; without a place, right of the rest. */
   function place(item: { type: NodeType } | { bundle: string }, x?: number, y?: number) {
-    const type: NodeType = "type" in item ? item.type : "each";
+    const type: NodeType = "type" in item ? item.type : "bundle";
     const id = freeId(graph.value, type);
     const at = x !== undefined && y !== undefined ? { x, y } : { x: graph.value.nodes.length ? Math.max(...graph.value.nodes.map((n) => n.x)) + COLUMN : 0, y: 0 };
     if (edit((g) => addNode(g, type, at.x, at.y, "bundle" in item ? { workflow: item.bundle } : {}))) {

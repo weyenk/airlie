@@ -22,25 +22,23 @@ test("a box per node, placed where the graph says, in its type's shape", () => {
   expect(base.attributes("style")).toContain("height: 56px");
   const shape = (id: string) => w.get(`[data-box][data-node=${id}]`).attributes("data-shape");
   expect(shape("survey")).toBe("model");
-  expect(shape("layers")).toBe("model");
+  expect(shape("layers")).toBe("code"); // a named catalog operation until Part 2
   expect(shape("amigos")).toBe("model");
   expect(shape("intake")).toBe("code");
   expect(shape("review")).toBe("gate");
-  expect(shape("plan_story")).toBe("parallel");
-  expect(shape("build_layers")).toBe("each");
+  expect(shape("build_layers")).toBe("bundle");
   expect(w.get("[data-box][data-node=build_layers]").text()).toContain("layer");
-  expect(w.get("[data-box][data-node=plan_story]").text()).toContain("same time");
 });
 
-test("a wire per edge, each drawn for its kind", () => {
+test("a wire per line", () => {
   const graph = graphOf(STORY_YAML);
   const w = mountCanvas(graph);
   expect(w.findAll("[data-edge]")).toHaveLength(graph.edges.length);
-  expect(w.findAll("[data-edge=parallel]")).toHaveLength(4);
-  expect(w.get("[data-edge=sequence][data-from=intake][data-to=base]").attributes("d")).toMatch(/^M 144 52 /); // base's right edge, mid height
+  expect(w.get("[data-edge=line][data-from=intake][data-to=base]").attributes("d")).toMatch(/^M 144 52 /); // base's right edge, mid height
 });
 
-test("a loop wire is dashed and runs below the boxes; a branch wire carries its value", () => {
+// replaced in Task 3 (ports and labelled lines): the branch half reads the old schema's on/branch wiring
+test.skip("a loop wire is dashed and runs below the boxes; a branch wire carries its value", () => {
   const loop = mountCanvas(graphOf(LAYER_YAML)).get("[data-edge=loop]");
   expect(loop.attributes("stroke-dasharray")).toBeTruthy();
   const ys = (loop.attributes("d") ?? "").match(/V (\d+)/)?.[1];
@@ -48,6 +46,15 @@ test("a loop wire is dashed and runs below the boxes; a branch wire carries its 
   const text = "workflows:\n  w:\n    start: a\n    nodes:\n      a: {type: check, run: x.a, on: v, branch: {yes: b}}\n      b: {type: check, run: x.b}\n";
   const w = mountCanvas(graphOf(text));
   expect(w.get("[data-edge-label]").text()).toBe("yes");
+});
+
+test("a loop line is dashed and runs below the boxes; a line's condition shows on it", () => {
+  const loop = mountCanvas(graphOf(LAYER_YAML)).get("[data-edge=loop]");
+  expect(loop.attributes("stroke-dasharray")).toBeTruthy();
+  const ys = (loop.attributes("d") ?? "").match(/V (\d+)/)?.[1];
+  expect(Number(ys)).toBeGreaterThan(24 + 56);
+  const text = "workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a, to: [{node: b, when: v == yes}]}\n      b: {type: check, run: x.b}\n";
+  expect(mountCanvas(graphOf(text)).get("[data-edge-label]").text()).toBe("if v == yes");
 });
 
 test("a click on a box selects it; the selected box shows pressed", async () => {
@@ -59,7 +66,7 @@ test("a click on a box selects it; the selected box shows pressed", async () => 
 });
 
 test("an empty graph says how to start", () => {
-  const empty: Graph = { name: "new", type: null, start: "", loose: [], nodes: [], edges: [], bundles: {} };
+  const empty: Graph = { name: "new", type: null, inputs: [], outputs: [], nodes: [], edges: [], bundles: {} };
   expect(mountCanvas(empty).text()).toContain("No boxes yet");
 });
 

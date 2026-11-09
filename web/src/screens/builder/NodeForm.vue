@@ -31,8 +31,8 @@ const FIELDS: Record<NodeType, string[]> = {
   meeting: ["role", "run", "inputs", "outputs", "steps", "when"],
   check: CODE,
   gate: CODE,
-  parallel: ["nodes"],
-  each: ["over", "workflow"],
+  team: MODEL,
+  bundle: ["workflow", "inputs", "outputs"],
 };
 /** The order the form lists fields in, whatever the type. */
 const ORDER = ["role", "prompt", "turn", "parse", "run", "session", "advisor", "over", "workflow", "nodes", "inputs", "outputs", "steps", "tools", "done", "after", "when", "on_fail", "args"];

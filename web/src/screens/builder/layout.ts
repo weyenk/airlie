@@ -4,14 +4,13 @@ import type { Graph } from "./graph";
 export const COLUMN = 160;
 export const ROW = 90;
 
-/** A copy of `graph` with every box that has no place given one: its column is the longest run of sequence,
- * branch and parallel wires that leads to it (loops are ignored, so a loop back never pushes its target right),
- * and the boxes sharing a column (parallel children, branch targets) stack in the file's order. Boxes already
- * placed keep their place. */
+/** A copy of `graph` with every box that has no place given one: its column is the longest run of lines that
+ * leads to it (loop lines are ignored, so a loop back never pushes its target right), and the boxes sharing a
+ * column (the targets of one node's lines) stack in the file's order. Boxes already placed keep their place. */
 export function autoLayout(graph: Graph): Graph {
   const ids = graph.nodes.map((n) => n.id);
   const known = new Set(ids);
-  const wires = graph.edges.filter((e) => e.kind !== "loop" && e.from !== e.to && known.has(e.from) && known.has(e.to));
+  const wires = graph.edges.filter((e) => !e.loop && e.from !== e.to && known.has(e.from) && known.has(e.to));
   const into = new Map(ids.map((id) => [id, 0]));
   for (const e of wires) into.set(e.to, (into.get(e.to) ?? 0) + 1);
 
@@ -26,7 +25,7 @@ export function autoLayout(graph: Graph): Graph {
       if (into.get(e.to) === 0) queue.push(e.to);
     }
   }
-  // a cycle of plain wires (a `next` back) never empties its in-count: place those after what leads to them
+  // a cycle of lines without a loop bound (which the server refuses) never empties its in-count: place those after what leads to them
   for (const id of ids) {
     if (column.has(id)) continue;
     const before = wires.filter((w) => w.to === id && column.has(w.from)).map((w) => column.get(w.from)! + 1);

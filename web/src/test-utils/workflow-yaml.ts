@@ -1,9 +1,8 @@
-// The story and layer workflows as the builder reads them, read at test time (Vite's `?raw` import). The builder
-// still reads the old schema (start, next, parallel, each); config/workflows/*.yaml moved to schema v2 (lines,
-// bundles) with the nodes-are-config engine plan, and the builder learns it in plan 2 (ports and lines). Until
-// then its tests run against these copies of the shipped files from before the move.
-import LAYER from "./workflows-v1/layer.yaml?raw";
-import STORY from "./workflows-v1/story.yaml?raw";
+// The story and layer workflows as the repository ships them (config/workflows/*.yaml), read at test time with
+// Vite's `?raw` import: the builder's tests read the files the server runs. Vite's test mode allows reading the
+// repo beside web/ (vite.config.ts `server.fs.allow`).
+import LAYER from "../../../config/workflows/layer.yaml?raw";
+import STORY from "../../../config/workflows/story.yaml?raw";
 
 export const STORY_YAML: string = STORY;
 export const LAYER_YAML: string = LAYER;
