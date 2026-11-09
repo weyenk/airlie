@@ -40,6 +40,8 @@ const progress = computed(() => {
   return i < 0 ? null : `layer ${String(i + 1).padStart(2, "0")} of ${layers.value.length}`;
 });
 const KW = { given: "text-info-foreground", when: "text-warn-foreground", then: "text-ok-foreground" } as const;
+const steps = (c: { given: string; when: string; then: string }) =>
+  [["Given", KW.given, c.given], ["When", KW.when, c.when], ["Then", KW.then, c.then]] as const;
 const base = computed(() => `/workflows/${encodeURIComponent(props.itemKey)}`);
 
 </script>
@@ -55,9 +57,11 @@ const base = computed(() => `/workflows/${encodeURIComponent(props.itemKey)}`);
       <CollapsibleContent>
         <div v-for="c in flow.acceptance" :key="c.id" class="grid grid-cols-[40px_1fr] gap-x-2.5 border-t py-2 text-[13px]">
           <span class="font-mono font-semibold text-primary">{{ c.id }}</span>
-          <span class="break-words [overflow-wrap:anywhere]">
-            <span data-kw :class="KW.given">Given</span> {{ c.given }} <span data-kw :class="KW.when">when</span> {{ c.when }}
-            <span data-kw :class="KW.then">then</span> {{ c.then }}
+          <span class="flex flex-col gap-0.5">
+            <span v-for="[kw, cls, text] in steps(c)" :key="kw" data-step class="grid grid-cols-[3.6em_1fr] break-words [overflow-wrap:anywhere]">
+              <span data-kw :class="['font-semibold not-italic', cls]">{{ kw }}</span>
+              <span>{{ text }}</span>
+            </span>
           </span>
         </div>
       </CollapsibleContent>

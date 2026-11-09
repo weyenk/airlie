@@ -213,13 +213,15 @@ test("the title edits in place and Enter saves it", async () => {
   expect(api.patchItem).toHaveBeenCalledWith("AIR-4", { title: "Wider" });
 });
 
-test("acceptance criteria show Given, When and Then, each in its own token colour", async () => {
+test("acceptance criteria show Given, When and Then, as three steps, each in its own token colour", async () => {
   await open();
   const section = q("[data-acceptance]")!;
   expect(section.textContent).toContain("Acceptance criteria");
   expect(section.textContent).toContain("AC1");
   const kws = [...section.querySelectorAll("[data-kw]")];
-  expect(kws.map((k) => k.textContent)).toEqual(["Given", "when", "then"]);
+  expect(kws.map((k) => k.textContent)).toEqual(["Given", "When", "Then"]);
+  const steps = [...section.querySelectorAll("[data-step]")].map((s) => [...s.children].map((c) => c.textContent).join(" "));
+  expect(steps).toEqual(["Given an open panel", "When the handle is dragged", "Then the width follows"]);
   const colours = kws.map((k) => k.className.split(" ").find((c) => /^text-(info|warn|ok)-foreground$/.test(c)));
   expect(colours).toEqual(["text-info-foreground", "text-warn-foreground", "text-ok-foreground"]);
 });

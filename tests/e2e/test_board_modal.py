@@ -257,6 +257,10 @@ def test_acceptance_criteria_colour_given_when_and_then(
     ]
     evidence.shot("Given, when and then each have a colour", section, held=len(set(colours)) == 3)
     assert len(set(colours)) == 3, colours
+    evidence.expect(
+        section.locator("[data-step]").first, "each criterion reads as Given / When / Then steps"
+    ).to_contain_text("Given")
+    assert section.locator("[data-kw]").all_inner_texts()[:3] == ["Given", "When", "Then"]
     evidence.expect(dialog.locator("[data-workflow]"), "the workflow lists its layers").to_contain_text(
         "Layer 01"
     )
