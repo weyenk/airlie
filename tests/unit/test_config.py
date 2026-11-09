@@ -1180,8 +1180,9 @@ def test_merge_order_is_include_then_root_then_local_then_profile(tmp_path: Path
 
 
 def test_missing_include_is_a_config_error(tmp_path: Path) -> None:
-    base = write(tmp_path, {**MINIMAL, "includes": ["missing.yaml"]})
-    with pytest.raises(ConfigError, match=r"includes: file not found: missing\.yaml"):
+    # The capital X pins that only *?[ mark a glob: a plain name with any other character is a file.
+    base = write(tmp_path, {**MINIMAL, "includes": ["Xmissing.yaml"]})
+    with pytest.raises(ConfigError, match=r"includes: file not found: Xmissing\.yaml"):
         load_config(base)
 
 
