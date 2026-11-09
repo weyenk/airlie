@@ -1,7 +1,7 @@
 // The automatic left-to-right arrangement a hand-written workflow opens with. Pure: no Vue.
 import type { Graph } from "./graph";
 
-export const COLUMN = 160;
+export const COLUMN = 220;
 export const ROW = 90;
 
 /** A copy of `graph` with every box that has no place given one: its column is the longest run of lines that

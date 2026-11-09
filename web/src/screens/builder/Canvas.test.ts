@@ -17,7 +17,7 @@ test("a box per node, placed where the graph says, in its type's shape", () => {
   const w = mountCanvas(graph);
   expect(w.findAll("[data-box]")).toHaveLength(graph.nodes.length);
   const base = w.get("[data-box][data-node=base]");
-  expect(base.attributes("style")).toContain("left: 184px"); // 160 + the 24 px margin
+  expect(base.attributes("style")).toContain("left: 244px"); // 220 + the 24 px margin
   expect(base.attributes("style")).toContain("width: 120px");
   expect(base.attributes("style")).toContain("height: 56px");
   const shape = (id: string) => w.get(`[data-box][data-node=${id}]`).attributes("data-shape");
@@ -73,14 +73,14 @@ afterEach(() => {
 
 test("dragging a box moves it, on a 8 px grid, and the click that ends the drag selects nothing", async () => {
   const w = editable(graphOf(STORY_YAML));
-  const base = w.get("[data-box][data-node=base]"); // at 160, 0
+  const base = w.get("[data-box][data-node=base]"); // at 220, 0
   await press(base, 200, 40);
   pointer("pointermove", 263, 101);
   await w.vm.$nextTick();
-  expect(base.attributes("style")).toContain("left: 248px"); // follows the pointer while dragging
+  expect(base.attributes("style")).toContain("left: 304px"); // follows the pointer while dragging
   pointer("pointerup", 263, 101);
   await w.vm.$nextTick();
-  expect(w.emitted("move")).toEqual([["base", 224, 64]]);
+  expect(w.emitted("move")).toEqual([["base", 280, 64]]);
   await base.trigger("click");
   expect(w.emitted("select")).toBeUndefined();
 });

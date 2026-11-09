@@ -119,6 +119,8 @@ def test_the_story_workflow_is_drawn_a_box_per_node(
     line = "[data-edge-hit][data-from=story_card][data-to=survey]"
     hidden = canvas.locator(f"g:has(> {line}) > [data-edge-label]")
     evidence.expect(hidden, "a label too long for the room between its boxes is hidden").to_be_hidden()
+    # the line is far to the right in the wider layout: bring it into the pane before hovering
+    canvas.locator(line).scroll_into_view_if_needed()
     # a point three quarters along the line, past where it leaves story_card beside its other lines
     point = canvas.locator(line).evaluate(
         "p => { const at = p.getPointAtLength(p.getTotalLength() * 0.75); const m = p.getScreenCTM();"
