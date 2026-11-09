@@ -37,17 +37,6 @@ test("a wire per line", () => {
   expect(w.get("[data-edge=line][data-from=intake][data-to=base]").attributes("d")).toMatch(/^M 144 /); // intake's right edge
 });
 
-// replaced in Task 3 (ports and labelled lines): the branch half reads the old schema's on/branch wiring
-test.skip("a loop wire is dashed and runs below the boxes; a branch wire carries its value", () => {
-  const loop = mountCanvas(graphOf(LAYER_YAML)).get("[data-edge=loop]");
-  expect(loop.attributes("stroke-dasharray")).toBeTruthy();
-  const ys = (loop.attributes("d") ?? "").match(/V (\d+)/)?.[1];
-  expect(Number(ys)).toBeGreaterThan(24 + 56);
-  const text = "workflows:\n  w:\n    start: a\n    nodes:\n      a: {type: check, run: x.a, on: v, branch: {yes: b}}\n      b: {type: check, run: x.b}\n";
-  const w = mountCanvas(graphOf(text));
-  expect(w.get("[data-edge-label]").text()).toBe("yes");
-});
-
 test("a loop line is dashed and runs below the boxes; a line's condition shows on it", () => {
   const loop = mountCanvas(graphOf(LAYER_YAML)).get("[data-edge=loop]");
   expect(loop.attributes("stroke-dasharray")).toBeTruthy();

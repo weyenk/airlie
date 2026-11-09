@@ -1,12 +1,12 @@
 // The builder's state: the definition loaded, the graph being edited, the draft's prompt files, what validation
 // said, and saving. BuilderScreen draws it; every edit goes through the pure functions of graph.ts.
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import type { Ref } from "vue";
 import { ApiError } from "@/api";
 import { deleteDraft, EMPTY_CATALOG, getWorkflowDef, publishWorkflow, registryCatalog, saveDraft, usedBy, validateWorkflow } from "@/api/workflow_defs";
 import type { Catalog, WorkflowDetail } from "@/api/workflow_defs";
-import { addNode, emptyGraph, freeId, fromWorkflow, renameOutput } from "./graph";
-import type { GEdge, Graph, NodeSpec, NodeType } from "./graph";
+import { addNode, bundleNames, emptyGraph, freeId, fromWorkflow, portsOf, renameOutput, withBundle } from "./graph";
+import type { GEdge, Graph, NodeSpec, NodeType, Ports } from "./graph";
 import { autoLayout, COLUMN } from "./layout";
 import { problemsByEdge, problemsByNode } from "./problems";
 import { promptFieldsOf } from "./promptFile";
@@ -64,9 +64,43 @@ export function useBuilder(name: Ref<string>) {
    * changes not yet saved. */
   const unsaved = computed(() => broken.value || isNew.value || dirty.value || detail.value?.source !== "draft");
 
+  // the ports of the workflows the bundle boxes run (graph.bundles): read when the canvas loads, and when a bundle
+  // box is placed or its workflow changes, so a bundle box offers its bundle's outputs and its lines carry them
+  const ports = new Map<string, Ports>();
+  const asking = new Set<string>();
+  const unreadable = new Set<string>();
+  function fillBundles(): void {
+    for (const n of bundleNames(graph.value)) {
+      if (graph.value.bundles[n]) continue;
+      const known = ports.get(n);
+      if (known) {
+        graph.value = withBundle(graph.value, n, known);
+        continue;
+      }
+      if (asking.has(n) || unreadable.has(n)) continue;
+      asking.add(n);
+      // a workflow's ports are its own, whichever canvas asked: an answer that lands after another load still serves
+      getWorkflowDef(n)
+        .then((def) => {
+          const found = portsOf(parseWorkflow(def.yaml).spec);
+          ports.set(n, found);
+          if (bundleNames(graph.value).includes(n) && !graph.value.bundles[n]) graph.value = withBundle(graph.value, n, found);
+        })
+        .catch(() => unreadable.add(n)) // the box says its ports are unknown; the next load asks again
+        .finally(() => asking.delete(n));
+    }
+  }
+  const missingBundles = () =>
+    bundleNames(graph.value)
+      .filter((n) => !graph.value.bundles[n])
+      .join("\n");
+  watch(missingBundles, (missing) => missing && fillBundles(), { immediate: true });
+
   let loading = 0;
   async function load(wanted: string): Promise<void> {
     const mine = ++loading;
+    ports.clear(); // a draft bundle may have changed since: read again
+    unreadable.clear();
     detail.value = null;
     error.value = null;
     broken.value = false;

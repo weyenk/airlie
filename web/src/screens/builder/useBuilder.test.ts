@@ -2,7 +2,8 @@ import { flushPromises } from "@vue/test-utils";
 import { ref } from "vue";
 import { ApiError } from "@/api";
 import { CATALOG } from "@/test-utils/catalog";
-import { fromWorkflow } from "./graph";
+import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
+import { fromWorkflow, outputsOfNode, updateNode } from "./graph";
 import { useBuilder } from "./useBuilder";
 
 const api = vi.hoisted(() => ({ getWorkflowDef: vi.fn(), registryCatalog: vi.fn(), deleteDraft: vi.fn(), saveDraft: vi.fn() }));
@@ -11,6 +12,7 @@ vi.mock("@/api/workflow_defs", async (importOriginal) => ({ ...(await importOrig
 beforeEach(() => {
   api.registryCatalog.mockReset().mockRejectedValue(new Error("no catalog"));
   api.deleteDraft.mockReset().mockResolvedValue(undefined);
+  api.getWorkflowDef.mockReset().mockRejectedValue(new Error("no such workflow"));
 });
 
 test("placing a bundle item adds a bundle node that runs it, with no each box", async () => {
@@ -83,4 +85,56 @@ test("a renaming save the server refuses with a 409 says which workflows use the
   const b = useBuilder(ref("new"));
   await flushPromises();
   await expect(b.save("fix", "bug")).resolves.toEqual({ refused: "fix is used by story, layer: take it out of those first" });
+});
+
+const shippedDetail = (name: string) => ({
+  name,
+  type: name === "story" ? "story" : null,
+  source: "file" as const,
+  yaml: name === "story" ? STORY_YAML : LAYER_YAML,
+  layout: {},
+  problems: [],
+  prompts: {},
+  pr: null,
+});
+
+test("loading the shipped story reads the ports of the bundle its build_layers box runs; the YAML is unchanged", async () => {
+  api.getWorkflowDef.mockReset().mockImplementation(async (name: string) => shippedDetail(name));
+  const b = useBuilder(ref("story"));
+  await b.load("story");
+  await flushPromises();
+  expect(api.getWorkflowDef).toHaveBeenCalledWith("layer");
+  expect(b.graph.value.bundles.layer).toEqual({ inputs: ["card", "repo", "story", "layers", "base", "gate", "agreement"], outputs: ["drafted", "built.{item}", "satisfied.{item}"] });
+  expect(b.dirty.value).toBe(false);
+  expect(b.yamlText.value).not.toContain("bundles");
+});
+
+test("a bundle box placed from the palette gets its bundle's ports: it offers the bundle's outputs", async () => {
+  api.getWorkflowDef.mockReset().mockImplementation(async (name: string) => shippedDetail(name));
+  const b = useBuilder(ref("new"));
+  await flushPromises();
+  b.place({ bundle: "layer" });
+  const id = b.graph.value.nodes[0].id;
+  expect(outputsOfNode(b.graph.value, id)).toEqual([]); // not read yet
+  await flushPromises();
+  expect(api.getWorkflowDef).toHaveBeenCalledWith("layer");
+  expect(outputsOfNode(b.graph.value, id)).toEqual(["drafted", "built", "satisfied"]);
+  // a box whose workflow changes to one not read yet asks for it
+  b.edit((g) => updateNode(g, id, { ...g.nodes[0].spec, workflow: "story" }));
+  await flushPromises();
+  expect(api.getWorkflowDef).toHaveBeenCalledWith("story");
+  expect(b.graph.value.bundles.story).toEqual({ inputs: ["card", "repo"], outputs: [] });
+});
+
+test("a bundle that cannot be read leaves its box without ports, and is not asked for again until the next load", async () => {
+  api.getWorkflowDef.mockReset().mockRejectedValue(new Error("gone"));
+  const b = useBuilder(ref("new"));
+  await flushPromises();
+  b.place({ bundle: "layer" });
+  await flushPromises();
+  b.place({ bundle: "layer" });
+  await flushPromises();
+  expect(api.getWorkflowDef).toHaveBeenCalledTimes(1);
+  expect(b.graph.value.bundles).toEqual({});
+  expect(b.error.value).toBeNull();
 });

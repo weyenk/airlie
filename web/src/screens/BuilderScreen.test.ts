@@ -96,6 +96,16 @@ test("the palette lists the other definitions as bundles", async () => {
   expect(w.findAll("[data-bundle]").map((b) => b.text())).toEqual(["layer", "fix"]);
 });
 
+test("a bundle box placed from the palette shows its bundle's out-ports and what it takes", async () => {
+  api.getWorkflowDef.mockImplementation(async (name: string) => (name === "layer" ? detail({ name: "layer", type: null, yaml: LAYER_YAML }) : detail()));
+  const { w } = await open();
+  await w.findAll("[data-bundle]").find((b) => b.text() === "layer")!.trigger("click");
+  await flushPromises();
+  const id = w.findAll("[data-box][data-shape=bundle]").map((b) => b.attributes("data-node")).find((n) => n !== "build_layers")!;
+  expect(w.findAll(`[data-port=out][data-node="${id}"]`).map((p) => p.attributes("data-artifact"))).toEqual(["drafted", "built", "satisfied"]);
+  expect(w.get(`[data-port=in][data-node="${id}"]`).attributes("title")).toBe("takes card, repo, story, layers, base, gate, agreement");
+});
+
 test("a saved layout places the boxes", async () => {
   api.getWorkflowDef.mockResolvedValue(detail({ layout: { intake: { x: 640, y: 180 } } }));
   const { w } = await open();
@@ -237,9 +247,11 @@ test("another name in the address loads that definition", async () => {
 
 test("leaving the builder asks for nothing more", async () => {
   const { router } = await open();
+  // the story, and the layer its bundle box runs (for the box's ports)
+  expect(api.getWorkflowDef.mock.calls.map(([n]) => n)).toEqual(["story", "layer"]);
   await router.push("/workflows");
   await flushPromises();
-  expect(api.getWorkflowDef).toHaveBeenCalledTimes(1);
+  expect(api.getWorkflowDef).toHaveBeenCalledTimes(2);
 });
 
 // ---- editing ----
