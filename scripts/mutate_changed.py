@@ -210,7 +210,7 @@ def enrolled_files() -> list[str]:
 
 
 class Equivalent(TypedDict):
-    """One `[[tool.airlie.mutation.equivalent]]` entry: a mutant no test can catch, and why."""
+    """One `equivalent = [...]` entry (an inline table): a mutant no test can catch, and why."""
 
     mutant: str
     line: str
@@ -734,13 +734,16 @@ def main() -> int:
         return COULD_NOT_RUN
 
     results = selected(parse_results(mutmut_out("results", "--all", "true")), globs)
-    gating, _ = split_failures(results, enrolled_modules)
-    shown = {name: mutmut_out("show", name) for name in gating}
+    # every uncaught enrolled mutant's diff, the listed equivalents' too: --merge applies the list with them
+    uncaught, _ = split_failures(results, enrolled_modules)
+    shown = {name: mutmut_out("show", name) for name in uncaught}
     write_results(args.results, "ran", results, shard, args.scope, shown)
-    report, code = verdict(results, enrolled_modules, args.scope, shown, equivalents())
+    listed = equivalents()
+    report, code = verdict(results, enrolled_modules, args.scope, shown, listed)
     say(report, args.report)
     if not code:
         return 0
+    gating, _, _ = triage(results, enrolled_modules, shown, listed)
     for name in gating[:SHOW_LIMIT]:
         print(f"\n## {name}\n{shown[name]}")
     if len(gating) > SHOW_LIMIT:

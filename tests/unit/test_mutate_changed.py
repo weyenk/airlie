@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -331,8 +332,14 @@ def test_the_mutmut_config_copies_what_the_tests_read_outside_src() -> None:
     assert "ops" in cfg["tool"]["mutmut"]["also_copy"]
 
 
-def run_main(monkeypatch: pytest.MonkeyPatch, argv: list[str], changed: set[str] | None = None) -> FakeMutmut:
-    fake = FakeMutmut()
+def run_main(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    changed: set[str] | None = None,
+    fake: FakeMutmut | None = None,
+    stats: dict[str, object] | None = None,
+) -> FakeMutmut:
+    fake = fake or FakeMutmut()
     monkeypatch.setattr(mc, "mutmut", fake.run)
     monkeypatch.setattr(mc, "mutmut_out", fake.out)
     monkeypatch.setattr(mc, "enrolled_files", lambda: SCOPE)
@@ -345,10 +352,49 @@ def run_main(monkeypatch: pytest.MonkeyPatch, argv: list[str], changed: set[str]
     touched = ({"airlie.engine.sse.x_iter_sse__mutmut_*": 20}, ["- src/airlie/engine/sse.py: iter_sse"])
     monkeypatch.setattr(mc, "changed_functions", lambda merge_base, paths: touched)
     monkeypatch.setattr(mc, "probe_mutant", lambda files: "airlie.engine.sse.x_iter_sse__mutmut_1")
-    monkeypatch.setattr(mc, "read_stats", lambda: STATS)
+    monkeypatch.setattr(mc, "read_stats", lambda: stats or STATS)
     monkeypatch.setattr(mc.sys, "argv", ["mutate_changed.py", *argv])
     mc.main()
     return fake
+
+
+SSE = "airlie.engine.sse.x_iter_sse__mutmut_"
+
+
+class ShowingMutmut(FakeMutmut):
+    """mutmut whose run ends with two enrolled survivors, a killed one and a survivor outside the enrolled
+    modules (a function the changed test runs), and whose `show` answers with each mutant's diff."""
+
+    def out(self, *args: str) -> str:
+        if args[0] == "show":
+            return f"--- a\n+++ b\n-    old\n+    new {args[1]}\n"
+        return f"{SSE}1: killed\n{SSE}2: survived\n{SSE}3: survived\nairlie.cli.x_main__mutmut_1: survived\n"
+
+
+NEW_TEST_RUNS_CLI = {"tests_by_mangled_function_name": {"airlie.cli.x_main": ["tests/unit/test_new.py::t"]}}
+
+
+def test_a_shards_record_carries_the_diff_of_each_gating_mutant_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    out = tmp_path / "shard-1.json"
+    monkeypatch.setattr(mc, "equivalents", lambda: {})
+    run_main(monkeypatch, ["--results", str(out)], fake=ShowingMutmut(), stats=NEW_TEST_RUNS_CLI)
+    record = json.loads(out.read_text())
+    assert record["status"] == "ran" and "airlie.cli.x_main__mutmut_1" in record["results"]
+    # the enrolled survivors' diffs; none for the killed mutant or the one outside the enrolled modules
+    assert record["shown"] == {f"{SSE}{i}": f"--- a\n+++ b\n-    old\n+    new {SSE}{i}\n" for i in (2, 3)}
+
+
+def test_the_failure_output_shows_the_gating_mutants_not_the_listed_equivalents(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    listed = {f"{SSE}2": {"mutant": f"{SSE}2", "line": f"new {SSE}2", "reason": "a log line"}}
+    monkeypatch.setattr(mc, "equivalents", lambda: listed)
+    run_main(monkeypatch, ["--gate-only"], fake=ShowingMutmut())
+    out = capsys.readouterr().out
+    assert f"\n## {SSE}3\n" in out
+    assert f"\n## {SSE}2\n" not in out  # listed: reported as equivalent, not shown as a failure
 
 
 def test_by_default_the_functions_the_changed_tests_run_are_mutated_too(
