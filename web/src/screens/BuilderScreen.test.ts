@@ -327,8 +327,10 @@ test("a workflow in the repo's files saves in place, as an edit of that file tha
   );
   const { w } = await open();
   expect(w.find("[data-edits-file]").exists()).toBe(false);
-  await w.get("[data-box][data-node=intake]").trigger("click"); // a box moved is the usual edit; any will do
-  await w.get("[data-box][data-node=intake]").trigger("click");
+  // a box moved is the usual edit
+  w.findComponent({ name: "AirlieBuilderCanvas" }).vm.$emit("move", "intake", 320, 400);
+  await flushPromises();
+  expect(w.find("[data-dirty]").exists()).toBe(true);
   await w.get("[data-save]").trigger("click");
   await flushPromises();
   expect(dialog()).toBeNull(); // no name asked: the file's own
@@ -336,11 +338,49 @@ test("a workflow in the repo's files saves in place, as an edit of that file tha
   expect(name).toBe("story");
   expect(body.type).toBe("story");
   expect(body.yaml).toContain("workflows:\n  story:\n");
+  expect(body.yaml).toContain("intake: {x: 320, y: 400}");
   expect(w.get("[data-edits-file]").text()).toBe("edit of story");
   expect(publishButton(w).disabled).toBe(false);
   await w.get("[data-publish]").trigger("click");
   await flushPromises();
   expect(api.publishWorkflow).toHaveBeenCalledWith("story");
+});
+
+test("a file's workflow as the file has it cannot be saved: nothing changed; an edit turns Save on", async () => {
+  const { w } = await open();
+  const save = w.get("[data-save]");
+  expect((save.element as HTMLButtonElement).disabled).toBe(true);
+  expect(save.attributes("title")).toBe("nothing changed");
+  await w.get("[data-tab=yaml]").trigger("click");
+  expect(w.get("[data-yaml-notice]").text()).toContain("a file's comments are regenerated away when it is saved as a draft");
+  await w.get("[data-tab=diagram]").trigger("click");
+  w.findComponent({ name: "AirlieBuilderCanvas" }).vm.$emit("move", "intake", 320, 400);
+  await flushPromises();
+  expect((w.get("[data-save]").element as HTMLButtonElement).disabled).toBe(false);
+  expect(w.get("[data-save]").attributes("title")).toBeUndefined();
+  // a draft as saved can still be saved (its own text goes back, comments and all)
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  const { w: draft } = await open("/workflows/build/fix");
+  expect((draft.get("[data-save]").element as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("the canvas pane fades at its right edge while more of a wide layout is off-screen", async () => {
+  const { w } = await open();
+  const pane = w.get("[data-canvas-pane]").element as HTMLElement;
+  expect(w.find("[data-canvas-more]").exists()).toBe(false); // jsdom lays nothing out: nothing is wider
+  Object.defineProperty(pane, "scrollWidth", { configurable: true, value: 2400 });
+  Object.defineProperty(pane, "clientWidth", { configurable: true, value: 900 });
+  pane.dispatchEvent(new Event("scroll"));
+  await flushPromises();
+  expect(w.find("[data-canvas-more]").exists()).toBe(true);
+  pane.scrollLeft = 1500; // scrolled to the end: nothing more
+  pane.dispatchEvent(new Event("scroll"));
+  await flushPromises();
+  expect(w.find("[data-canvas-more]").exists()).toBe(false);
+  pane.scrollLeft = 0;
+  window.dispatchEvent(new Event("resize"));
+  await flushPromises();
+  expect(w.find("[data-canvas-more]").exists()).toBe(true);
 });
 
 test("a saved edit of a file opens as that edit", async () => {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useEventListener } from "@vueuse/core";
 import { ChevronLeft } from "lucide-vue-next";
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { onBeforeRouteLeave, onBeforeRouteUpdate, RouterLink, useRoute, useRouter } from "vue-router";
 import type { RouteLocationNormalized } from "vue-router";
 import ErrorBanner from "@/components/ErrorBanner.vue";
@@ -303,6 +303,20 @@ async function leaveAnyway() {
   }
 }
 
+/** A file's workflow as the file has it: saving it would only rewrite the file's text (its comments regenerated
+ * away), so Save waits for an edit. */
+const untouchedFile = computed(() => detail.value?.source === "file" && !b.dirty.value);
+
+// the canvas pane scrolls when the layout is wider than it: a fade at its right edge says more is off-screen
+const pane = ref<HTMLElement | null>(null);
+const more = ref(false);
+function measure() {
+  const el = pane.value;
+  more.value = !!el && el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+}
+useEventListener(window, "resize", measure);
+watch([graph, tab, pane], () => void nextTick(measure), { immediate: true, flush: "post" });
+
 const count = computed(() => problems.value.length);
 /** Why Publish is off, as its tooltip; undefined when it is on (a publish in flight aside). */
 const publishHelp = computed(() => (b.unsaved.value ? "Save first" : count.value ? "Fix the problems first" : undefined));
@@ -327,7 +341,7 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       <Button v-if="detail?.source === 'draft'" size="sm" variant="ghost" data-delete :disabled="b.saving.value || b.publishing.value" @click="deleting = true">Delete draft</Button>
       <Button size="sm" variant="outline" data-workflow-edit :disabled="b.broken.value" @click="editingWorkflow = true">Workflow</Button>
       <Button size="sm" variant="outline" data-validate :disabled="b.broken.value" @click="b.validate">Validate</Button>
-      <Button size="sm" data-save :disabled="b.broken.value || b.saving.value || b.publishing.value" @click="saveClick">Save draft</Button>
+      <Button size="sm" data-save :title="untouchedFile ? 'nothing changed' : undefined" :disabled="b.broken.value || b.saving.value || b.publishing.value || untouchedFile" @click="saveClick">Save draft</Button>
       <Button size="sm" variant="outline" data-publish :title="publishHelp" :disabled="publishHelp !== undefined || b.publishing.value || b.saving.value" @click="publishClick">Publish</Button>
       <div role="tablist" aria-label="View" class="inline-flex gap-0.5 rounded-lg bg-muted p-[3px]">
         <button type="button" role="tab" data-tab="diagram" :aria-selected="tab === 'diagram'" :class="tabClass(tab === 'diagram')" @click="tab = 'diagram'">Diagram</button>
@@ -347,30 +361,46 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
     </template>
 
     <template v-if="tab === 'yaml'">
-      <p data-yaml-notice class="text-[13px] text-muted-foreground">Saving regenerates the file; comments in a hand-written file are kept only when the definition is unchanged.</p>
+      <p data-yaml-notice class="text-[13px] text-muted-foreground">
+        Saving regenerates the file. A draft's comments are kept only while its definition is unchanged; a file's comments are regenerated away when it is saved as a draft.
+      </p>
       <pre data-yaml class="overflow-auto rounded-xl border border-border bg-[var(--code)] p-4 font-mono text-xs leading-relaxed min-[901px]:min-h-0 min-[901px]:flex-1">{{ b.yamlText.value }}</pre>
     </template>
 
     <div v-else class="grid grid-cols-[180px_minmax(0,1fr)] items-start gap-3 max-[900px]:grid-cols-1 min-[901px]:min-h-0 min-[901px]:flex-1 min-[901px]:items-stretch">
       <Palette :bundles="bundles" :failed="failed" :readonly="b.broken.value" @retry="reload" @add="(item) => b.place(item)" />
-      <section aria-label="Canvas" class="min-h-[240px] overflow-auto rounded-xl border border-border bg-card shadow-sm max-[900px]:max-h-[calc(100dvh-var(--header-h)-200px)] min-[901px]:h-full">
-        <Canvas
-          :graph="graph"
-          :selected="selected"
-          :selected-edge="selectedEdge"
-          :problems="b.byNode.value"
-          :edge-problems="b.byEdge.value"
-          :readonly="b.broken.value"
-          @select="pick"
-          @move="(id, x, y) => b.edit((g) => moveNode(g, id, x, y))"
-          @connect="drawn"
-          @open="openBox"
-          @enter="enterBox"
-          @select-edge="clickedWire"
-          @open-edge="openWire"
-          @place="(item, x, y) => b.place(item, x, y)"
-        />
-      </section>
+      <div class="relative min-w-0 min-[901px]:h-full">
+        <section
+          ref="pane"
+          aria-label="Canvas"
+          data-canvas-pane
+          class="canvas-pane min-h-[240px] overflow-auto rounded-xl border border-border bg-card shadow-sm max-[900px]:max-h-[calc(100dvh-var(--header-h)-200px)] min-[901px]:h-full"
+          @scroll.passive="measure"
+        >
+          <Canvas
+            :graph="graph"
+            :selected="selected"
+            :selected-edge="selectedEdge"
+            :problems="b.byNode.value"
+            :edge-problems="b.byEdge.value"
+            :readonly="b.broken.value"
+            @select="pick"
+            @move="(id, x, y) => b.edit((g) => moveNode(g, id, x, y))"
+            @connect="drawn"
+            @open="openBox"
+            @enter="enterBox"
+            @select-edge="clickedWire"
+            @open-edge="openWire"
+            @place="(item, x, y) => b.place(item, x, y)"
+          />
+        </section>
+        <div
+          v-if="more"
+          data-canvas-more
+          aria-hidden="true"
+          class="pointer-events-none absolute top-px right-[11px] bottom-[11px] w-12 bg-gradient-to-l from-card to-transparent"
+        ></div>
+      </div>
     </div>
 
     <NodeModal
@@ -428,3 +458,37 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
     </Dialog>
   </div>
 </template>
+
+<style scoped>
+/* The canvas pane's scrollbars are always drawn (an overlay scrollbar hides that the layout runs on): thin, in the
+ * theme's colours. Chromium and Safari draw a styled ::-webkit-scrollbar as a classic one; Firefox reads the
+ * standard properties (which Chromium would let override the styled one, so they are Firefox's alone). */
+.canvas-pane {
+  scrollbar-gutter: stable;
+}
+.canvas-pane::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.canvas-pane::-webkit-scrollbar-track {
+  background: var(--muted);
+  border-radius: 0 0 12px 12px;
+}
+.canvas-pane::-webkit-scrollbar-thumb {
+  background: var(--input);
+  border: 2px solid var(--muted);
+  border-radius: 999px;
+}
+.canvas-pane::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-fg);
+}
+.canvas-pane::-webkit-scrollbar-corner {
+  background: var(--muted);
+}
+@supports not selector(::-webkit-scrollbar) {
+  .canvas-pane {
+    scrollbar-width: thin;
+    scrollbar-color: var(--input) var(--muted);
+  }
+}
+</style>
