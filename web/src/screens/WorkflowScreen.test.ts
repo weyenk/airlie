@@ -10,6 +10,8 @@ import WorkflowScreen from "./WorkflowScreen.vue";
 
 const api = vi.hoisted(() => ({ storyFlow: vi.fn(), storyJob: vi.fn(), listJobs: vi.fn(), listRunning: vi.fn(), cancelJob: vi.fn() }));
 vi.mock("@/api/workflows", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/workflows")>()), ...api }));
+const defsApi = vi.hoisted(() => ({ adoptWorkflow: vi.fn() }));
+vi.mock("@/api/workflow_defs", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/workflow_defs")>()), ...defsApi }));
 
 const STAGES = [stage("intake", "Intake"), stage("refine", "Refine"), stage("layers", "Plan layers")];
 const FAILED = flow([...STAGES, layer("01", "Comment id store", "passed", ["passed", "passed", "passed"]), layer("02", "Comment edit", "failed", ["passed", "failed", "pending"]), stage("publish", "Publish", "pending")], {
@@ -42,6 +44,7 @@ beforeEach(() => {
   api.storyJob.mockReset().mockImplementation(async (_k: string, node: string, jobId: string) => detail({ node, job: job({ id: jobId, label: jobId }) }));
   api.listJobs.mockReset().mockResolvedValue([]);
   api.listRunning.mockReset().mockResolvedValue([]);
+  defsApi.adoptWorkflow.mockReset();
   api.cancelJob.mockReset().mockResolvedValue({ job_id: "story-AIR-17", cancelled: true });
 });
 afterEach(() => {
@@ -343,4 +346,45 @@ test("on a laptop the detail stays below the pipeline and no sheet opens", async
   expect(document.body.querySelector("[data-sheet]")).toBeNull();
   expect(w.find("section[aria-label=Job]").exists()).toBe(true);
   vi.unstubAllGlobals();
+});
+
+const adoptButton = (w: { find: (s: string) => { element: Element } }) => w.find("[data-adopt]").element as HTMLButtonElement;
+const inBody = <T extends Element = HTMLElement>(sel: string) => document.body.querySelector<T>(sel);
+
+test("Use the current workflow is disabled while the story runs, and says why", async () => {
+  api.listJobs.mockResolvedValue([jobRow()]);
+  const { w } = await open();
+  expect(adoptButton(w).disabled).toBe(true);
+  expect(adoptButton(w).title).toBe("the story is running");
+});
+
+test("Use the current workflow asks first, then shows the move and refreshes the flow", async () => {
+  defsApi.adoptWorkflow.mockResolvedValue({ key: "AIR-17", name: "bug", from: "story", to: "bug" });
+  const { w } = await open();
+  expect(adoptButton(w).disabled).toBe(false);
+  expect(adoptButton(w).title).toBe("");
+  await w.get("[data-adopt]").trigger("click");
+  await flushPromises();
+  const dialog = inBody("[data-adopt-dialog]")!;
+  expect(dialog.textContent).toContain("Use the current workflow?");
+  expect(dialog.textContent).toContain("Changed nodes and everything after them run again. Unchanged work is kept.");
+  expect(defsApi.adoptWorkflow).not.toHaveBeenCalled();
+  const before = api.storyFlow.mock.calls.length;
+  inBody<HTMLButtonElement>("[data-adopt-ok]")!.click();
+  await flushPromises();
+  expect(defsApi.adoptWorkflow).toHaveBeenCalledWith("AIR-17");
+  expect(w.get("[data-adopted]").text()).toBe("now on bug (story → bug)");
+  expect(api.storyFlow.mock.calls.length).toBeGreaterThan(before);
+  expect(inBody("[data-adopt-dialog]")).toBeNull();
+});
+
+test("a refusal (409 running, 422 not adoptable) shows the server's message in the dialog", async () => {
+  defsApi.adoptWorkflow.mockRejectedValue(new ApiError(409, "AIR-17 is running; stop it first"));
+  const { w } = await open();
+  await w.get("[data-adopt]").trigger("click");
+  await flushPromises();
+  inBody<HTMLButtonElement>("[data-adopt-ok]")!.click();
+  await flushPromises();
+  expect(inBody("[data-adopt-error]")!.textContent).toBe("AIR-17 is running; stop it first");
+  expect(w.find("[data-adopted]").exists()).toBe(false);
 });

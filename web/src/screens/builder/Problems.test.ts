@@ -1,6 +1,6 @@
 import { mount } from "@vue/test-utils";
 import Problems from "./Problems.vue";
-import { problemNode, problemsByNode } from "./problems";
+import { problemEdge, problemNode, problemsByEdge, problemsByNode } from "./problems";
 
 test("a problem's box is the node it names", () => {
   expect(problemNode("workflow w: node fix: input 'repro' is not produced by any node and not loose")).toBe("fix");
@@ -15,6 +15,21 @@ test("each problem is listed; one naming a node focuses it", async () => {
   await w.get("[data-problem-node=fix]").trigger("click");
   expect(w.emitted("focus")).toEqual([["fix"]]);
   expect(w.text()).toContain("start names unknown node 'a'");
+});
+
+test("a problem naming a line is about that line; a click on it asks for the line", async () => {
+  const cond = "workflow w: node a: line to b: condition names 'zzz', which nothing produces";
+  expect(problemEdge(cond)).toEqual({ from: "a", to: "b" });
+  expect(problemEdge("workflow w: node a: the loop line to 'b' goes to a node that does not reach this one through forward lines")).toEqual({ from: "a", to: "b" });
+  expect(problemEdge("workflow w: node fix: input 'repro' is not produced by any node and not loose")).toBeNull();
+  expect(problemsByEdge([cond, "workflow w: node a: other"])).toEqual({ "a>b": ["line to b: condition names 'zzz', which nothing produces"] });
+  // with the workflow given, a bundle child's line of the same name is not this one's
+  expect(problemsByEdge([cond, cond.replace("workflow w", "workflow child")], "w")).toEqual({ "a>b": ["line to b: condition names 'zzz', which nothing produces"] });
+  expect(problemsByEdge([cond.replace("workflow w", "workflow child")], "w")).toEqual({});
+  expect(problemsByNode(["workflow child: node fix: a", "workflow w: node fix: b"], "w")).toEqual({ fix: ["b"] });
+  const w = mount(Problems, { props: { problems: [cond] } });
+  await w.get("[data-problem-edge='a>b']").trigger("click");
+  expect(w.emitted("focusEdge")).toEqual([["a", "b"]]);
 });
 
 test("no problems says so", () => {

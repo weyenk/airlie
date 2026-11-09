@@ -313,6 +313,12 @@ error names the key path.
 A workflow is nodes and lines: a node's `to` names the nodes its outputs feed, a model node's `prompt` is text or
 `prompt:<id>`, and a `check`/`gate` node's `run` comes from the catalog that `airlie workflows catalog` prints.
 
+The web app's workflow builder (Workflows, then a name or New) draws that file: a box per node, a port per output,
+a line per `to` entry with its condition or loop on it. A click selects a box and shows a small card; a double-click
+opens the box's fields (a check or gate picks its `run` from the catalog by title). A bundle box opens its own
+workflow in place with a breadcrumb back. Validate runs the composer's checks; Save draft stores the workflow
+as a draft a card can choose, and the story screen can adopt the current workflow with one confirm.
+
 A role that thinks (`thinking: true` with a `thinking_budget`) needs `max_tokens` larger than the budget: `max_tokens`
 caps the thinking and the answer together, so the config is refused otherwise, naming the role and both numbers.
 A reply the engine cuts off at `max_tokens` ends an agent's turn as `cut_off`, never as a finished answer; the

@@ -13,30 +13,30 @@ const at = (g: Graph, id: string) => {
   return { x: n.x, y: n.y };
 };
 
-test("left to right: every line that is not a loop goes to a later column, 160 px apart", () => {
+test("left to right: every line that is not a loop goes to a later column, 220 px apart", () => {
   const g = autoLayout(graphOf(STORY_YAML));
   for (const e of g.edges.filter((x) => !x.loop)) expect(at(g, e.from).x, `${e.from}>${e.to}`).toBeLessThan(at(g, e.to).x);
-  expect(g.nodes.every((n) => n.x % 160 === 0 && n.y % 90 === 0)).toBe(true);
+  expect(g.nodes.every((n) => n.x % 220 === 0 && n.y % 90 === 0)).toBe(true);
   expect(at(g, "intake")).toEqual({ x: 0, y: 0 });
-  expect(at(g, "base")).toEqual({ x: 160, y: 0 });
+  expect(at(g, "base")).toEqual({ x: 220, y: 0 });
 });
 
 test("a box's column is the longest run of lines that leads to it", () => {
   const g = autoLayout(graphOf(STORY_YAML));
   // to_build > gate > request > story_card: the request waits for the gate's column, though to_build lines to it too
-  expect(at(g, "request").x).toBe(4 * 160);
-  expect(at(g, "story_card").x).toBe(5 * 160);
+  expect(at(g, "request").x).toBe(4 * 220);
+  expect(at(g, "story_card").x).toBe(5 * 220);
   // build_layers sits after planned, the longest way in, not after base
-  expect(at(g, "build_layers").x).toBe(at(g, "planned").x + 160);
-  expect(at(g, "review").x).toBe(18 * 160);
+  expect(at(g, "build_layers").x).toBe(at(g, "planned").x + 220);
+  expect(at(g, "review").x).toBe(18 * 220);
 });
 
 test("boxes sharing a column stack 90 px apart in the file's order, and no two boxes share a place", () => {
   const g = autoLayout(graphOf(STORY_YAML));
   expect([at(g, "take_card_as_story"), at(g, "refine"), at(g, "survey")]).toEqual([
-    { x: 960, y: 0 },
-    { x: 960, y: 90 },
-    { x: 960, y: 180 },
+    { x: 1320, y: 0 },
+    { x: 1320, y: 90 },
+    { x: 1320, y: 180 },
   ]);
   expect(at(g, "agree_plain").x).toBe(at(g, "amigos").x);
   expect(new Set(g.nodes.map((n) => `${n.x},${n.y}`)).size).toBe(g.nodes.length);
@@ -51,7 +51,7 @@ test("a loop line does not push its target right", () => {
 test("boxes with a place keep it; only the others are placed", () => {
   const g = autoLayout(graphOf(STORY_YAML, { base: { x: 500, y: 333 } }));
   expect(at(g, "base")).toEqual({ x: 500, y: 333 });
-  expect(at(g, "to_build")).toEqual({ x: 320, y: 0 });
+  expect(at(g, "to_build")).toEqual({ x: 440, y: 0 });
 });
 
 test("it returns a new graph", () => {

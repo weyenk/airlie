@@ -18,7 +18,8 @@ from pydantic import BaseModel, ConfigDict
 from airlie.board.model import WorkflowDraft
 from airlie.board.store import BoardStore, BoardStoreError
 from airlie.config import AirlieConfig
-from airlie.flow.spec import MEETINGS, Format, NodeType, WorkflowSpec
+from airlie.flow.spec import MEETINGS, Format, NodeType, WorkflowSpec, old_schema_problems
+from airlie.flow.upgrade import upgrade_v1
 from airlie.prompts.hub import load as hub_prompts
 from airlie.story.flow import STORY_CATALOG  # the catalog, with the story's checks declared on it
 from airlie.story.publish import PublishError
@@ -112,21 +113,39 @@ def workflows_router(
         dumped = {"workflows": {name: spec.model_dump(mode="json", exclude_none=True)}}
         return yaml.safe_dump(dumped, sort_keys=False)
 
+    def current_yaml(draft: WorkflowDraft) -> tuple[str, list[str]]:
+        """The draft's text in the current schema, so an old-schema draft draws in the builder: `upgrade_v1`'s
+        mapping through the dumper `file_text` uses, its layout kept, and the problems the upgrade leaves for
+        a person to fix. The stored text is untouched until the person saves; a current-schema draft, or one
+        that does not parse, is its own text with none."""
+        try:
+            name, body = draft_body(draft.yaml, draft.name)
+        except WorkflowError:
+            return draft.yaml, []
+        if not old_schema_problems(body):
+            return draft.yaml, []
+        upgraded, left = upgrade_v1(body, catalog=STORY_CATALOG)
+        text = yaml.safe_dump({"workflows": {name: upgraded}}, sort_keys=False)
+        return text, [f"workflow {name}: {p}" for p in left]
+
     def draft_detail(draft: WorkflowDraft) -> dict[str, Any]:
         try:
             layout = _layout(draft_spec(draft.name, draft.yaml))
         except WorkflowError:  # a draft that does not parse shows no positions; its problems say why
             layout = {}
+        text, left = current_yaml(draft)
+        found = problems(draft.name, {**texts(), draft.name: text}) if left else problems(draft.name)
         return {
             "name": draft.name,
             "type": draft.type,
             "source": "draft",
-            "yaml": draft.yaml,
+            "yaml": text,
             "layout": layout,
-            "problems": problems(draft.name),
+            "problems": found + [p for p in left if p not in found],
             "prompts": dict(draft.prompts),
             "pr": _pr(draft),
             "edits_file": edits_file(cfg, draft.name),
+            "upgraded": text != draft.yaml,
         }
 
     def get_draft(name: str) -> WorkflowDraft:

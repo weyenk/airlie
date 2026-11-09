@@ -1,7 +1,7 @@
 // A prompt file a draft carries (airlie.flow.prompt_files; the hub's format, airlie.prompts.hub): YAML front
 // matter between `---` lines (`kind: rule`, `roles`, `fields`, `why`), then a body whose `{field}` placeholders
 // the node's inputs fill (`{{` and `}}` write a brace). Pure: no Vue.
-import { Document, visit } from "yaml";
+import { Document, parse, visit } from "yaml";
 
 export type PromptFile = { roles: string[]; fields: string[]; why: string; body: string };
 
@@ -38,5 +38,29 @@ export function promptProblems(file: PromptFile & { id: string }, hub: string[])
   const used = placeholders(file.body);
   for (const n of [...used].sort()) if (!file.fields.includes(n)) out.push(`{${n}} is not one of the fields`);
   for (const n of file.fields) if (!used.has(n)) out.push(`field ${n} is never used in the body`);
+  return out;
+}
+
+/** The `fields` a prompt file's front matter lists, or undefined when the text has no front matter that reads. */
+export function fieldsOf(text: string): string[] | undefined {
+  const m = /^---\n([\s\S]*?)\n---\n/.exec(text);
+  if (!m) return undefined;
+  try {
+    const meta: unknown = parse(m[1]);
+    if (typeof meta !== "object" || meta === null) return undefined;
+    const fields = (meta as { fields?: unknown }).fields;
+    return Array.isArray(fields) ? fields.filter((f): f is string => typeof f === "string") : [];
+  } catch {
+    return undefined;
+  }
+}
+
+/** The fields of the draft's prompt files that read (id -> fields), for `renameOutput` to know which name what. */
+export function promptFieldsOf(prompts: Record<string, string>): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [id, text] of Object.entries(prompts)) {
+    const fields = fieldsOf(text);
+    if (fields) out[id] = fields;
+  }
   return out;
 }

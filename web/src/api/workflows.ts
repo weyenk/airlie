@@ -149,7 +149,6 @@ export type FlowNode = {
   acceptance?: string[];
   attempts?: number;
   lane?: "plan" | "build";
-  group?: string | null;
   rows?: LaneRow[];
   tags?: FlowTag[];
 };

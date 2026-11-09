@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, shallowRef, watch } from "vue";
 import { RouterLink } from "vue-router";
 import { getItem } from "@/api/board";
+import type { Adopted } from "@/api/workflow_defs";
 import type { Item, ItemChange, Level, Status } from "@/api/board";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import ItemKey from "@/components/ItemKey.vue";
@@ -12,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { useRepoNames } from "@/composables/useRepoNames";
 import { useBoardStore } from "@/stores/board";
 import { useSessionStore } from "@/stores/session";
+import AdoptDialog from "../workflow/AdoptDialog.vue";
 import ClickToEdit from "./ClickToEdit.vue";
 import Comments from "./Comments.vue";
 import ModalShell from "./ModalShell.vue";
@@ -116,6 +118,17 @@ const started = computed(() => {
   return fetched.value?.started ?? (status !== undefined && status !== "todo" && status !== "approved");
 });
 
+const adopting = ref(false);
+const adopted = ref("");
+async function onAdopted(result: Adopted): Promise<void> {
+  adopted.value = `now on ${result.name} (${result.from} → ${result.to})`;
+  try {
+    fetched.value = await getItem(props.itemKey);
+  } catch (e) {
+    problem.value = (e as Error).message;
+  }
+}
+
 async function moveTo(status: Status): Promise<void> {
   problem.value = "";
   try {
@@ -196,7 +209,11 @@ function giveFocusBack(e: Event): void {
                 Workflows did not load
                 <Button type="button" data-workflow-retry variant="outline" size="xs" @click="reloadDefs">Retry</Button>
               </p>
-              <p v-if="started" data-workflow-started class="basis-full text-muted-foreground">Locked: {{ STARTED_HELP }}.</p>
+              <p v-if="started" data-workflow-started class="basis-full text-muted-foreground">Locked: {{ STARTED_HELP }}.
+                <a href="#" data-adopt-link class="text-primary hover:underline" @click.prevent="adopting = true">use the current workflow</a>
+              </p>
+              <p v-if="adopted" data-adopted role="status" class="basis-full text-muted-foreground">{{ adopted }}</p>
+              <AdoptDialog v-model:open="adopting" :story-key="itemKey" :running="false" @adopted="onAdopted" />
               <p v-if="workflowError" role="alert" class="basis-full break-words text-danger-foreground">{{ workflowError }}</p>
             </div>
           </template>

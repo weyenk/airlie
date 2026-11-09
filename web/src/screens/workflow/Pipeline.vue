@@ -23,9 +23,9 @@ const emit = defineEmits<{ pick: [node: string, job: string] }>();
 
 const phone = useMediaQuery(PHONE_QUERY);
 
-type Item = { kind: "stage"; node: FlowNode } | { kind: "group"; name: string; nodes: FlowNode[] } | { kind: "lanes"; nodes: FlowNode[] };
-const keyOf = (item: Item) => (item.kind === "stage" ? item.node.id : item.kind === "group" ? `group-${item.nodes[0].id}` : "lanes");
-/** The nodes in order: layers gathered into one block of lanes, neighbors with the same group into one bracket; a stage that never ran is left out. */
+type Item = { kind: "stage"; node: FlowNode } | { kind: "lanes"; nodes: FlowNode[] };
+const keyOf = (item: Item) => (item.kind === "stage" ? item.node.id : "lanes");
+/** The nodes in order: a bundle's per-item layers gathered into one block of lanes; a stage that never ran is left out. */
 const items = computed<Item[]>(() => {
   const out: Item[] = [];
   for (const node of props.nodes) {
@@ -34,13 +34,9 @@ const items = computed<Item[]>(() => {
       if (last?.kind === "lanes") last.nodes.push(node);
       else out.push({ kind: "lanes", nodes: [node] });
     } else if (!node.jobs.length) continue;
-    else if (node.group) {
-      if (last?.kind === "group" && last.name === node.group) last.nodes.push(node);
-      else out.push({ kind: "group", name: node.group, nodes: [node] });
-    } else out.push({ kind: "stage", node });
+    else out.push({ kind: "stage", node });
   }
-  // a bracket around one box is just the box
-  return out.map((it) => (it.kind === "group" && it.nodes.length === 1 ? { kind: "stage", node: it.nodes[0] } : it));
+  return out;
 });
 
 const layers = computed(() => props.nodes.filter((n) => n.kind === "layer"));
@@ -70,12 +66,6 @@ const isSelected = (node: string, job: string) => props.selected?.[0] === node &
         <span v-if="i" class="flex-none px-2 text-muted-foreground" aria-hidden="true">→</span>
         <div v-if="item.kind === 'stage'" data-stage :data-node="item.node.id" class="flex flex-none flex-col gap-2">
           <FlowBox v-for="j in item.node.jobs" :key="j.id" :node-id="item.node.id" :job="j" :selected="isSelected(item.node.id, j.id)" @pick="(n, jb) => emit('pick', n, jb)" />
-        </div>
-        <div v-else-if="item.kind === 'group'" data-group class="flex flex-none flex-col gap-1.5 rounded-xl border border-dashed border-border px-2 pt-1 pb-2">
-          <span class="text-[11px] tracking-[0.06em] text-muted-foreground">same time</span>
-          <div v-for="n in item.nodes" :key="n.id" data-stage :data-node="n.id" class="flex flex-col gap-2">
-            <FlowBox v-for="j in n.jobs" :key="j.id" :node-id="n.id" :job="j" :selected="isSelected(n.id, j.id)" @pick="(a, b) => emit('pick', a, b)" />
-          </div>
         </div>
         <div v-else data-lanes class="flex flex-none flex-col gap-2">
           <LayerLane v-for="n in item.nodes" :key="n.id" :node="n" :selected="selected" @pick="(a, b) => emit('pick', a, b)" />

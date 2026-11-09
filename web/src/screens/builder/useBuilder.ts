@@ -1,20 +1,19 @@
 // The builder's state: the definition loaded, the graph being edited, the draft's prompt files, what validation
 // said, and saving. BuilderScreen draws it; every edit goes through the pure functions of graph.ts.
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import type { Ref } from "vue";
 import { ApiError } from "@/api";
-import { getWorkflowDef, publishWorkflow, registryCatalog, saveDraft, validateWorkflow } from "@/api/workflow_defs";
+import { deleteDraft, EMPTY_CATALOG, getWorkflowDef, publishWorkflow, registryCatalog, saveDraft, usedBy, validateWorkflow } from "@/api/workflow_defs";
 import type { Catalog, WorkflowDetail } from "@/api/workflow_defs";
-import { addNode, emptyGraph, freeId, fromWorkflow } from "./graph";
-import type { GEdge, Graph, NodeType } from "./graph";
+import { addNode, bundleNames, emptyGraph, freeId, fromWorkflow, portsOf, renameOutput, withBundle } from "./graph";
+import type { GEdge, Graph, NodeSpec, NodeType, Ports } from "./graph";
 import { autoLayout, COLUMN } from "./layout";
-import { problemsByNode } from "./problems";
+import { problemsByEdge, problemsByNode } from "./problems";
+import { promptFieldsOf } from "./promptFile";
 import { parseWorkflow, toYaml } from "./yaml";
 
 /** The name the server checks a canvas not yet named under (`new` is the builder's address, not a name). */
 const UNNAMED = "untitled";
-
-const EMPTY_CATALOG: Catalog = { roles: [], types: [], checks: [], meetings: [], prompt_files: [] };
 
 export function useBuilder(name: Ref<string>) {
   const detail = ref<WorkflowDetail | null>(null);
@@ -52,16 +51,56 @@ export function useBuilder(name: Ref<string>) {
   const state = () => `${toYaml(graph.value)}\n${JSON.stringify(prompts.value)}`;
   const saved = ref("");
   const dirty = computed(() => !broken.value && state() !== saved.value);
-  const byNode = computed(() => problemsByNode(problems.value));
+  // only this workflow's own problems mark its boxes and lines: a bundle's child is checked with it, and a child's
+  // node or line of the same name is not this one's
+  const own = computed(() => (isNew.value ? UNNAMED : graph.value.name));
+  const byNode = computed(() => problemsByNode(problems.value, own.value));
+  const byEdge = computed(() => problemsByEdge(problems.value, own.value));
+  /** The draft came back upgraded from an older schema: its text is not the stored text until a save. */
+  const upgraded = computed(() => detail.value?.upgraded === true); // a save answers with the stored text: false
   /** What Save would send (the text itself only when it could not be drawn). */
   const yamlText = computed(() => (broken.value && detail.value ? detail.value.yaml : toYaml(graph.value)));
   /** Publish opens a PR of a saved draft (an edit of a file too): not a new canvas, a file's workflow as it is, or
    * changes not yet saved. */
   const unsaved = computed(() => broken.value || isNew.value || dirty.value || detail.value?.source !== "draft");
 
+  // the ports of the workflows the bundle boxes run (graph.bundles): read when the canvas loads, and when a bundle
+  // box is placed or its workflow changes, so a bundle box offers its bundle's outputs and its lines carry them
+  const ports = new Map<string, Ports>();
+  const asking = new Set<string>();
+  const unreadable = new Set<string>();
+  function fillBundles(): void {
+    for (const n of bundleNames(graph.value)) {
+      if (graph.value.bundles[n]) continue;
+      const known = ports.get(n);
+      if (known) {
+        graph.value = withBundle(graph.value, n, known);
+        continue;
+      }
+      if (asking.has(n) || unreadable.has(n)) continue;
+      asking.add(n);
+      // a workflow's ports are its own, whichever canvas asked: an answer that lands after another load still serves
+      getWorkflowDef(n)
+        .then((def) => {
+          const found = portsOf(parseWorkflow(def.yaml).spec);
+          ports.set(n, found);
+          if (bundleNames(graph.value).includes(n) && !graph.value.bundles[n]) graph.value = withBundle(graph.value, n, found);
+        })
+        .catch(() => unreadable.add(n)) // the box says its ports are unknown; the next load asks again
+        .finally(() => asking.delete(n));
+    }
+  }
+  const missingBundles = () =>
+    bundleNames(graph.value)
+      .filter((n) => !graph.value.bundles[n])
+      .join("\n");
+  watch(missingBundles, (missing) => missing && fillBundles(), { immediate: true });
+
   let loading = 0;
   async function load(wanted: string): Promise<void> {
     const mine = ++loading;
+    ports.clear(); // a draft bundle may have changed since: read again
+    unreadable.clear();
     detail.value = null;
     error.value = null;
     broken.value = false;
@@ -100,6 +139,17 @@ export function useBuilder(name: Ref<string>) {
     checked.value = saved.value;
   }
 
+  /** Put back a canvas held while its bundle was open (builder_state.ts): its graph and prompt files over the
+   * definition `load` just read, so the differences show as unsaved changes. Nothing when it is another
+   * workflow's. */
+  function restore(held: { name: string; graph: Graph; prompts: Record<string, string> }): void {
+    if (held.name !== name.value || broken.value) return;
+    graph.value = held.graph;
+    prompts.value = { ...held.prompts };
+    selected.value = null;
+    selectedEdge.value = null;
+  }
+
   /** Apply an edit; one graph.ts refuses (a name taken, a move missing a field) shows as the error. */
   function edit(change: (g: Graph) => Graph): boolean {
     try {
@@ -118,10 +168,24 @@ export function useBuilder(name: Ref<string>) {
     const type: NodeType = "type" in item ? item.type : "bundle";
     const id = freeId(graph.value, type);
     const at = x !== undefined && y !== undefined ? { x, y } : { x: graph.value.nodes.length ? Math.max(...graph.value.nodes.map((n) => n.x)) + COLUMN : 0, y: 0 };
-    if (edit((g) => addNode(g, type, at.x, at.y, "bundle" in item ? { workflow: item.bundle } : {}))) {
+    // a meeting sits the protocol's roles and reads its inputs (the catalog's); a bundle box runs its bundle
+    const meeting = catalog.value.meetings[0];
+    const spec: NodeSpec = "bundle" in item ? { workflow: item.bundle } : type === "meeting" && meeting ? { role: [...meeting.roles], inputs: [...meeting.inputs] } : {};
+    if (edit((g) => addNode(g, type, at.x, at.y, spec))) {
       selected.value = id;
       selectedEdge.value = null;
     }
+  }
+
+  /** Box `id`'s output `old` called `to`, its lines and readers following (graph.ts `renameOutput`, told the
+   * fields of the draft's prompt files); a reader through a prompt file that names it refuses it, shown as the
+   * error. True once renamed. */
+  function renameOutputOf(id: string, old: string, to: string): boolean {
+    return edit((g) => {
+      const done = renameOutput(g, id, old, to, promptFieldsOf(prompts.value));
+      if ("refused" in done) throw new Error(`${old} cannot be renamed: ${done.refused.join(", ")} read it through a prompt file`);
+      return done;
+    });
   }
 
   async function validate(): Promise<void> {
@@ -156,11 +220,33 @@ export function useBuilder(name: Ref<string>) {
       error.value = null;
       return true;
     } catch (e) {
-      if (e instanceof ApiError && (e.status === 409 || e.status === 422)) return { refused: e.message };
+      if (e instanceof ApiError) {
+        const users = usedBy(e);
+        if (users) return { refused: usedBySentence(as, users) };
+        if (e.status === 409 || e.status === 422) return { refused: e.message };
+      }
       error.value = e instanceof Error ? e : String(e);
       return false;
     } finally {
       saving.value = false;
+    }
+  }
+
+  /** Delete draft `as`. Resolves to true once gone; to `{ refused }` with the workflows that use it when the server
+   * answers 409; false on any other failure (shown as the error). */
+  async function remove(as: string): Promise<true | { refused: string[] } | false> {
+    try {
+      await deleteDraft(as);
+      error.value = null;
+      return true;
+    } catch (e) {
+      const users = e instanceof ApiError ? usedBy(e) : null;
+      if (users) {
+        error.value = usedBySentence(as, users); // replaces whatever was shown before
+        return { refused: users };
+      }
+      error.value = e instanceof Error ? e : String(e);
+      return false;
     }
   }
 
@@ -207,6 +293,9 @@ export function useBuilder(name: Ref<string>) {
     validated,
     stale: computed(() => checked.value !== null && checked.value !== state()),
     byNode,
+    byEdge,
+    own,
+    upgraded,
     catalog,
     catalogFailed,
     loadCatalog,
@@ -218,12 +307,20 @@ export function useBuilder(name: Ref<string>) {
     dirty,
     yamlText,
     load,
+    restore,
     edit,
     place,
+    renameOutput: renameOutputOf,
+    remove,
     validate,
     save,
     publish,
   };
+}
+
+/** What a 409 naming the workflows that run draft `name` says to a person. */
+function usedBySentence(name: string, users: string[]): string {
+  return `${name} is used by ${users.join(", ")}: take it out of those first`;
 }
 
 /** The problems of a 422 publish: its detail is `{problems: [...]}`, which arrives as JSON text; anything else is

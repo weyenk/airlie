@@ -5,8 +5,9 @@ import { createMemoryHistory, createRouter, RouterView } from "vue-router";
 import { ApiError } from "@/api";
 import type { Catalog, WorkflowDef, WorkflowDetail } from "@/api/workflow_defs";
 import { type CreateForm, useCardDraftStore } from "@/stores/card_draft";
-import { STORY_YAML } from "@/test-utils/workflow-yaml";
+import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
 import BuilderScreen from "./BuilderScreen.vue";
+import { takeGraph } from "./builder/builder_state";
 
 const api = vi.hoisted(() => ({ getWorkflowDef: vi.fn(), listWorkflowDefs: vi.fn(), registryCatalog: vi.fn(), publishWorkflow: vi.fn(), saveDraft: vi.fn(), validateWorkflow: vi.fn(), deleteDraft: vi.fn() }));
 vi.mock("@/api/workflow_defs", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/workflow_defs")>()), ...api }));
@@ -22,10 +23,12 @@ const detail = (over: Partial<WorkflowDetail> = {}): WorkflowDetail => ({
   pr: null,
   ...over,
 });
-const def = (name: string, over: Partial<WorkflowDef> = {}): WorkflowDef => ({ name, type: "story", source: "file", problems: [], pr: null, ...over });
+const def = (name: string, over: Partial<WorkflowDef> = {}): WorkflowDef => ({ name, type: "story", source: "file", problems: [], pr: null, used_by: [], ...over });
 const CATALOG: Catalog = {
   roles: ["architect", "coder", "product", "tester"],
   types: ["ask", "check"],
+  formats: ["text"],
+  kinds: ["text"],
   checks: [{ name: "story.intake", title: "Intake", inputs: ["card", "repo"], outputs: ["report"], formats: { report: "text" }, transient: [], every_run: false, args: [] }],
   meetings: [{ roles: ["product", "architect"], inputs: ["card"] }],
   prompt_files: [],
@@ -93,26 +96,97 @@ test("the palette lists the other definitions as bundles", async () => {
   expect(w.findAll("[data-bundle]").map((b) => b.text())).toEqual(["layer", "fix"]);
 });
 
+test("a bundle box placed from the palette shows its bundle's out-ports and what it takes", async () => {
+  api.getWorkflowDef.mockImplementation(async (name: string) => (name === "layer" ? detail({ name: "layer", type: null, yaml: LAYER_YAML }) : detail()));
+  const { w } = await open();
+  await w.findAll("[data-bundle]").find((b) => b.text() === "layer")!.trigger("click");
+  await flushPromises();
+  const id = w.findAll("[data-box][data-shape=bundle]").map((b) => b.attributes("data-node")).find((n) => n !== "build_layers")!;
+  expect(w.findAll(`[data-port=out][data-node="${id}"]`).map((p) => p.attributes("data-artifact"))).toEqual(["drafted", "built", "satisfied"]);
+  expect(w.get(`[data-port=in][data-node="${id}"]`).attributes("title")).toBe("takes card, repo, story, layers, base, gate, agreement");
+});
+
 test("a saved layout places the boxes", async () => {
   api.getWorkflowDef.mockResolvedValue(detail({ layout: { intake: { x: 640, y: 180 } } }));
   const { w } = await open();
   expect(w.get("[data-box][data-node=intake]").attributes("style")).toContain("left: 664px");
 });
 
-test("a click on a box shows its fields in the side panel", async () => {
+test("a click on a box selects it; its card's Edit opens its fields in the modal", async () => {
   const { w } = await open();
-  expect(w.get("[data-fields]").text()).toContain("Select a box");
   await w.get("[data-box][data-node=survey]").trigger("click");
-  const panel = w.get("[data-fields]");
-  expect((panel.get("input[data-input=id]").element as HTMLInputElement).value).toBe("survey");
-  expect(panel.text()).toContain("ask");
-  expect((panel.get("select[data-input=role]").element as HTMLSelectElement).value).toBe("architect");
-  expect((panel.get("[data-input-name=request]").element as HTMLInputElement).checked).toBe(true); // v2: the survey reads the request
-  expect((panel.get("[data-output-row] input").element as HTMLInputElement).value).toBe("survey");
-  expect((panel.get("[data-output-row] select").element as HTMLSelectElement).value).toBe("markdown");
   expect(w.get("[data-box][data-node=survey]").attributes("aria-pressed")).toBe("true");
+  expect(document.body.querySelector("[data-node-modal]")).toBeNull(); // a click only selects
+  expect(w.find("[data-fields]").exists()).toBe(false); // there is no side panel: the canvas has the room
+  await w.get("[data-box-card][data-node=survey] [data-box-edit]").trigger("click");
+  await flushPromises();
+  const modal = document.body.querySelector("[data-node-modal]")!;
+  expect((modal.querySelector("input[data-input=id]") as HTMLInputElement).value).toBe("survey");
+  expect(modal.querySelector("[data-node-type]")!.textContent).toBe("ask");
+  expect((modal.querySelector("select[data-input=role]") as HTMLSelectElement).value).toBe("architect");
+  expect((modal.querySelector("[data-input-name=request]") as HTMLInputElement).checked).toBe(true); // v2: the survey reads the request
+  expect((modal.querySelector("select[data-input=prompt-file]") as HTMLSelectElement).value).toBe("prompt:story-survey"); // the story names a prompt file
+  expect((modal.querySelector("[data-input='events.done']") as HTMLInputElement).value).toBe("survey_done");
+  expect((modal.querySelector("[data-output-row] [data-output-name]") as HTMLInputElement).value).toBe("survey");
+  expect((modal.querySelector("[data-output-row] [data-output-format]") as HTMLSelectElement).value).toBe("markdown");
+  (modal.querySelector("[data-node-done]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(document.body.querySelector("[data-node-modal]")).toBeNull();
 });
 
+/** The fix box's modal open, its prompt focused and typed into (no blur yet). */
+async function typingInFix() {
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  const opened = await open("/workflows/build/fix");
+  await opened.w.get("[data-box][data-node=fix]").trigger("dblclick");
+  await flushPromises();
+  const area = document.body.querySelector("[data-node-modal] [data-input=prompt]") as HTMLTextAreaElement;
+  area.focus();
+  type(area, "Fix it {repro}.");
+  return opened;
+}
+async function expectFixPromptSaved(w: Awaited<ReturnType<typeof open>>["w"]) {
+  expect(document.body.querySelector("[data-node-modal]")).toBeNull();
+  expect(w.find("[role=alert]").exists()).toBe(false); // no error banner (it once said "no box null")
+  await w.get("[data-tab=yaml]").trigger("click");
+  expect(w.get("[data-yaml]").text()).toContain("prompt: Fix it {repro}.");
+}
+
+test("Escape after typing in the prompt keeps the text, and closes with no error", async () => {
+  const { w } = await typingInFix();
+  document.body.querySelector("[data-node-modal]")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await flushPromises();
+  await expectFixPromptSaved(w);
+});
+
+test("a click outside after typing in the prompt keeps the text, and closes with no error", async () => {
+  const { w } = await typingInFix();
+  // reka's outside-pointer check registers a tick after opening
+  await new Promise((r) => setTimeout(r, 0));
+  document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+  await flushPromises();
+  await expectFixPromptSaved(w);
+});
+
+test("an output renamed in the modal is renamed in its readers too", async () => {
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  const { w } = await open("/workflows/build/fix");
+  w.findComponent({ name: "AirlieBuilderCanvas" }).vm.$emit("open", "intake");
+  await flushPromises();
+  w.findComponent({ name: "AirlieBuilderOutputsEditor" }).vm.$emit("rename", "report", "findings");
+  await flushPromises();
+  await w.get("[data-tab=yaml]").trigger("click");
+  expect(w.get("[data-yaml]").text()).toContain("outputs: {findings: text}");
+});
+
+
+test("a line drawn from an artifact port is made at once and carries that artifact", async () => {
+  const { w } = await open();
+  w.findComponent({ name: "AirlieBuilderCanvas" }).vm.$emit("connect", "survey", "refine", { artifacts: ["survey"] });
+  await flushPromises();
+  expect(document.body.querySelector("[data-wire-modal]")).toBeNull();
+  expect(w.get("[data-edge-hit][data-from=survey][data-to=refine] title").text()).toMatch(/^survey: survey/);
+});
 test("the YAML tab shows the definition's text", async () => {
   const { w } = await open();
   expect(w.find("[data-yaml]").exists()).toBe(false);
@@ -173,9 +247,11 @@ test("another name in the address loads that definition", async () => {
 
 test("leaving the builder asks for nothing more", async () => {
   const { router } = await open();
+  // the story, and the layer its bundle box runs (for the box's ports)
+  expect(api.getWorkflowDef.mock.calls.map(([n]) => n)).toEqual(["story", "layer"]);
   await router.push("/workflows");
   await flushPromises();
-  expect(api.getWorkflowDef).toHaveBeenCalledTimes(1);
+  expect(api.getWorkflowDef).toHaveBeenCalledTimes(2);
 });
 
 // ---- editing ----
@@ -251,8 +327,10 @@ test("a workflow in the repo's files saves in place, as an edit of that file tha
   );
   const { w } = await open();
   expect(w.find("[data-edits-file]").exists()).toBe(false);
-  await w.get("[data-box][data-node=intake]").trigger("click"); // a box moved is the usual edit; any will do
-  await w.get("[data-box][data-node=intake]").trigger("click");
+  // a box moved is the usual edit
+  w.findComponent({ name: "AirlieBuilderCanvas" }).vm.$emit("move", "intake", 320, 400);
+  await flushPromises();
+  expect(w.find("[data-dirty]").exists()).toBe(true);
   await w.get("[data-save]").trigger("click");
   await flushPromises();
   expect(dialog()).toBeNull(); // no name asked: the file's own
@@ -260,11 +338,49 @@ test("a workflow in the repo's files saves in place, as an edit of that file tha
   expect(name).toBe("story");
   expect(body.type).toBe("story");
   expect(body.yaml).toContain("workflows:\n  story:\n");
+  expect(body.yaml).toContain("intake: {x: 320, y: 400}");
   expect(w.get("[data-edits-file]").text()).toBe("edit of story");
   expect(publishButton(w).disabled).toBe(false);
   await w.get("[data-publish]").trigger("click");
   await flushPromises();
   expect(api.publishWorkflow).toHaveBeenCalledWith("story");
+});
+
+test("a file's workflow as the file has it cannot be saved: nothing changed; an edit turns Save on", async () => {
+  const { w } = await open();
+  const save = w.get("[data-save]");
+  expect((save.element as HTMLButtonElement).disabled).toBe(true);
+  expect(save.attributes("title")).toBe("nothing changed");
+  await w.get("[data-tab=yaml]").trigger("click");
+  expect(w.get("[data-yaml-notice]").text()).toContain("a file's comments are regenerated away when it is saved as a draft");
+  await w.get("[data-tab=diagram]").trigger("click");
+  w.findComponent({ name: "AirlieBuilderCanvas" }).vm.$emit("move", "intake", 320, 400);
+  await flushPromises();
+  expect((w.get("[data-save]").element as HTMLButtonElement).disabled).toBe(false);
+  expect(w.get("[data-save]").attributes("title")).toBeUndefined();
+  // a draft as saved can still be saved (its own text goes back, comments and all)
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  const { w: draft } = await open("/workflows/build/fix");
+  expect((draft.get("[data-save]").element as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("the canvas pane fades at its right edge while more of a wide layout is off-screen", async () => {
+  const { w } = await open();
+  const pane = w.get("[data-canvas-pane]").element as HTMLElement;
+  expect(w.find("[data-canvas-more]").exists()).toBe(false); // jsdom lays nothing out: nothing is wider
+  Object.defineProperty(pane, "scrollWidth", { configurable: true, value: 2400 });
+  Object.defineProperty(pane, "clientWidth", { configurable: true, value: 900 });
+  pane.dispatchEvent(new Event("scroll"));
+  await flushPromises();
+  expect(w.find("[data-canvas-more]").exists()).toBe(true);
+  pane.scrollLeft = 1500; // scrolled to the end: nothing more
+  pane.dispatchEvent(new Event("scroll"));
+  await flushPromises();
+  expect(w.find("[data-canvas-more]").exists()).toBe(false);
+  pane.scrollLeft = 0;
+  window.dispatchEvent(new Event("resize"));
+  await flushPromises();
+  expect(w.find("[data-canvas-more]").exists()).toBe(true);
 });
 
 test("a saved edit of a file opens as that edit", async () => {
@@ -302,6 +418,18 @@ test("Delete draft asks first; Keep it keeps it, Delete removes it and goes to t
   expect(router.currentRoute.value.fullPath).toBe("/workflows");
 });
 
+test("a delete the server refuses (409) names the workflows that use the draft and stays", async () => {
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  api.deleteDraft.mockRejectedValueOnce(new ApiError(409, JSON.stringify({ used_by: ["story", "layer"] })));
+  const { w, router } = await open("/workflows/build/fix");
+  await w.get("[data-delete]").trigger("click");
+  await flushPromises();
+  (dialog()!.querySelector("[data-delete-confirm]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe("/workflows/build/fix");
+  expect(w.text()).toContain("used by story, layer");
+});
+
 test("a delete that fails stays and says why; a file or a new canvas has no Delete", async () => {
   api.getWorkflowDef.mockResolvedValue(fixDraft());
   api.deleteDraft.mockRejectedValueOnce(new Error("gone already"));
@@ -319,22 +447,6 @@ test("a delete that fails stays and says why; a file or a new canvas has no Dele
   await router.push("/workflows/build/new");
   await flushPromises();
   expect(w.find("[data-delete]").exists()).toBe(false);
-});
-
-// replaced in Task 5 (the workflow modal): drives WorkflowForm's old start and loose fields
-test.skip("with nothing selected the panel edits the workflow's type, loose names and start", async () => {
-  const { w } = await open("/workflows/build/new");
-  await w.get("[data-palette-type=check]").trigger("click");
-  await w.get("[data-palette-type=gate]").trigger("click");
-  await w.get("[data-box][data-node=gate-1]").trigger("click"); // unselect
-  const panel = w.get("[data-workflow-form]");
-  expect(panel.findAll("[data-loose]").map((c) => c.attributes("data-loose"))).toEqual(["card", "repo"]);
-  await panel.get("[data-loose-drop=repo]").trigger("click");
-  await w.get("[data-workflow-input=start]").setValue("gate-1");
-  await w.get("[data-workflow-input=type]").setValue("bug");
-  await w.get("[data-tab=yaml]").trigger("click");
-  const text = w.get("[data-yaml]").text();
-  expect(text).toContain("    type: bug\n    start: gate-1\n    loose: [card]\n");
 });
 
 test("a save the server refuses as unreadable (422) reopens the dialog with its reason", async () => {
@@ -385,28 +497,16 @@ test("a workflow that validates says so", async () => {
   expect(w.find("[data-no-problems]").exists()).toBe(true);
 });
 
-// replaced in Task 5 (the wire modal): drives WireForm's old moves and expects a v1 `loop:` field
-test.skip("a wire drawn between two boxes opens the wire form; its move lands in the fields", async () => {
+test("a box's modal edits the box as the change is made", async () => {
   api.getWorkflowDef.mockResolvedValue(fixDraft());
   const { w } = await open("/workflows/build/fix");
-  w.findComponent({ name: "AirlieBuilderCanvas" }).vm.$emit("connect", "fix", "intake");
+  await w.get("[data-box][data-node=fix]").trigger("dblclick");
   await flushPromises();
-  expect(w.get("[data-wire-form]").text()).toContain("fix → intake");
-  await w.get("input[value=loop]").setValue(true);
-  await w.get("input[data-wire=max]").setValue("3");
-  await w.get("[data-wire-apply]").trigger("click");
+  const report = document.body.querySelector("[data-node-modal] [data-input-name=report]") as HTMLInputElement;
+  report.checked = true;
+  report.dispatchEvent(new Event("change"));
   await flushPromises();
-  expect(w.find("[data-edge=loop][data-from=fix][data-to=intake]").exists()).toBe(true);
-  await w.get("[data-tab=yaml]").trigger("click");
-  expect(w.get("[data-yaml]").text()).toContain("loop: {to: intake, max: 3}");
-  expect(w.get("[data-yaml-notice]").text()).toContain("Saving regenerates the file");
-});
-
-test("a box's form edits the box", async () => {
-  api.getWorkflowDef.mockResolvedValue(fixDraft());
-  const { w } = await open("/workflows/build/fix");
-  await w.get("[data-box][data-node=fix]").trigger("click");
-  await w.get("[data-fields] [data-input-name=report]").setValue(true);
+  (document.body.querySelector("[data-node-done]") as HTMLButtonElement).click();
   await flushPromises();
   await w.get("[data-tab=yaml]").trigger("click");
   expect(w.get("[data-yaml]").text()).toContain("inputs: [repro, report]");
@@ -665,4 +765,370 @@ test("Cancel returns to the card unchanged: nothing saved, nothing published, no
   expect(api.saveDraft).not.toHaveBeenCalled();
   expect(api.publishWorkflow).not.toHaveBeenCalled();
   expect(useCardDraftStore().take(token)).toEqual(HELD);
+});
+
+// the wire modal and the workflow modal
+const LINED_YAML = `workflows:
+  fix:
+    type: bug
+    inputs: [card]
+    nodes:
+      intake: {type: check, run: x.intake, outputs: {report: text, verdict: text}, to: [fix]}
+      fix: {type: ask, role: coder, prompt: x.fix, inputs: [report], outputs: {fixed: text}}
+`;
+const lined = (over: Partial<WorkflowDetail> = {}) => fixDraft({ yaml: LINED_YAML, ...over });
+const modal = (sel: string) => document.body.querySelector<HTMLElement>(`[data-wire-modal] ${sel}`);
+const yamlText = async (w: Awaited<ReturnType<typeof open>>["w"]) => {
+  await w.get("[data-tab=yaml]").trigger("click");
+  return w.get("[data-yaml]").text();
+};
+
+test("the screen has a palette and a canvas and no Fields aside", async () => {
+  const { w } = await open();
+  expect(w.findAll("aside").map((a) => a.attributes("aria-label"))).toEqual(["Palette"]);
+  expect(w.find("[data-fields]").exists()).toBe(false);
+  const grid = w.get("[data-canvas]").element.closest("[class*='grid-cols']")!;
+  expect(grid.className).toContain("grid-cols-[180px_minmax(0,1fr)]");
+  expect(grid.className).not.toContain("280px");
+});
+
+test("a wire's artifacts and condition save into the line", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined());
+  const { w } = await open("/workflows/build/fix");
+  await w.get("[data-edge-hit][data-from=intake][data-to=fix]").trigger("dblclick");
+  await flushPromises();
+  expect(modal("[data-wire-artifact=report]")).not.toBeNull();
+  (modal("[data-wire-artifact=verdict]") as HTMLInputElement).click();
+  type(modal("[data-wire-when]"), "verdict == pass");
+  await flushPromises();
+  (modal("[data-wire-apply]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(document.body.querySelector("[data-wire-modal]")).toBeNull();
+  expect(w.get("[data-edge-label]").text()).toBe("if verdict == pass · report, verdict");
+  const text = await yamlText(w);
+  expect(text).toContain("when: verdict == pass");
+  expect(text).toContain("inputs: [report, verdict]");
+});
+
+test("unchecking an unreferenced, single-source artifact removes it from the target's inputs and from the YAML", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined());
+  const { w } = await open("/workflows/build/fix");
+  expect(await yamlText(w)).toContain("inputs: [report]");
+  await w.get("[data-tab=diagram]").trigger("click");
+  await w.get("[data-edge-hit][data-from=intake][data-to=fix]").trigger("dblclick");
+  await flushPromises();
+  (modal("[data-wire-artifact=report]") as HTMLInputElement).click();
+  await flushPromises();
+  expect(modal("[data-wire-unread]")).toBeNull();
+  (modal("[data-wire-apply]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(await yamlText(w)).not.toContain("inputs: [report]");
+});
+
+test("clearing the condition removes the key from the YAML", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined({ yaml: LINED_YAML.replace("to: [fix]", "to: [{node: fix, when: verdict == pass}]") }));
+  const { w } = await open("/workflows/build/fix");
+  expect(await yamlText(w)).toContain("when: verdict == pass");
+  await w.get("[data-tab=diagram]").trigger("click");
+  await w.get("[data-edge-hit][data-from=intake][data-to=fix]").trigger("dblclick");
+  await flushPromises();
+  type(modal("[data-wire-when]"), "");
+  await flushPromises();
+  (modal("[data-wire-apply]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(await yamlText(w)).not.toContain("when:");
+});
+
+test("a loop with max 2 drawn from the wire modal draws as a loop and saves into the line", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined());
+  const { w } = await open("/workflows/build/fix");
+  w.findComponent({ name: "AirlieBuilderCanvas" }).vm.$emit("connect", "fix", "intake", {});
+  await flushPromises();
+  expect(document.body.querySelector("[data-wire-modal]")).toBeNull(); // the line is drawn at once
+  expect(w.find("[data-edge=line][data-from=fix][data-to=intake]").exists()).toBe(true);
+  // the drawn line is selected: its card's Edit opens the modal
+  await w.get("[data-edge-card] [data-edge-edit]").trigger("click");
+  await flushPromises();
+  (modal("[data-wire-loop]") as HTMLInputElement).click();
+  await flushPromises();
+  type(modal("[data-wire-max]"), "2");
+  await flushPromises();
+  (modal("[data-wire-apply]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(w.find("[data-edge=loop][data-from=fix][data-to=intake]").exists()).toBe(true);
+  expect(await yamlText(w)).toContain("loop: {max: 2}");
+});
+
+test("a condition problem from the server marks the wire's label and lists in the problems; the draft still saves", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined());
+  const { w } = await open("/workflows/build/fix");
+  await w.get("[data-validate]").trigger("click"); // the graph has been validated: an edit is checked again
+  await flushPromises();
+  api.validateWorkflow.mockResolvedValue(["workflow fix: node intake: line to fix: condition names 'zzz', which nothing produces"]);
+  await w.get("[data-edge-hit][data-from=intake][data-to=fix]").trigger("dblclick");
+  await flushPromises();
+  type(modal("[data-wire-when]"), "zzz == 1");
+  await flushPromises();
+  (modal("[data-wire-apply]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(api.validateWorkflow).toHaveBeenCalledTimes(2);
+  expect(api.validateWorkflow.mock.calls[1][0]).toContain("zzz == 1");
+  expect(w.get("[data-edge-label]").attributes("data-edge-problem")).toBe("true");
+  expect(w.get("[data-problem-edge='intake>fix']").text()).toContain("nothing produces");
+  expect(w.get("[data-save]").attributes("disabled")).toBeUndefined();
+  // a click on the problem opens the line's modal
+  await w.get("[data-problem-edge='intake>fix']").trigger("click");
+  await flushPromises();
+  expect(modal("[data-wire-when]")).not.toBeNull();
+  (modal("[data-wire-done]") as HTMLButtonElement).click();
+  await flushPromises();
+  await w.get("[data-save]").trigger("click");
+  await flushPromises();
+  expect(api.saveDraft).toHaveBeenCalledTimes(1);
+});
+
+test("Remove in the wire modal takes the line out", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined());
+  const { w } = await open("/workflows/build/fix");
+  await w.get("[data-edge-hit][data-from=intake][data-to=fix]").trigger("dblclick");
+  await flushPromises();
+  (modal("[data-wire-remove]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(w.find("[data-edge][data-from=intake]").exists()).toBe(false);
+  expect(document.body.querySelector("[data-wire-modal]")).toBeNull();
+});
+
+test("the title bar opens the workflow modal, which edits the inputs and outputs and the type", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined());
+  const { w } = await open("/workflows/build/fix");
+  await w.get("[data-workflow-edit]").trigger("click");
+  await flushPromises();
+  const m = document.body.querySelector("[data-workflow-modal]")!;
+  expect([...m.querySelectorAll("[data-workflow-inputs] [data-chip]")].map((c) => c.getAttribute("data-chip"))).toEqual(["card"]);
+  const add = m.querySelector("[data-workflow-add=inputs]")!;
+  type(add, "repo");
+  add.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+  const out = m.querySelector("[data-workflow-add=outputs]")!;
+  type(out, "fixed");
+  out.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+  const select = m.querySelector<HTMLSelectElement>("[data-workflow-type-select]")!;
+  select.value = "";
+  select.dispatchEvent(new Event("change"));
+  await flushPromises();
+  (m.querySelector("[data-workflow-done]") as HTMLButtonElement).click();
+  await flushPromises();
+  const text = await yamlText(w);
+  expect(text).toContain("inputs: [card, repo]");
+  expect(text).toContain("outputs: [fixed]");
+  expect(text).not.toContain("type: bug");
+  expect(w.get("[data-workflow-type]").text()).toBe("bug"); // the title bar shows the saved definition's type until a save
+});
+
+test("a draft the server upgraded from the old schema says so until it is saved", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined({ upgraded: true }));
+  const { w } = await open("/workflows/build/fix");
+  expect(w.get("[data-upgraded]").text()).toContain("upgraded to the current schema");
+  await w.get("[data-save]").trigger("click");
+  await flushPromises();
+  expect(w.find("[data-upgraded]").exists()).toBe(false);
+});
+
+test("a draft that was not upgraded shows no cue", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined());
+  const { w } = await open("/workflows/build/fix");
+  expect(w.find("[data-upgraded]").exists()).toBe(false);
+});
+
+// bundles in place: a bundle box opens the workflow it runs, and the breadcrumb comes back with the canvas as it was
+const withLayer = () =>
+  api.getWorkflowDef.mockImplementation(async (n: string) => (n === "layer" ? detail({ name: "layer", type: null, yaml: LAYER_YAML }) : detail()));
+const crumb = (w: Awaited<ReturnType<typeof open>>["w"]) => w.find("[data-breadcrumb]");
+
+test("a double-click on a bundle box opens its workflow with a token, and the breadcrumb names the parent", async () => {
+  withLayer();
+  const { w, router } = await open();
+  expect(crumb(w).exists()).toBe(false); // not inside a bundle
+  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await flushPromises();
+  const at = router.currentRoute.value;
+  expect(at.name).toBe("builder");
+  expect(at.params.name).toBe("layer");
+  expect(typeof at.query.from).toBe("string");
+  expect(document.body.querySelector("[data-node-modal]")).toBeNull(); // a double-click on a bundle box enters it
+  expect(w.get("h1").text()).toBe("layer");
+  expect(crumb(w).text()).toContain("story");
+  const held = takeGraph(at.query.from as string); // the token resolves to the parent as it was
+  expect(held?.name).toBe("story");
+  expect(held?.graph.nodes).toHaveLength(22);
+  expect(held?.graph.nodes.some((n) => n.id === "build_layers")).toBe(true);
+});
+
+test("the card's Edit on a bundle box opens its fields, not the bundle", async () => {
+  withLayer();
+  const { w, router } = await open();
+  await w.get("[data-box][data-node=build_layers]").trigger("click");
+  await w.get("[data-box-card][data-node=build_layers] [data-box-edit]").trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("story");
+  const modal = document.body.querySelector("[data-node-modal]")!;
+  expect((modal.querySelector("select[data-input=workflow]") as HTMLSelectElement).value).toBe("layer");
+  expect((modal.querySelector("select[data-input=each]") as HTMLSelectElement).value).toBe("layers");
+});
+
+test("the modal's Open button enters the bundle", async () => {
+  withLayer();
+  const { w, router } = await open();
+  await w.get("[data-box][data-node=build_layers]").trigger("click");
+  await w.get("[data-box-card][data-node=build_layers] [data-box-edit]").trigger("click");
+  await flushPromises();
+  expect(document.body.querySelector("[data-bundle-open]")!.textContent).toContain("Open layer");
+  (document.body.querySelector("[data-bundle-open]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("layer");
+  expect(crumb(w).text()).toContain("story");
+});
+
+test("browser Back from the bundle restores the parent's unsaved edits", async () => {
+  withLayer();
+  const { w, router } = await open();
+  await w.get("[data-palette-type=gate]").trigger("click");
+  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("layer");
+  router.back();
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("story");
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
+  expect(w.get("[data-dirty]").text()).toContain("Unsaved");
+});
+
+test("a browser that cannot hold the canvas keeps a dirty one here with a warning, and a clean one goes", async () => {
+  withLayer();
+  const { w, router } = await open();
+  const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("quota");
+  });
+  try {
+    await w.get("[data-palette-type=gate]").trigger("click");
+    await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+    await flushPromises();
+    expect(router.currentRoute.value.params.name).toBe("story");
+    expect(w.get("[role=alert]").text()).toContain("could not hold your unsaved edits; save first");
+    expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
+  } finally {
+    spy.mockRestore();
+  }
+  const clean = await open();
+  const spy2 = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("quota");
+  });
+  try {
+    await clean.w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+    await flushPromises();
+    expect(clean.router.currentRoute.value.params.name).toBe("layer");
+    expect(clean.router.currentRoute.value.query.parent).toBe("story");
+  } finally {
+    spy2.mockRestore();
+  }
+});
+
+test("the card a builder came from goes into the bundle and back", async () => {
+  withLayer();
+  const { w, router } = await open("/workflows/build/story?card=tok");
+  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await flushPromises();
+  expect(router.currentRoute.value.query.card).toBe("tok");
+  await crumb(w).trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("story");
+  expect(router.currentRoute.value.query.card).toBe("tok");
+});
+
+test("a bundle inside a bundle: the breadcrumb restores each level in turn", async () => {
+  const MID = `workflows:
+  layer:
+    inputs: [card]
+    nodes:
+      intake: {type: check, run: x.intake, outputs: {report: text}}
+      inner: {type: bundle, workflow: fix}
+`;
+  api.getWorkflowDef.mockImplementation(async (n: string) =>
+    n === "layer" ? detail({ name: "layer", type: null, yaml: MID }) : n === "fix" ? fixDraft() : detail(),
+  );
+  const { w, router } = await open();
+  await w.get("[data-palette-type=gate]").trigger("click"); // unsaved in story: 23 boxes
+  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await flushPromises();
+  await w.get("[data-palette-type=gate]").trigger("click"); // unsaved in layer: 3 boxes
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(3);
+  await w.get("[data-box][data-node=inner]").trigger("dblclick");
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("fix");
+  expect(crumb(w).text()).toContain("layer");
+  await crumb(w).trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("layer");
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(3);
+  expect(crumb(w).text()).toContain("story"); // still inside the story's bundle
+  await crumb(w).trigger("click");
+  await flushPromises();
+  (dialog()!.querySelector("[data-leave-go]") as HTMLButtonElement).click(); // the layer's own unsaved box is asked about
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("story");
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
+  expect(crumb(w).exists()).toBe(false);
+});
+
+test("the breadcrumb returns to the parent with its unsaved edits", async () => {
+  withLayer();
+  const { w, router } = await open();
+  await w.get("[data-palette-type=gate]").trigger("click"); // an unsaved box in the story
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
+  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await flushPromises();
+  expect(dialog()).toBeNull(); // leaving for the bundle is not leaving the edits behind: nothing asked
+  await crumb(w).trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("story");
+  expect(w.get("h1").text()).toBe("story");
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
+  expect(w.get("[data-dirty]").text()).toContain("Unsaved");
+  expect(crumb(w).exists()).toBe(false);
+  expect(router.currentRoute.value.query).toEqual({}); // the token is spent
+});
+
+test("a breadcrumb whose token is gone still goes back, and the parent loads from the server", async () => {
+  withLayer();
+  const { w, router } = await open();
+  await w.get("[data-palette-type=gate]").trigger("click");
+  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await flushPromises();
+  sessionStorage.clear(); // expired
+  await crumb(w).trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("story");
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(22);
+  expect(w.find("[data-dirty]").exists()).toBe(false);
+  expect(w.find("[role=alert]").exists()).toBe(false);
+  expect(api.getWorkflowDef.mock.calls.filter((c) => c[0] === "story")).toHaveLength(2); // loaded again from the server
+});
+
+test("a double-click on a bundle that names nothing that exists opens its fields, so the name can be fixed", async () => {
+  const yaml = STORY_YAML.replace("workflow: layer", "workflow: gone");
+  api.getWorkflowDef.mockResolvedValue(detail({ yaml }));
+  const { w, router } = await open();
+  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe("/workflows/build/story");
+  const modal = document.body.querySelector("[data-node-modal]")!;
+  expect((modal.querySelector("select[data-input=workflow]") as HTMLSelectElement).value).toBe("gone");
+  expect(modal.querySelector("[data-bundle-open]")).toBeNull();
+});
+
+test("a bundle child's problem does not mark the parent's box of the same name", async () => {
+  api.getWorkflowDef.mockResolvedValue(detail({ problems: ["workflow layer: node survey: bad", "workflow story: node intake: worse"] }));
+  const { w } = await open();
+  expect(w.findAll("[data-problem-node]").map((b) => b.attributes("data-problem-node"))).toEqual(["intake"]); // the child's row names no box here
+  expect(w.findAll("[data-problem-list] [data-problem]")).toHaveLength(2); // but it is still listed
+  expect(w.get("[data-box][data-node=survey]").text()).not.toContain("bad"); // and the child's survey box is not this one's
 });

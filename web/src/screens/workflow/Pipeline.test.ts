@@ -94,8 +94,8 @@ const FULL = () => [
   planStage("intake", "Intake", "passed", {}, "code"),
   planStage("base", "Base", "passed", {}, "code"),
   planStage("gate", "Gate", "passed", {}, "code"),
-  planStage("survey", "Survey", "passed", { group: "same-time" }),
-  planStage("refine", "Refine", "passed", { group: "same-time" }),
+  planStage("survey", "Survey", "passed"),
+  planStage("refine", "Refine", "passed"),
   planStage("layers", "Plan layers"),
   planStage("amigos", "Three amigos"),
   planStage("planned", "Planned", "passed", {}, "milestone"),
@@ -107,13 +107,12 @@ const FULL = () => [
   stage("review", "Review", "pending", { shape: "code" }),
 ];
 
-test("the row runs intake, base, gate, the same-time pair, plan layers, amigos, planned, drafting, the lanes, publish, review", () => {
+test("the row runs intake, base, gate, survey and refine, plan layers, amigos, planned, drafting, the lanes, publish, review", () => {
   const w = draw(FULL());
-  const top = w.get("[data-flow]").findAll(":scope > [data-stage], :scope > [data-group], :scope > [data-lanes] > [data-lane]");
-  expect(top.map((t) => t.attributes("data-node") ?? "group")).toEqual(["intake", "base", "gate", "group", "layers", "amigos", "planned", "packages", "layer-01", "layer-02", "layer-03", "publish", "review"]);
-  const group = w.get("[data-group]");
-  expect(group.text()).toContain("same time");
-  expect(group.findAll("[data-stage]").map((s) => s.attributes("data-node"))).toEqual(["survey", "refine"]);
+  const top = w.get("[data-flow]").findAll(":scope > [data-stage], :scope > [data-lanes] > [data-lane]");
+  expect(top.map((t) => t.attributes("data-node"))).toEqual(["intake", "base", "gate", "survey", "refine", "layers", "amigos", "planned", "packages", "layer-01", "layer-02", "layer-03", "publish", "review"]);
+  expect(w.find("[data-group]").exists()).toBe(false);
+  expect(w.text()).not.toContain("same time");
 });
 
 test("boxes draw by shape: a milestone diamond, code boxes, model boxes", () => {
@@ -128,7 +127,6 @@ test("a stage with no jobs is not drawn", () => {
   nodes[3] = { ...nodes[3], jobs: [] };
   const w = draw(nodes);
   expect(w.find("[data-node=survey]").exists()).toBe(false);
-  // refine alone needs no bracket
   expect(w.find("[data-group]").exists()).toBe(false);
   expect(w.find("[data-node=refine]").exists()).toBe(true);
 });

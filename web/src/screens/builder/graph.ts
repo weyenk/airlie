@@ -44,6 +44,8 @@ export type GNode = { id: string; type: NodeType; spec: NodeSpec; x: number; y: 
 /** A line: `artifacts` are what it carries (none: an ordering line), `when` its condition, `loop` its bound when
  * it is drawn back to an earlier node. */
 export type GEdge = { from: string; to: string; artifacts: string[]; when?: string; loop?: LoopBound };
+/** What a bundle box's workflow is handed and hands back: its declared inputs and outputs. */
+export type Ports = { inputs: string[]; outputs: string[] };
 export type Graph = {
   name: string;
   type: string | null;
@@ -53,8 +55,9 @@ export type Graph = {
   outputs: string[];
   nodes: GNode[];
   edges: GEdge[];
-  /** The bundles a bundle box runs, loaded by name when opened. */
-  bundles: Record<string, Graph>;
+  /** The ports of the workflows the bundle boxes run, by name: fetched when the canvas loads and when a bundle box
+   * is placed or its workflow changes (useBuilder). Never written to the YAML: the bundle's own file holds them. */
+  bundles: Record<string, Ports>;
 };
 
 /** What a line drawn between two boxes may carry and say. */
@@ -108,16 +111,16 @@ function entryOf(edge: GEdge): Line {
 }
 
 /** What a line from `from` to `to` carries: `from`'s output names that `to` reads, in `from`'s order. */
-function carried(from: GNode | undefined, to: GNode | undefined): string[] {
+function carried(graph: Graph, from: GNode | undefined, to: GNode | undefined): string[] {
   if (!from || !to) return [];
   const reads = new Set(inputsOf(to.spec));
-  return outputsOf(from.spec).filter((o) => reads.has(o));
+  return outputsOfNode(graph, from.id).filter((o) => reads.has(o));
 }
 
 /** The graph with every line's artifacts worked out again from its ends' fields. */
 function relabel(graph: Graph): Graph {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
-  return { ...graph, edges: graph.edges.map((e) => ({ ...e, artifacts: carried(byId.get(e.from), byId.get(e.to)) })) };
+  return { ...graph, edges: graph.edges.map((e) => ({ ...e, artifacts: carried(graph, byId.get(e.from), byId.get(e.to)) })) };
 }
 
 /** The boxes and lines of one workflow: a box per node in the file's order, a line per `to` entry. */
@@ -255,22 +258,48 @@ export function renameNode(graph: Graph, id: string, to: string): Graph {
   });
 }
 
+/** The output names a box offers: its declared `outputs`, or, for a bundle box that declares none, the outputs of
+ * the workflow it runs (a `name.{item}` output is `name`). The canvas's ports and `connect`'s check both read this. */
+export function outputsOfNode(graph: Graph, id: string): string[] {
+  const spec = graph.nodes.find((n) => n.id === id)?.spec ?? {};
+  const named = outputsOf(spec);
+  if (named.length) return named;
+  const run = graph.bundles[typeof spec.workflow === "string" ? spec.workflow : ""];
+  return [...new Set((run?.outputs ?? []).map((o) => o.replace(/\.\{item\}$/, "")))];
+}
+
+/** The names of the workflows the graph's bundle boxes run, each once. */
+export const bundleNames = (graph: Graph): string[] => [
+  ...new Set(graph.nodes.filter((n) => n.type === "bundle" && typeof n.spec.workflow === "string" && n.spec.workflow).map((n) => n.spec.workflow as string)),
+];
+/** A workflow's ports as a bundle box shows them: what it is handed and what it hands back. */
+export const portsOf = (spec: { inputs?: string[]; outputs?: string[] }): Ports => ({ inputs: [...(spec.inputs ?? [])], outputs: [...(spec.outputs ?? [])] });
+/** The graph knowing the ports of bundle `name`: a bundle box that runs it offers its outputs, and its lines carry
+ * them. Only the canvas reads them; the YAML is unchanged. */
+export function withBundle(graph: Graph, name: string, ports: Ports): Graph {
+  return relabel({ ...graph, bundles: { ...graph.bundles, [name]: portsOf(ports) } });
+}
+
 /** The graph with a line `from` → `to`: each of `artifacts` (outputs of `from`) joins the target's inputs if it
- * is not there yet, and `when` and `loop` say when the line is taken and its bound. A line already between the two
- * boxes is replaced in place. Throws on a box that is not there, an artifact `from` does not write, or a loop
- * without its max. */
+ * is not there yet, and `when` and `loop` say when the line is taken and its bound. A line already between the
+ * two boxes is merged into, in place: the new artifacts join what it carries, and its `when` and `loop` stay
+ * unless this call gives new ones. Throws on a box that is not there, an artifact `from` does not write, or a
+ * loop without its max. */
 export function connect(graph: Graph, from: string, to: string, opts: LineOpts = {}): Graph {
-  const source = nodeOf(graph, from);
+  nodeOf(graph, from);
   nodeOf(graph, to);
   const artifacts = opts.artifacts ?? [];
-  const writes = outputsOf(source.spec);
+  const writes = outputsOfNode(graph, from);
   for (const a of artifacts) if (!writes.includes(a)) throw new Error(`${from} writes no ${a}`);
   if (opts.loop && !hasMax(opts.loop.max)) throw new Error("a loop needs its max");
 
-  const edge: GEdge = { from, to, artifacts: [] };
-  if (opts.when) edge.when = opts.when;
-  if (opts.loop) edge.loop = opts.loop.carry ? { max: opts.loop.max, carry: opts.loop.carry } : { max: opts.loop.max };
   const at = graph.edges.findIndex((e) => e.from === from && e.to === to);
+  const old = at < 0 ? undefined : graph.edges[at];
+  const edge: GEdge = { from, to, artifacts: [] };
+  const when = opts.when ? opts.when : old?.when;
+  if (when) edge.when = when;
+  const loop = opts.loop ?? old?.loop;
+  if (loop) edge.loop = loop.carry ? { max: loop.max, carry: loop.carry } : { max: loop.max };
   const edges = at < 0 ? [...graph.edges, edge] : graph.edges.map((e, i) => (i === at ? edge : e));
   const g = editing(graph, [to], (s) => {
     const have = inputsOf(s);
@@ -278,6 +307,41 @@ export function connect(graph: Graph, from: string, to: string, opts: LineOpts =
     if (add.length) s.inputs = [...have, ...add];
   });
   return relabel({ ...g, edges });
+}
+
+/** The graph with the line `from` → `to` set to `patch`: it carries exactly `patch.artifacts` (none: an ordering
+ * line), and says `when` and `loop` only if the patch does, so a patch without them clears them. A newly carried
+ * artifact joins the target's inputs; one no longer carried leaves them unless another line or a workflow input
+ * still brings it. Throws on a line that is not there, an artifact `from` does not write, or a loop without its max. */
+export function updateEdge(graph: Graph, from: string, to: string, patch: { artifacts: string[]; when?: string; loop?: LoopBound }): Graph {
+  const current = relabel(graph);
+  const at = current.edges.findIndex((e) => e.from === from && e.to === to);
+  if (at < 0) throw new Error(`no line from ${from} to ${to}`);
+  const writes = outputsOfNode(graph, from);
+  for (const a of patch.artifacts) if (!writes.includes(a)) throw new Error(`${from} writes no ${a}`);
+  if (patch.loop && !hasMax(patch.loop.max)) throw new Error("a loop needs its max");
+
+  const old = current.edges[at];
+  const edge: GEdge = { from, to, artifacts: [] };
+  if (patch.when) edge.when = patch.when;
+  if (patch.loop) edge.loop = patch.loop.carry ? { max: patch.loop.max, carry: patch.loop.carry } : { max: patch.loop.max };
+  const edges = current.edges.map((e, i) => (i === at ? edge : e));
+  const elsewhere = new Set([...graph.inputs, ...edges.filter((e, i) => i !== at && e.to === to).flatMap((e) => e.artifacts)]);
+  const drop = old.artifacts.filter((a) => !patch.artifacts.includes(a) && !elsewhere.has(a));
+  const g = editing(graph, [to], (s) => {
+    const have = inputsOf(s);
+    if (!Array.isArray(s.inputs) && !patch.artifacts.length) return;
+    s.inputs = [...have.filter((i) => !drop.includes(i)), ...patch.artifacts.filter((a) => !have.includes(a))];
+  });
+  return relabel({ ...g, edges });
+}
+
+/** Who else writes `name` for a box `to` that reads it: the boxes other than `from` and `to` that write it, then
+ * "the workflow's inputs" when the caller hands it in. A line carries whatever its source writes that its target
+ * reads, so an input is the target's, not one line's: the wire modal keeps such a name checked (graph-wide). */
+export function producersOf(graph: Graph, name: string, from: string, to: string): string[] {
+  const boxes = graph.nodes.filter((n) => n.id !== from && n.id !== to && outputsOfNode(graph, n.id).includes(name)).map((n) => n.id);
+  return graph.inputs.includes(name) ? [...boxes, "the workflow's inputs"] : boxes;
 }
 
 const sameLine = (a: GEdge, b: GEdge) => a.from === b.from && a.to === b.to && a.when === b.when;
@@ -306,9 +370,30 @@ function renamePlaceholders(text: string, old: string, to: string): string {
   return text.replace(new RegExp(`\\{([?/]?)${escape(old)}(?=[}.])`, "g"), (_m, mark: string) => `{${mark}${to}`);
 }
 
+const CONDITION_WORDS = new Set(["and", "or", "not", "exists"]);
+const CONDITION_TOKEN = /(==|!=|\(|\))|("[^"]*"|'[^']*')|([^\s()=!"']+)/g;
+/** A line's condition with every path headed by `old` (`old`, `old.field`) headed by `to` instead. The tokens are
+ * airlie.flow.conditions's, so a keyword, a quoted string and the literal after `==` / `!=` stay as they are. */
+export function renameInCondition(when: string, old: string, to: string): string {
+  let out = "";
+  let last = 0;
+  let afterCompare = false;
+  for (const m of when.matchAll(CONDITION_TOKEN)) {
+    out += when.slice(last, m.index);
+    last = m.index + m[0].length;
+    const word = m[3];
+    const path = word !== undefined && !afterCompare && !CONDITION_WORDS.has(word);
+    out += path && (word === old || word.startsWith(`${old}.`)) ? to + word.slice(old.length) : m[0];
+    afterCompare = m[1] === "==" || m[1] === "!=";
+  }
+  return out + when.slice(last);
+}
+
 /** The graph with box `id`'s output `old` called `to`, in place: the lines that carry it, every reader's inputs,
- * `session` and `each`, the `{old}` placeholders in a reader's own prompt text, a loop's `carry` from `id`, and the
- * workflow's declared outputs follow. A reader is a box a line from `id` brings it to, or, when `id` is its only
+ * `session` and `each`, a reader's `args` values that name it, the `{old}` placeholders in a reader's own prompt
+ * text, a loop's `carry` from `id`, the paths headed by `old` in the lines' conditions, and the workflow's declared
+ * outputs follow. The conditions of every line follow when `id` is the only box that writes `old`; else those on
+ * the lines out of `id` and out of its readers (another writer's `old` keeps its name). A reader is a box a line from `id` brings it to, or, when `id` is its only
  * writer, any box that reads it. A reader whose prompt (or a team's worker) is a prompt file that names it cannot
  * be rewritten here: the rename is refused with those readers. `promptFields` are the fields of the prompt files
  * the caller knows (id -> fields); a prompt file not in it is taken to name the output. Throws when `id` has no
@@ -322,7 +407,8 @@ export function renameOutput(graph: Graph, id: string, old: string, to: string, 
   if (to in outputs) throw new Error(`${id} already has an output ${to}`);
 
   // a box reads `old` by its inputs, or by the session it continues or the list a bundle runs over
-  const reads = (n: GNode) => inputsOf(n.spec).includes(old) || n.spec.session === old || n.spec.each === old;
+  const argsOf = (n: GNode) => (isRecord(n.spec.args) ? Object.values(n.spec.args) : []);
+  const reads = (n: GNode) => inputsOf(n.spec).includes(old) || n.spec.session === old || n.spec.each === old || argsOf(n).includes(old);
   const lined = new Set(graph.edges.filter((e) => e.from === id).map((e) => e.to));
   const only = !graph.nodes.some((n) => n.id !== id && outputsOf(n.spec).includes(old));
   const readers = graph.nodes.filter((n) => n.id !== id && reads(n) && (lined.has(n.id) || only));
@@ -341,15 +427,24 @@ export function renameOutput(graph: Graph, id: string, old: string, to: string, 
   g = editing(g, readers.map((n) => n.id), (s) => {
     if (Array.isArray(s.inputs)) s.inputs = s.inputs.map((i) => (i === old ? to : i));
     for (const key of ["session", "each"]) if (s[key] === old) s[key] = to;
+    if (isRecord(s.args)) s.args = Object.fromEntries(Object.entries(s.args).map(([k, v]) => [k, v === old ? to : v]));
     for (const key of ["prompt", "turn", "worker"]) {
       const text = s[key];
       if (typeof text === "string" && !text.startsWith(PROMPT_FILE)) s[key] = renamePlaceholders(text, old, to);
     }
   });
+  const conditioned = only ? null : new Set([id, ...readers.map((n) => n.id)]);
   return relabel({
     ...g,
     outputs: g.outputs.map((o) => (o === old ? to : o)),
-    edges: g.edges.map((e) => (e.from === id && e.loop?.carry === old ? { ...e, loop: { ...e.loop, carry: to } } : e)),
+    edges: g.edges.map((e) => {
+      let next = e.from === id && e.loop?.carry === old ? { ...e, loop: { ...e.loop, carry: to } } : e;
+      if (next.when !== undefined && (conditioned === null || conditioned.has(e.from))) {
+        const when = renameInCondition(next.when, old, to);
+        if (when !== next.when) next = { ...next, when };
+      }
+      return next;
+    }),
   });
 }
 

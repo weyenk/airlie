@@ -22,10 +22,10 @@ const defs = vi.hoisted(() => ({ listWorkflowDefs: vi.fn() }));
 vi.mock("@/api/workflow_defs", () => defs);
 
 const DEFS: WorkflowDef[] = [
-  { name: "story", type: "story", source: "file", problems: [], pr: null },
-  { name: "bug-fix", type: "bug", source: "file", problems: [], pr: null },
-  { name: "review-loop", type: null, source: "file", problems: [], pr: null, bundle: true },
-  { name: "my-draft", type: "story", source: "draft", problems: [], pr: null },
+  { name: "story", type: "story", source: "file", used_by: [], problems: [], pr: null },
+  { name: "bug-fix", type: "bug", source: "file", used_by: [], problems: [], pr: null },
+  { name: "review-loop", type: null, source: "file", used_by: [], problems: [], pr: null, bundle: true },
+  { name: "my-draft", type: "story", source: "draft", used_by: [], problems: [], pr: null },
 ];
 
 const ITEMS: Item[] = [
