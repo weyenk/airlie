@@ -8,7 +8,7 @@ import type { Catalog, WorkflowDetail } from "@/api/workflow_defs";
 import { addNode, emptyGraph, freeId, fromWorkflow, renameOutput } from "./graph";
 import type { GEdge, Graph, NodeSpec, NodeType } from "./graph";
 import { autoLayout, COLUMN } from "./layout";
-import { problemsByNode } from "./problems";
+import { problemsByEdge, problemsByNode } from "./problems";
 import { promptFieldsOf } from "./promptFile";
 import { parseWorkflow, toYaml } from "./yaml";
 
@@ -52,6 +52,9 @@ export function useBuilder(name: Ref<string>) {
   const saved = ref("");
   const dirty = computed(() => !broken.value && state() !== saved.value);
   const byNode = computed(() => problemsByNode(problems.value));
+  const byEdge = computed(() => problemsByEdge(problems.value));
+  /** The draft came back upgraded from an older schema: its text is not the stored text until a save. */
+  const upgraded = computed(() => detail.value?.upgraded === true); // a save answers with the stored text: false
   /** What Save would send (the text itself only when it could not be drawn). */
   const yamlText = computed(() => (broken.value && detail.value ? detail.value.yaml : toYaml(graph.value)));
   /** Publish opens a PR of a saved draft (an edit of a file too): not a new canvas, a file's workflow as it is, or
@@ -242,6 +245,8 @@ export function useBuilder(name: Ref<string>) {
     validated,
     stale: computed(() => checked.value !== null && checked.value !== state()),
     byNode,
+    byEdge,
+    upgraded,
     catalog,
     catalogFailed,
     loadCatalog,

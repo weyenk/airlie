@@ -10,19 +10,19 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useCardDraftStore } from "@/stores/card_draft";
 import { useWorkflowDefs } from "./board/workflow";
 import Canvas from "./builder/Canvas.vue";
-import { connect, moveNode, removeEdge, removeNode, renameNode, updateNode } from "./builder/graph";
-import type { GEdge, LineOpts, NodeSpec } from "./builder/graph";
+import { connect, moveNode, removeEdge, removeNode, renameNode, updateEdge, updateNode } from "./builder/graph";
+import type { GEdge, LineOpts, LoopBound, NodeSpec } from "./builder/graph";
 import NodeModal from "./builder/NodeModal.vue";
 import Palette from "./builder/Palette.vue";
 import Problems from "./builder/Problems.vue";
 import SaveDialog from "./builder/SaveDialog.vue";
 import { useBuilder } from "./builder/useBuilder";
-import WireForm from "./builder/WireForm.vue";
-import type { Move, MoveOpts } from "./builder/WireForm.vue";
-import WorkflowForm from "./builder/WorkflowForm.vue";
+import WireModal from "./builder/WireModal.vue";
+import WorkflowModal from "./builder/WorkflowModal.vue";
 
 /** The builder (`/workflows/build/<name>`, or `new` for an empty canvas): the palette, the workflow drawn as boxes
- * and wires, a box's fields in a modal (its card's Edit, or a double-click), the wire's form, and the YAML. Validate and Save draft run the server's checks, so
+ * and wires, a box's fields in a modal (its card's Edit, or a double-click), a wire's in another (its card's Edit,
+ * or a double-click), the workflow's own in a third (the title bar's button), and the YAML. Validate and Save draft run the server's checks, so
  * the canvas is judged by the code that judges a hand-written file. */
 const route = useRoute();
 const router = useRouter();
@@ -55,7 +55,7 @@ watch(name, () => {
 function pick(id: string) {
   selected.value = selected.value === id ? null : id;
   selectedEdge.value = null;
-  wire.value = null;
+  closeWire();
 }
 
 /** Edit on a box's card, or a double-click: its fields, in the modal. */
@@ -63,46 +63,50 @@ function openBox(id: string) {
   selected.value = id;
   editing.value = id;
   selectedEdge.value = null;
-  wire.value = null;
+  closeWire();
 }
 
-// a wire: one just drawn (no edge yet) or one clicked
-/** `opts` are what the canvas drew it with (the artifact of the port it left), kept until the line is made. */
-const wire = ref<{ from: string; to: string; edge: GEdge | null; opts?: LineOpts } | null>(null);
+// a wire: a drag draws the line at once (the modal is for what it carries, says and bounds); a click selects it, and
+// its card's Edit or a double-click opens the modal, which always reads the line from the graph
+const wire = ref<{ from: string; to: string } | null>(null);
 const wireEnds = computed(() => (wire.value ? { from: nodeOf(wire.value.from), to: nodeOf(wire.value.to) } : null));
+const wireEdge = computed(() => (wire.value ? (graph.value.edges.find((e) => e.from === wire.value!.from && e.to === wire.value!.to) ?? null) : null));
+const findEdge = (from: string, to: string) => graph.value.edges.find((e) => e.from === from && e.to === to) ?? null;
+/** What the person changed since the last check is checked again, when they have asked for a check before. */
+function recheck() {
+  if (b.validated.value) void b.validate();
+}
 function drawn(from: string, to: string, opts: LineOpts = {}) {
-  wire.value = { from, to, edge: null, opts };
+  if (!b.edit((g) => connect(g, from, to, opts))) return;
   selected.value = null;
-  selectedEdge.value = null;
+  selectedEdge.value = findEdge(from, to);
+  recheck();
 }
 function clickedWire(edge: GEdge) {
-  wire.value = { from: edge.from, to: edge.to, edge };
   selected.value = null;
   selectedEdge.value = edge;
 }
+function openWire(edge: GEdge) {
+  clickedWire(edge);
+  wire.value = { from: edge.from, to: edge.to };
+}
 function closeWire() {
   wire.value = null;
-  selectedEdge.value = null;
 }
-/** The old wire form's move as a v2 line (until the wire modal replaces the form): a loop keeps its bound (its
- * `when` the line's), a branch value becomes the line's condition. */
-function lineOpts(move: Move, opts: MoveOpts): LineOpts {
-  if (move === "loop" && opts.loop) {
-    const { when, ...loop } = opts.loop;
-    return when ? { loop, when } : { loop };
+function applyWire(change: { artifacts: string[]; when?: string; loop?: LoopBound }) {
+  const w = wire.value;
+  if (!w) return;
+  if (b.edit((g) => updateEdge(g, w.from, w.to, change))) {
+    selectedEdge.value = findEdge(w.from, w.to);
+    recheck();
   }
-  if (move === "branch" && opts.branch) return { when: `${opts.branch.on} == ${opts.branch.value}` };
-  return {};
-}
-function applyWire(move: Move, opts: MoveOpts) {
-  const w = wire.value!;
-  // a second line between the same boxes replaces the first
-  if (b.edit((g) => connect(g, w.from, w.to, { ...w.opts, ...lineOpts(move, opts) }))) closeWire();
 }
 function dropWire() {
-  const e = wire.value?.edge;
+  const e = wireEdge.value;
   if (e) b.edit((g) => removeEdge(g, e));
   closeWire();
+  selectedEdge.value = null;
+  recheck();
 }
 
 // the modal's changes (live: the graph holds each as it is made), each to the box it names, so a change that
@@ -126,10 +130,19 @@ function removeBox(id: string) {
 function addPrompt(id: string, text: string) {
   b.prompts.value = { ...b.prompts.value, [id]: text };
 }
+/** A problem's line, shown: the diagram, the line selected, its modal open. */
+function focusEdge(from: string, to: string) {
+  const e = findEdge(from, to);
+  if (!e) return;
+  tab.value = "diagram";
+  editing.value = null;
+  openWire(e);
+}
 /** A problem's box, shown: the diagram, the box selected, its fields open. */
 function focus(id: string) {
   tab.value = "diagram";
   closeWire();
+  selectedEdge.value = null;
   selected.value = id;
   editing.value = id;
 }
@@ -146,10 +159,11 @@ async function saveClick() {
   }
   await saveAs(detail.value?.name ?? name.value, graph.value.type);
 }
-/** The workflow's own fields (its type, and its inputs, which the old form calls loose), from the panel shown
- * while nothing is selected. */
-function updateWorkflow(change: { type?: string | null; loose?: string[]; start?: string }) {
-  b.edit((g) => ({ ...g, ...(change.type !== undefined ? { type: change.type } : {}), ...(change.loose ? { inputs: change.loose } : {}) }));
+/** The workflow's own fields, in the modal the title bar opens: its type, the inputs its caller supplies and the
+ * outputs it hands back. */
+const editingWorkflow = ref(false);
+function updateWorkflow(change: { type?: string | null; inputs?: string[]; outputs?: string[] }) {
+  b.edit((g) => ({ ...g, ...(change.type !== undefined ? { type: change.type } : {}), ...(change.inputs ? { inputs: change.inputs } : {}), ...(change.outputs ? { outputs: change.outputs } : {}) }));
 }
 
 // Delete draft: asked first; the draft goes (an edit of a file leaves the file as it is) and the builder returns
@@ -249,12 +263,14 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       <span v-if="typeLabel" data-workflow-type class="rounded-full bg-chip px-2 py-px text-xs font-semibold text-chip-foreground">{{ typeLabel }}</span>
       <span v-if="detail?.edits_file" data-edits-file :title="`Publishing changes the repo's ${detail.name}; until it merges, the file runs`" class="rounded-full bg-warn px-2 py-px text-xs font-semibold text-warn-foreground">edit of {{ detail.name }}</span>
       <span v-else-if="detail?.source === 'draft'" class="rounded-full bg-warn px-2 py-px text-xs font-semibold text-warn-foreground">draft</span>
+      <span v-if="b.upgraded.value" data-upgraded class="rounded-full bg-warn px-2 py-px text-xs font-semibold text-warn-foreground">upgraded to the current schema, unsaved</span>
       <span v-if="count" data-problems class="rounded-full bg-danger px-2 py-px text-xs font-semibold text-danger-foreground">{{ count }} {{ count === 1 ? "problem" : "problems" }}</span>
       <a v-if="detail?.pr" data-pr :href="detail.pr.url" target="_blank" rel="noopener" class="text-[13px] text-muted-foreground underline">PR #{{ detail.pr.number }}</a>
       <span v-if="b.dirty.value" data-dirty class="text-xs text-muted-foreground">Unsaved changes</span>
       <span class="grow" />
       <Button v-if="card" size="sm" variant="ghost" data-cancel @click="cancel">Cancel</Button>
       <Button v-if="detail?.source === 'draft'" size="sm" variant="ghost" data-delete :disabled="b.saving.value || b.publishing.value" @click="deleting = true">Delete draft</Button>
+      <Button size="sm" variant="outline" data-workflow-edit :disabled="b.broken.value" @click="editingWorkflow = true">Workflow</Button>
       <Button size="sm" variant="outline" data-validate :disabled="b.broken.value" @click="b.validate">Validate</Button>
       <Button size="sm" data-save :disabled="b.broken.value || b.saving.value || b.publishing.value" @click="saveClick">Save draft</Button>
       <Button size="sm" variant="outline" data-publish :title="publishHelp" :disabled="publishHelp !== undefined || b.publishing.value || b.saving.value" @click="publishClick">Publish</Button>
@@ -271,7 +287,7 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       <button type="button" class="underline" @click="b.loadCatalog">Retry</button>
     </p>
     <template v-if="count || b.validated.value">
-      <Problems :problems="problems" @focus="focus" />
+      <Problems :problems="problems" @focus="focus" @focus-edge="focusEdge" />
       <p v-if="b.stale.value" data-problems-stale class="-mt-2 text-xs text-muted-foreground">Edited since this check: Validate again to see where it stands.</p>
     </template>
 
@@ -280,7 +296,7 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       <pre data-yaml class="overflow-auto rounded-xl border border-border bg-[var(--code)] p-4 font-mono text-xs leading-relaxed min-[901px]:min-h-0 min-[901px]:flex-1">{{ b.yamlText.value }}</pre>
     </template>
 
-    <div v-else class="grid grid-cols-[180px_minmax(0,1fr)_280px] items-start gap-3 max-[900px]:grid-cols-1 min-[901px]:min-h-0 min-[901px]:flex-1 min-[901px]:items-stretch">
+    <div v-else class="grid grid-cols-[180px_minmax(0,1fr)] items-start gap-3 max-[900px]:grid-cols-1 min-[901px]:min-h-0 min-[901px]:flex-1 min-[901px]:items-stretch">
       <Palette :bundles="bundles" :failed="failed" :readonly="b.broken.value" @retry="reload" @add="(item) => b.place(item)" />
       <section aria-label="Canvas" class="min-h-[240px] overflow-auto rounded-xl border border-border bg-card shadow-sm max-[900px]:max-h-[calc(100dvh-var(--header-h)-200px)] min-[901px]:h-full">
         <Canvas
@@ -288,40 +304,17 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
           :selected="selected"
           :selected-edge="selectedEdge"
           :problems="b.byNode.value"
+          :edge-problems="b.byEdge.value"
           :readonly="b.broken.value"
           @select="pick"
           @move="(id, x, y) => b.edit((g) => moveNode(g, id, x, y))"
           @connect="drawn"
           @open="openBox"
           @select-edge="clickedWire"
-          @open-edge="clickedWire"
+          @open-edge="openWire"
           @place="(item, x, y) => b.place(item, x, y)"
         />
       </section>
-      <aside aria-label="Fields" data-fields class="flex flex-col gap-2 rounded-xl border border-border bg-card p-3 text-[13px] shadow-sm min-[901px]:min-h-0 min-[901px]:overflow-auto">
-        <WireForm
-          v-if="wire && wireEnds?.from && wireEnds.to"
-          :from="wireEnds.from"
-          :to="wireEnds.to"
-          :existing="wire.edge"
-          :removable="!!wire.edge"
-          :bundles="bundles"
-          :predicates="[]"
-          :from-child="false"
-          @apply="applyWire"
-          @remove="dropWire"
-          @cancel="closeWire"
-        />
-        <WorkflowForm
-          v-else
-          :type="graph.type"
-          :loose="graph.inputs"
-          start=""
-          :nodes="[]"
-          :types="cardTypes"
-          @update="updateWorkflow"
-        />
-      </aside>
     </div>
 
     <NodeModal
@@ -339,6 +332,18 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       @remove="removeBox"
       @create-prompt="addPrompt"
     />
+    <WireModal
+      v-if="wire && wireEnds?.from && wireEnds.to"
+      :open="true"
+      :edge="wireEdge"
+      :from="wireEnds.from"
+      :to="wireEnds.to"
+      :graph="graph"
+      @update:open="(v) => !v && closeWire()"
+      @apply="applyWire"
+      @remove="dropWire"
+    />
+    <WorkflowModal v-model:open="editingWorkflow" :type="graph.type" :inputs="graph.inputs" :outputs="graph.outputs" :types="cardTypes" @update="updateWorkflow" />
     <SaveDialog v-model:open="asking" :taken="taken" :files="files" :types="cardTypes" :type="graph.type" :reason="reason" @save="saveAs" />
     <Dialog :open="deleting" @update:open="(v) => !v && (deleting = false)">
       <DialogContent :show-close-button="false">

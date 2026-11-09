@@ -31,6 +31,8 @@ export type WorkflowDetail = {
   pr: { number: number; url: string } | null;
   /** A draft named as a file: an edit of that file, published as a change to it; the file runs meanwhile. */
   edits_file?: boolean;
+  /** A draft stored in an older schema, read upgraded: its text is not the stored text until a save. */
+  upgraded?: boolean;
 };
 
 /** A check the engine offers (`GET /v1/workflows/catalog`): what it reads, what it writes and in which format. */

@@ -106,7 +106,7 @@ test("a click on a box selects it; its card's Edit opens its fields in the modal
   await w.get("[data-box][data-node=survey]").trigger("click");
   expect(w.get("[data-box][data-node=survey]").attributes("aria-pressed")).toBe("true");
   expect(document.body.querySelector("[data-node-modal]")).toBeNull(); // a click only selects
-  expect(w.find("[data-fields] [data-input=id]").exists()).toBe(false); // and the side panel holds no box's fields
+  expect(w.find("[data-fields]").exists()).toBe(false); // there is no side panel: the canvas has the room
   await w.get("[data-box-card][data-node=survey] [data-box-edit]").trigger("click");
   await flushPromises();
   const modal = document.body.querySelector("[data-node-modal]")!;
@@ -169,12 +169,11 @@ test("an output renamed in the modal is renamed in its readers too", async () =>
 });
 
 
-test("a line drawn from an artifact port carries that artifact once the wire is confirmed", async () => {
+test("a line drawn from an artifact port is made at once and carries that artifact", async () => {
   const { w } = await open();
   w.findComponent({ name: "AirlieBuilderCanvas" }).vm.$emit("connect", "survey", "refine", { artifacts: ["survey"] });
   await flushPromises();
-  await w.get("[data-wire-apply]").trigger("click");
-  await flushPromises();
+  expect(document.body.querySelector("[data-wire-modal]")).toBeNull();
   expect(w.get("[data-edge-hit][data-from=survey][data-to=refine] title").text()).toMatch(/^survey: survey/);
 });
 test("the YAML tab shows the definition's text", async () => {
@@ -397,22 +396,6 @@ test("a delete that fails stays and says why; a file or a new canvas has no Dele
   expect(w.find("[data-delete]").exists()).toBe(false);
 });
 
-// replaced in Task 5 (the workflow modal): drives WorkflowForm's old start and loose fields
-test.skip("with nothing selected the panel edits the workflow's type, loose names and start", async () => {
-  const { w } = await open("/workflows/build/new");
-  await w.get("[data-palette-type=check]").trigger("click");
-  await w.get("[data-palette-type=gate]").trigger("click");
-  await w.get("[data-box][data-node=gate-1]").trigger("click"); // unselect
-  const panel = w.get("[data-workflow-form]");
-  expect(panel.findAll("[data-loose]").map((c) => c.attributes("data-loose"))).toEqual(["card", "repo"]);
-  await panel.get("[data-loose-drop=repo]").trigger("click");
-  await w.get("[data-workflow-input=start]").setValue("gate-1");
-  await w.get("[data-workflow-input=type]").setValue("bug");
-  await w.get("[data-tab=yaml]").trigger("click");
-  const text = w.get("[data-yaml]").text();
-  expect(text).toContain("    type: bug\n    start: gate-1\n    loose: [card]\n");
-});
-
 test("a save the server refuses as unreadable (422) reopens the dialog with its reason", async () => {
   api.saveDraft.mockRejectedValueOnce(new ApiError(422, "'drafts' is reserved"));
   const { w } = await open("/workflows/build/new");
@@ -459,23 +442,6 @@ test("a workflow that validates says so", async () => {
   await w.get("[data-validate]").trigger("click");
   await flushPromises();
   expect(w.find("[data-no-problems]").exists()).toBe(true);
-});
-
-// replaced in Task 5 (the wire modal): drives WireForm's old moves and expects a v1 `loop:` field
-test.skip("a wire drawn between two boxes opens the wire form; its move lands in the fields", async () => {
-  api.getWorkflowDef.mockResolvedValue(fixDraft());
-  const { w } = await open("/workflows/build/fix");
-  w.findComponent({ name: "AirlieBuilderCanvas" }).vm.$emit("connect", "fix", "intake");
-  await flushPromises();
-  expect(w.get("[data-wire-form]").text()).toContain("fix → intake");
-  await w.get("input[value=loop]").setValue(true);
-  await w.get("input[data-wire=max]").setValue("3");
-  await w.get("[data-wire-apply]").trigger("click");
-  await flushPromises();
-  expect(w.find("[data-edge=loop][data-from=fix][data-to=intake]").exists()).toBe(true);
-  await w.get("[data-tab=yaml]").trigger("click");
-  expect(w.get("[data-yaml]").text()).toContain("loop: {to: intake, max: 3}");
-  expect(w.get("[data-yaml-notice]").text()).toContain("Saving regenerates the file");
 });
 
 test("a box's modal edits the box as the change is made", async () => {
@@ -746,4 +712,161 @@ test("Cancel returns to the card unchanged: nothing saved, nothing published, no
   expect(api.saveDraft).not.toHaveBeenCalled();
   expect(api.publishWorkflow).not.toHaveBeenCalled();
   expect(useCardDraftStore().take(token)).toEqual(HELD);
+});
+
+// the wire modal and the workflow modal
+const LINED_YAML = `workflows:
+  fix:
+    type: bug
+    inputs: [card]
+    nodes:
+      intake: {type: check, run: x.intake, outputs: {report: text, verdict: text}, to: [fix]}
+      fix: {type: ask, role: coder, prompt: x.fix, inputs: [report], outputs: {fixed: text}}
+`;
+const lined = (over: Partial<WorkflowDetail> = {}) => fixDraft({ yaml: LINED_YAML, ...over });
+const modal = (sel: string) => document.body.querySelector<HTMLElement>(`[data-wire-modal] ${sel}`);
+const yamlText = async (w: Awaited<ReturnType<typeof open>>["w"]) => {
+  await w.get("[data-tab=yaml]").trigger("click");
+  return w.get("[data-yaml]").text();
+};
+
+test("the screen has a palette and a canvas and no Fields aside", async () => {
+  const { w } = await open();
+  expect(w.findAll("aside").map((a) => a.attributes("aria-label"))).toEqual(["Palette"]);
+  expect(w.find("[data-fields]").exists()).toBe(false);
+  const grid = w.get("[data-canvas]").element.closest("[class*='grid-cols']")!;
+  expect(grid.className).toContain("grid-cols-[180px_minmax(0,1fr)]");
+  expect(grid.className).not.toContain("280px");
+});
+
+test("a wire's artifacts and condition save into the line", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined());
+  const { w } = await open("/workflows/build/fix");
+  await w.get("[data-edge-hit][data-from=intake][data-to=fix]").trigger("dblclick");
+  await flushPromises();
+  expect(modal("[data-wire-artifact=report]")).not.toBeNull();
+  (modal("[data-wire-artifact=verdict]") as HTMLInputElement).click();
+  type(modal("[data-wire-when]"), "verdict == pass");
+  await flushPromises();
+  (modal("[data-wire-apply]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(document.body.querySelector("[data-wire-modal]")).toBeNull();
+  expect(w.get("[data-edge-label]").text()).toBe("if verdict == pass · report, verdict");
+  const text = await yamlText(w);
+  expect(text).toContain("when: verdict == pass");
+  expect(text).toContain("inputs: [report, verdict]");
+});
+
+test("clearing the condition removes the key from the YAML", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined({ yaml: LINED_YAML.replace("to: [fix]", "to: [{node: fix, when: verdict == pass}]") }));
+  const { w } = await open("/workflows/build/fix");
+  expect(await yamlText(w)).toContain("when: verdict == pass");
+  await w.get("[data-tab=diagram]").trigger("click");
+  await w.get("[data-edge-hit][data-from=intake][data-to=fix]").trigger("dblclick");
+  await flushPromises();
+  type(modal("[data-wire-when]"), "");
+  await flushPromises();
+  (modal("[data-wire-apply]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(await yamlText(w)).not.toContain("when:");
+});
+
+test("a loop with max 2 drawn from the wire modal draws as a loop and saves into the line", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined());
+  const { w } = await open("/workflows/build/fix");
+  w.findComponent({ name: "AirlieBuilderCanvas" }).vm.$emit("connect", "fix", "intake", {});
+  await flushPromises();
+  expect(document.body.querySelector("[data-wire-modal]")).toBeNull(); // the line is drawn at once
+  expect(w.find("[data-edge=line][data-from=fix][data-to=intake]").exists()).toBe(true);
+  // the drawn line is selected: its card's Edit opens the modal
+  await w.get("[data-edge-card] [data-edge-edit]").trigger("click");
+  await flushPromises();
+  (modal("[data-wire-loop]") as HTMLInputElement).click();
+  await flushPromises();
+  type(modal("[data-wire-max]"), "2");
+  await flushPromises();
+  (modal("[data-wire-apply]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(w.find("[data-edge=loop][data-from=fix][data-to=intake]").exists()).toBe(true);
+  expect(await yamlText(w)).toContain("loop: {max: 2}");
+});
+
+test("a condition problem from the server marks the wire's label and lists in the problems; the draft still saves", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined());
+  const { w } = await open("/workflows/build/fix");
+  await w.get("[data-validate]").trigger("click"); // the graph has been validated: an edit is checked again
+  await flushPromises();
+  api.validateWorkflow.mockResolvedValue(["workflow fix: node intake: line to fix: condition names 'zzz', which nothing produces"]);
+  await w.get("[data-edge-hit][data-from=intake][data-to=fix]").trigger("dblclick");
+  await flushPromises();
+  type(modal("[data-wire-when]"), "zzz == 1");
+  await flushPromises();
+  (modal("[data-wire-apply]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(api.validateWorkflow).toHaveBeenCalledTimes(2);
+  expect(api.validateWorkflow.mock.calls[1][0]).toContain("zzz == 1");
+  expect(w.get("[data-edge-label]").attributes("data-edge-problem")).toBe("true");
+  expect(w.get("[data-problem-edge='intake>fix']").text()).toContain("nothing produces");
+  expect(w.get("[data-save]").attributes("disabled")).toBeUndefined();
+  // a click on the problem opens the line's modal
+  await w.get("[data-problem-edge='intake>fix']").trigger("click");
+  await flushPromises();
+  expect(modal("[data-wire-when]")).not.toBeNull();
+  (modal("[data-wire-done]") as HTMLButtonElement).click();
+  await flushPromises();
+  await w.get("[data-save]").trigger("click");
+  await flushPromises();
+  expect(api.saveDraft).toHaveBeenCalledTimes(1);
+});
+
+test("Remove in the wire modal takes the line out", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined());
+  const { w } = await open("/workflows/build/fix");
+  await w.get("[data-edge-hit][data-from=intake][data-to=fix]").trigger("dblclick");
+  await flushPromises();
+  (modal("[data-wire-remove]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(w.find("[data-edge][data-from=intake]").exists()).toBe(false);
+  expect(document.body.querySelector("[data-wire-modal]")).toBeNull();
+});
+
+test("the title bar opens the workflow modal, which edits the inputs and outputs and the type", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined());
+  const { w } = await open("/workflows/build/fix");
+  await w.get("[data-workflow-edit]").trigger("click");
+  await flushPromises();
+  const m = document.body.querySelector("[data-workflow-modal]")!;
+  expect([...m.querySelectorAll("[data-workflow-inputs] [data-chip]")].map((c) => c.getAttribute("data-chip"))).toEqual(["card"]);
+  const add = m.querySelector("[data-workflow-add=inputs]")!;
+  type(add, "repo");
+  add.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+  const out = m.querySelector("[data-workflow-add=outputs]")!;
+  type(out, "fixed");
+  out.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+  const select = m.querySelector<HTMLSelectElement>("[data-workflow-type-select]")!;
+  select.value = "";
+  select.dispatchEvent(new Event("change"));
+  await flushPromises();
+  (m.querySelector("[data-workflow-done]") as HTMLButtonElement).click();
+  await flushPromises();
+  const text = await yamlText(w);
+  expect(text).toContain("inputs: [card, repo]");
+  expect(text).toContain("outputs: [fixed]");
+  expect(text).not.toContain("type: bug");
+  expect(w.get("[data-workflow-type]").text()).toBe("bug"); // the title bar shows the saved definition's type until a save
+});
+
+test("a draft the server upgraded from the old schema says so until it is saved", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined({ upgraded: true }));
+  const { w } = await open("/workflows/build/fix");
+  expect(w.get("[data-upgraded]").text()).toContain("upgraded to the current schema");
+  await w.get("[data-save]").trigger("click");
+  await flushPromises();
+  expect(w.find("[data-upgraded]").exists()).toBe(false);
+});
+
+test("a draft that was not upgraded shows no cue", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined());
+  const { w } = await open("/workflows/build/fix");
+  expect(w.find("[data-upgraded]").exists()).toBe(false);
 });
