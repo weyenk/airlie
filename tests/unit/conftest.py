@@ -99,20 +99,65 @@ def quarantine_mode(config: pytest.Config) -> str:
 
 
 QUARANTINED = pytest.StashKey[int]()
+STALE = pytest.StashKey[list[str]]()
+
+
+def collects_all_of_unit(config: pytest.Config) -> bool:
+    """Whether this run collects the whole of tests/unit: a path argument at or above it, and no -k or
+    --deselect narrowing (mutmut always passes --deselect, so its runs are never judged)."""
+    if config.option.keyword or config.getoption("deselect", None):
+        return False
+    unit = Path(__file__).resolve().parent
+    for arg in config.args:
+        if "::" in arg:
+            continue
+        path = (config.invocation_params.dir / arg).resolve()
+        if path == unit or path in unit.parents:
+            return True
+    return False
+
+
+def stale_entries(entries: dict[str, str], nodeids: list[str], root: Path) -> list[str]:
+    """The entries no collected test matches: a parametrized entry must equal a node id exactly, a test entry
+    must be some node id's base, a file entry must hold a node id. An entry whose file is not on disk is
+    stale; one whose file exists but was not collected here (MAC_ONLY on Linux, a mutmut --ignore) is not
+    judged."""
+    exact = set(nodeids)
+    bases = {n.split("[")[0] for n in nodeids}
+    files = {n.split("::")[0] for n in nodeids}
+    stale = []
+    for entry in entries:
+        file = entry.split("::")[0]
+        if not (root / file).is_file():
+            stale.append(entry)
+        elif file not in files:
+            continue
+        elif "[" in entry:
+            if entry not in exact:
+                stale.append(entry)
+        elif "::" in entry and entry not in bases:
+            stale.append(entry)
+    return stale
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Skip MAC_ONLY_TESTS where vllm-mlx is missing, naming where they run instead; deselect (or keep only)
-    the quarantined tests."""
+    the quarantined tests. A run of the whole of tests/unit also checks no entry has gone stale."""
     if not HAS_MLX:
         skip = pytest.mark.skip(reason="needs vllm-mlx or mlx (macOS only): `task test:mac` runs it")
         for item in items:
             if item.nodeid.split("[")[0].removeprefix("tests/unit/") in MAC_ONLY_TESTS:
                 item.add_marker(skip)
+    entries = load_quarantine()
+    if collects_all_of_unit(config):
+        stale = stale_entries(entries, [item.nodeid for item in items], config.rootpath)
+        if stale:
+            config.stash[STALE] = stale
+            if hasattr(config, "workeroutput"):  # an xdist worker: the controller fails the session
+                config.workeroutput["stale"] = stale
     mode = quarantine_mode(config)
     if mode == "include":
         return
-    entries = load_quarantine()
     listed = [item for item in items if is_quarantined(item.nodeid, entries)]
     if not listed and mode == "skip":
         return
@@ -129,14 +174,16 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 @pytest.hookimpl(optionalhook=True)
 def pytest_testnodedown(node: Any, error: Any) -> None:
     """xdist's controller collects nothing itself: each worker reports how many it deselected."""
-    count = getattr(node, "workeroutput", {}).get("quarantined")
-    if count is not None:
-        config = node.config
-        config.stash[QUARANTINED] = max(config.stash.get(QUARANTINED, 0), count)
+    out, config = getattr(node, "workeroutput", {}), node.config
+    if out.get("quarantined") is not None:
+        config.stash[QUARANTINED] = max(config.stash.get(QUARANTINED, 0), out["quarantined"])
+    if out.get("stale"):
+        config.stash[STALE] = out["stale"]
 
 
 class Budget:
-    """Seconds each test took (setup + call + teardown), registered when AIRLIE_TEST_BUDGET_MS is set. A
+    """Seconds each test's call phase took, registered when AIRLIE_TEST_BUDGET_MS is set: setup and teardown
+    are left out, so a worker's cold imports and session fixtures are not charged to its first test. A
     plugin object, not module state: mutmut runs pytest.main many times in one process, and this conftest
     stays imported between them. Under xdist the controller receives every worker's reports: it sees them
     all."""
@@ -145,7 +192,8 @@ class Budget:
         self.seconds: dict[str, float] = {}
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
-        self.seconds[report.nodeid] = self.seconds.get(report.nodeid, 0.0) + report.duration
+        if report.when == "call":
+            self.seconds[report.nodeid] = report.duration
 
 
 BUDGET = pytest.StashKey[Budget]()
@@ -170,8 +218,26 @@ def over_budget(config: pytest.Config) -> list[tuple[str, float]]:
 
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    if over_budget(session.config) and session.exitstatus == 0:
+    stale = session.config.stash.get(STALE, None)
+    if (over_budget(session.config) or stale) and session.exitstatus == 0:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def selected_but_quarantined(config: pytest.Config) -> list[str]:
+    """The node ids the person named on the command line that the quarantine deselected."""
+    if quarantine_mode(config) != "skip":
+        return []
+    entries, named = load_quarantine(), []
+    for arg in config.args:
+        if "::" not in arg:
+            continue
+        file, _, rest = arg.partition("::")
+        path = (config.invocation_params.dir / file).resolve()
+        if config.rootpath in path.parents:
+            nodeid = f"{path.relative_to(config.rootpath).as_posix()}::{rest}"
+            if is_quarantined(nodeid, entries):
+                named.append(nodeid)
+    return named
 
 
 def pytest_terminal_summary(terminalreporter: Any, exitstatus: int, config: pytest.Config) -> None:
@@ -180,6 +246,16 @@ def pytest_terminal_summary(terminalreporter: Any, exitstatus: int, config: pyte
         terminalreporter.write_line(
             f"{count} quarantined (tests/unit/quarantine.toml; `task test:quarantine` runs them)"
         )
+    for nodeid in selected_but_quarantined(config):
+        terminalreporter.write_line(
+            f"{nodeid} is quarantined (tests/unit/quarantine.toml); run it with --quarantined include"
+        )
+    stale = config.stash.get(STALE, None)
+    if stale:
+        terminalreporter.section("stale tests/unit/quarantine.toml entries", red=True)
+        for entry in stale:
+            terminalreporter.write_line(f"  {entry}")
+        terminalreporter.write_line("no collected test matches these: delete or correct each line")
     slow = over_budget(config)
     if slow:
         budget = os.environ["AIRLIE_TEST_BUDGET_MS"]

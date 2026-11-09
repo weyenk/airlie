@@ -1,9 +1,14 @@
 # Unit tests kept out of the default run until someone reviews them (tests/unit/conftest.py).
-# slow: <ms> = setup + call + teardown over 500 ms, the max of two `-n auto --maxprocesses 8` runs on an
-# Apple Silicon Mac on 2026-11-09; clock: <why> = the test leans on the real clock (sleeps, timeouts,
-# elapsed-time asserts, wall-clock deadlines). A key is a node id without parameters (every case), an exact
-# parametrized node id, or a whole file. Release a test by making it fast and clock-free, then deleting its
-# line. `task test:quarantine` runs only these; they must still pass.
+# slow: <ms> = the test's setup + call + teardown, summed from `--durations=0`, went over 500 ms. Measured
+# 2026-11-09 on an Apple Silicon Mac: the max of two `pytest -n auto --maxprocesses 8 tests/unit` runs on
+# main (d821a99), plus six that went over in later runs of the kept suite with the budget on (one -n 8 run,
+# one serial run); those six carry the ms that run reported. A test whose cases differ is listed case by
+# case. CI's budget (AIRLIE_TEST_BUDGET_MS) times the call phase only.
+# clock: <why> = the test leans on the real clock (real sleeps, real timeouts that must fire, elapsed-time
+# asserts, wall-clock polling deadlines, data aged against time.time()), found by reading the suite.
+# A key is a node id without parameters (every case), an exact parametrized node id, or a whole file; a whole
+# tests/unit run fails on a key no collected test matches. Release a test by making it fast and clock-free,
+# then deleting its line. `task test:quarantine` runs only these; they must still pass.
 [quarantine]
 "tests/unit/test_auth_api.py::test_login_options_flood_leaves_the_server_bounded" = "slow: 1700 ms"
 "tests/unit/test_board_comment_id.py::test_edit_comment_bumps_updated_at" = "clock: a real 10 ms sleep so updated_at moves"
