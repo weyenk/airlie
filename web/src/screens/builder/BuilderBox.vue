@@ -6,7 +6,7 @@ import { SHAPE_CLASS, shapeOf } from "./shapes";
 /** One node on the canvas, in its type's shape; the canvas sets where it sits. A box validation found wrong is
  * outlined, and its hover says what is wrong. */
 const props = defineProps<{ node: GNode; selected?: boolean; problems?: string[] }>();
-const emit = defineEmits<{ pick: [id: string] }>();
+const emit = defineEmits<{ pick: [id: string]; open: [id: string] }>();
 
 const shape = computed(() => shapeOf(props.node.type));
 const text = (v: unknown): string => (Array.isArray(v) ? v.join(", ") : typeof v === "string" || typeof v === "number" ? String(v) : "");
@@ -38,6 +38,7 @@ const title = computed(() => [`${props.node.id} (${props.node.type})`, ...(props
       bad ? 'outline-2 outline-offset-1 outline-destructive' : '',
     ]"
     @click="emit('pick', node.id)"
+    @dblclick="emit('open', node.id)"
   >
     <span :class="['flex w-full min-w-0 items-center gap-[5px] font-semibold', shape === 'model' ? 'text-[13px]' : 'text-xs']">
       <span v-if="shape === 'code' || shape === 'gate'" data-square class="size-[7px] flex-none rounded-[1px] bg-muted-foreground"></span>

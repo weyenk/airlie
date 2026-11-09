@@ -51,6 +51,13 @@ function pick(id: string) {
   wire.value = null;
 }
 
+/** Edit on a box's card, or a double-click: its fields (the form beside, until the modal replaces it). */
+function openBox(id: string) {
+  selected.value = id;
+  selectedEdge.value = null;
+  wire.value = null;
+}
+
 // a wire: one just drawn (no edge yet) or one clicked
 const wire = ref<{ from: string; to: string; edge: GEdge | null } | null>(null);
 const wireEnds = computed(() => (wire.value ? { from: nodeOf(wire.value.from), to: nodeOf(wire.value.to) } : null));
@@ -270,7 +277,9 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
           @select="pick"
           @move="(id, x, y) => b.edit((g) => moveNode(g, id, x, y))"
           @connect="drawn"
+          @open="openBox"
           @select-edge="clickedWire"
+          @open-edge="clickedWire"
           @place="(item, x, y) => b.place(item, x, y)"
         />
       </section>
