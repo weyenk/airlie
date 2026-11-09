@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit import budget
+
 os.environ.setdefault("NO_PROXY", "*")
 
 ATLASSIAN = ("ATLASSIAN_API_KEY", "ATLASSIAN_EMAIL", "ATLASSIAN_BASE_URL", "ATLASSIAN_PROJECT_KEY")
@@ -153,45 +155,15 @@ def pytest_testnodedown(node: Any, error: Any) -> None:
         config.stash[STALE] = out["stale"]
 
 
-class Budget:
-    """Seconds each test's call phase took, registered when AIRLIE_TEST_BUDGET_MS is set: setup and teardown
-    are left out, so a worker's cold imports and session fixtures are not charged to its first test. A
-    plugin object, not module state: mutmut runs pytest.main many times in one process, and this conftest
-    stays imported between them. Under xdist the controller receives every worker's reports: it sees them
-    all."""
-
-    def __init__(self) -> None:
-        self.seconds: dict[str, float] = {}
-
-    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
-        if report.when == "call":
-            self.seconds[report.nodeid] = report.duration
-
-
-BUDGET = pytest.StashKey[Budget]()
-
-
 def pytest_configure(config: pytest.Config) -> None:
-    if os.environ.get("AIRLIE_TEST_BUDGET_MS") and not hasattr(config, "workerinput"):
-        config.stash[BUDGET] = budget = Budget()
-        config.pluginmanager.register(budget, "airlie-test-budget")
-
-
-def over_budget(config: pytest.Config) -> list[tuple[str, float]]:
-    """The tests over AIRLIE_TEST_BUDGET_MS that are not quarantined, slowest first."""
-    budget = config.stash.get(BUDGET, None)
-    if budget is None or not budget.seconds:
-        return []
-    limit = float(os.environ["AIRLIE_TEST_BUDGET_MS"]) / 1000
+    """The CPU budget (tests/unit/budget.py) when AIRLIE_TEST_BUDGET_MS is set; the quarantine is exempt."""
     entries = load_quarantine()
-    slow = [(n, s) for n, s in budget.seconds.items() if s > limit and not is_quarantined(n, entries)]
-    return sorted(slow, key=lambda pair: -pair[1])
+    budget.register(config, lambda nodeid: is_quarantined(nodeid, entries))
 
 
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    stale = session.config.stash.get(STALE, None)
-    if (over_budget(session.config) or stale) and session.exitstatus == 0:
+    if session.config.stash.get(STALE, None) and session.exitstatus == 0:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
@@ -228,15 +200,6 @@ def pytest_terminal_summary(terminalreporter: Any, exitstatus: int, config: pyte
         for entry in stale:
             terminalreporter.write_line(f"  {entry}")
         terminalreporter.write_line("no collected test matches these: delete or correct each line")
-    slow = over_budget(config)
-    if slow:
-        budget = os.environ["AIRLIE_TEST_BUDGET_MS"]
-        terminalreporter.section(f"over the {budget} ms test budget (AIRLIE_TEST_BUDGET_MS)", red=True)
-        for nodeid, seconds in slow:
-            terminalreporter.write_line(f"{seconds * 1000:8.0f} ms  {nodeid}")
-        terminalreporter.write_line(
-            "make each one faster, or quarantine it in tests/unit/quarantine.toml with a `slow: <ms>` reason"
-        )
 
 
 @pytest.fixture(autouse=True)

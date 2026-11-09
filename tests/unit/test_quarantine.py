@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.unit.conftest import BUDGET, Budget, is_quarantined, load_quarantine, over_budget, stale_entries
+from tests.unit.budget import CHARGE, FIRST, Budget
+from tests.unit.conftest import is_quarantined, load_quarantine, stale_entries
 
 
 def test_an_entry_no_collected_test_matches_is_stale_parametrized_cases_exactly(tmp_path: Path) -> None:
@@ -54,18 +55,22 @@ def test_an_entry_covers_every_case_of_its_test_and_a_file_entry_every_test_in_i
     assert not is_quarantined("tests/unit/test_a.py::test_b[fast]", one_case)
 
 
-def test_the_budget_names_each_test_over_it_that_is_not_quarantined_slowest_first(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    listed = next(iter(load_quarantine()))
-    budget = Budget()
-    for nodeid, seconds in [("tests/unit/test_a.py::fast", 0.1), ("tests/unit/test_a.py::slow", 0.7),
-                            ("tests/unit/test_a.py::slower[x]", 0.9), (f"{listed}[p]", 5.0)]:  # fmt: skip
-        for when, took in (("setup", 9.0), ("call", seconds), ("teardown", 9.0)):  # only the call counts
-            report = SimpleNamespace(nodeid=nodeid, when=when, duration=took)
+def test_the_budget_names_each_test_over_it_twice_that_is_not_quarantined_costliest_first() -> None:
+    entries = load_quarantine()
+    listed = next(iter(entries))
+    budget = Budget(0.5, lambda nodeid: is_quarantined(nodeid, entries))
+    rows = [("tests/unit/test_a.py::cheap", None, 0.1), ("tests/unit/test_a.py::once", 0.7, 0.3),
+            ("tests/unit/test_a.py::twice", 0.7, 0.6), ("tests/unit/test_a.py::twice_more[x]", 0.9, 0.8),
+            (f"{listed}[p]", None, 5.0)]  # fmt: skip
+    for nodeid, first, charge in rows:
+        props = [[CHARGE, charge]] + ([[FIRST, first]] if first is not None else [])  # lists, as from xdist
+        for when in ("setup", "call", "teardown"):  # only the call report carries a charge
+            report = SimpleNamespace(nodeid=nodeid, when=when, duration=9.0, user_properties=props)
             budget.pytest_runtest_logreport(report)  # type: ignore[arg-type]
-    config = SimpleNamespace(stash={BUDGET: budget})
-    monkeypatch.setenv("AIRLIE_TEST_BUDGET_MS", "500")
-    named = [n for n, _ in over_budget(config)]  # type: ignore[arg-type]
-    assert named == ["tests/unit/test_a.py::slower[x]", "tests/unit/test_a.py::slow"]
-    assert over_budget(SimpleNamespace(stash={})) == []  # type: ignore[arg-type]  # no budget set: nothing
+    budget.pytest_runtest_logreport(
+        SimpleNamespace(nodeid="x::failed_setup", when="call", user_properties=[])
+    )  # type: ignore[arg-type]
+    assert budget.over() == [
+        ("tests/unit/test_a.py::twice_more[x]", 0.9, 0.8),
+        ("tests/unit/test_a.py::twice", 0.7, 0.6),
+    ]

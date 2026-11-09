@@ -3,7 +3,9 @@
 # 2026-11-09 on an Apple Silicon Mac: the max of two `pytest -n auto --maxprocesses 8 tests/unit` runs on
 # main (d821a99), plus six that went over in later runs of the kept suite with the budget on (one -n 8 run,
 # one serial run); those six carry the ms that run reported. A test whose cases differ is listed case by
-# case. CI's budget (AIRLIE_TEST_BUDGET_MS) times the call phase only.
+# case. CI's budget (AIRLIE_TEST_BUDGET_MS, tests/unit/budget.py) charges the call phase only, in CPU time (the
+# worker's plus the child processes it waited for), and runs a test over it once more: only a test over it both
+# times fails the run. The ms above are wall clock and stay as they were measured.
 # clock: <why> = the test leans on the real clock (real sleeps, real timeouts that must fire, elapsed-time
 # asserts, wall-clock polling deadlines, data aged against time.time()), found by reading the suite.
 # A key is a node id without parameters (every case), an exact parametrized node id, or a whole file; a whole
