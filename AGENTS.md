@@ -16,6 +16,14 @@ node's `prompt` is the text itself or `prompt:<id>` for a prompt file; a `check`
 an operation from the catalog, and `airlie workflows catalog` prints it (name, title, inputs, outputs,
 transient, every_run).
 
+The web builder (`/workflows/build/<name>`) edits a workflow as the engine reads it: one box per node, a port per
+output, a line per `to` entry (its condition and loop live on the line; a line that only orders carries no
+artifact). Drag a port to another box to connect; double-click a box (or Edit on its card) for its fields in a
+modal, a line for its wire modal, and the Workflow button for the workflow's type, inputs and outputs. A bundle
+box opens its workflow in place on a double-click, with a breadcrumb back that restores the parent's unsaved
+edits. Save draft writes a draft the board can choose; a draft in the old schema is read upgraded and says so
+until saved. A story's screen and card offer "Use the current workflow" to adopt the published one.
+
 Merge order: `includes` → root keys → `airlie.local.yaml` → topology profile. Role prompts, model paths, and similar data paths resolve against the root file's directory, not the fragment's. Prefer editing the fragment that owns a section rather than inlining it back into the root.
 
 ## Test gate

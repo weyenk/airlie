@@ -372,3 +372,27 @@ What differs from the text above, and what was added, in plain words.
   `{assignment}`.
 - **The builder.** The live Vue builder cannot open the v2 files until plan 2 (unknown type `bundle`); its
   tests read frozen v1 copies; plans 1 and 2 merge together.
+
+## As built (plan 2, 2026-11-09)
+
+The Vue builder reads and writes the v2 files. What differs from the design text above:
+
+- **Ports.** A box has a port per output, and one edge port for lines that only order. A line from an output
+  port carries that artifact; artifacts are encoded as the target's inputs (a `to` entry is node, `when`, `loop`
+  and nothing else).
+- **Editing.** A single click selects a box and shows a small card; a double-click (or the card's Edit) opens
+  the node modal. A bundle opens in place on a double-click, and the card's Edit opens the modal, which has an
+  Open button. The node modal commits pending text on Escape and on the backdrop.
+- **The wire modal.** An artifact also brought to the target by another source shows checked and disabled;
+  removing one the target's prompt reads asks first. A loop's `carry` is a single name (radios). `connect`
+  merges a second artifact into an existing line rather than adding another.
+- **The output-format sentence** is inserted by a button, never automatically. A meeting's prompt is required
+  (an engine rule).
+- **Bundles in place.** Opening a bundle puts `?parent=` beside `?from=`; a breadcrumb leads back and restores
+  the parent's unsaved edits from a sessionStorage hold, also on the browser's Back. A hold expires and says
+  so when it cannot be kept.
+- **The Workflows page** shows "Used by" for each bundle, deletes drafts, and has New.
+- **Upgrade.** A draft in the old schema is read upgraded and shows `[data-upgraded]` until saved.
+- **Adopt.** The story screen and the card modal offer "Use the current workflow", with a confirm.
+- **The run view** drops the `group` bracket (the server never emits it); a bundle's per-item lanes draw as the
+  layer lanes.
