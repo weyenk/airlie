@@ -597,5 +597,58 @@ def test_merge_applies_the_equivalent_list_to_the_shards_diffs(
     assert "equivalent (listed in pyproject.toml)" in capsys.readouterr().out
 
 
+def test_function_of_a_mutant_is_its_functions_glob() -> None:
+    assert mc.function_of("airlie.a.xǁCǁm__mutmut_4") == "airlie.a.xǁCǁm__mutmut_*"
+    assert mc.function_of("airlie.a.x_f__mutmut_12") == "airlie.a.x_f__mutmut_*"
+
+
+def shard_record(where: Path, n: int, results: dict[str, str], shown: dict[str, str]) -> None:
+    mc.write_results(where / f"shard-{n}.json", "ran", results, f"{n}/2", "changed", shown)
+
+
+def test_merge_writes_the_gating_survivors_with_their_diffs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kept, listed, other = "airlie.engine.sse.x_a__mutmut_3", EQ_MUTANT, "airlie.cli.x_b__mutmut_1"
+    shard_record(
+        tmp_path, 1, {kept: "survived", listed: "survived"}, {kept: "+ a\n", listed: "+    return  None\n"}
+    )
+    shard_record(
+        tmp_path, 2, {other: "survived", "airlie.engine.sse.x_c__mutmut_1": "killed"}, {other: "+ b\n"}
+    )
+    monkeypatch.setattr(mc, "equivalents", lambda: EQ_LISTED)
+    out = tmp_path / "out" / "survivors.json"
+    assert mc.merge(tmp_path, 2, None, {"airlie.engine.sse"}, out) == 1
+    assert mc.json.loads(out.read_text()) == {
+        "status": "ran",
+        "survivors": [
+            {
+                "mutant": kept,
+                "status": "survived",
+                "function": "airlie.engine.sse.x_a__mutmut_*",
+                "diff": "+ a\n",
+            }
+        ],
+    }
+
+
+def test_merge_writes_an_empty_survivors_list_when_nothing_ran(tmp_path: Path) -> None:
+    mc.write_results(tmp_path / "shard-1.json", "nothing", {}, "1/1", "changed")
+    out = tmp_path / "survivors.json"
+    assert mc.merge(tmp_path, 1, None, ENROLLED, out) == 0
+    assert mc.json.loads(out.read_text()) == {"status": "ran", "survivors": []}
+
+
+def test_merge_writes_a_survivors_file_when_a_shard_could_not_run(tmp_path: Path) -> None:
+    shard_record(tmp_path, 1, {"airlie.engine.sse.x_a__mutmut_1": "killed"}, {})
+    out = tmp_path / "survivors.json"
+    assert mc.merge(tmp_path, 2, None, ENROLLED, out) == mc.COULD_NOT_RUN
+    assert mc.json.loads(out.read_text()) == {"status": "could_not_run", "survivors": []}
+    mc.write_results(tmp_path / "shard-2.json", "could_not_run", {}, "2/2", "changed")
+    out.unlink()
+    assert mc.merge(tmp_path, 2, None, ENROLLED, out) == mc.COULD_NOT_RUN
+    assert mc.json.loads(out.read_text())["status"] == "could_not_run"
+
+
 def test_the_committed_equivalent_list_parses() -> None:
     assert all({"mutant", "line", "reason"} <= e.keys() for e in mc.equivalents().values())

@@ -28,7 +28,10 @@ Sharding (CI runs a matrix of these, then one merge)
   the others. Every shard of a run picks the same parts from the same tree. --results writes what the shard
   ran to a JSON file (CI names it shard-<I>.json). --merge reads every shard-*.json under a directory, gates
   on all of them together, and writes the one report; --expect N fails it when fewer than N shards
-  reported, so a shard that died before writing cannot pass.
+  reported, so a shard that died before writing cannot pass. --survivors PATH (with --merge) writes the
+  uncaught mutants that gate, after the equivalent list, as {"status": "ran" | "could_not_run", "survivors":
+  [{"mutant", "status", "function", "diff"}]}; the file exists on every path,
+  empty when a shard could not run.
 
 Enrolment is `[tool.airlie.mutation].enrolled` in pyproject.toml. A mutant no test can catch (it changes
 nothing a caller can see) is listed in `[[tool.airlie.mutation.equivalent]]` with its `mutant` name, the
@@ -452,6 +455,20 @@ def write_results(
     path.write_text(json.dumps(record, indent=1, sort_keys=True))
 
 
+def triage(
+    results: dict[str, str],
+    enrolled_modules: set[str],
+    shown: dict[str, str] | None = None,
+    listed: dict[str, Equivalent] | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """(gating, informational, equivalent) uncaught mutants: the gating ones are those of an enrolled module
+    that are not listed as equivalent (their `shown` diff's mutated line is the listed one)."""
+    gating, info = split_failures(results, enrolled_modules)
+    shown, listed = shown or {}, listed or {}
+    equivalent = [n for n in gating if n in listed and mutated_line(shown.get(n, "")) == listed[n]["line"]]
+    return [n for n in gating if n not in equivalent], info, equivalent
+
+
 def verdict(
     results: dict[str, str],
     enrolled_modules: set[str],
@@ -462,11 +479,9 @@ def verdict(
     """The report's verdict lines over `results`, and the exit code: 0 when every mutant of an enrolled module
     is caught or listed as equivalent (its `shown` diff's mutated line is the listed one), 1 when one is not.
     A listed mutant that is caught, or whose line differs, is reported as stale."""
-    gating, info = split_failures(results, enrolled_modules)
-    shown, listed = shown or {}, listed or {}
-    equivalent = [n for n in gating if n in listed and mutated_line(shown.get(n, "")) == listed[n]["line"]]
+    gating, info, equivalent = triage(results, enrolled_modules, shown, listed)
+    listed = listed or {}
     stale = [n for n in listed if n in results and n not in equivalent]
-    gating = [n for n in gating if n not in equivalent]
     report = [""]
     if scope == "project" or info:
         report += score_table(results, enrolled_modules)
@@ -488,18 +503,40 @@ def verdict(
     return report, 1
 
 
-def merge(where: Path, expect: int | None, report: Path | None, enrolled_modules: set[str]) -> int:
+def function_of(mutant: str) -> str:
+    """airlie.a.x_f__mutmut_12 -> airlie.a.x_f__mutmut_*  (every mutant of the same function)."""
+    return mutant.rsplit("_", 1)[0] + "_*"
+
+
+def write_survivors(path: Path | None, status: str, survivors: list[dict[str, str]]) -> None:
+    """`--survivors`: the gating uncaught mutants as JSON, for the fix cards a later job files."""
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"status": status, "survivors": survivors}, indent=1))
+
+
+def merge(
+    where: Path,
+    expect: int | None,
+    report: Path | None,
+    enrolled_modules: set[str],
+    survivors: Path | None = None,
+) -> int:
     """Gate on every shard's record under `where` together (`--merge`): 2 when a shard could not run or fewer
-    than `expect` reported, else `verdict`'s code."""
+    than `expect` reported, else `verdict`'s code. `survivors` always gets a file: the gating mutants, or
+    status "could_not_run" with none."""
     records = [json.loads(f.read_text()) for f in sorted(where.rglob(SHARD_FILES))]
     scopes = {str(r.get("scope")) for r in records}
     out = [f"### Mutation testing ({', '.join(sorted(scopes)) or 'no shard'}, {len(records)} shard(s))"]
     if expect is not None and len(records) < expect:
         say([*out, f"only {len(records)} of {expect} shards reported: a shard did not finish"], report)
+        write_survivors(survivors, "could_not_run", [])
         return COULD_NOT_RUN
     failed = sorted(str(r["shard"]) for r in records if r["status"] == "could_not_run")
     if failed:
         say([*out, f"mutmut did not run to the end in shard(s) {', '.join(failed)}; see their logs"], report)
+        write_survivors(survivors, "could_not_run", [])
         return COULD_NOT_RUN
     results: dict[str, str] = {}
     shown: dict[str, str] = {}
@@ -508,9 +545,20 @@ def merge(where: Path, expect: int | None, report: Path | None, enrolled_modules
         shown.update(r.get("shown", {}))
     if not results:
         say([*out, "nothing to mutate in any shard"], report)
+        write_survivors(survivors, "ran", [])
         return 0
     scope = "project" if "project" in scopes else "changed"
-    lines, code = verdict(results, enrolled_modules, scope, shown, equivalents())
+    listed = equivalents()
+    lines, code = verdict(results, enrolled_modules, scope, shown, listed)
+    gating, _, _ = triage(results, enrolled_modules, shown, listed)
+    write_survivors(
+        survivors,
+        "ran",
+        [
+            {"mutant": n, "status": results[n], "function": function_of(n), "diff": shown.get(n, "")}
+            for n in gating
+        ],
+    )
     say([*out, *lines], report)
     if code:
         print("run `uv run mutmut show NAME` on a checkout of this commit to see a mutant")
@@ -546,6 +594,7 @@ def main() -> int:
     ap.add_argument(
         "--merge", type=Path, help="gate on the --results files under this directory, run nothing"
     )
+    ap.add_argument("--survivors", type=Path, help="--merge: write the gating survivors to this JSON file")
     ap.add_argument("--expect", type=int, help="--merge: how many shards must have reported")
     ap.add_argument(
         "--mac-only",
@@ -556,8 +605,10 @@ def main() -> int:
 
     scope_files = enrolled_files()
     enrolled_modules = {module_name(f) for f in scope_files}
+    if args.survivors is not None and args.merge is None:
+        ap.error("--survivors needs --merge")
     if args.merge is not None:
-        return merge(args.merge, args.expect, args.report, enrolled_modules)
+        return merge(args.merge, args.expect, args.report, enrolled_modules, args.survivors)
     shard = f"{args.shard[0]}/{args.shard[1]}" if args.shard else "1/1"
     out: list[str] = [f"### Mutation testing ({args.scope})"]
     test_files: list[str] = []
