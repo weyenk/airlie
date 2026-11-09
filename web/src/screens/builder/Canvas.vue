@@ -93,6 +93,14 @@ const same = (a: GEdge, b: GEdge | null | undefined) => !!b && a.from === b.from
 /** What a line says: the condition first, then what it carries (or "order"), then its loop's bound. */
 const labelOf = (edge: GEdge) =>
   [edge.when !== undefined ? `if ${edge.when}` : "", edge.artifacts.join(", ") || "order", edge.loop ? `loop ×${edge.loop.max}` : ""].filter(Boolean).join(" · ");
+/** A label's band above its baseline `y`: the 11 px face rises about 10 px and falls 3. */
+const band = (y: number) => [y - 10, y + 3] as const;
+/** Every box's rectangle on the canvas, so a label is never laid over one. */
+const rects = computed(() => props.graph.nodes.map((n) => ({ x: at.value.get(n.id)!.x, y: at.value.get(n.id)!.y, r: at.value.get(n.id)!.x + W, b: at.value.get(n.id)!.y + hOf(n.id) })));
+const crossesBox = (x0: number, x1: number, y: number) => {
+  const [y0, y1] = band(y);
+  return rects.value.some((r) => r.x < x1 && r.r > x0 && r.y < y1 && r.b > y0);
+};
 const wires = computed<Wire[]>(() =>
   props.graph.edges.flatMap((edge, i) => {
     const a = at.value.get(edge.from);
@@ -102,22 +110,36 @@ const wires = computed<Wire[]>(() =>
     const sy = portY(edge.from, edge.artifacts[0] ?? null);
     const tx = b.x;
     const ty = b.y + hOf(edge.to) / 2;
+    const text = labelOf(edge);
+    const width = text.length * CHAR_W;
     let d: string;
-    // the label goes above the line, in the room the line crosses between its boxes
-    let label: { x: number; y: number; room: number };
+    // the label goes above the line, in the free room the line crosses first after its source: up to its target,
+    // or to the first box standing in the label's band before it (a line that skips a column runs behind one)
+    let label: { x: number; y: number; fits: boolean };
     if (edge.loop) {
       const low = Math.max(a.y + hOf(edge.from), b.y + hOf(edge.to)) + 16;
       d = `M ${sx} ${sy} H ${sx + 12} V ${low} H ${tx - 12} V ${ty} H ${tx}`;
-      label = { x: (sx + tx) / 2, y: low - 5, room: Math.abs(sx - tx) + 24 };
+      const x = (sx + tx) / 2;
+      label = { x, y: low - 5, fits: Math.abs(sx - tx) + 24 >= width && !crossesBox(x - width / 2, x + width / 2, low - 5) };
     } else {
       const dx = Math.max(24, Math.abs(tx - sx) / 2);
       d = `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`;
-      label = { x: (sx + tx) / 2, y: Math.min(sy, ty) - 6, room: tx - sx };
+      const y = Math.min(sy, ty) - 6;
+      const [y0, y1] = band(y);
+      const right = Math.min(tx, ...rects.value.filter((r) => r.x >= sx && r.y < y1 && r.b > y0).map((r) => r.x));
+      label = { x: (sx + right) / 2, y, fits: right - sx >= width };
     }
-    const text = labelOf(edge);
-    return [{ key: `${i}-${edge.from}-${edge.to}`, edge, d, selected: same(edge, props.selectedEdge), label: { x: label.x, y: label.y, text, fits: label.room >= text.length * CHAR_W } }];
+    return [{ key: `${i}-${edge.from}-${edge.to}`, edge, d, selected: same(edge, props.selectedEdge), label: { ...label, text } }];
   }),
 );
+
+/** The line the pointer is over, by its wire's key: its hidden label shows. */
+const hovered = ref<string | null>(null);
+/** Where a hidden label shows when asked for: over its place, kept inside the canvas. */
+function popAt(w: Wire) {
+  const half = (w.label.text.length * CHAR_W) / 2 + 6;
+  return { left: `${Math.max(half, Math.min(w.label.x, size.value.width - half))}px`, top: `${Math.max(0, w.label.y - 12)}px` };
+}
 
 /** Where a box's card sits: under the box, kept inside the canvas (whose size reserves room for it). */
 function cardAt(id: string) {
@@ -272,7 +294,7 @@ function onDrop(e: DragEvent) {
           <path d="M 0 0 L 8 4 L 0 8 z" fill="currentColor" />
         </marker>
       </defs>
-      <g v-for="w in wires" :key="w.key" :class="['group', w.selected ? 'text-primary' : undefined]">
+      <g v-for="w in wires" :key="w.key" :class="['group/wire', w.selected ? 'text-primary' : undefined]">
         <path
           :data-edge="w.edge.loop ? 'loop' : 'line'"
           :data-from="w.edge.from"
@@ -298,11 +320,23 @@ function onDrop(e: DragEvent) {
           class="cursor-pointer"
           @click="emit('selectEdge', w.edge)"
           @dblclick="emit('openEdge', w.edge)"
+          @pointerenter="hovered = w.key"
+          @pointerleave="hovered = hovered === w.key ? null : hovered"
         >
           <title>{{ w.label.text }}: {{ w.edge.from }} → {{ w.edge.to }}</title>
         </path>
         <!-- a read-only canvas has no hit path: a line's own hover band, so a hidden label still shows on hover -->
-        <path v-else data-edge-hover :d="w.d" fill="none" stroke="transparent" stroke-width="12" pointer-events="stroke">
+        <path
+          v-else
+          data-edge-hover
+          :d="w.d"
+          fill="none"
+          stroke="transparent"
+          stroke-width="12"
+          pointer-events="stroke"
+          @pointerenter="hovered = w.key"
+          @pointerleave="hovered = hovered === w.key ? null : hovered"
+        >
           <title>{{ w.label.text }}: {{ w.edge.from }} → {{ w.edge.to }}</title>
         </path>
         <text
@@ -316,7 +350,8 @@ function onDrop(e: DragEvent) {
             // the halo: a card-coloured stroke painted under the glyphs, so a line or a neighbour under it never blurs it
             'font-mono text-[11px] [paint-order:stroke] [stroke:var(--card)] [stroke-width:3px] [stroke-linejoin:round]',
             edgeProblems?.[`${w.edge.from}>${w.edge.to}`]?.length ? 'fill-destructive font-semibold' : 'fill-current',
-            w.label.fits || w.selected ? undefined : 'hidden group-hover:inline',
+            // a named group: a hover anywhere else (a port is a `group` too) never shows it
+            w.label.fits || w.selected ? undefined : 'hidden group-hover/wire:inline',
           ]"
         ><title v-if="edgeProblems?.[`${w.edge.from}>${w.edge.to}`]?.length">{{ edgeProblems[`${w.edge.from}>${w.edge.to}`].join("; ") }}</title>{{ w.label.text }}</text>
       </g>
@@ -372,6 +407,19 @@ function onDrop(e: DragEvent) {
         @edit="emit('open', n.id)"
       />
     </template>
+    <!-- a hidden label, hovered or selected, shows over the boxes (the SVG lies under them) -->
+    <div
+      v-for="w in wires.filter((x) => !x.label.fits && (x.selected || x.key === hovered))"
+      :key="`pop-${w.key}`"
+      data-edge-label-pop
+      :data-from="w.edge.from"
+      :data-to="w.edge.to"
+      aria-hidden="true"
+      class="pointer-events-none absolute z-40 -translate-x-1/2 rounded-sm border border-border bg-card px-1 font-mono text-[11px] leading-[14px] whitespace-nowrap text-foreground shadow-sm"
+      :style="popAt(w)"
+    >
+      {{ w.label.text }}
+    </div>
     <div
       v-for="w in wires.filter((x) => x.selected && !readonly)"
       :key="`card-${w.key}`"

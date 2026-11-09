@@ -459,12 +459,39 @@ test("a label the room does not take is hidden (still in the DOM), and shows on 
   const label = labelOfPair(w);
   expect(label.text()).toBe("if v == yes · v");
   expect(label.attributes("data-label-fits")).toBe("false");
-  expect(label.classes()).toEqual(expect.arrayContaining(["hidden", "group-hover:inline"]));
-  expect(label.element.parentElement!.classList.contains("group")).toBe(true);
+  expect(label.classes()).toEqual(expect.arrayContaining(["hidden", "group-hover/wire:inline"]));
+  expect(label.element.parentElement!.classList.contains("group/wire")).toBe(true);
+  // hovered, it also shows over the boxes (the SVG lies under them)
+  expect(w.find("[data-edge-label-pop]").exists()).toBe(false);
+  await w.get("[data-edge-hit]").trigger("pointerenter");
+  expect(w.get("[data-edge-label-pop]").text()).toBe("if v == yes · v");
+  await w.get("[data-edge-hit]").trigger("pointerleave");
+  expect(w.find("[data-edge-label-pop]").exists()).toBe(false);
   await w.setProps({ selectedEdge: graph.edges[0] });
   expect(labelOfPair(w).classes()).not.toContain("hidden");
+  expect(w.get("[data-edge-label-pop]").text()).toBe("if v == yes · v");
   // a read-only canvas keeps a hover band for it
   const ro = mountCanvas(graph);
   expect(ro.get("[data-edge-label]").classes()).toContain("hidden");
   expect(ro.find("[data-edge-hover]").exists()).toBe(true);
+});
+
+test("a line that runs behind a box in its label's band has only the room before that box", () => {
+  // a -> b skips a column; c stands between them in the same row
+  const graph = fromWorkflow(
+    "w",
+    {
+      inputs: [],
+      outputs: [],
+      nodes: {
+        a: { type: "check", run: "x.a", outputs: { v: "text" }, to: [{ node: "b", when: "v == yes" }] },
+        c: { type: "check", run: "x.c" },
+        b: { type: "check", run: "x.b", inputs: ["v"] },
+      },
+    },
+    { a: { x: 0, y: 0 }, c: { x: 160, y: 0 }, b: { x: 360, y: 0 } },
+  );
+  const label = editable(graph).get("[data-edge-label]");
+  expect(label.attributes("data-label-fits")).toBe("false"); // 40 px before c, where 240 px would take it
+  expect(Number(label.attributes("x"))).toBe(24 + 120 + 20);
 });
