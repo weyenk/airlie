@@ -63,14 +63,132 @@ HAS_MLX = not os.environ.get("AIRLIE_TEST_WITHOUT_MLX") and importlib.util.find_
 collect_ignore = [] if HAS_MLX else list(MAC_ONLY)
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Skip MAC_ONLY_TESTS where vllm-mlx is missing, naming where they run instead."""
-    if HAS_MLX:
+QUARANTINE_FILE = Path(__file__).with_name("quarantine.toml")
+"""The unit tests kept out of the default run until someone reviews them: each one took over 500 ms
+(`slow: <ms>`) or depends on the real clock (`clock: <why>`). An entry is a node id without its parameters
+(every case of it), one parametrized case, or a whole file. `task test:quarantine` runs only them;
+`--quarantined include` (or AIRLIE_RUN_QUARANTINED=1) runs them with the rest. mutmut runs pytest with this
+conftest, so its stats run and its mutants skip them too: code only a quarantined test reaches has no mutation
+coverage until it is released. To release one, make it fast and clock-free, then delete its line."""
+QUARANTINE_TAGS = ("slow:", "clock:")
+
+
+def load_quarantine(path: Path = QUARANTINE_FILE) -> dict[str, str]:
+    """{node id or file: reason}; a reason that is not `slow: ...` or `clock: ...` is an error."""
+    import tomllib
+
+    entries: dict[str, str] = tomllib.loads(path.read_text(encoding="utf-8")).get("quarantine", {})
+    bad = [k for k, why in entries.items() if not str(why).startswith(QUARANTINE_TAGS)]
+    if bad:
+        raise pytest.UsageError(f"{path.name}: a reason must start with slow: or clock: ({', '.join(bad)})")
+    return entries
+
+
+def is_quarantined(nodeid: str, entries: dict[str, str]) -> bool:
+    base = nodeid.split("[")[0]
+    return nodeid in entries or base in entries or base.split("::")[0] in entries
+
+
+def quarantine_mode(config: pytest.Config) -> str:
+    """skip (the default), include or only."""
+    chosen = config.getoption("--quarantined", default=None)
+    if chosen:
+        return str(chosen)
+    env = os.environ.get("AIRLIE_RUN_QUARANTINED", "")
+    return "only" if env == "only" else "include" if env not in ("", "0") else "skip"
+
+
+QUARANTINED = pytest.StashKey[int]()
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip MAC_ONLY_TESTS where vllm-mlx is missing, naming where they run instead; deselect (or keep only)
+    the quarantined tests."""
+    if not HAS_MLX:
+        skip = pytest.mark.skip(reason="needs vllm-mlx or mlx (macOS only): `task test:mac` runs it")
+        for item in items:
+            if item.nodeid.split("[")[0].removeprefix("tests/unit/") in MAC_ONLY_TESTS:
+                item.add_marker(skip)
+    mode = quarantine_mode(config)
+    if mode == "include":
         return
-    skip = pytest.mark.skip(reason="needs vllm-mlx or mlx (macOS only): `task test:mac` runs it")
-    for item in items:
-        if item.nodeid.split("[")[0].removeprefix("tests/unit/") in MAC_ONLY_TESTS:
-            item.add_marker(skip)
+    entries = load_quarantine()
+    listed = [item for item in items if is_quarantined(item.nodeid, entries)]
+    if not listed and mode == "skip":
+        return
+    chosen = set(listed)
+    dropped = listed if mode == "skip" else [item for item in items if item not in chosen]
+    items[:] = [item for item in items if (item in chosen) == (mode == "only")]
+    config.hook.pytest_deselected(items=dropped)
+    if mode == "skip":
+        config.stash[QUARANTINED] = len(dropped)
+        if hasattr(config, "workeroutput"):  # an xdist worker: the controller prints the count
+            config.workeroutput["quarantined"] = len(dropped)
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node: Any, error: Any) -> None:
+    """xdist's controller collects nothing itself: each worker reports how many it deselected."""
+    count = getattr(node, "workeroutput", {}).get("quarantined")
+    if count is not None:
+        config = node.config
+        config.stash[QUARANTINED] = max(config.stash.get(QUARANTINED, 0), count)
+
+
+class Budget:
+    """Seconds each test took (setup + call + teardown), registered when AIRLIE_TEST_BUDGET_MS is set. A
+    plugin object, not module state: mutmut runs pytest.main many times in one process, and this conftest
+    stays imported between them. Under xdist the controller receives every worker's reports: it sees them
+    all."""
+
+    def __init__(self) -> None:
+        self.seconds: dict[str, float] = {}
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        self.seconds[report.nodeid] = self.seconds.get(report.nodeid, 0.0) + report.duration
+
+
+BUDGET = pytest.StashKey[Budget]()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if os.environ.get("AIRLIE_TEST_BUDGET_MS") and not hasattr(config, "workerinput"):
+        config.stash[BUDGET] = budget = Budget()
+        config.pluginmanager.register(budget, "airlie-test-budget")
+
+
+def over_budget(config: pytest.Config) -> list[tuple[str, float]]:
+    """The tests over AIRLIE_TEST_BUDGET_MS that are not quarantined, slowest first."""
+    budget = config.stash.get(BUDGET, None)
+    if budget is None or not budget.seconds:
+        return []
+    limit = float(os.environ["AIRLIE_TEST_BUDGET_MS"]) / 1000
+    entries = load_quarantine()
+    slow = [(n, s) for n, s in budget.seconds.items() if s > limit and not is_quarantined(n, entries)]
+    return sorted(slow, key=lambda pair: -pair[1])
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    if over_budget(session.config) and session.exitstatus == 0:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def pytest_terminal_summary(terminalreporter: Any, exitstatus: int, config: pytest.Config) -> None:
+    count = config.stash.get(QUARANTINED, 0)
+    if count:
+        terminalreporter.write_line(
+            f"{count} quarantined (tests/unit/quarantine.toml; `task test:quarantine` runs them)"
+        )
+    slow = over_budget(config)
+    if slow:
+        budget = os.environ["AIRLIE_TEST_BUDGET_MS"]
+        terminalreporter.section(f"over the {budget} ms test budget (AIRLIE_TEST_BUDGET_MS)", red=True)
+        for nodeid, seconds in slow:
+            terminalreporter.write_line(f"{seconds * 1000:8.0f} ms  {nodeid}")
+        terminalreporter.write_line(
+            "make each one faster, or quarantine it in tests/unit/quarantine.toml with a `slow: <ms>` reason"
+        )
 
 
 @pytest.fixture(autouse=True)
