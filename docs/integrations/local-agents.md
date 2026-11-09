@@ -3,7 +3,7 @@
 These agents call your machine directly, so nothing leaves it. They bring their own system prompt and tool set.
 Two ways to connect: the **raw catalog models** on the engine (port 8080), or the **roles** on `task serve`
 (port 8090), where the role's prompt is placed in front of the client's own system prompt with a line telling
-the model to use the client's tools. Start the engines first: `task restart -- --topology studio` (or `task up`);
+the model to use the client's tools. Start the engines first: `task restart` (or `task up`);
 for roles also `task serve`.
 
 | agent | how it connects | config |

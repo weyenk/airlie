@@ -240,6 +240,13 @@ def cache_memory_gb(e: Any) -> float:
     return 0.0
 
 
+def _resident_engines(cfg: AirlieConfig) -> list[Any]:
+    """The engines resident beside each other under this (profile-resolved) config: every one that starts with
+    `task up`, and every bench engine a role's model sits on (the experiment profiles start it by hand)."""
+    used = {cfg.engine_for_model(r.model) for r in cfg.roles.values()}
+    return [e for n, e in cfg.engines.items() if e.kind != "openai_http" and (e.autostart or n in used)]
+
+
 def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[str]]:
     """Spec 01 §1 budget: preloaded weights + the live KV + the prefix cache + OS reserve.
 
@@ -253,11 +260,12 @@ def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[
     weights = 0.0
     cache = 0.0
     unknown: list[str] = []
+    resident = _resident_engines(cfg)
     for other in cfg.engines.values():  # every managed process shares the one wired limit
         if other.kind not in ("vllm_mlx", "llama_server", "mlx_vlm"):
             continue
-        if other.kind == "mlx_vlm" and not other.autostart:
-            continue  # started by hand, not beside the others
+        if other not in resident:
+            continue
         cache += cache_memory_gb(other)
         for mname in other.models:
             m = cfg.models[mname]
@@ -289,11 +297,7 @@ def live_kv_gb(cfg: AirlieConfig, e: Any) -> float:
 
 def projection_detail(cfg: AirlieConfig, e: Any) -> str:
     """What `project_memory_gb` counted, in words for the doctor's row."""
-    cache = sum(
-        cache_memory_gb(o)
-        for o in cfg.engines.values()
-        if o.kind in ("vllm_mlx", "llama_server") or (o.kind == "mlx_vlm" and o.autostart)
-    )
+    cache = sum(cache_memory_gb(o) for o in _resident_engines(cfg))
     tail = f" + {cache:.0f} GB prefix cache" if cache else ""
     if cfg.topology.kind == "studio":
         build = cfg.roles[cfg.story.build_role]
@@ -343,6 +347,19 @@ def _registry_models(argv: list[str]) -> set[str] | None:
     return None
 
 
+def restart_command(spec: Any, engine_name: str) -> str:
+    """What brings an engine back on the config: `task restart` restarts the autostart engines only, so a
+    bench engine (autostart: false) is restarted by name."""
+    if spec.autostart:
+        return "task restart"
+    return f"uv run airlie engine restart {engine_name}"
+
+
+def start_command(spec: Any, engine_name: str) -> str:
+    """What starts a down engine: `task restart` for an autostart one, else the engine by name."""
+    return "task restart" if spec.autostart else f"uv run airlie engine up {engine_name}"
+
+
 # the flags a running mlx-vlm server must carry to be the one the config describes
 _MLX_VLM_FLAGS = ("--max-num-seqs", "--max-kv-size", "--kv-bits", "--draft-model")
 
@@ -382,7 +399,7 @@ def engine_matches_config(cfg: AirlieConfig, probe: SystemProbe, engine_name: st
             name,
             "fail",
             f"engine {engine_name} runs other flags than the config: {'; '.join(differ)}; restart it: "
-            "task restart",
+            + restart_command(spec, engine_name),
         )
     return CheckResult(name, "ok", f"engine {engine_name} carries the config's flags")
 
@@ -451,6 +468,31 @@ def _profile_variants(cfg: AirlieConfig) -> dict[str, AirlieConfig | ConfigError
     return out
 
 
+def _projection_rows(
+    cfg: AirlieConfig, variants: dict[str, AirlieConfig | ConfigError], ename: str
+) -> list[CheckResult]:
+    """The memory projection of every profile against the wired limit, under engine `ename`'s name."""
+    rows: list[CheckResult] = []
+    limit_gb = cfg.memory.wired_limit_mb / 1024.0
+    for pname, pcfg in variants.items():
+        name = f"engine:{ename}:memory_projection[{pname}]"
+        if isinstance(pcfg, ConfigError):
+            rows.append(CheckResult(name, "fail", f"profile: {pcfg}"))
+            continue
+        if ename not in pcfg.engines:
+            continue
+        projected, unknown = project_memory_gb(pcfg, ename)
+        detail = (
+            f"projected {projected:.0f} GB ({projection_detail(pcfg, pcfg.engines[ename])}) "
+            f"vs wired limit {limit_gb:.0f} GB"
+        )
+        if unknown:
+            detail += f"; no estimated_memory_gb for {', '.join(unknown)}"
+        status: Status = "fail" if projected > limit_gb else ("warn" if unknown else "ok")
+        rows.append(CheckResult(name, status, detail))
+    return rows
+
+
 def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT) -> list[CheckResult]:
     results: list[CheckResult] = []
     variants = _profile_variants(cfg)
@@ -504,6 +546,7 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
     results.append(CheckResult("ram", "ok" if ram_gb >= 64 else "warn", f"{ram_gb:.0f} GiB"))
 
     managed_models: set[str] = set()
+    projected_once = False
     for ename, e in cfg.engines.items():
         if e.kind == "llama_server":
             managed_models.update(e.models)
@@ -512,6 +555,9 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
         if e.kind == "mlx_vlm":
             managed_models.update(e.models)
             results.append(_mlx_vlm_binary_check(ename, e.entry, probe))
+            if e.autostart and not projected_once:  # one wired limit for every process: one projection
+                projected_once = True
+                results.extend(_projection_rows(cfg, variants, ename))
             continue
         if e.kind != "vllm_mlx":
             continue
@@ -545,25 +591,7 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
             results.append(
                 CheckResult(f"engine:{ename}:health", "warn", f"not running ({health_url}); run: task up")
             )
-        limit_gb = cfg.memory.wired_limit_mb / 1024.0
-        for pname, pcfg in variants.items():
-            if isinstance(pcfg, ConfigError):
-                results.append(
-                    CheckResult(f"engine:{ename}:memory_projection[{pname}]", "fail", f"profile: {pcfg}")
-                )
-                continue
-            if ename not in pcfg.engines:
-                continue
-            pe = pcfg.engines[ename]
-            projected, unknown = project_memory_gb(pcfg, ename)
-            detail = (
-                f"projected {projected:.0f} GB ({projection_detail(pcfg, pe)}) "
-                f"vs wired limit {limit_gb:.0f} GB"
-            )
-            if unknown:
-                detail += f"; no estimated_memory_gb for {', '.join(unknown)}"
-            status: Status = "fail" if projected > limit_gb else ("warn" if unknown else "ok")
-            results.append(CheckResult(f"engine:{ename}:memory_projection[{pname}]", status, detail))
+        results.extend(_projection_rows(cfg, variants, ename))
 
     for mname in sorted(managed_models):
         m = cfg.models[mname]

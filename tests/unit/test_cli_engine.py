@@ -128,6 +128,23 @@ def test_engine_up_down_and_restart_take_no_topology_option(tmp_path: Path, monk
     assert StubProcess.calls == ["stop:main", "start:main"]
 
 
+def test_engine_down_and_restart_name_one_engine_even_with_autostart_off(tmp_path: Path, monkeypatch) -> None:
+    cfg_path = write_cfg(tmp_path)
+    data = yaml.safe_load(cfg_path.read_text())
+    data["engines"]["bench"] = {"kind": "mlx_vlm", "port": 8091, "model": "benchm", "autostart": False}
+    data["models"]["benchm"] = {"repo": "org/bench", "revision": "r3", "path": "/models/bench"}
+    cfg_path.write_text(yaml.safe_dump(data))
+    StubProcess.calls = []
+    monkeypatch.setattr(cli, "_engine_process", lambda cfg, name: StubProcess(cfg, name))
+    r = runner.invoke(cli.app, ["engine", "restart", "bench", "--config", str(cfg_path)])
+    assert r.exit_code == 0, r.output
+    assert StubProcess.calls == ["stop:bench", "start:bench"]
+    StubProcess.calls = []
+    assert runner.invoke(cli.app, ["engine", "down", "bench", "--config", str(cfg_path)]).exit_code == 0
+    assert StubProcess.calls == ["stop:bench"]
+    assert runner.invoke(cli.app, ["engine", "down", "nope", "--config", str(cfg_path)]).exit_code == 1
+
+
 def test_engine_up_skips_engines_with_autostart_false_unless_named(tmp_path: Path, monkeypatch) -> None:
     cfg_path = write_cfg(tmp_path)
     data = yaml.safe_load(cfg_path.read_text())

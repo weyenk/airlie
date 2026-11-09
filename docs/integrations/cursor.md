@@ -10,7 +10,7 @@ Tab autocomplete and code indexing stay on Cursor's models regardless; the overr
 ## 1. Engines and the role server
 
 ```bash
-task restart -- --topology studio          # vllm-mlx (base, generalist, reviewer…) + Kev
+task restart                               # mlx-vlm engines (generalist, reviewer, small) + Kev
 task serve -- --api-key <choose-a-secret>  # roles and catalog models on 127.0.0.1:8090, bearer auth on /v1
 ```
 

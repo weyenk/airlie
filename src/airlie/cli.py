@@ -255,22 +255,40 @@ def engine_up(
     console.print(_health_table(rows))
 
 
+def _named_or_all(cfg: AirlieConfig, name: str | None) -> list[str]:
+    if name is not None and name not in _managed(cfg):
+        err.print(
+            f"[red]no managed engine named '{name}' (managed: {', '.join(_managed(cfg)) or 'none'})[/red]"
+        )
+        raise typer.Exit(1)
+    return [name] if name is not None else _managed(cfg)
+
+
 @engine_app.command("down")
-def engine_down(config: ConfigOpt = None) -> None:
-    """Stop every managed engine."""
+def engine_down(
+    name: Annotated[str | None, typer.Argument(help="stop only this engine")] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Stop the named engine, else every managed engine."""
     import asyncio
 
     cfg = _load(config)
-    for name in _managed(cfg):
-        asyncio.run(_engine_process(cfg, name).stop())
-        console.print(f"stopped engine [bold]{name}[/bold]")
+    for engine in _named_or_all(cfg, name):
+        asyncio.run(_engine_process(cfg, engine).stop())
+        console.print(f"stopped engine [bold]{engine}[/bold]")
 
 
 @engine_app.command("restart")
-def engine_restart(config: ConfigOpt = None, timeout: float = 900) -> None:
-    """Stop then start every managed engine."""
-    engine_down(config)
-    engine_up(name=None, config=config, timeout=timeout)
+def engine_restart(
+    name: Annotated[
+        str | None, typer.Argument(help="restart only this engine (even if autostart is off)")
+    ] = None,
+    config: ConfigOpt = None,
+    timeout: float = 900,
+) -> None:
+    """Stop then start the named engine, else every managed engine (the autostart ones come back up)."""
+    engine_down(name, config)
+    engine_up(name=name, config=config, timeout=timeout)
 
 
 @engine_app.command("status")

@@ -31,7 +31,7 @@ from typing import Any, Literal
 
 from airlie.board import Item
 from airlie.config import AirlieConfig
-from airlie.doctor import RealProbe, SystemProbe, engine_matches_profile
+from airlie.doctor import RealProbe, SystemProbe, engine_matches_profile, start_command
 from airlie.story import factory
 from airlie.story.board import Board, BoardError, Card, NullBoard, note
 from airlie.story.epic_pipeline import EpicPipeline, epics_dir
@@ -208,7 +208,8 @@ class Line:
             healthy = False
         self.gates["engine"] = "ok" if healthy else "down"
         if not healthy:
-            return "engine down: start it with `task restart`"
+            name = self.cfg.engine_for_role(self.cfg.story.build_role)
+            return f"engine down: start it with `{start_command(self.cfg.engines[name], name)}`"
         down = await factory.github_down(self.cfg)
         self.gates["github"] = "ok" if down is None else "down"
         if down is not None:

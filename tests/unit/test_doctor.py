@@ -498,7 +498,9 @@ ROOT = Path(__file__).resolve().parents[2]
 NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
 
 
-def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant() -> None:
+def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from airlie.doctor import cache_memory_gb, project_memory_gb
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
@@ -513,8 +515,16 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
     projected, unknown = project_memory_gb(coder8, "main")
     # the lane's sequence is at the coder model's rate: coder8's 32.5 GB, 65.536k × 96 MB/1k = 6.1 GB
     assert coder8.engines["main"].max_kv_size == 131072
-    assert (round(projected, 1), unknown) == (74.7, [])
-    assert projected < coder8.memory.wired_limit_mb / 1024  # every studio profile's cache fits its own budget
+    # the bench engine a role's model sits on is resident too (started by hand): coder8's 32.5 GB counts, and
+    # beside the base's 131072-token generalist the experiment projects over the 104 GB wired limit
+    assert (round(projected, 1), unknown) == (107.2, [])
+    assert projected > coder8.memory.wired_limit_mb / 1024
+    monkeypatch.setattr(
+        "airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name
+    )  # the profiles reload from the file
+    base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    row = by_name(run_checks(base, FakeProbe()))["engine:main:memory_projection[studio-coder8]"]
+    assert row.status == "fail" and "107 GB" in row.detail
     qwen = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen25")
     assert project_memory_gb(qwen, "main")[0] < qwen.memory.wired_limit_mb / 1024
 
@@ -700,6 +710,23 @@ def test_real_probe_lists_every_matching_process_and_process_args_keeps_the_serv
     assert ports == ["8080", "8082"]
     assert probe.process_args("mlx_vlm.server") is None  # no ` serve` in them
     assert probe.process_args("vllm-mlx") == ["vllm-mlx", "serve", "--port", "9"]
+
+
+def test_a_bench_engine_mismatch_is_restarted_by_name_not_by_task_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from airlie.doctor import engine_matches_profile, start_command
+
+    cfg = committed_cfg(monkeypatch)
+    coder8 = mlx_vlm_argv(cfg, "coder8")
+    stale = list(coder8)
+    stale[stale.index("--max-kv-size") + 1] = "4096"
+    bad = engine_matches_profile(cfg, MlxVlmProcesses([stale]), "studio-coder8")
+    assert bad.name == "engine:config[coder8]" and bad.status == "fail", bad
+    assert bad.detail.endswith("restart it: uv run airlie engine restart coder8"), bad.detail
+    assert "task restart" not in bad.detail
+    assert start_command(cfg.engines["coder8"], "coder8") == "uv run airlie engine up coder8"
+    assert start_command(cfg.engines["main"], "main") == "task restart"
 
 
 def test_a_bench_engines_model_missing_from_the_cache_is_a_warning_not_a_failure(tmp_path: Path) -> None:
