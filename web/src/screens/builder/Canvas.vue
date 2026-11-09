@@ -29,8 +29,10 @@ const emit = defineEmits<{
   /** A line asked for: `opts.artifacts` is the out-port it was drawn from; none from the edge port (an ordering line). */
   connect: [from: string, to: string, opts: LineOpts];
   selectEdge: [edge: GEdge];
-  /** A box opened for editing (double-click, or Edit on its card). */
+  /** A box's fields asked for (Edit on its card). */
   open: [id: string];
+  /** A double-click on a box: its fields, except a bundle box, which opens the workflow it runs. */
+  enter: [id: string];
   openEdge: [edge: GEdge];
   place: [item: { type: NodeType } | { bundle: string }, x: number, y: number];
 }>();
@@ -312,7 +314,7 @@ function onDrop(e: DragEvent) {
         :style="{ left: `${at.get(n.id)!.x}px`, top: `${at.get(n.id)!.y}px`, width: `${W}px`, height: `${hOf(n.id)}px` }"
         :class="readonly ? undefined : drag?.id === n.id && drag.moved ? 'z-10 cursor-grabbing shadow-md' : 'cursor-grab'"
         @pick="pick"
-        @open="emit('open', $event)"
+        @open="emit('enter', $event)"
         @pointerdown="(e: PointerEvent) => startDrag(n.id, e)"
       />
       <template v-if="!readonly">

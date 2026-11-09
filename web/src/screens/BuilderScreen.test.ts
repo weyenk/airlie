@@ -7,6 +7,7 @@ import type { Catalog, WorkflowDef, WorkflowDetail } from "@/api/workflow_defs";
 import { type CreateForm, useCardDraftStore } from "@/stores/card_draft";
 import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
 import BuilderScreen from "./BuilderScreen.vue";
+import { takeGraph } from "./builder/builder_state";
 
 const api = vi.hoisted(() => ({ getWorkflowDef: vi.fn(), listWorkflowDefs: vi.fn(), registryCatalog: vi.fn(), publishWorkflow: vi.fn(), saveDraft: vi.fn(), validateWorkflow: vi.fn(), deleteDraft: vi.fn() }));
 vi.mock("@/api/workflow_defs", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/workflow_defs")>()), ...api }));
@@ -901,19 +902,129 @@ test("a double-click on a bundle box opens its workflow with a token, and the br
   expect(at.name).toBe("builder");
   expect(at.params.name).toBe("layer");
   expect(typeof at.query.from).toBe("string");
-  expect(at.query.from).not.toBe("");
-  expect(document.body.querySelector("[data-node-modal]")).toBeNull(); // no node modal for a bundle box
+  expect(document.body.querySelector("[data-node-modal]")).toBeNull(); // a double-click on a bundle box enters it
   expect(w.get("h1").text()).toBe("layer");
   expect(crumb(w).text()).toContain("story");
+  const held = takeGraph(at.query.from as string); // the token resolves to the parent as it was
+  expect(held?.name).toBe("story");
+  expect(held?.graph.nodes).toHaveLength(22);
+  expect(held?.graph.nodes.some((n) => n.id === "build_layers")).toBe(true);
 });
 
-test("the card's Edit on a bundle box opens the bundle too", async () => {
+test("the card's Edit on a bundle box opens its fields, not the bundle", async () => {
   withLayer();
   const { w, router } = await open();
   await w.get("[data-box][data-node=build_layers]").trigger("click");
   await w.get("[data-box-card][data-node=build_layers] [data-box-edit]").trigger("click");
   await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("story");
+  const modal = document.body.querySelector("[data-node-modal]")!;
+  expect((modal.querySelector("select[data-input=workflow]") as HTMLSelectElement).value).toBe("layer");
+  expect((modal.querySelector("select[data-input=each]") as HTMLSelectElement).value).toBe("layers");
+});
+
+test("the modal's Open button enters the bundle", async () => {
+  withLayer();
+  const { w, router } = await open();
+  await w.get("[data-box][data-node=build_layers]").trigger("click");
+  await w.get("[data-box-card][data-node=build_layers] [data-box-edit]").trigger("click");
+  await flushPromises();
+  expect(document.body.querySelector("[data-bundle-open]")!.textContent).toContain("Open layer");
+  (document.body.querySelector("[data-bundle-open]") as HTMLButtonElement).click();
+  await flushPromises();
   expect(router.currentRoute.value.params.name).toBe("layer");
+  expect(crumb(w).text()).toContain("story");
+});
+
+test("browser Back from the bundle restores the parent's unsaved edits", async () => {
+  withLayer();
+  const { w, router } = await open();
+  await w.get("[data-palette-type=gate]").trigger("click");
+  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("layer");
+  router.back();
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("story");
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
+  expect(w.get("[data-dirty]").text()).toContain("Unsaved");
+});
+
+test("a browser that cannot hold the canvas keeps a dirty one here with a warning, and a clean one goes", async () => {
+  withLayer();
+  const { w, router } = await open();
+  const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("quota");
+  });
+  try {
+    await w.get("[data-palette-type=gate]").trigger("click");
+    await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+    await flushPromises();
+    expect(router.currentRoute.value.params.name).toBe("story");
+    expect(w.get("[role=alert]").text()).toContain("could not hold your unsaved edits; save first");
+    expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
+  } finally {
+    spy.mockRestore();
+  }
+  const clean = await open();
+  const spy2 = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("quota");
+  });
+  try {
+    await clean.w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+    await flushPromises();
+    expect(clean.router.currentRoute.value.params.name).toBe("layer");
+    expect(clean.router.currentRoute.value.query.parent).toBe("story");
+  } finally {
+    spy2.mockRestore();
+  }
+});
+
+test("the card a builder came from goes into the bundle and back", async () => {
+  withLayer();
+  const { w, router } = await open("/workflows/build/story?card=tok");
+  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await flushPromises();
+  expect(router.currentRoute.value.query.card).toBe("tok");
+  await crumb(w).trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("story");
+  expect(router.currentRoute.value.query.card).toBe("tok");
+});
+
+test("a bundle inside a bundle: the breadcrumb restores each level in turn", async () => {
+  const MID = `workflows:
+  layer:
+    inputs: [card]
+    nodes:
+      intake: {type: check, run: x.intake, outputs: {report: text}}
+      inner: {type: bundle, workflow: fix}
+`;
+  api.getWorkflowDef.mockImplementation(async (n: string) =>
+    n === "layer" ? detail({ name: "layer", type: null, yaml: MID }) : n === "fix" ? fixDraft() : detail(),
+  );
+  const { w, router } = await open();
+  await w.get("[data-palette-type=gate]").trigger("click"); // unsaved in story: 23 boxes
+  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await flushPromises();
+  await w.get("[data-palette-type=gate]").trigger("click"); // unsaved in layer: 3 boxes
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(3);
+  await w.get("[data-box][data-node=inner]").trigger("dblclick");
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("fix");
+  expect(crumb(w).text()).toContain("layer");
+  await crumb(w).trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("layer");
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(3);
+  expect(crumb(w).text()).toContain("story"); // still inside the story's bundle
+  await crumb(w).trigger("click");
+  await flushPromises();
+  (dialog()!.querySelector("[data-leave-go]") as HTMLButtonElement).click(); // the layer's own unsaved box is asked about
+  await flushPromises();
+  expect(router.currentRoute.value.params.name).toBe("story");
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
+  expect(crumb(w).exists()).toBe(false);
 });
 
 test("the breadcrumb returns to the parent with its unsaved edits", async () => {
@@ -947,16 +1058,19 @@ test("a breadcrumb whose token is gone still goes back, and the parent loads fro
   expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(22);
   expect(w.find("[data-dirty]").exists()).toBe(false);
   expect(w.find("[role=alert]").exists()).toBe(false);
+  expect(api.getWorkflowDef.mock.calls.filter((c) => c[0] === "story")).toHaveLength(2); // loaded again from the server
 });
 
-test("a bundle that names nothing that exists only selects its box", async () => {
+test("a double-click on a bundle that names nothing that exists opens its fields, so the name can be fixed", async () => {
   const yaml = STORY_YAML.replace("workflow: layer", "workflow: gone");
   api.getWorkflowDef.mockResolvedValue(detail({ yaml }));
   const { w, router } = await open();
   await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
   await flushPromises();
   expect(router.currentRoute.value.fullPath).toBe("/workflows/build/story");
-  expect(w.get("[data-box][data-node=build_layers]").attributes("aria-pressed")).toBe("true");
+  const modal = document.body.querySelector("[data-node-modal]")!;
+  expect((modal.querySelector("select[data-input=workflow]") as HTMLSelectElement).value).toBe("gone");
+  expect(modal.querySelector("[data-bundle-open]")).toBeNull();
 });
 
 test("a bundle child's problem does not mark the parent's box of the same name", async () => {

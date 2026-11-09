@@ -43,7 +43,7 @@ watch(name, async (n) => {
   if (held) b.restore(held);
   letGo = true;
   try {
-    await router.replace({ query: held?.up ? { from: held.up.from, parent: held.up.parent } : {} });
+    await router.replace({ query: { ...carried(), ...(held?.up ? { from: held.up.from, parent: held.up.parent } : {}) } });
   } finally {
     letGo = false;
   }
@@ -55,16 +55,24 @@ const parentName = computed(() => (typeof route.query.parent === "string" && rou
 const parentToken = computed(() => (typeof route.query.from === "string" && route.query.from ? route.query.from : null));
 async function crumbBack() {
   if (parentName.value === null) return;
-  await router.push({ name: "builder", params: { name: parentName.value }, query: parentToken.value ? { back: parentToken.value } : {} });
+  await router.push({ name: "builder", params: { name: parentName.value }, query: { ...carried(), ...(parentToken.value ? { back: parentToken.value } : {}) } });
 }
+/** The card the person came from (`?card=`) goes with them into a bundle and back. */
+const carried = (): Record<string, string> => (typeof route.query.card === "string" ? { card: route.query.card } : {});
 /** A bundle box opens the workflow it runs, in place: this canvas is held (edits and all) and the breadcrumb
  * brings it back. */
 async function enterBundle(target: string) {
   const up = parentName.value !== null && parentToken.value !== null ? { from: parentToken.value, parent: parentName.value } : undefined;
   const token = holdGraph(name.value, graph.value, b.prompts.value, up);
+  if (token === null && b.dirty.value) {
+    b.error.value = "The browser could not hold your unsaved edits; save first";
+    return;
+  }
   letGo = true; // leaving for the bundle with edits is not leaving them behind
   try {
-    await router.push({ name: "builder", params: { name: target }, query: { from: token, parent: name.value } });
+    // this entry carries the token too, so the browser's Back from the bundle restores the canvas like the breadcrumb
+    if (token !== null) await router.replace({ query: { ...route.query, back: token } });
+    await router.push({ name: "builder", params: { name: target }, query: { ...carried(), ...(token !== null ? { from: token } : {}), parent: name.value } });
   } finally {
     letGo = false;
   }
@@ -92,19 +100,24 @@ function pick(id: string) {
   closeWire();
 }
 
-/** Edit on a box's card, or a double-click: its fields, in the modal. */
+/** Edit on a box's card (and a problem's box): its fields, in the modal. A bundle box's form has an Open button. */
 function openBox(id: string) {
   selected.value = id;
+  editing.value = id;
   selectedEdge.value = null;
   closeWire();
+}
+/** A double-click: a bundle box opens the workflow it runs, in place; any other box (or a bundle naming nothing
+ * that exists, so its name can be fixed) opens its fields. */
+function enterBox(id: string) {
   const node = nodeOf(id);
-  if (node?.type === "bundle") {
-    // a bundle box opens the workflow it runs; one naming nothing that exists only selects
-    const target = node.spec.workflow;
-    if (typeof target === "string" && defs.value.some((d) => d.name === target)) void enterBundle(target);
-    return;
-  }
-  editing.value = id;
+  const target = node?.type === "bundle" ? node.spec.workflow : undefined;
+  if (typeof target === "string" && defs.value.some((d) => d.name === target)) {
+    selected.value = id;
+    selectedEdge.value = null;
+    closeWire();
+    void enterBundle(target);
+  } else openBox(id);
 }
 
 // a wire: a drag draws the line at once (the modal is for what it carries, says and bounds); a click selects it, and
@@ -352,6 +365,7 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
           @move="(id, x, y) => b.edit((g) => moveNode(g, id, x, y))"
           @connect="drawn"
           @open="openBox"
+          @enter="enterBox"
           @select-edge="clickedWire"
           @open-edge="openWire"
           @place="(item, x, y) => b.place(item, x, y)"
@@ -373,6 +387,7 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       @rename-output="renameBoxOutput"
       @remove="removeBox"
       @create-prompt="addPrompt"
+      @open-bundle="(workflow) => void enterBundle(workflow)"
     />
     <WireModal
       v-if="wire && wireEnds?.from && wireEnds.to"

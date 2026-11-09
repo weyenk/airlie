@@ -337,7 +337,8 @@ test("the selected box shows its card; Edit and a double-click open the box", as
   await w.get("[data-box-edit]").trigger("click");
   expect(w.emitted("open")).toEqual([["gate"]]);
   await w.get("[data-box][data-node=base]").trigger("dblclick");
-  expect(w.emitted("open")).toEqual([["gate"], ["base"]]);
+  expect(w.emitted("open")).toEqual([["gate"]]);
+  expect(w.emitted("enter")).toEqual([["base"]]); // a double-click enters: a bundle box opens its workflow, any other box its fields
   await w.setProps({ selected: null });
   expect(w.find("[data-box-card]").exists()).toBe(false);
 });

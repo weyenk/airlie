@@ -30,6 +30,8 @@ const emit = defineEmits<{
   renameOutput: [old: string, to: string, id: string];
   remove: [id: string];
   createPrompt: [id: string, text: string];
+  /** Open the bundle this box runs, in place (its canvas is held for the breadcrumb back). */
+  openBundle: [workflow: string];
 }>();
 
 const spec = computed(() => props.node.spec);
@@ -356,6 +358,15 @@ const label = "text-muted-foreground";
                 </select>
                 <span v-if="!listInputs.length" class="text-xs text-muted-foreground">None of the box's inputs is a list.</span>
               </label>
+              <button
+                v-if="text(spec.workflow) && bundles.includes(text(spec.workflow))"
+                type="button"
+                data-bundle-open
+                class="self-start rounded-md border border-border px-2.5 py-1 text-[13px] font-medium hover:bg-muted"
+                @click="emit('openBundle', text(spec.workflow))"
+              >
+                Open {{ text(spec.workflow) }}
+              </button>
               <div data-bundle-ports class="flex flex-col gap-1 rounded-md border border-border p-2 font-mono text-xs">
                 <template v-if="ports">
                   <span>reads {{ ports.inputs.join(", ") || "nothing" }}</span>
