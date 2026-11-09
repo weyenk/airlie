@@ -16,6 +16,7 @@ import contextlib
 import json
 import os
 import subprocess
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -359,12 +360,20 @@ async def retire_draft(
 
 
 async def bookkeep(
-    cfg: AirlieConfig, store: BoardStore, *, serve_commit: str | None, gh: GhRun | None = None
+    cfg: AirlieConfig,
+    store: BoardStore,
+    *,
+    serve_commit: str | None,
+    gh: GhRun | None = None,
+    now: Callable[[], float] = time.time,
 ) -> list[str]:
     """What every beat does with no model (until the scheduler moves it): each open fix card through
     `release_after_fix`, each published workflow draft through `retire_draft`, each blocked story through
-    `transient_retry`. One line per thing done, for the log. A card or draft that fails is a line and the
-    rest go on."""
+    `transient_retry`, then the nightly mutation run's survivors through `mutation_cards.harvest` (at most
+    once an hour, by `now`). One line per thing done, for the log. A card, draft or harvest that fails is a
+    line and the rest go on."""
+    from airlie.story import mutation_cards  # it builds on this module
+
     state_dir = cfg.observability.state_dir.expanduser()
     home = home_checkout()
     lines: list[str] = []
@@ -398,6 +407,10 @@ async def bookkeep(
                 lines.append(f"{story.key}: transient block, retried")
         except Exception as e:  # noqa: BLE001
             lines.append(f"{story.key}: retry failed ({type(e).__name__}: {e})")
+    try:
+        lines += await mutation_cards.harvest(cfg, store, gh=run, now=now)
+    except Exception as e:  # noqa: BLE001 - the harvest's failure never stops the beat
+        lines.append(f"mutation cards failed ({type(e).__name__}: {e})")
     return lines
 
 

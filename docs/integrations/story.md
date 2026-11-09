@@ -492,8 +492,8 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
   gets a `test_checks_skipped` event; its package is still parsed, linted and placed, and its tests locked.
 
 Mutation testing is the repository's CI's, on every PR, not a stage of the story: airlie's own pipeline runs
-`task mutate:changed -- --gate-only` over the functions the PR changed, in 5 shards and merges them (`task mutate:merge`); the
-weekly run covers the whole project. Before 2026-10-19 a story ran an `AGENTS.md` *Mutation gate* once and an
+`task mutate:changed -- --gate-only` over the functions the PR changed, in 8 shards and merges them (`task mutate:merge`);
+the nightly sweep covers every enrolled module and a weekly run on the Mac the whole project (see *Mutation fix cards*). Before 2026-10-19 a story ran an `AGENTS.md` *Mutation gate* once and an
 architect-planned *Harden the tests* layer built tests for the survivors; its tests failed the red check often
 for no fault in them, and it is gone. A state saved with its keys still opens.
 
@@ -687,6 +687,31 @@ never merges its fix. Once the fix's PRs are merged on GitHub the card gets one 
 `approved` with `resumed_after:<fix>`. A story that then blocks on the same signature waits for you and the card gets
 a comment: the loop stops at one. With `story.board: jira` the card's text is a note on the issue and no label is
 written.
+
+### Mutation fix cards
+
+The nightly mutation sweep (`.github/workflows/mutation-nightly.yml`) mutates every enrolled module on main and
+uploads its surviving mutants as the artifact `mutation-survivors`. Each beat's bookkeeping asks GitHub for the
+newest completed run at most once an hour (`airlie.story.mutation_cards`) and files one card per function whose
+mutants survived: `todo`, labels `fix`, `repo:<line.home_repo>`, `signature:mutation:<function>` and `mutation`,
+with each mutant's diff, how to reproduce it, and the acceptance criteria (a test fails with each mutant applied,
+or the mutant gets an `equivalent` entry in `pyproject.toml` with its reason). An open card for the same function
+is commented when its set of mutants changes instead of filed again. Approve a card and the line builds it into a
+draft PR; once that is merged and deployed the card is `done`, as any fix card. A run that could not mutate files
+nothing and says so once in the line's log. `line.mutation_cards: false` stops the harvest.
+
+The whole-project run, which also mutates the modules that are not enrolled and prints the backlog score table, is
+not in CI: a launchd agent on the Mac runs it every Sunday at 01:00 (`scripts/mutate_local.py`, `task mutate:local`
+by hand). It waits for the planning and build lanes to be free, polling every ten minutes and giving the week up at
+06:00 (the line event `mutation_project_skipped`), then mutates a fresh worktree of `origin/main` under
+`~/.local/state/airlie/mutation/` and writes `<date>.md` beside it (the newest twelve are kept) and the line event
+`mutation_project` with mutmut's exit code (`stale_base: true` when `git fetch` failed and it ran on the last
+fetched `origin/main`). A `git worktree add` or `uv sync` that fails stops it before mutmut, as the event
+`mutation_project_failed` with the step. The script keeps the Mac awake (`caffeinate -w` on itself) and runs each
+step in its own process group: launchd's SIGTERM stops the running step's group, SIGKILL after 30 s, and the
+worktree is removed. The exit is 0 whatever mutmut found. The log is
+`~/.local/state/airlie/mutation-weekly.log`. `task mutate:launchd:install` loads the agent from this checkout and
+`task mutate:launchd:uninstall` removes it.
 
 ## From OpenCode
 

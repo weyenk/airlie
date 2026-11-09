@@ -8,15 +8,18 @@ Scopes
   changed   Two sets of mutants, run together:
             1. every mutant of each function or method of an enrolled source file that the change touched
                since the merge base with --base (committed, staged, unstaged and untracked; a new file is
-               all touched). Code the change left alone is not held to the gate here: the weekly
-               `--scope project` run covers it. And
+               all touched). Code the change left alone is not held to the gate here: the nightly
+               `--scope enrolled` sweep covers it. And
             2. every mutant of any function that a changed or new test file exercises. A new test is
                only good if the mutants in the code it runs get caught, so the suite is asked to prove it.
             A change to the mutation setup (pyproject.toml, tests/unit/conftest.py) is not attributable to
-            one function and runs every enrolled module, whole, instead.
+            one function and runs every enrolled module, whole, instead. --defer-setup (the pipeline) leaves
+            that to the nightly `--scope enrolled` run: the run says so, and still mutates the functions the
+            change touched in enrolled sources.
             --gate-only drops set 2 (and the stats run it needs): only the enrolled functions a change
             touched are mutated. Set 2 is most of a story's mutants (AIR-5: 855 of 1,211) and none of them
-            can fail the run, so the pipeline leaves them to the weekly `--scope project` run.
+            can fail the run, so the pipeline leaves them to the nightly `--scope enrolled` sweep (the
+            enrolled ones) and the weekly `--scope project` run on the Mac (the rest).
   enrolled  Every mutant of every enrolled module.
   project   Every mutant in src/airlie. Enrolled modules gate; the rest is reported as the backlog.
 
@@ -28,12 +31,21 @@ Sharding (CI runs a matrix of these, then one merge)
   the others. Every shard of a run picks the same parts from the same tree. --results writes what the shard
   ran to a JSON file (CI names it shard-<I>.json). --merge reads every shard-*.json under a directory, gates
   on all of them together, and writes the one report; --expect N fails it when fewer than N shards
-  reported, so a shard that died before writing cannot pass.
+  reported, so a shard that died before writing cannot pass. --survivors PATH (with --merge) writes the
+  uncaught mutants that gate, after the equivalent list, as {"status": "ran" | "could_not_run", "survivors":
+  [{"mutant", "status", "function", "diff"}]}; the file exists on every path, empty when a shard could not
+  run.
 
-Enrolment is `[tool.airlie.mutation].enrolled` in pyproject.toml. Exit 0 when every selected mutant of an
-enrolled module is caught (killed, or timed out); 1 when one survives, has no covering test, is suspicious
-or crashed the runner, or when mutmut itself fails (a red unit test). Mutants outside the enrolled modules
-are reported, never failed. Run it after the unit tests: a red unit test stops mutmut before it starts."""
+Enrolment is `[tool.airlie.mutation].enrolled` in pyproject.toml. A mutant no test can catch (it changes
+nothing a caller can see) is listed as an inline table in `equivalent = [...]` under `[tool.airlie.mutation]`,
+`{ mutant = "...", line = "...", reason = "..." }`: its name, the mutated line (the `+` line of `mutmut show`)
+and why; it is then reported, not failed. An entry whose
+mutant is now caught, or whose line no longer matches, is reported as stale. Every shard's record carries the
+`mutmut show` diff of each uncaught mutant, so --merge applies the list without the mutants directory.
+Exit 0 when every selected mutant of an enrolled module is caught (killed, or timed out) or listed; 1 when one
+survives, has no covering test, is suspicious or crashed the runner, or when mutmut itself fails (a red unit
+test). Mutants outside the enrolled modules are reported, never failed.
+Run it after the unit tests: a red unit test stops mutmut before it starts."""
 
 from __future__ import annotations
 
@@ -50,6 +62,7 @@ import sys
 import tomllib
 from collections import defaultdict
 from pathlib import Path
+from typing import TypedDict
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP_FILES = {"pyproject.toml", "tests/unit/conftest.py"}
@@ -194,6 +207,28 @@ def changed_functions(merge_base: str, paths: list[str]) -> tuple[dict[str, int]
 def enrolled_files() -> list[str]:
     cfg = tomllib.loads((ROOT / "pyproject.toml").read_text())
     return list(cfg["tool"]["airlie"]["mutation"]["enrolled"])
+
+
+class Equivalent(TypedDict):
+    """One `equivalent = [...]` entry (an inline table): a mutant no test can catch, and why."""
+
+    mutant: str
+    line: str
+    reason: str
+
+
+def equivalents() -> dict[str, Equivalent]:
+    """The listed equivalent mutants, keyed by mutant name."""
+    cfg = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    return {e["mutant"]: e for e in cfg["tool"]["airlie"]["mutation"].get("equivalent", [])}
+
+
+def mutated_line(diff: str) -> str | None:
+    """The first added line of a `mutmut show` diff, stripped; None when it has none."""
+    for line in diff.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            return line[1:].strip()
+    return None
 
 
 def module_name(path: str) -> str:
@@ -407,20 +442,50 @@ def read_stats() -> dict[str, object]:
     return json.loads((ROOT / "mutants" / "mutmut-stats.json").read_text())  # type: ignore[no-any-return]
 
 
-def write_results(path: Path | None, status: str, results: dict[str, str], shard: str, scope: str) -> None:
-    """A shard's record for --merge: how it ended ("ran", "nothing" or "could_not_run") and every mutant it
-    selected, with mutmut's status."""
+def write_results(
+    path: Path | None,
+    status: str,
+    results: dict[str, str],
+    shard: str,
+    scope: str,
+    shown: dict[str, str] | None = None,
+) -> None:
+    """A shard's record for --merge: how it ended ("ran", "nothing" or "could_not_run"), every mutant it
+    selected with mutmut's status, and `shown`: the `mutmut show` diff of each gating uncaught mutant."""
     if path is None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    record = {"status": status, "shard": shard, "scope": scope, "results": results}
+    record = {"status": status, "shard": shard, "scope": scope, "results": results, "shown": shown or {}}
     path.write_text(json.dumps(record, indent=1, sort_keys=True))
 
 
-def verdict(results: dict[str, str], enrolled_modules: set[str], scope: str) -> tuple[list[str], int]:
-    """The report's verdict lines over `results`, and the exit code: 0 when every mutant of an enrolled module
-    is caught, 1 when one is not."""
+def triage(
+    results: dict[str, str],
+    enrolled_modules: set[str],
+    shown: dict[str, str] | None = None,
+    listed: dict[str, Equivalent] | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """(gating, informational, equivalent) uncaught mutants: the gating ones are those of an enrolled module
+    that are not listed as equivalent (their `shown` diff's mutated line is the listed one)."""
     gating, info = split_failures(results, enrolled_modules)
+    shown, listed = shown or {}, listed or {}
+    equivalent = [n for n in gating if n in listed and mutated_line(shown.get(n, "")) == listed[n]["line"]]
+    return [n for n in gating if n not in equivalent], info, equivalent
+
+
+def verdict(
+    results: dict[str, str],
+    enrolled_modules: set[str],
+    scope: str,
+    shown: dict[str, str] | None = None,
+    listed: dict[str, Equivalent] | None = None,
+) -> tuple[list[str], int]:
+    """The report's verdict lines over `results`, and the exit code: 0 when every mutant of an enrolled module
+    is caught or listed as equivalent (its `shown` diff's mutated line is the listed one), 1 when one is not.
+    A listed mutant that is caught, or whose line differs, is reported as stale."""
+    gating, info, equivalent = triage(results, enrolled_modules, shown, listed)
+    listed = listed or {}
+    stale = [n for n in listed if n in results and n not in equivalent]
     report = [""]
     if scope == "project" or info:
         report += score_table(results, enrolled_modules)
@@ -428,6 +493,12 @@ def verdict(results: dict[str, str], enrolled_modules: set[str], scope: str) -> 
         report.append(
             f"\n{len(info)} uncaught mutant(s) in modules that are not enrolled (reported, not failed)"
         )
+    if equivalent:
+        report.append("\nequivalent (listed in pyproject.toml):")
+        report += [f"- {n}: {listed[n]['reason']}" for n in equivalent]
+    if stale:
+        report.append("\nstale equivalent entries:")
+        report += [f"- {n}: {results[n]}, no longer matches its listed line" for n in stale]
     if not gating:
         report.append("\nall selected mutants of the enrolled modules were caught")
         return report, 0
@@ -436,26 +507,62 @@ def verdict(results: dict[str, str], enrolled_modules: set[str], scope: str) -> 
     return report, 1
 
 
-def merge(where: Path, expect: int | None, report: Path | None, enrolled_modules: set[str]) -> int:
+def function_of(mutant: str) -> str:
+    """airlie.a.x_f__mutmut_12 -> airlie.a.x_f__mutmut_*  (every mutant of the same function)."""
+    return mutant.rsplit("_", 1)[0] + "_*"
+
+
+def write_survivors(path: Path | None, status: str, survivors: list[dict[str, str]]) -> None:
+    """`--survivors`: the gating uncaught mutants as JSON, for the fix cards a later job files."""
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"status": status, "survivors": survivors}, indent=1))
+
+
+def merge(
+    where: Path,
+    expect: int | None,
+    report: Path | None,
+    enrolled_modules: set[str],
+    survivors: Path | None = None,
+) -> int:
     """Gate on every shard's record under `where` together (`--merge`): 2 when a shard could not run or fewer
-    than `expect` reported, else `verdict`'s code."""
+    than `expect` reported, else `verdict`'s code. `survivors` always gets a file: the gating mutants, or
+    status "could_not_run" with none."""
     records = [json.loads(f.read_text()) for f in sorted(where.rglob(SHARD_FILES))]
     scopes = {str(r.get("scope")) for r in records}
     out = [f"### Mutation testing ({', '.join(sorted(scopes)) or 'no shard'}, {len(records)} shard(s))"]
     if expect is not None and len(records) < expect:
         say([*out, f"only {len(records)} of {expect} shards reported: a shard did not finish"], report)
+        write_survivors(survivors, "could_not_run", [])
         return COULD_NOT_RUN
     failed = sorted(str(r["shard"]) for r in records if r["status"] == "could_not_run")
     if failed:
         say([*out, f"mutmut did not run to the end in shard(s) {', '.join(failed)}; see their logs"], report)
+        write_survivors(survivors, "could_not_run", [])
         return COULD_NOT_RUN
     results: dict[str, str] = {}
+    shown: dict[str, str] = {}
     for r in records:
         results.update(r["results"])
+        shown.update(r.get("shown", {}))
     if not results:
         say([*out, "nothing to mutate in any shard"], report)
+        write_survivors(survivors, "ran", [])
         return 0
-    lines, code = verdict(results, enrolled_modules, "project" if "project" in scopes else "changed")
+    scope = "project" if "project" in scopes else "changed"
+    listed = equivalents()
+    lines, code = verdict(results, enrolled_modules, scope, shown, listed)
+    gating, _, _ = triage(results, enrolled_modules, shown, listed)
+    write_survivors(
+        survivors,
+        "ran",
+        [
+            {"mutant": n, "status": results[n], "function": function_of(n), "diff": shown.get(n, "")}
+            for n in gating
+        ],
+    )
     say([*out, *lines], report)
     if code:
         print("run `uv run mutmut show NAME` on a checkout of this commit to see a mutant")
@@ -484,6 +591,11 @@ def main() -> int:
         action="store_true",
         help="changed scope: mutate the impacted enrolled modules only, not what the changed tests run",
     )
+    ap.add_argument(
+        "--defer-setup",
+        action="store_true",
+        help="changed scope: a setup change does not run every enrolled module (the nightly does)",
+    )
     ap.add_argument("--list", action="store_true", help="print what would be tested and stop")
     ap.add_argument("--report", type=Path, help="also append the markdown summary to this file")
     ap.add_argument("--shard", type=parse_shard, help="run only part I of N of the mutants (I/N, as 2/5)")
@@ -491,6 +603,7 @@ def main() -> int:
     ap.add_argument(
         "--merge", type=Path, help="gate on the --results files under this directory, run nothing"
     )
+    ap.add_argument("--survivors", type=Path, help="--merge: write the gating survivors to this JSON file")
     ap.add_argument("--expect", type=int, help="--merge: how many shards must have reported")
     ap.add_argument(
         "--mac-only",
@@ -501,8 +614,10 @@ def main() -> int:
 
     scope_files = enrolled_files()
     enrolled_modules = {module_name(f) for f in scope_files}
+    if args.survivors is not None and args.merge is None:
+        ap.error("--survivors needs --merge")
     if args.merge is not None:
-        return merge(args.merge, args.expect, args.report, enrolled_modules)
+        return merge(args.merge, args.expect, args.report, enrolled_modules, args.survivors)
     shard = f"{args.shard[0]}/{args.shard[1]}" if args.shard else "1/1"
     out: list[str] = [f"### Mutation testing ({args.scope})"]
     test_files: list[str] = []
@@ -514,8 +629,11 @@ def main() -> int:
         sources = []
     else:
         changed = changed_files(args.base)
-        sources = impacted_sources(changed, scope_files)
-        whole = bool(changed & SETUP_FILES)  # the setup changed: every enrolled module, whole
+        if args.defer_setup:
+            sources = [f for f in scope_files if f in changed]  # the nightly run takes the setup change
+        else:
+            sources = impacted_sources(changed, scope_files)
+            whole = bool(changed & SETUP_FILES)  # the setup changed: every enrolled module, whole
         test_files = changed_tests(changed)
         skipped = [f for f in test_files if f in mutation_ignored_tests()]
         test_files = [f for f in test_files if f not in skipped]
@@ -523,8 +641,10 @@ def main() -> int:
         if skipped:
             out += ["changed tests kept out of mutation runs (not fork-safe):", *[f"- {f}" for f in skipped]]
         if changed & SETUP_FILES:
+            files = ", ".join(sorted(changed & SETUP_FILES))
             out.append(
-                f"mutation setup changed ({', '.join(sorted(changed & SETUP_FILES))}): every enrolled module"
+                f"mutation setup changed ({files}): every enrolled module"
+                + (" is left to the nightly run" if args.defer_setup else "")
             )
         unenrolled = sorted(
             f for f in changed if f.startswith("src/airlie/") and f.endswith(".py") and f not in scope_files
@@ -614,14 +734,18 @@ def main() -> int:
         return COULD_NOT_RUN
 
     results = selected(parse_results(mutmut_out("results", "--all", "true")), globs)
-    write_results(args.results, "ran", results, shard, args.scope)
-    report, code = verdict(results, enrolled_modules, args.scope)
+    # every uncaught enrolled mutant's diff, the listed equivalents' too: --merge applies the list with them
+    uncaught, _ = split_failures(results, enrolled_modules)
+    shown = {name: mutmut_out("show", name) for name in uncaught}
+    write_results(args.results, "ran", results, shard, args.scope, shown)
+    listed = equivalents()
+    report, code = verdict(results, enrolled_modules, args.scope, shown, listed)
     say(report, args.report)
     if not code:
         return 0
-    gating, _ = split_failures(results, enrolled_modules)
+    gating, _, _ = triage(results, enrolled_modules, shown, listed)
     for name in gating[:SHOW_LIMIT]:
-        print(f"\n## {name}\n{mutmut_out('show', name)}")
+        print(f"\n## {name}\n{shown[name]}")
     if len(gating) > SHOW_LIMIT:
         print(f"... and {len(gating) - SHOW_LIMIT} more; run `uv run mutmut show NAME` for each")
     return 1

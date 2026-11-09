@@ -726,7 +726,7 @@ class BudgetSpec(Strict):
 
 class LineSpec(Strict):
     """The line's scheduler and control surface (planning-line P5, 2026-10-25). The diagnosis half (P5a) reads
-    `home_repo` and `transient_retries`; the scheduler half (P5b) the rest."""
+    `home_repo`, `transient_retries` and `mutation_cards`; the scheduler half (P5b) the rest."""
 
     home_repo: str | None = Field(
         default=None,
@@ -737,6 +737,11 @@ class LineSpec(Strict):
         default=2,
         ge=0,
         description="how often a story blocked by a transient failure is retried per signature",
+    )
+    mutation_cards: bool = Field(
+        default=True,
+        description="the nightly mutation sweep's survivors become fix cards on airlie's own board "
+        "(airlie.story.mutation_cards), one per function, todo until a person approves",
     )
     tick_s: int = Field(
         default=60,
