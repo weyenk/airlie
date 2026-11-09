@@ -10,6 +10,8 @@
 #
 # Stages 3-5 run `task test:<layer>`, which succeeds while tests/<layer>/ is empty; add tests there and the
 # stage starts enforcing them. Only the e2e stage serves the application: its web app, in a container.
+# Unit, functional, contract and integration run in the Linux test image (ops/test/Containerfile) under the
+# runner's Docker with `--network none`: loopback only, so a test that reaches outside fails here.
 name: pipeline
 
 on:
@@ -46,13 +48,19 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
+      # In the Linux test image (ops/test/Containerfile) with the outside network off, as the layers above it
+      # run; the runner's Docker builds it. The tests marked `mac` skip there and run on the `mac` job.
       # The budget fails the job on a test whose call phase took over 500 ms and that tests/unit/quarantine.toml
       # does not list (setup and teardown are not timed, so a worker's cold imports are not charged to its first
-      # test; tests/unit/conftest.py). No multiplier: these 2-worker runners are not slower per test than a
-      # Mac under -n 8 (2026-11-09: 4217 tests summed ~910 worker-seconds here against ~1770 locally).
-      - run: task test:unit
+      # test; tests/unit/conftest.py). No multiplier: these runners are not slower per test than a Mac under
+      # -n 8 (2026-11-09: 4217 tests summed ~910 worker-seconds here against ~1770 locally).
+      - run: task test:unit:image
         env:
+          TEST_ENGINE: docker
           AIRLIE_TEST_BUDGET_MS: "500"
 
   # The map mutmut needs before it runs a mutant: which unit tests execute which function (its stats run, the
@@ -186,10 +194,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
+      - uses: arduino/setup-task@v2
         if: hashFiles('tests/functional/**/test_*.py') != ''
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
       - run: task test:functional
         if: hashFiles('tests/functional/**/test_*.py') != ''
+        env:
+          TEST_ENGINE: docker
 
   contract:
     needs: unit
@@ -197,10 +210,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
+      - uses: arduino/setup-task@v2
         if: hashFiles('tests/contract/**/test_*.py') != ''
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
       - run: task test:contract
         if: hashFiles('tests/contract/**/test_*.py') != ''
+        env:
+          TEST_ENGINE: docker
 
   integration:
     needs: unit
@@ -208,10 +226,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
+      - uses: arduino/setup-task@v2
         if: hashFiles('tests/integration/**/test_*.py') != ''
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
       - run: task test:integration
         if: hashFiles('tests/integration/**/test_*.py') != ''
+        env:
+          TEST_ENGINE: docker
 
   # ---- stage 4: behavioural ----
   # The web app in Chromium, in the e2e image (ops/e2e/Containerfile): the image a Mac runs under Apple's

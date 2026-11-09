@@ -12,6 +12,8 @@ from airlie.lts.controller.learned import LTSAdmissionController, tiny_test_back
 from airlie.train.dataset import Example
 from airlie.train.trainer import TrainConfig, advantages_by_group, evaluate, train
 
+pytestmark = pytest.mark.mac  # torch and mlx (tests/unit/conftest.py MAC_ONLY)
+
 
 def ex(
     run: str, team: str, step: int, action: str, used: bool, reward: float, first: bool, task: str = "t"

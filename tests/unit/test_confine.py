@@ -23,7 +23,7 @@ from airlie.tools import confine
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.registry import ToolRegistry
 
-pytestmark = pytest.mark.skipif(not confine.available(), reason="sandbox-exec is macOS's")
+pytestmark = [pytest.mark.mac, pytest.mark.skipif(not confine.available(), reason="sandbox-exec is macOS's")]
 
 
 @pytest.fixture

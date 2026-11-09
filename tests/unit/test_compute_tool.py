@@ -50,6 +50,7 @@ async def test_a_program_that_runs_too_long_is_stopped(
     assert not ok and "ran past 0.5s" in out
 
 
+@pytest.mark.mac
 @needs_sandbox
 async def test_it_cannot_write_outside_its_own_directory(tmp_path: Path) -> None:
     target = tmp_path / "written.txt"
@@ -58,6 +59,7 @@ async def test_it_cannot_write_outside_its_own_directory(tmp_path: Path) -> None
     assert (await run("open('scratch.txt', 'w').write('x'); print('ok')", tmp_path)) == (True, "ok\n")
 
 
+@pytest.mark.mac
 @needs_sandbox
 async def test_it_cannot_reach_the_network(tmp_path: Path) -> None:
     code = "import socket\nsocket.create_connection(('1.1.1.1', 80), timeout=3)\nprint('connected')"

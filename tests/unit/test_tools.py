@@ -386,7 +386,7 @@ def venv_tool(c: ToolContext) -> None:
     (bin_dir / "only-in-the-venv").chmod(0o755)
 
 
-@pytest.mark.parametrize("sandbox", [False, pytest.param(True, marks=needs_sandbox)])
+@pytest.mark.parametrize("sandbox", [False, pytest.param(True, marks=[pytest.mark.mac, needs_sandbox])])
 async def test_a_command_is_found_on_the_worktrees_path(tmp_path: Path, sandbox: bool) -> None:
     c = replace(ctx(tmp_path), sandbox=sandbox)
     venv_tool(c)
@@ -394,6 +394,7 @@ async def test_a_command_is_found_on_the_worktrees_path(tmp_path: Path, sandbox:
     assert r.ok and r.output.strip() == "from-the-venv"
 
 
+@pytest.mark.mac
 @needs_sandbox
 async def test_a_confined_command_that_is_not_there_fails_as_an_unconfined_one_does(tmp_path: Path) -> None:
     r = await run_cmd(["no-such-program-airlie"], ctx(tmp_path), shell=False)
@@ -417,7 +418,7 @@ async def test_the_sandbox_note_is_for_a_confined_command_that_failed_on_a_refus
     assert ok.ok and confine_mod.NOTE not in ok.output
 
 
-@pytest.mark.parametrize("sandbox", [False, pytest.param(True, marks=needs_sandbox)])
+@pytest.mark.parametrize("sandbox", [False, pytest.param(True, marks=[pytest.mark.mac, needs_sandbox])])
 @pytest.mark.parametrize(("hold", "cancel"), cancel_phases())
 async def test_cancelling_a_shell_call_kills_what_the_command_started(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sandbox: bool, hold: bool, cancel: Any

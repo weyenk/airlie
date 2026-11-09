@@ -591,29 +591,76 @@ tasks:
       - task: typecheck
 
   test:unit:
-    desc: "Stage 2: the lowest level of the pyramid (tests/unit)"
+    desc: "Stage 2: the lowest level of the pyramid (tests/unit), on this machine as the AGENTS.md gate runs it; CI runs test:unit:image"
     cmds:
       - '{{.RUN}} python scripts/run_layer.py unit {{.CLI_ARGS}}'
 
-  test:mac:
-    desc: "The unit tests that need mlx (macOS only; tests/unit/conftest.py MAC_ONLY, MAC_ONLY_TESTS): the pipeline's mac job"
+  test:unit:image:
+    desc: "Stage 2 as CI runs it: tests/unit in the Linux test image (ops/test/Containerfile), outside network off; the mac-marked tests skip there"
     cmds:
-      - '{{.RUN}} python scripts/run_layer.py unit --mac-only {{.CLI_ARGS}}'
+      - task: test:image:run
+        vars: {LAYER: unit}
+
+  test:mac:
+    desc: "The tests marked mac, which need mlx or macOS's sandbox-exec, on this Mac (every layer): the pipeline's mac job"
+    cmds:
+      - '{{.RUN}} pytest -m "mac and not live and not e2e" -n auto --maxprocesses 8 tests {{.CLI_ARGS}}'
 
   test:functional:
-    desc: "Stage 3, units in concert: functional tests (tests/functional)"
+    desc: "Stage 3, units in concert: functional tests (tests/functional), in the Linux test image"
     cmds:
-      - '{{.RUN}} python scripts/run_layer.py functional {{.CLI_ARGS}}'
+      - task: test:image:run
+        vars: {LAYER: functional}
 
   test:contract:
-    desc: "Stage 3, units in concert: contract tests (tests/contract)"
+    desc: "Stage 3, units in concert: contract tests (tests/contract), in the Linux test image"
     cmds:
-      - '{{.RUN}} python scripts/run_layer.py contract {{.CLI_ARGS}}'
+      - task: test:image:run
+        vars: {LAYER: contract}
 
   test:integration:
-    desc: "Stage 3, units in concert: integration tests (tests/integration)"
+    desc: "Stage 3, units in concert: integration tests (tests/integration), in the Linux test image"
     cmds:
-      - '{{.RUN}} python scripts/run_layer.py integration {{.CLI_ARGS}}'
+      - task: test:image:run
+        vars: {LAYER: integration}
+
+  test:image:run:
+    # One layer (scripts/run_layer.py LAYER) in the test image (ops/test/Containerfile), under Apple's container
+    # here and Docker in GitHub (TEST_ENGINE=docker). The build reuses its cached layers: it redoes work only
+    # when pyproject.toml, uv.lock or the Containerfile changed. The checkout is mounted read-only at /src (the
+    # venv is the image's /opt/venv, tmp the container's own /tmp).
+    #
+    # The outside network is off and loopback stays on: `--network none` in both engines, which leaves the
+    # container only `lo`. Apple's container 1.5 takes `none` as Docker does (checked 2026-11-09: an outbound
+    # connect fails with ENETUNREACH, a loopback round trip works, `lo` is the only interface). An `--internal`
+    # network is host-only by its help, so the Mac would still answer. tests/integration/test_image_network.py
+    # proves it on every run.
+    #
+    # --init: an init as PID 1 reaps the processes tests orphan; without it they stay zombies until the run ends
+    # (seen 2026-11-09: defunct ssh and git stand-ins), where a test that looks for processes would find them.
+    #
+    # container's default VM is 4 CPUs and 1 GB, too small for the unit layer's 8 xdist workers. A checkout
+    # that is a git worktree keeps its repository outside itself: that one is mounted too, read-only at its own
+    # path (where the worktree's .git file points), so tests that ask git about airlie's checkout work.
+    internal: true
+    requires:
+      vars: [LAYER]
+    vars:
+      ENGINE: '{{.TEST_ENGINE | default "container"}}'
+      SIZE: '{{if eq .ENGINE "container"}}--cpus 8 --memory 16G{{end}}'
+      GIT_COMMON:
+        sh: git rev-parse --path-format=absolute --git-common-dir
+      GIT_MOUNT: '{{if not (hasPrefix (print .ROOT_DIR "/") .GIT_COMMON)}}--mount type=bind,source={{.GIT_COMMON}},target={{.GIT_COMMON}},readonly{{end}}'
+    cmds:
+      - '{{if eq .ENGINE "container"}}container system start --disable-kernel-install > /dev/null{{else}}true{{end}}'
+      - mkdir -p .task
+      # the build's log, not -q: container 1.5.0's quiet build can hang with no output
+      - '{{.ENGINE}} build --progress plain -t airlie-test -f ops/test/Containerfile . > .task/test-image-build.log 2>&1 || { tail -40 .task/test-image-build.log; exit 1; }'
+      - >-
+        {{.ENGINE}} run --rm --init --network none {{.SIZE}}
+        --mount type=bind,source={{.ROOT_DIR}},target=/src,readonly {{.GIT_MOUNT}}
+        ${AIRLIE_TEST_BUDGET_MS:+--env AIRLIE_TEST_BUDGET_MS=$AIRLIE_TEST_BUDGET_MS}
+        airlie-test {{.LAYER}} {{.CLI_ARGS}}
 
   test:e2e:
     desc: "Stage 4, behavioural: the web app in Chromium (tests/e2e) in the e2e image (ops/e2e/Containerfile), under Apple's container here and Docker in GitHub (E2E_ENGINE=docker); a screenshot of every check lands in test-results/e2e/evidence/ (task test:e2e -- -k board)"

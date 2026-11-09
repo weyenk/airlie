@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
 from airlie import cli
 from airlie.lts.controller.learned import tiny_test_backbone
+
+pytestmark = pytest.mark.mac  # torch and mlx (tests/unit/conftest.py MAC_ONLY)
 
 runner = CliRunner()
 

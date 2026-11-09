@@ -67,6 +67,7 @@ asyncio_mode = "auto"
 markers = [
     "live: needs a running engine on the Mac (run with `task test:live`)",
     "e2e: drives the web app in Chromium, in the e2e container (run with `task test:e2e`)",
+    "mac: needs mlx or macOS's sandbox-exec; skipped elsewhere (tests/conftest.py); `task test:mac` runs it",
 ]
 addopts = "-m 'not live and not e2e'"
 

@@ -12,6 +12,8 @@ from airlie.engine import ToolCall
 from airlie.lts.controller import AdmissionContext
 from airlie.lts.controller.learned import LearnedController, LTSAdmissionController, tiny_test_backbone
 
+pytestmark = pytest.mark.mac  # torch and mlx (tests/unit/conftest.py MAC_ONLY)
+
 
 @pytest.fixture(scope="module")
 def ctrl() -> LTSAdmissionController:
