@@ -133,3 +133,35 @@ def test_engine_up_and_restart_take_a_topology_profile(tmp_path: Path, monkeypat
     r = runner.invoke(cli.app, ["engine", "restart", "--config", str(p), "--topology", "fork"])
     assert r.exit_code == 0, r.output
     assert seen and set(seen) == {"fork"}
+
+
+def test_engine_up_skips_engines_with_autostart_false_unless_named(tmp_path: Path, monkeypatch) -> None:
+    cfg_path = write_cfg(tmp_path)
+    data = yaml.safe_load(cfg_path.read_text())
+    data["engines"]["bench"] = {
+        "kind": "mlx_vlm",
+        "port": 8091,
+        "model": "benchm",
+        "autostart": False,
+    }
+    data["models"]["benchm"] = {
+        "repo": "org/bench",
+        "revision": "r3",
+        "path": "/models/bench",
+        "estimated_memory_gb": 3,
+    }
+    cfg_path.write_text(yaml.safe_dump(data))
+    monkeypatch.setattr(cli, "_engine_process", lambda cfg, name: StubProcess(cfg, name))
+
+    StubProcess.calls = []
+    r = runner.invoke(cli.app, ["engine", "up", "--config", str(cfg_path)])
+    assert r.exit_code == 0, r.output
+    assert StubProcess.calls == ["start:main"]
+
+    StubProcess.calls = []
+    r = runner.invoke(cli.app, ["engine", "up", "bench", "--config", str(cfg_path)])
+    assert r.exit_code == 0, r.output
+    assert StubProcess.calls == ["start:bench"]
+
+    r = runner.invoke(cli.app, ["engine", "up", "nope", "--config", str(cfg_path)])
+    assert r.exit_code == 1

@@ -20,6 +20,7 @@ import psutil
 
 from airlie.config import AirlieConfig, ModelSpec
 from airlie.config.load import hf_snapshot_dir
+from airlie.engine.mlx_vlm import MLX_VLM_ENTRY, build_mlx_vlm_command, served_model
 from airlie.engine.mtp import mtp_model_dir
 from airlie.engine.registry import (
     SERVE_ENTRY,
@@ -33,7 +34,7 @@ from airlie.engine.types import EngineError, ModelState
 
 
 class ProcessRunner(Protocol):
-    def spawn(self, argv: list[str], log_path: Path, cwd: Path) -> int: ...
+    def spawn(self, argv: list[str], log_path: Path, cwd: Path, env: dict[str, str] | None = None) -> int: ...
     def is_alive(self, pid: int) -> bool: ...
     def terminate(self, pid: int, signal: str) -> None: ...
     def port_holder(self, port: int) -> int | None: ...
@@ -42,6 +43,8 @@ class ProcessRunner(Protocol):
 class Prober(Protocol):
     async def health_ok(self) -> bool: ...
     async def model_ids(self) -> list[str]: ...
+    async def loaded_model_ids(self) -> list[str]: ...
+    async def preload_failures(self) -> list[str]: ...
 
 
 @dataclass(frozen=True)
@@ -55,9 +58,10 @@ class ProcessHealth:
 class RealRunner:
     """Spawns the engine detached from the CLI so it survives `task up`; vllm-mlx runs inside `uv run`."""
 
-    def spawn(self, argv: list[str], log_path: Path, cwd: Path) -> int:
+    def spawn(self, argv: list[str], log_path: Path, cwd: Path, env: dict[str, str] | None = None) -> int:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        cmd = ["uv", "run", "--quiet", *argv] if argv[: len(SERVE_ENTRY)] == SERVE_ENTRY else list(argv)
+        in_uv = argv[: len(SERVE_ENTRY)] == SERVE_ENTRY or argv[: len(MLX_VLM_ENTRY)] == MLX_VLM_ENTRY
+        cmd = ["uv", "run", "--quiet", *argv] if in_uv else list(argv)
         with log_path.open("ab") as log:
             proc = subprocess.Popen(
                 cmd,
@@ -66,7 +70,7 @@ class RealRunner:
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env={**os.environ, "PYTHONUNBUFFERED": "1", **(env or {})},
             )
         return proc.pid
 
@@ -92,13 +96,16 @@ class RealRunner:
 
 
 class HTTPProber:
-    def __init__(self, base_url: str, api_key: str | None = None) -> None:
+    def __init__(
+        self, base_url: str, api_key: str | None = None, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
+        self._transport = transport
         self._root = base_url.removesuffix("/v1").rstrip("/")
         self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
     async def health_ok(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=3.0, headers=self._headers) as c:
+            async with httpx.AsyncClient(timeout=3.0, headers=self._headers, transport=self._transport) as c:
                 r = await c.get(f"{self._root}/health")
                 return r.status_code == 200
         except httpx.HTTPError:
@@ -106,13 +113,48 @@ class HTTPProber:
 
     async def model_ids(self) -> list[str]:
         try:
-            async with httpx.AsyncClient(timeout=3.0, headers=self._headers) as c:
+            async with httpx.AsyncClient(timeout=3.0, headers=self._headers, transport=self._transport) as c:
                 r = await c.get(f"{self._root}/v1/models")
                 if r.status_code != 200:
                     return []
                 return [str(m.get("id")) for m in r.json().get("data", [])]
         except (httpx.HTTPError, ValueError):
             return []
+
+    async def loaded_model_ids(self) -> list[str]:
+        """The ids `/v1/models` lists with `loaded` true (mlx-vlm lists every cached model)."""
+        try:
+            async with httpx.AsyncClient(timeout=3.0, headers=self._headers, transport=self._transport) as c:
+                r = await c.get(f"{self._root}/v1/models")
+                if r.status_code != 200:
+                    return []
+                return [str(m.get("id")) for m in r.json().get("data", []) if m.get("loaded") is True]
+        except (httpx.HTTPError, ValueError):
+            return []
+
+    async def preload_failures(self) -> list[str]:
+        """`/v1/metrics` `server.preload_failures`, as text. mlx-vlm keys it by model kind with
+        {model, label, error}; a list or a bare count is read too."""
+        try:
+            async with httpx.AsyncClient(timeout=3.0, headers=self._headers, transport=self._transport) as c:
+                r = await c.get(f"{self._root}/v1/metrics")
+                if r.status_code != 200:
+                    return []
+                failures = r.json().get("server", {}).get("preload_failures")
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return []
+        if isinstance(failures, dict):
+            return [
+                f"{f.get('model', kind)}: {f.get('error', 'failed')}"
+                if isinstance(f, dict)
+                else f"{kind}: {f}"
+                for kind, f in failures.items()
+            ]
+        if isinstance(failures, list):
+            return [str(f) for f in failures]
+        if isinstance(failures, int) and not isinstance(failures, bool) and failures > 0:
+            return [f"{failures} preload failure(s)"]
+        return []
 
 
 class EngineProcess:
@@ -184,7 +226,10 @@ class EngineProcess:
                 f"port {self.spec.port} is held by pid {holder}, not by airlie; "
                 f"stop it or change engines.{self.name}.port"
             )
-        if self.spec.kind == "llama_server":
+        env: dict[str, str] | None = None
+        if self.spec.kind == "mlx_vlm":
+            argv, env = build_mlx_vlm_command(self.cfg, self.name, self.snapshot_dir)
+        elif self.spec.kind == "llama_server":
             gguf = gguf_path(self.cfg.models[self.spec.models[0]], self.snapshot_dir)
             argv = build_llama_command(self.cfg, self.name, gguf)
         else:
@@ -192,19 +237,25 @@ class EngineProcess:
             write_registry(registry, self.registry_path)
             argv = build_serve_command(self.cfg, self.name, self.registry_path)
         self.dir.mkdir(parents=True, exist_ok=True)
-        pid = self.runner.spawn(argv, self.log_path, self.cwd)
+        pid = self.runner.spawn(argv, self.log_path, self.cwd, env)
         self.pidfile.write_text(f"{pid}\n")
         return await self._wait_ready(pid, timeout_s)
 
     async def _wait_ready(self, pid: int, timeout_s: float) -> ProcessHealth:
         deadline = time.monotonic() + timeout_s
-        preload = [m for m in self.spec.models if self.cfg.models[m].preload]
+        mlx = self.spec.kind == "mlx_vlm"
+        preload = [m for m in self.spec.models if mlx or self.cfg.models[m].preload]
         last: ProcessHealth = ProcessHealth(False, {}, pid, "starting")
         while True:
             if not self.runner.is_alive(pid):
                 self.pidfile.unlink(missing_ok=True)
                 raise EngineError(f"engine '{self.name}' exited during startup; see {self.log_path}")
             last = await self._probe(pid)
+            if mlx and (failures := await self.prober.preload_failures()):
+                raise EngineError(
+                    f"engine '{self.name}' failed to load its model: {'; '.join(failures)}; "
+                    f"see {self.log_path}"
+                )
             if last.ok and all(last.models.get(m) == "ready" for m in preload):
                 return last
             if time.monotonic() >= deadline:
@@ -218,6 +269,15 @@ class EngineProcess:
 
     async def _probe(self, pid: int | None) -> ProcessHealth:
         ok = await self.prober.health_ok()
+        if self.spec.kind == "mlx_vlm":
+            # /health stays "healthy" after a failed preload and its loaded_model is null for a decision-only
+            # engine, so readiness is the /v1/models entry under the exact --model path with loaded true.
+            loaded = (
+                served_model(self.cfg, self.name) in await self.prober.loaded_model_ids() if ok else False
+            )
+            state: ModelState = "ready" if loaded else ("loading" if ok else "missing")
+            detail = "healthy" if ok else "health endpoint not answering"
+            return ProcessHealth(ok, {self.spec.models[0]: state}, pid, detail)
         ids = set(await self.prober.model_ids()) if ok else set()
         models: dict[str, ModelState] = {}
         for m in self.spec.models:

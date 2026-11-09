@@ -112,5 +112,7 @@ def test_api_key_extra_args_env_and_entry_override(tmp_path: Path) -> None:
     )
     argv, env = build_mlx_vlm_command(cfg, "main", snap)
     assert argv[:4] == ["uvx", "--from", "mlx-vlm==0.7.12", "mlx_vlm.server"]
-    assert argv[-4:] == ["--api-key", "k", "--log-level", "DEBUG"]  # mlx-vlm's log levels are uppercase
+    assert argv[-2:] == ["--log-level", "DEBUG"]  # mlx-vlm's log levels are uppercase
+    assert "--api-key" not in argv and "k" not in argv  # the key stays out of `ps`
+    assert env["MLX_VLM_SERVER_API_KEY"] == "k"
     assert env["FOO"] == "1"

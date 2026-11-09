@@ -34,17 +34,19 @@ def build_mlx_vlm_command(
     argv += ["--prefill-step-size", str(e.prefill_step_size)]
     if e.max_image_px is not None:
         argv += ["--max-pixels", str(e.max_image_px**2)]
-    if e.api_key:
-        argv += ["--api-key", e.api_key]
     argv += e.extra_args
 
     env: dict[str, str] = {}
     if e.prefix_cache:
-        env = {
+        env |= {
             "APC_ENABLED": "1",
             "APC_DISK_ENABLED": "0",  # upstream's disk tier defaults on
             "APC_MEMORY_MAX_GB": f"{e.cache_memory_gb:g}",
             "APC_CHECKPOINT_ENTRIES": str(e.cache_checkpoints),
             "APC_CHECKPOINT_INTERVAL_TOKENS": str(e.cache_checkpoint_interval),
         }
+    if e.api_key:
+        env["MLX_VLM_SERVER_API_KEY"] = (
+            e.api_key
+        )  # the server reads this; --api-key would show the key in `ps`
     return argv, {**env, **e.env}

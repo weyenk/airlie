@@ -205,7 +205,7 @@ def _engine_process(cfg: AirlieConfig, name: str):  # type: ignore[no-untyped-de
 
 
 def _managed(cfg: AirlieConfig) -> list[str]:
-    return [n for n, e in cfg.engines.items() if e.kind in ("vllm_mlx", "llama_server")]
+    return [n for n, e in cfg.engines.items() if e.kind in ("vllm_mlx", "llama_server", "mlx_vlm")]
 
 
 def _health_table(rows: list[tuple[str, object]]) -> Table:
@@ -226,26 +226,35 @@ ProfileOpt = Annotated[
 
 @engine_app.command("up")
 def engine_up(
+    name: Annotated[
+        str | None, typer.Argument(help="start only this engine (even if autostart is off)")
+    ] = None,
     config: ConfigOpt = None,
     timeout: Annotated[float, typer.Option(help="seconds to wait for models")] = 900,
     topology: ProfileOpt = None,
 ) -> None:
-    """Start every managed engine and wait until its preloaded models are ready."""
+    """Start the named engine, else every autostart engine, and wait until its models are ready."""
     import asyncio
 
     from airlie.engine.types import EngineError
 
     cfg = _load(config, topology)
+    if name is not None and name not in _managed(cfg):
+        err.print(
+            f"[red]no managed engine named '{name}' (managed: {', '.join(_managed(cfg)) or 'none'})[/red]"
+        )
+        raise typer.Exit(1)
+    names = [name] if name is not None else [n for n in _managed(cfg) if cfg.engines[n].autostart]
     rows = []
-    for name in _managed(cfg):
-        p = _engine_process(cfg, name)
-        console.print(f"starting engine [bold]{name}[/bold] (log: {p.log_path})")
+    for engine in names:
+        p = _engine_process(cfg, engine)
+        console.print(f"starting engine [bold]{engine}[/bold] (log: {p.log_path})")
         try:
-            rows.append((name, asyncio.run(p.start(timeout_s=timeout))))
+            rows.append((engine, asyncio.run(p.start(timeout_s=timeout))))
         except EngineError as e:
             if "already running" in str(e):
-                console.print(f"engine [bold]{name}[/bold] is already running; leaving it (use restart)")
-                rows.append((name, asyncio.run(p.status())))
+                console.print(f"engine [bold]{engine}[/bold] is already running; leaving it (use restart)")
+                rows.append((engine, asyncio.run(p.status())))
                 continue
             err.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
@@ -267,7 +276,7 @@ def engine_down(config: ConfigOpt = None, topology: ProfileOpt = None) -> None:
 def engine_restart(config: ConfigOpt = None, timeout: float = 900, topology: ProfileOpt = None) -> None:
     """Stop then start every managed engine (as the given topology profile configures them)."""
     engine_down(config, topology)
-    engine_up(config, timeout, topology)
+    engine_up(name=None, config=config, timeout=timeout, topology=topology)
 
 
 @engine_app.command("status")
@@ -279,7 +288,7 @@ def engine_status(config: ConfigOpt = None) -> None:
     rows = [(name, asyncio.run(_engine_process(cfg, name).status())) for name in _managed(cfg)]
     console.print(_health_table(rows))
     if not rows:
-        console.print("no managed (vllm_mlx) engines in config")
+        console.print("no managed engines in config")
 
 
 @engine_app.command("logs")
