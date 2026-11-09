@@ -294,12 +294,12 @@ async def test_a_profile_mismatch_is_a_gate_that_starts_no_build(
     started = started_log(monkeypatch)
     verdict = CheckResult(
         "engine:profile[studio]", "fail", "the engine runs other flags than the studio profile: "
-        "--max-kv-size 65536 (profile: 131072); restart it: task restart -- --topology studio",
+        "--max-kv-size 65536 (profile: 131072); restart it: task restart",
     )  # fmt: skip
     monkeypatch.setattr(line_module, "engine_matches_profile", lambda cfg, probe, profile: verdict)
     line = await tick(rig.cfg)
     assert line.startswith("promoted") and "engine mismatch: the engine runs other flags" in line, line
-    assert "task restart -- --topology studio" in line
+    assert "restart it: task restart" in line
     assert started == [] and not rig.engine.requests and rig.status(epic) == "approved"
     events = [
         json.loads(x)

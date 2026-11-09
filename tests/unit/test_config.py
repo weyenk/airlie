@@ -185,11 +185,10 @@ def test_committed_default_config_is_valid() -> None:
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")  # never the person's own
     assert {"coder", "summarizer", "judge", "aggregator"} <= set(cfg.roles)
     assert {"generalist", "llama70b", "qwen25_32b"} <= {n for n, m in cfg.models.items() if m.bench}
-    assert cfg.engines["main"].kind == "vllm_mlx"
+    assert cfg.engines["main"].kind == "mlx_vlm"
     for name, m in cfg.models.items():
         assert m.revision, f"models.{name} must pin a revision"
-    for role in cfg.roles:
-        assert cfg.engine_for_role(role) == "main"
+    assert cfg.engine_for_role("coder") == "main" and cfg.engine_for_role("reviewer") == "reviewer"
 
 
 # ---- a thinking role has room to answer (HDS-3, 2026-10-15) ----
@@ -340,21 +339,17 @@ def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_w
 
 
 def test_the_qwen25_experiment_is_a_profile_beside_the_default() -> None:
-    """Noah 2026-10-18: Qwen2.5-32B in the coder seat as an experiment; the default and its parsers stay."""
+    """Noah 2026-10-18: Qwen2.5-32B in the coder seat as an experiment; the default stays. The profile changes
+    no engine or model entry: its engine is a bench engine started by hand (`airlie engine up qwen25_32b`)."""
     base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     assert base.roles["coder"].model == "generalist"
-    assert base.models["qwen25_32b"].tool_call_parser == "qwen"
     assert load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"].model == "generalist"
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen25")
     coder = cfg.roles["coder"]
     assert (coder.model, coder.thinking, coder.max_tokens) == ("qwen25_32b", False, 10240)
-    # the server-wide parser follows the coder's model: airlie's, which reads the generalist's XML too
-    assert (cfg.models["qwen25_32b"].tool_call_parser, cfg.models["qwen25_32b"].reasoning_parser) == (
-        "qwen3_xml_raw",
-        "qwen3",
-    )
-    assert [cfg.models[m].preload for m in ("qwen25_32b", "generalist", "reviewer")] == [True, True, True]
-    assert cfg.roles["chief"].model == "generalist" and cfg.engines["main"].max_kv_size == 65536
+    assert cfg.engines == base.engines and cfg.models == base.models
+    assert cfg.engines["qwen25_32b"].autostart is False
+    assert cfg.roles["chief"].model == "generalist"
 
 
 def test_the_coder8_experiment_is_a_profile_beside_the_default() -> None:
@@ -362,16 +357,56 @@ def test_the_coder8_experiment_is_a_profile_beside_the_default() -> None:
     base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     coder8 = base.models["coder8"]
     assert coder8.repo == "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit" and coder8.bench
-    assert not coder8.preload and "coder8" in base.engines["main"].models  # lazy unless the profile asks
+    assert base.engines["coder8"].autostart is False and base.engines["coder8"].models == ["coder8"]
     assert base.roles["coder"].model == "generalist"
     assert load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"].model == "generalist"
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-coder8")
     coder = cfg.roles["coder"]
     assert (coder.model, coder.thinking, coder.max_tokens) == ("coder8", False, 10240)
-    assert [cfg.models[m].preload for m in ("coder8", "generalist", "reviewer")] == [True, True, True]
+    assert cfg.engines == base.engines and cfg.models == base.models
     assert cfg.roles["security"].model == "generalist" and cfg.roles["chief"].model == "generalist"
-    # the studio's KV: 74 GB of weights + 12.3 GB KV (coder8 at 96 MB/1k) + 12 GB reserve = 98 GB < 104 GB
-    assert cfg.engines["main"].max_kv_size == 131072
+
+
+def test_committed_config_declares_four_autostart_engines_and_the_bench_and_gate_engines() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    kinds = {n: e.kind for n, e in cfg.engines.items()}
+    assert kinds == {
+        "main": "mlx_vlm",
+        "reviewer": "mlx_vlm",
+        "small": "mlx_vlm",
+        "decision": "llama_server",
+        "decision_mlx": "mlx_vlm",
+        "coder8": "mlx_vlm",
+        "llama70b": "mlx_vlm",
+        "qwen25_32b": "mlx_vlm",
+    }
+    autostart = [n for n, e in cfg.engines.items() if e.autostart]
+    assert autostart == ["main", "reviewer", "small", "decision"]
+    assert cfg.engines["main"].models == ["generalist"] and cfg.engines["main"].port == 8080
+    assert cfg.engines["main"].buffer_cache_mb is None  # mlx-vlm reads none
+    assert [n for n, e in cfg.engines.items() if e.decision] == ["decision_mlx"]
+    decider = cfg.models["decider_2b"]
+    assert (decider.repo, decider.revision) == (
+        "nativ-community/decider-2b",
+        "acbae4ecce4dbcc0aea8c5a501c9f54008458a70",
+    )
+    assert (
+        cfg.engines["main"]
+        .served_name("generalist")
+        .endswith(f"models--mlx-community--Qwen3.8-27B-4bit/snapshots/{cfg.models['generalist'].revision}")
+    )  # the HF-cache snapshot: the exact --model string
+    assert cfg.models["generalist"].tool_call_parser == "qwen3_coder"
+    assert cfg.models["coder8"].tool_call_parser == "qwen3_coder"
+    assert cfg.models["reviewer"].tool_call_parser == "atem"
+    assert cfg.models["qwen25_32b"].tool_call_parser is None  # mlx-vlm has no `qwen` parser: inferred
+    assert cfg.models["llama70b"].tool_call_parser is None  # nor `llama`; an unknown name is a 422
+    assert all(m.reasoning_parser is None for m in cfg.models.values())
+
+
+def test_profiles_carry_no_engine_or_model_overrides() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    for name, profile in cfg.topology.profiles.items():
+        assert "engines" not in profile and "models" not in profile, name
 
 
 def test_catalog_kv_constants_follow_each_models_attention_geometry() -> None:

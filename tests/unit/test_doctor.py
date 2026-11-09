@@ -504,17 +504,16 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, unknown = project_memory_gb(studio, "main")
     # 41.5 GB of weights (small, generalist, reviewer, Kev) + the build lane's one sequence at the coder's
-    # 65.536k × 64 MB/1k = 4.1 GB + 4 asks at 8.192k = 2.0 GB + 12 GB reserve = 59.6 GB, and the prefix cache
-    # the profile sets aside (12288 MB = 12 GB since 2026-11-02; 44 GB filled the machine beside the gate's
-    # own test runs, and 24 GB ran the engine out of GPU memory under macOS's default wired limit)
-    assert cache_memory_gb(studio.engines["main"]) == 12.0
-    assert (round(projected, 1), unknown) == (71.6, [])
+    # 65.536k × 64 MB/1k = 4.1 GB + 4 asks at 8.192k = 2.0 GB + 12 GB reserve = 59.6 GB, and the prefix caches
+    # the autostart mlx-vlm engines set aside (main 8 GB, reviewer 4, small 1: mlx-vlm sizes them per engine)
+    assert cache_memory_gb(studio.engines["main"]) == 8.0
+    assert (round(projected, 1), unknown) == (72.6, [])
     assert projected < studio.memory.wired_limit_mb / 1024  # 104 GB
     coder8 = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-coder8")
     projected, unknown = project_memory_gb(coder8, "main")
     # the lane's sequence is at the coder model's rate: coder8's 32.5 GB, 65.536k × 96 MB/1k = 6.1 GB
     assert coder8.engines["main"].max_kv_size == 131072
-    assert (round(projected, 1), unknown) == (103.2, [])
+    assert (round(projected, 1), unknown) == (74.7, [])
     assert projected < coder8.memory.wired_limit_mb / 1024  # every studio profile's cache fits its own budget
     qwen = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen25")
     assert project_memory_gb(qwen, "main")[0] < qwen.memory.wired_limit_mb / 1024
@@ -535,12 +534,12 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
     wider = studio.model_copy(deep=True)
     wider.line.fanout = 8
     assert live_kv_gb(wider, e) > live_kv_gb(studio, e)  # more asks, more KV
-    assert "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 12 GB prefix cache" in projection_detail(
+    assert "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 13 GB prefix cache" in projection_detail(
         studio, e
     )
     teams = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="teams")
     assert (
-        live_kv_gb(teams, teams.engines["main"]) == 3 * 65.536 * 64 / 1024
+        live_kv_gb(teams, teams.engines["main"]) == 3 * 131.072 * 64 / 1024
     )  # the other topologies are as they were
 
 
@@ -555,51 +554,159 @@ class RunningEngine(FakeProbe):
         return self.argv
 
 
-def serve_argv(profile: str, tmp_path: Path) -> list[str]:
-    """What `task restart -- --topology <profile>` starts, as `ps` shows it."""
-    from airlie.engine.registry import build_registry, build_serve_command, write_registry
+def vllm_profile_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AirlieConfig:
+    """A vllm_mlx config with a `studio` profile that widens the KV and sizes the prefix cache."""
+    monkeypatch.setattr("airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name)
+    data = {
+        "version": 1,
+        "engines": {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"], "max_kv_size": 65536}},
+        "models": {"team": {"repo": "org/model", "revision": "r1"}},
+        "roles": {
+            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+        },
+        "topology": {
+            "profiles": {
+                "wide": {
+                    "engines": {"main": {"max_kv_size": 131072, "extra_args": ["--cache-memory-mb", "12288"]}}
+                }
+            }
+        },
+    }
+    (tmp_path / "p.md").write_text("x")
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    return load_config(tmp_path / "airlie.yaml")
 
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology=profile)
-    path = write_registry(
-        build_registry(cfg, "main", lambda m: Path("/models") / m.repo), tmp_path / f"{profile}.yaml"
-    )
-    return build_serve_command(cfg, "main", path)
 
-
-def test_an_engine_running_other_flags_than_the_story_profile_is_a_mismatch_naming_the_restart(
+def test_a_vllm_engine_running_other_flags_than_the_story_profile_is_a_mismatch_naming_the_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from airlie.doctor import engine_matches_profile
+    from airlie.engine.registry import build_registry, build_serve_command, write_registry
 
-    # the check reloads the config from its file for the profile, local overrides and all: never the person's
-    monkeypatch.setattr("airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name)
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    ok = engine_matches_profile(cfg, RunningEngine(serve_argv("studio", tmp_path)), "studio")
-    assert ok.status == "ok" and "studio" in ok.detail
-    # the engine the person left running from another profile: a smaller KV, no cache size, full-width KV
-    wrong = engine_matches_profile(cfg, RunningEngine(serve_argv("single", tmp_path)), "studio")
+    cfg = vllm_profile_cfg(tmp_path, monkeypatch)
+
+    def argv_for(profile: str | None) -> list[str]:
+        c = load_config(tmp_path / "airlie.yaml", topology=profile) if profile else cfg
+        path = write_registry(
+            build_registry(c, "main", lambda m: Path("/models") / m.repo), tmp_path / f"{profile}.yaml"
+        )
+        return build_serve_command(c, "main", path)
+
+    ok = engine_matches_profile(cfg, RunningEngine(argv_for("wide")), "wide")
+    assert ok.status == "ok" and "wide" in ok.detail
+    wrong = engine_matches_profile(cfg, RunningEngine(argv_for(None)), "wide")
     assert wrong.status == "fail"
-    named = (
-        "--max-kv-size 65536 (profile: 131072)",
-        "--cache-memory-mb (unset) (profile: 12288)",
-        "--kv-cache-quantization off (profile: on)",
-    )
-    for flag in named:
+    for flag in ("--max-kv-size 65536 (profile: 131072)", "--cache-memory-mb (unset) (profile: 12288)"):
         assert flag in wrong.detail, wrong.detail
-    assert wrong.detail.endswith("restart it: task restart -- --topology studio")
-    # one flag alone is enough
-    argv = serve_argv("studio", tmp_path)
-    argv[argv.index("--max-kv-size") + 1] = "32768"
-    one = engine_matches_profile(cfg, RunningEngine(argv), "studio")
-    assert one.status == "fail" and "--max-kv-size 32768" in one.detail and "--max-num-seqs" not in one.detail
-    # the resident models are compared too: a registry that preloads other models
-    studio_argv = serve_argv("studio-coder8", tmp_path)
-    models = engine_matches_profile(cfg, RunningEngine(studio_argv), "studio")
-    assert models.status == "fail" and "preloaded models" in models.detail
-    # none running is a warning (the engine-down gate says so), an unmanaged engine is fine
-    assert engine_matches_profile(cfg, RunningEngine(None), "studio").status == "warn"
-    assert engine_matches_profile(cfg, RunningEngine(None), "single").status == "warn"
+    assert wrong.detail.endswith("restart it: task restart")
+    assert engine_matches_profile(cfg, RunningEngine(None), "wide").status == "warn"
     assert engine_matches_profile(cfg, RunningEngine(None), "nope").status == "warn"  # a profile not declared
+
+
+class MlxVlmProcesses(FakeProbe):
+    """A probe whose host runs mlx_vlm.server processes with the given argvs."""
+
+    def __init__(self, argvs: list[list[str]]) -> None:
+        super().__init__()
+        self.argvs = argvs
+
+    def all_process_args(self, marker: str) -> list[list[str]] | None:
+        return [a for a in self.argvs if marker in " ".join(a)]
+
+
+def mlx_vlm_argv(cfg: AirlieConfig, engine: str) -> list[str]:
+    from airlie.config.load import hf_snapshot_dir
+    from airlie.engine.mlx_vlm import build_mlx_vlm_command
+
+    return ["python", *build_mlx_vlm_command(cfg, engine, hf_snapshot_dir)[0][1:]]
+
+
+def committed_cfg(monkeypatch: pytest.MonkeyPatch) -> AirlieConfig:
+    monkeypatch.setattr("airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name)
+    return load_config(ROOT / "airlie.yaml", NO_LOCAL)
+
+
+def test_an_mlx_vlm_engine_running_other_flags_than_the_config_is_a_mismatch_naming_task_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from airlie.doctor import engine_matches_config
+
+    cfg = committed_cfg(monkeypatch)
+    assert cfg.engines["main"].max_kv_size == 131072
+    main = mlx_vlm_argv(cfg, "main")
+    stale = list(main)
+    stale[stale.index("--max-kv-size") + 1] = "65536"
+    other = mlx_vlm_argv(cfg, "reviewer")  # on 8082: ignored by main's check
+    ok = engine_matches_config(cfg, MlxVlmProcesses([other, main]), "main")
+    assert (ok.name, ok.status) == ("engine:config[main]", "ok")
+    bad = engine_matches_config(cfg, MlxVlmProcesses([other, stale]), "main")
+    assert bad.status == "fail" and "--max-kv-size 65536 (config: 131072)" in bad.detail, bad.detail
+    assert "--max-num-seqs" not in bad.detail and bad.detail.endswith("restart it: task restart")
+    # the stale argv is on 8080, not the reviewer's port
+    assert engine_matches_config(cfg, MlxVlmProcesses([other, stale]), "reviewer").status == "ok"
+    bits = main.index("--kv-bits")
+    no_bits = main[:bits] + main[bits + 2 :]
+    assert (
+        "--kv-bits (unset) (config: 8)"
+        in engine_matches_config(cfg, MlxVlmProcesses([no_bits]), "main").detail
+    )
+
+
+def test_no_mlx_vlm_server_on_the_engines_port_is_a_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    from airlie.doctor import engine_matches_config
+
+    cfg = committed_cfg(monkeypatch)
+    only_reviewer = MlxVlmProcesses([mlx_vlm_argv(cfg, "reviewer")])
+    found = engine_matches_config(cfg, only_reviewer, "main")
+    assert found.status == "warn" and "8080" in found.detail
+    assert engine_matches_config(cfg, FakeProbe(), "main").status == "warn"  # ps unreadable: no processes
+
+
+def test_the_story_line_gates_on_the_build_engines_config_not_a_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from airlie.doctor import engine_matches_profile
+
+    cfg = committed_cfg(monkeypatch)
+    main = mlx_vlm_argv(cfg, "main")
+    ok = engine_matches_profile(cfg, MlxVlmProcesses([main]), "studio")
+    assert (ok.name, ok.status) == ("engine:config[main]", "ok")
+    stale = list(main)
+    stale[stale.index("--max-num-seqs") + 1] = "2"
+    bad = engine_matches_profile(cfg, MlxVlmProcesses([stale]), "studio")
+    assert bad.status == "fail" and "--max-num-seqs 2 (config: 16)" in bad.detail
+    # the coder8 experiment builds on its own engine (port 8091), which nothing runs
+    assert engine_matches_profile(cfg, MlxVlmProcesses([main]), "studio-coder8").status == "warn"
+
+
+def test_real_probe_lists_every_matching_process_and_process_args_keeps_the_serve_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from airlie.doctor import RealProbe
+
+    ps = (
+        "python -m mlx_vlm.server --model /m/a --port 8080\n"
+        "python -m mlx_vlm.server --model /m/b --port 8082\n"
+        "vllm-mlx serve --port 9\n"
+        "ps -axo args= mlx_vlm.server\n"
+    )
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=ps, stderr="")
+    )
+    probe = RealProbe()
+    ports = [a[a.index("--port") + 1] for a in probe.all_process_args("mlx_vlm.server") or []]
+    assert ports == ["8080", "8082"]
+    assert probe.process_args("mlx_vlm.server") is None  # no ` serve` in them
+    assert probe.process_args("vllm-mlx") == ["vllm-mlx", "serve", "--port", "9"]
+
+
+def test_a_bench_engines_model_missing_from_the_cache_is_a_warning_not_a_failure(tmp_path: Path) -> None:
+    cfg = mlx_vlm_cfg(tmp_path)  # `bench` is autostart: false; `rev` is not
+    found = by_name(run_checks(cfg, FakeProbe()))
+    assert found["model:bench"].status == "warn"
+    assert found["model:rev"].status == "fail"
 
 
 def test_a_missing_mtp_head_is_its_own_finding_and_names_the_pull_task(tmp_path: Path) -> None:

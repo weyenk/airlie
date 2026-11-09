@@ -47,7 +47,7 @@ tasks:
       - '{{.RUN}} airlie models pull {{.CLI_ARGS}}'
 
   up:
-    desc: Start the vllm-mlx engine(s) from airlie.yaml and wait until preloaded models are ready
+    desc: Start the mlx-vlm engines from airlie.yaml (autostart ones; `-- NAME` starts one by hand) and wait until their models are ready
     cmds:
       - '{{.RUN}} airlie engine up {{.CLI_ARGS}}'
 
@@ -57,7 +57,7 @@ tasks:
       - '{{.RUN}} airlie engine down {{.CLI_ARGS}}'
 
   restart:
-    desc: Stop then start the managed engine(s)
+    desc: Stop then start the managed mlx-vlm engines
     cmds:
       - '{{.RUN}} airlie engine restart {{.CLI_ARGS}}'
 

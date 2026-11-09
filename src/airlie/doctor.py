@@ -42,6 +42,9 @@ class SystemProbe(Protocol):
     def file_contains(self, path: Path, needle: str) -> bool | None: ...
     def model_file(self, repo: str, revision: str, file: str) -> Path | None: ...
     def process_args(self, marker: str) -> list[str] | None: ...
+    def all_process_args(self, marker: str) -> list[list[str]] | None:
+        return None
+
     def package_version(self, dist: str) -> str | None:
         return None
 
@@ -148,17 +151,26 @@ class RealProbe:
     def process_args(self, marker: str) -> list[str] | None:
         """The arguments of the running process whose command line holds `marker` and `serve` (the managed
         vllm-mlx server), or None when none runs. Read from `ps`; nothing is started or stopped."""
+        for argv in self.all_process_args(marker) or []:
+            if " serve" in " ".join(argv):
+                return argv
+        return None
+
+    def all_process_args(self, marker: str) -> list[list[str]] | None:
+        """The arguments of every running process whose command line holds `marker` (mlx-vlm runs one
+        `python -m mlx_vlm.server` per engine), or None when `ps` cannot be read."""
         try:
             out = subprocess.run(["ps", "-axo", "args="], capture_output=True, text=True, timeout=10)
         except (OSError, subprocess.TimeoutExpired):
             return None
+        found: list[list[str]] = []
         for line in out.stdout.splitlines():
-            if marker in line and " serve" in line and "ps -axo" not in line:
+            if marker in line and "ps -axo" not in line:
                 try:
-                    return shlex.split(line)
+                    found.append(shlex.split(line))
                 except ValueError:
-                    return line.split()
-        return None
+                    found.append(line.split())
+        return found
 
     def package_version(self, dist: str) -> str | None:
         try:
@@ -331,6 +343,50 @@ def _registry_models(argv: list[str]) -> set[str] | None:
     return None
 
 
+# the flags a running mlx-vlm server must carry to be the one the config describes
+_MLX_VLM_FLAGS = ("--max-num-seqs", "--max-kv-size", "--kv-bits", "--draft-model")
+
+
+def _mlx_vlm_flags(argv: list[str]) -> dict[str, str]:
+    return {a: argv[i + 1] for i, a in enumerate(argv[:-1]) if a in _MLX_VLM_FLAGS}
+
+
+def _port_of(argv: list[str]) -> str | None:
+    return next((argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--port"), None)
+
+
+def engine_matches_config(cfg: AirlieConfig, probe: SystemProbe, engine_name: str) -> CheckResult:
+    """The running `mlx_vlm.server` on the engine's port against the command the config builds for it: the
+    sequences, the KV cap, the KV bits and the draft model. `fail` names the flags that differ and the command
+    that restarts it; a KV smaller than the config's rotates a long prompt and wastes a layer, so the line
+    starts no build on a mismatch. `warn` when none runs on that port (the engine gate says so)."""
+    name = f"engine:config[{engine_name}]"
+    spec = cfg.engines[engine_name]
+    running = next(
+        (a for a in probe.all_process_args("mlx_vlm.server") or [] if _port_of(a) == str(spec.port)), None
+    )
+    if running is None:
+        return CheckResult(name, "warn", f"no mlx_vlm.server is running on port {spec.port}")
+    from airlie.config.load import hf_snapshot_dir
+    from airlie.engine.mlx_vlm import build_mlx_vlm_command
+
+    wanted = _mlx_vlm_flags(build_mlx_vlm_command(cfg, engine_name, hf_snapshot_dir)[0])
+    have = _mlx_vlm_flags(running)
+    differ = [
+        f"{flag} {have.get(flag, '(unset)')} (config: {wanted.get(flag, '(unset)')})"
+        for flag in _MLX_VLM_FLAGS
+        if wanted.get(flag) != have.get(flag)
+    ]
+    if differ:
+        return CheckResult(
+            name,
+            "fail",
+            f"engine {engine_name} runs other flags than the config: {'; '.join(differ)}; restart it: "
+            "task restart",
+        )
+    return CheckResult(name, "ok", f"engine {engine_name} carries the config's flags")
+
+
 def engine_matches_profile(cfg: AirlieConfig, probe: SystemProbe, profile: str) -> CheckResult:
     """The running vllm-mlx server's arguments against the profile's engine spec (planning-line P5b, D10): the
     KV cap, the sequences, chunked prefill, stored-KV quantization, the prefix cache and the preloaded models.
@@ -344,6 +400,10 @@ def engine_matches_profile(cfg: AirlieConfig, probe: SystemProbe, profile: str) 
         target = load_config(cfg.source_path, topology=profile) if cfg.source_path is not None else cfg
     except ConfigError as e:
         return CheckResult(name, "fail", f"profile {profile}: {e}")
+    build_engine = target.engine_for_role(target.story.build_role)
+    if target.engines[build_engine].kind == "mlx_vlm":
+        found = engine_matches_config(target, probe, build_engine)
+        return CheckResult(f"engine:config[{build_engine}]", found.status, found.detail)
     managed = [n for n, e in target.engines.items() if e.kind == "vllm_mlx"]
     if not managed:
         return CheckResult(name, "ok", "no engine airlie manages for this profile")
@@ -373,7 +433,7 @@ def engine_matches_profile(cfg: AirlieConfig, probe: SystemProbe, profile: str) 
             name,
             "fail",
             f"the engine runs other flags than the {profile} profile: {'; '.join(differ)}; restart it: "
-            f"task restart -- --topology {profile}",
+            "task restart",
         )
     return CheckResult(name, "ok", f"the running engine carries the {profile} profile's flags")
 
@@ -507,6 +567,10 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
 
     for mname in sorted(managed_models):
         m = cfg.models[mname]
+        # an mlx_vlm engine loads its one model at start, so its model is lazy only when the engine is
+        # started by hand (autostart: false)
+        serving = [e for e in cfg.engines.values() if mname in e.models]
+        needed = m.preload and not (serving and all(e.kind == "mlx_vlm" and not e.autostart for e in serving))
         if m.file:
             f = probe.model_file(m.repo, m.revision, m.file)
             if f:
@@ -536,7 +600,7 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
                 if head
                 else CheckResult(
                     f"model:{mname}:mtp",
-                    "fail" if m.preload else "warn",
+                    "fail" if needed else "warn",
                     f"{m.mtp.repo}@{m.mtp.revision[:8]} not in HF cache; run: task models:pull -- {mname}",
                 )
             )
@@ -569,7 +633,7 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
                 results.append(
                     CheckResult(f"model:{mname}:attention", "ok", "standard attention (prefix cache works)")
                 )
-        elif m.preload:
+        elif needed:
             results.append(
                 CheckResult(
                     f"model:{mname}",

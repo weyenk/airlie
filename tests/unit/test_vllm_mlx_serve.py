@@ -141,13 +141,10 @@ def test_the_engine_runs_inside_the_project_environment(
     assert spawned == [["uv", "run", "--quiet", *ENTRY, "serve"], ["llama-server", "-m", "k.gguf"]]
 
 
-@pytest.mark.parametrize("topology", [None, "studio"])
-def test_the_shipped_engine_parser_keeps_code_intact(topology: str | None) -> None:
-    """The parser airlie.yaml gives the engine keeps an indented `<<` line exactly (bench 2026-10-14)."""
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology=topology)
-    argv = build_serve_command(cfg, "main", Path("/r.yaml"))
+def test_the_shipped_engine_parser_keeps_code_intact() -> None:
+    """airlie's `qwen3_xml_raw` keeps an indented `<<` line exactly (bench 2026-10-14)."""
     parsers.ensure_registered()
-    parser = ToolParserManager.get_tool_parser(argv[argv.index("--tool-call-parser") + 1])()
+    parser = ToolParserManager.get_tool_parser("qwen3_xml_raw")()
     text = (
         "<tool_call>\n<function=write_file>\n<parameter=path>\nb.py\n</parameter>\n"
         "<parameter=content>\n    x = 1 << 3\n\n</parameter>\n</function>\n</tool_call>"
@@ -175,12 +172,11 @@ def test_airlies_parser_reads_json_tool_calls_as_well_as_xml() -> None:
     ]
 
 
-def test_every_parser_named_in_airlie_yaml_resolves() -> None:
+def test_every_parser_airlie_registers_resolves() -> None:
+    """The committed config names mlx-vlm's parsers; these two are airlie's own engine's."""
     from vllm_mlx.reasoning import get_parser
 
     parsers.ensure_registered()
-    for m in load_config(ROOT / "airlie.yaml", NO_LOCAL).models.values():
-        if m.tool_call_parser:
-            ToolParserManager.get_tool_parser(m.tool_call_parser)
-        if m.reasoning_parser:
-            get_parser(m.reasoning_parser)
+    for name in ("qwen3_xml_raw", "muse_glimmer"):
+        ToolParserManager.get_tool_parser(name)
+    get_parser("muse_glimmer")

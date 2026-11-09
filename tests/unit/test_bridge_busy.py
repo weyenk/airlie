@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from airlie.config import load_config
+from airlie.config.schema import EngineSpec
 from airlie.serve.bridge.busy import busy_reason, reason_key
 from airlie.story.state import lane_lock
 
@@ -18,8 +19,17 @@ NOW = 1_800_000_000.0
 
 
 def _cfg(tmp_path: Path) -> Any:
+    """The committed config's two probed shapes before phase 4a: one vllm-mlx process serving the catalog
+    (`main`) and Kev's llama-server (`decision`)."""
     cfg = load_config(ROOT / "airlie.yaml", local_path=ROOT / "no-local-overrides.yaml")
     cfg.observability.state_dir = tmp_path
+    main = EngineSpec(
+        kind="vllm_mlx",
+        port=8080,
+        models=["small", "generalist", "reviewer"],
+        base_url="http://127.0.0.1:8080/v1",
+    )
+    cfg.engines = {"main": main, "decision": cfg.engines["decision"]}
     return cfg
 
 
@@ -248,7 +258,7 @@ def test_a_trailing_slash_after_v1_is_the_same_root(tmp_path: Path) -> None:
 
 
 def _mlx_cfg(tmp_path: Path, api_key: str | None = None) -> Any:
-    """The repo's config says vllm_mlx until phase 4a: one mlx_vlm engine serving `generalist`."""
+    """One mlx_vlm engine serving `generalist`."""
     cfg = _cfg(tmp_path)
     spec = cfg.engines["main"].model_copy(
         update={

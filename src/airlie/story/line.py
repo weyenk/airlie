@@ -208,7 +208,7 @@ class Line:
             healthy = False
         self.gates["engine"] = "ok" if healthy else "down"
         if not healthy:
-            return "engine down: start it with `task restart -- --topology studio`"
+            return "engine down: start it with `task restart`"
         down = await factory.github_down(self.cfg)
         self.gates["github"] = "ok" if down is None else "down"
         if down is not None:

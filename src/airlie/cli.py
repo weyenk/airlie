@@ -219,11 +219,6 @@ def _health_table(rows: list[tuple[str, object]]) -> Table:
     return table
 
 
-ProfileOpt = Annotated[
-    str | None, typer.Option("--topology", help="start the engines as this topology profile configures them")
-]
-
-
 @engine_app.command("up")
 def engine_up(
     name: Annotated[
@@ -231,14 +226,13 @@ def engine_up(
     ] = None,
     config: ConfigOpt = None,
     timeout: Annotated[float, typer.Option(help="seconds to wait for models")] = 900,
-    topology: ProfileOpt = None,
 ) -> None:
     """Start the named engine, else every autostart engine, and wait until its models are ready."""
     import asyncio
 
     from airlie.engine.types import EngineError
 
-    cfg = _load(config, topology)
+    cfg = _load(config)
     if name is not None and name not in _managed(cfg):
         err.print(
             f"[red]no managed engine named '{name}' (managed: {', '.join(_managed(cfg)) or 'none'})[/red]"
@@ -262,21 +256,21 @@ def engine_up(
 
 
 @engine_app.command("down")
-def engine_down(config: ConfigOpt = None, topology: ProfileOpt = None) -> None:
+def engine_down(config: ConfigOpt = None) -> None:
     """Stop every managed engine."""
     import asyncio
 
-    cfg = _load(config, topology)
+    cfg = _load(config)
     for name in _managed(cfg):
         asyncio.run(_engine_process(cfg, name).stop())
         console.print(f"stopped engine [bold]{name}[/bold]")
 
 
 @engine_app.command("restart")
-def engine_restart(config: ConfigOpt = None, timeout: float = 900, topology: ProfileOpt = None) -> None:
-    """Stop then start every managed engine (as the given topology profile configures them)."""
-    engine_down(config, topology)
-    engine_up(name=None, config=config, timeout=timeout, topology=topology)
+def engine_restart(config: ConfigOpt = None, timeout: float = 900) -> None:
+    """Stop then start every managed engine."""
+    engine_down(config)
+    engine_up(name=None, config=config, timeout=timeout)
 
 
 @engine_app.command("status")

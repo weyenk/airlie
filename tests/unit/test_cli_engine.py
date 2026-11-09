@@ -115,24 +115,17 @@ def test_up_skips_an_engine_that_is_already_running_and_starts_the_rest(tmp_path
     assert "already running" in r.output
 
 
-def test_engine_up_and_restart_take_a_topology_profile(tmp_path: Path, monkeypatch) -> None:
-    seen: list[str] = []
-
-    def make(cfg, name):  # type: ignore[no-untyped-def]
-        seen.append(cfg.topology.kind)
-        return StubProcess(cfg, name)
-
+def test_engine_up_down_and_restart_take_no_topology_option(tmp_path: Path, monkeypatch) -> None:
     StubProcess.calls = []
-    monkeypatch.setattr(cli, "_engine_process", make)
+    monkeypatch.setattr(cli, "_engine_process", lambda cfg, name: StubProcess(cfg, name))
     p = write_cfg(tmp_path)
-    data = yaml.safe_load(p.read_text())
-    data["topology"] = {"kind": "teams", "profiles": {"fork": {"engines": {"main": {"max_kv_size": 4096}}}}}
-    p.write_text(yaml.safe_dump(data))
-    r = runner.invoke(cli.app, ["engine", "up", "--config", str(p), "--topology", "fork"])
+    for command in ("up", "down", "restart"):
+        r = runner.invoke(cli.app, ["engine", command, "--config", str(p), "--topology", "fork"])
+        assert r.exit_code == 2, (command, r.output)
+    assert StubProcess.calls == []
+    r = runner.invoke(cli.app, ["engine", "restart", "--config", str(p)])
     assert r.exit_code == 0, r.output
-    r = runner.invoke(cli.app, ["engine", "restart", "--config", str(p), "--topology", "fork"])
-    assert r.exit_code == 0, r.output
-    assert seen and set(seen) == {"fork"}
+    assert StubProcess.calls == ["stop:main", "start:main"]
 
 
 def test_engine_up_skips_engines_with_autostart_false_unless_named(tmp_path: Path, monkeypatch) -> None:

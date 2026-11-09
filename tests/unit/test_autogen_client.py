@@ -123,6 +123,7 @@ async def test_calls_the_server_parsed_and_a_client_without_a_model_are_left_alo
 
 
 def test_the_meetings_clients_carry_their_models_parsers() -> None:
+    """A vllm-mlx engine's replies are parsed by airlie; mlx-vlm's server parses its own."""
     from pathlib import Path
 
     from airlie.config.load import load_config
@@ -130,11 +131,15 @@ def test_the_meetings_clients_carry_their_models_parsers() -> None:
 
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")
-    make = http_clients(cfg)
     reviewer = cfg.roles["reviewer"]
-    built = make("reviewer", reviewer)
+    served = http_clients(cfg)("reviewer", reviewer)
+    assert isinstance(served, RepairingOpenAIClient) and served.model_spec is None
+    engine = cfg.engines[cfg.engine_for_model(reviewer.model)]
+    cfg.engines[cfg.engine_for_model(reviewer.model)] = engine.model_copy(update={"kind": "vllm_mlx"})
+    built = http_clients(cfg)("reviewer", reviewer)
     assert isinstance(built, RepairingOpenAIClient)
-    assert built.model_spec is not None and built.model_spec.tool_call_parser == "muse_glimmer"
+    assert built.model_spec is not None
+    assert built.model_spec.tool_call_parser == cfg.models[reviewer.model].tool_call_parser
 
 
 async def test_a_reply_with_no_answer_in_it_is_asked_again_once(served: Any) -> None:
