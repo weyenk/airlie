@@ -757,6 +757,21 @@ test("a wire's artifacts and condition save into the line", async () => {
   expect(text).toContain("inputs: [report, verdict]");
 });
 
+test("unchecking an unreferenced, single-source artifact removes it from the target's inputs and from the YAML", async () => {
+  api.getWorkflowDef.mockResolvedValue(lined());
+  const { w } = await open("/workflows/build/fix");
+  expect(await yamlText(w)).toContain("inputs: [report]");
+  await w.get("[data-tab=diagram]").trigger("click");
+  await w.get("[data-edge-hit][data-from=intake][data-to=fix]").trigger("dblclick");
+  await flushPromises();
+  (modal("[data-wire-artifact=report]") as HTMLInputElement).click();
+  await flushPromises();
+  expect(modal("[data-wire-unread]")).toBeNull();
+  (modal("[data-wire-apply]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(await yamlText(w)).not.toContain("inputs: [report]");
+});
+
 test("clearing the condition removes the key from the YAML", async () => {
   api.getWorkflowDef.mockResolvedValue(lined({ yaml: LINED_YAML.replace("to: [fix]", "to: [{node: fix, when: verdict == pass}]") }));
   const { w } = await open("/workflows/build/fix");

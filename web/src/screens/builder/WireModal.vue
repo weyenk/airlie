@@ -10,7 +10,7 @@ defineOptions({ name: "AirlieBuilderWireModal" });
 /** A line between two boxes, in a dialog (a bottom sheet on a phone): what it carries (a checkbox per output of its
  * source; none checked is an ordering line), the condition it is taken on, and a loop bound when it runs back.
  * Nothing is applied until Apply; closing any other way (Escape, a click outside, Done) keeps what was typed, by
- * applying it when the form changed and can be applied, so no text is lost. The graph judges the line (a source
+ * applying it when the form changed; a loop with no max keeps the dialog open and says why, so no text is lost. The graph judges the line (a source
  * that writes no such artifact, a loop without its max); the condition is judged by the server, on Validate. */
 const props = defineProps<{ open: boolean; edge: GEdge | null; from: GNode; to: GNode; graph: Graph }>();
 const emit = defineEmits<{
@@ -25,6 +25,10 @@ const when = ref("");
 const loopOn = ref(false);
 const max = ref("");
 const carry = ref("");
+/** Close was tried with a loop that has no max: the message by the field shows. */
+const tried = ref(false);
+/** An artifact whose uncheck waits for the person to confirm it. */
+const confirming = ref<string | null>(null);
 
 function reset() {
   const e = props.edge;
@@ -33,6 +37,8 @@ function reset() {
   loopOn.value = !!e?.loop;
   max.value = e?.loop ? String(e.loop.max) : "";
   carry.value = e?.loop?.carry ?? "";
+  tried.value = false;
+  confirming.value = null;
 }
 // the form starts from the line each time the dialog opens on one
 watch(() => [props.open, props.edge, props.from.id, props.to.id], reset, { immediate: true });
@@ -54,10 +60,46 @@ const change = computed(() => {
   if (bound.value) out.loop = bound.value;
   return out;
 });
-const changed = computed(() => JSON.stringify(change.value) !== JSON.stringify({ artifacts: props.edge?.artifacts ?? [], ...(props.edge?.when ? { when: props.edge.when } : {}), ...(props.edge?.loop ? { loop: props.edge.loop } : {}) }));
+/** A line's change in a form that does not depend on key order or on how the artifacts were listed. */
+const normal = (c: { artifacts: string[]; when?: string; loop?: LoopBound }) => ({
+  artifacts: [...c.artifacts].sort(),
+  when: c.when ?? null,
+  max: c.loop ? String(c.loop.max) : null,
+  carry: c.loop?.carry ?? null,
+});
+const same = (a: ReturnType<typeof normal>, b: ReturnType<typeof normal>) =>
+  a.when === b.when && a.max === b.max && a.carry === b.carry && a.artifacts.length === b.artifacts.length && a.artifacts.every((x, i) => x === b.artifacts[i]);
+const changed = computed(() => !same(normal(change.value), normal({ artifacts: props.edge?.artifacts ?? [], when: props.edge?.when, loop: props.edge?.loop })));
 
-function toggle(name: string, on: boolean) {
+/** Another source's line into the target that brings `name` in as well (or the workflow's own inputs): the
+ * target keeps it whatever this line says, so the checkbox is shown checked and cannot be unchecked here. */
+const sharedFrom = (name: string): string | null => {
+  const other = props.graph.edges.find((e) => e.to === props.to.id && e.from !== props.from.id && e.artifacts.includes(name));
+  if (other) return other.from;
+  return props.graph.inputs.includes(name) ? "the workflow's inputs" : null;
+};
+/** Whether the target's own text or fields read `name`: `{name}`, `{name.field}`, `{?name}`, `{/name}`, or its `each` / `session`. */
+const readByPrompt = (name: string): boolean => {
+  const spec = props.to.spec;
+  if (spec.each === name || spec.session === name) return true;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`\\{[?/]?${escaped}(?=[}.])`);
+  return ["prompt", "turn", "worker"].some((k) => typeof spec[k] === "string" && re.test(spec[k] as string));
+};
+function toggle(name: string, on: boolean, box?: HTMLInputElement) {
+  if (!on && readByPrompt(name)) {
+    if (box) box.checked = true; // not yet: asked first
+    confirming.value = name;
+    return;
+  }
+  if (confirming.value === name) confirming.value = null;
   artifacts.value = on ? [...artifacts.value.filter((a) => a !== name), name] : artifacts.value.filter((a) => a !== name);
+}
+function confirmUncheck() {
+  const name = confirming.value;
+  if (name === null) return;
+  confirming.value = null;
+  artifacts.value = artifacts.value.filter((a) => a !== name);
 }
 function apply() {
   if (!valid.value) return;
@@ -66,7 +108,11 @@ function apply() {
 }
 /** Close, keeping what was typed: applied when it changed and reads. */
 function close() {
-  if (changed.value && valid.value) emit("apply", change.value);
+  if (!valid.value) {
+    tried.value = true; // a loop without its max: stay open, say so
+    return;
+  }
+  if (changed.value) emit("apply", change.value);
   emit("update:open", false);
 }
 
@@ -91,9 +137,20 @@ const control = "h-8 w-full min-w-0 rounded-md border border-input bg-background
         <fieldset class="flex flex-col gap-1.5">
           <legend class="mb-1 text-xs font-semibold tracking-[0.06em] text-muted-foreground uppercase">Carries</legend>
           <label v-for="o in outputs" :key="o" class="flex items-center gap-2 font-mono text-xs">
-            <input type="checkbox" :data-wire-artifact="o" :checked="artifacts.includes(o)" @change="toggle(o, ($event.target as HTMLInputElement).checked)" />
+            <input
+              type="checkbox"
+              :data-wire-artifact="o"
+              :checked="artifacts.includes(o) || sharedFrom(o) !== null"
+              :disabled="sharedFrom(o) !== null"
+              @change="toggle(o, ($event.target as HTMLInputElement).checked, $event.target as HTMLInputElement)"
+            />
             <span>{{ o }}</span>
+            <span v-if="sharedFrom(o) !== null" :data-wire-artifact-shared="o" class="font-sans text-muted-foreground">also from {{ sharedFrom(o) }}</span>
           </label>
+          <p v-if="confirming" data-wire-unread class="flex flex-wrap items-center gap-2 text-danger-foreground">
+            <span>{{ confirming }} is read by the prompt; remove anyway?</span>
+            <Button type="button" size="sm" variant="outline" data-wire-unread-confirm @click="confirmUncheck">Remove it</Button>
+          </p>
           <p v-if="!outputs.length" data-wire-no-outputs class="text-muted-foreground">{{ from.id }} writes nothing yet: this is an ordering line.</p>
           <p v-else-if="!change.artifacts.length" data-wire-order-only class="text-muted-foreground">Nothing checked: an ordering line, {{ from.id }} runs first and passes nothing.</p>
         </fieldset>
@@ -108,7 +165,7 @@ const control = "h-8 w-full min-w-0 rounded-md border border-input bg-background
 
         <fieldset class="flex flex-col gap-1.5">
           <label class="flex items-center gap-2">
-            <input v-model="loopOn" type="checkbox" data-wire-loop />
+            <input v-model="loopOn" type="checkbox" data-wire-loop @change="tried = false" />
             <span>Loop back: run {{ to.id }} again, up to a bound</span>
           </label>
           <template v-if="loopOn">
@@ -127,7 +184,7 @@ const control = "h-8 w-full min-w-0 rounded-md border border-input bg-background
                 <span>{{ o }}</span>
               </label>
             </fieldset>
-            <p v-if="!valid" data-wire-max-missing class="text-xs text-danger-foreground">A loop needs its max.</p>
+            <p v-if="tried && !valid" data-wire-loop-max-missing class="text-xs text-danger-foreground">A loop needs its max: give a count or a config path, or turn the loop off.</p>
           </template>
         </fieldset>
 

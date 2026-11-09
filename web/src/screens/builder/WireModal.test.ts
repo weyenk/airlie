@@ -54,6 +54,8 @@ test("a blank condition and no artifacts apply as an ordering line with neither 
   const w = mountModal("a", "b");
   await flushPromises();
   $<HTMLInputElement>("[data-wire-artifact=notes]")!.click();
+  await flushPromises();
+  $<HTMLButtonElement>("[data-wire-unread-confirm]")!.click(); // b's prompt reads {notes}
   type($("[data-wire-when]"), "");
   await flushPromises();
   expect($("[data-wire-order-only]")).not.toBeNull();
@@ -119,4 +121,120 @@ test("Remove asks for the line to go; a source with no outputs says it is an ord
   mountModal("c", "a");
   await flushPromises();
   expect($("[data-wire-no-outputs]")).not.toBeNull();
+});
+
+// `a` and `d` both write notes into `b`; `b`'s prompt reads {notes} and {verdict.why}; `e` reads nothing.
+const shared: Graph = fromWorkflow("s", {
+  inputs: ["card"],
+  outputs: [],
+  nodes: {
+    a: { type: "check", run: "x.a", outputs: { verdict: "text", notes: "markdown" }, to: ["b", "e"] },
+    d: { type: "check", run: "x.d", outputs: { notes: "markdown" }, to: ["b"] },
+    b: { type: "ask", role: "coder", prompt: "Fix {notes} per {verdict.why}.", inputs: ["notes", "verdict"] },
+    e: { type: "ask", role: "coder", prompt: "Go.", inputs: ["verdict"] },
+  } as Record<string, NodeSpec & { type: NodeType }>,
+});
+const mountShared = (from: string, to: string) =>
+  mount(WireModal, {
+    props: { open: true, edge: shared.edges.find((e) => e.from === from && e.to === to) ?? null, from: shared.nodes.find((n) => n.id === from)!, to: shared.nodes.find((n) => n.id === to)!, graph: shared },
+    attachTo: document.body,
+  });
+
+test("an artifact the target also gets from another source is checked, disabled and says where from", async () => {
+  mountShared("a", "b");
+  await flushPromises();
+  const box = $<HTMLInputElement>("[data-wire-artifact=notes]")!;
+  expect(box.checked).toBe(true);
+  expect(box.disabled).toBe(true);
+  expect($("[data-wire-artifact-shared=notes]")!.textContent).toContain("also from d");
+  expect($("[data-wire-artifact-shared=verdict]")).toBeNull();
+  expect($<HTMLInputElement>("[data-wire-artifact=verdict]")!.disabled).toBe(false);
+});
+
+test("unchecking an artifact the target's prompt reads asks first; confirming removes it, leaving it keeps it", async () => {
+  const w = mountShared("a", "b");
+  await flushPromises();
+  const box = $<HTMLInputElement>("[data-wire-artifact=verdict]")!; // read as {verdict.why}
+  box.click();
+  await flushPromises();
+  expect($("[data-wire-unread]")!.textContent).toContain("verdict is read by the prompt; remove anyway?");
+  expect(box.checked).toBe(true);
+  $<HTMLButtonElement>("[data-wire-apply]")!.click();
+  expect(applied(w)!.artifacts).toContain("verdict");
+  $<HTMLButtonElement>("[data-wire-unread-confirm]")!.click();
+  await flushPromises();
+  expect($("[data-wire-unread]")).toBeNull();
+  expect(box.checked).toBe(false);
+  $<HTMLButtonElement>("[data-wire-apply]")!.click();
+  expect(applied(w)!.artifacts).not.toContain("verdict");
+});
+
+test("an unreferenced, single-source artifact unchecks with no question", async () => {
+  const w = mountShared("a", "e");
+  await flushPromises();
+  $<HTMLInputElement>("[data-wire-artifact=verdict]")!.click();
+  await flushPromises();
+  expect($("[data-wire-unread]")).toBeNull();
+  $<HTMLButtonElement>("[data-wire-apply]")!.click();
+  expect(applied(w)!.artifacts).toEqual([]);
+});
+
+test("a loop on with no max keeps the dialog open on Done, Escape and a click outside, and says so; turning it off clears the message", async () => {
+  const w = mountModal("a", "b");
+  await flushPromises();
+  $<HTMLInputElement>("[data-wire-loop]")!.click();
+  await flushPromises();
+  expect($("[data-wire-loop-max-missing]")).toBeNull();
+  $<HTMLButtonElement>("[data-wire-done]")!.click();
+  await flushPromises();
+  expect($("[data-wire-loop-max-missing]")).not.toBeNull();
+  expect(w.emitted("update:open")).toBeUndefined();
+  expect(w.emitted("apply")).toBeUndefined();
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await flushPromises();
+  expect(w.emitted("update:open")).toBeUndefined();
+  $("[data-slot=dialog-overlay]")!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  await flushPromises();
+  expect(w.emitted("update:open")).toBeUndefined();
+  $<HTMLInputElement>("[data-wire-loop]")!.click();
+  await flushPromises();
+  expect($("[data-wire-loop-max-missing]")).toBeNull();
+});
+
+test("Escape and a click outside apply a changed form and emit nothing for an unchanged one", async () => {
+  const w = mountModal("a", "b");
+  await flushPromises();
+  type($("[data-wire-when]"), "verdict == fail");
+  await flushPromises();
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await flushPromises();
+  expect(applied(w)).toEqual({ artifacts: ["notes"], when: "verdict == fail" });
+  expect(w.emitted("update:open")?.at(-1)).toEqual([false]);
+  document.body.innerHTML = "";
+  const outside = mountModal("a", "b");
+  await flushPromises();
+  type($("[data-wire-when]"), "verdict == fail");
+  await flushPromises();
+  $("[data-slot=dialog-overlay]")!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  await flushPromises();
+  expect(applied(outside)).toEqual({ artifacts: ["notes"], when: "verdict == fail" });
+  document.body.innerHTML = "";
+  const idle = mountModal("a", "b");
+  await flushPromises();
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await flushPromises();
+  expect(idle.emitted("apply")).toBeUndefined();
+  expect(idle.emitted("update:open")?.at(-1)).toEqual([false]);
+});
+
+test("closing an unchanged loop line applies nothing, whatever order its bound's keys came in", async () => {
+  const w = mount(WireModal, {
+    props: { open: true, edge: { ...line("b", "a")!, loop: { carry: "fixed", max: 2 } }, from: node("b"), to: node("a"), graph },
+    attachTo: document.body,
+  });
+  await flushPromises();
+  $<HTMLButtonElement>("[data-wire-done]")!.click();
+  await flushPromises();
+  expect(w.emitted("apply")).toBeUndefined();
+  expect(w.emitted("update:open")?.at(-1)).toEqual([false]);
 });
