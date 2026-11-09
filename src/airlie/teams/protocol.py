@@ -30,6 +30,7 @@ StopReason = Literal[
     "test_wrong",
     "red_limit",
     "answer_after_cuts",
+    "unwritten_after_cuts",
 ]
 """cut_off: a reply with no tool call ended at max_tokens: not a finished answer, whatever text it holds.
 malformed_call: two replies in a row held a tool call the server could not parse, left in the text.
@@ -40,7 +41,10 @@ red_limit: a think_when_red role's tests failed RED_LIMIT runs in a row, two red
 diagnosis between: the layer goes back to the architect rather than spend more of the build red (R1).
 answer_after_cuts: a role that can write, and has, reached answer_after_cuts: its run ends unanswered and the
 caller asks for the answer in a turn of its own (the package conversation's JSON-only turn; AIR-55,
-2026-11-06), not the tool-less answer turn as text, which it went on as a transcript."""
+2026-11-06), not the tool-less answer turn as text, which it went on as a transcript.
+unwritten_after_cuts: a role that can write and has not, held to writing after answer_after_cuts reads, was
+cut on answer_after_cuts more, told to write now (write-demand), and READS_UNDER_HOLD steps later had still
+written nothing (AIR-66, 2026-11-09)."""
 
 
 def cut_off_text(role_name: str, role: RoleSpec, *, thinking: bool = False) -> str:

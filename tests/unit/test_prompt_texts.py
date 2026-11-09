@@ -171,6 +171,7 @@ CASES: dict[str, Callable[[], str]] = {
     "one-step-left": lambda: text("one-step-left"),
     "fresh-run": lambda: text("fresh-run", n=N),
     "reasoning-carried": lambda: text("reasoning-carried", tail=TAIL),
+    "write-demand": lambda: text("write-demand", tail=TAIL),
     "same-call": lambda: text("same-call", step=N),
     "same-call-held": lambda: text("same-call-held", step=N),
     "context-pressure": lambda: text("context-pressure", max_prompt=MAX_PROMPT, max_context=MAX_CONTEXT),
