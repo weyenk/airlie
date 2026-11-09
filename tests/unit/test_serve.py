@@ -230,6 +230,75 @@ def test_a_role_on_an_mlx_vlm_engine_is_sent_mlx_vlms_thinking_fields_and_its_mo
     assert second["thinking_budget"] == 100  # a client's own value wins
 
 
+def mlx_vlm_upstream(tmp_path: Path) -> tuple[FakeUpstream, TestClient, Any]:
+    names = ("coder", "summarizer", "judge", "aggregator")
+    for r in names:
+        (tmp_path / f"{r}.md").write_text("x")
+    data = {
+        "version": 1,
+        "engines": {"main": {"kind": "mlx_vlm", "port": 8094, "model": "base"}},
+        "models": {
+            "base": {
+                "repo": "org/m",
+                "revision": "r",
+                "path": "/models/base",
+                "tool_call_parser": "qwen3_coder",
+            }
+        },
+        "roles": {
+            r: {"prompt": f"{r}.md", "model": "base", "thinking": True, "thinking_budget": 4096}
+            for r in names
+        },
+        "observability": {"state_dir": str(tmp_path / "state")},
+    }
+    data["roles"]["judge"]["chat_template_kwargs"] = {"reasoning_strength": "low"}
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    c = load_config(tmp_path / "airlie.yaml")
+    up = FakeUpstream()
+    return up, TestClient(create_app(c, transport=httpx.MockTransport(up))), c
+
+
+ASK = {"messages": [{"role": "user", "content": "yo"}]}
+
+
+def test_vllm_mlx_field_names_from_a_client_are_translated_for_an_mlx_vlm_role(tmp_path: Path) -> None:
+    """The Press Box bridge speaks vllm-mlx's names; mlx-vlm would drop the budget."""
+    up, client, _ = mlx_vlm_upstream(tmp_path)
+    body = {
+        "model": "coder",
+        "chat_template_kwargs": {"enable_thinking": False},
+        "thinking_token_budget": 64,
+        **ASK,
+    }
+    client.post("/v1/chat/completions", json=body)
+    sent = json.loads(up.requests[0].content)
+    assert sent["enable_thinking"] is False and sent["thinking_budget"] == 64
+    assert "thinking_token_budget" not in sent and "chat_template_kwargs" not in sent
+
+
+def test_other_client_template_kwargs_survive_the_translation(tmp_path: Path) -> None:
+    up, client, _ = mlx_vlm_upstream(tmp_path)
+    client.post(
+        "/v1/chat/completions",
+        json={"model": "coder", "chat_template_kwargs": {"enable_thinking": True, "x": 1}, **ASK},
+    )
+    sent = json.loads(up.requests[0].content)
+    assert sent["enable_thinking"] is True and sent["chat_template_kwargs"] == {"x": 1}
+
+
+def test_an_mlx_vlm_role_gets_its_tool_parser_when_tools_are_sent_and_its_reasoning_effort(
+    tmp_path: Path,
+) -> None:
+    up, client, _ = mlx_vlm_upstream(tmp_path)
+    tool = {"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}
+    client.post("/v1/chat/completions", json={"model": "coder", "tools": [tool], **ASK})
+    client.post("/v1/chat/completions", json={"model": "summarizer", **ASK})
+    client.post("/v1/chat/completions", json={"model": "judge", **ASK})
+    with_tools, without, strength = (json.loads(r.content) for r in up.requests)
+    assert with_tools["tool_parser"] == "qwen3_coder" and "tool_parser" not in without
+    assert strength["reasoning_effort"] == "low" and "reasoning_effort" not in without
+
+
 def test_unknown_role_is_404(tmp_path: Path) -> None:
     app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()))
     r = TestClient(app).post("/v1/chat/completions", json={"model": "ghost", "messages": []})

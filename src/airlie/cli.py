@@ -343,11 +343,7 @@ def _http_engine(
             dialect=dialect_for(e.kind),
         )
 
-    # a role whose model no engine serves stays with engine_name, as it did before roles were routed
-    owners = {
-        role: next((n for n, e in cfg.engines.items() if spec.model in e.models), engine_name)
-        for role, spec in cfg.roles.items()
-    }
+    owners = {role: cfg.engine_for_role(role) for role in cfg.roles}  # a role no engine serves raises
     if model_override or set(owners.values()) <= {engine_name}:
         return one(engine_name)
     names = [engine_name, *dict.fromkeys(n for n in owners.values() if n != engine_name)]

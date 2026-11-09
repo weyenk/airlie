@@ -12,7 +12,7 @@ from autogen_core import FunctionCall
 from autogen_core.models import CreateResult, FunctionExecutionResult, RequestUsage
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
-from airlie.config import RoleSpec
+from airlie.config import ModelSpec, RoleSpec
 from airlie.engine import ToolCall
 from airlie.scheduler import SlotScheduler
 from airlie.teams import NullObserver, TeamContext
@@ -107,9 +107,15 @@ def test_model_client_for_an_mlx_vlm_engine_uses_its_field_names(tmp_path: Path)
         chat_template_kwargs={"reasoning_strength": "low"},
     )
     client = build_model_client(
-        "http://127.0.0.1:1/v1", "/models/base", role, api_key=None, dialect="mlx_vlm"
+        "http://127.0.0.1:1/v1",
+        "/models/base",
+        role,
+        api_key=None,
+        model=ModelSpec(repo="o/m", revision="r", tool_call_parser="qwen3_coder"),
+        dialect="mlx_vlm",
     )
     extra = client._create_args["extra_body"]
+    assert extra["tool_parser"] == "qwen3_coder"  # an agent always carries its tools
     assert extra["enable_thinking"] is True and extra["thinking_budget"] == 512
     assert extra["reasoning_effort"] == "low" and extra["top_k"] == role.sampling.top_k
     assert "chat_template_kwargs" not in extra and "thinking_token_budget" not in extra

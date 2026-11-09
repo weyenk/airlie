@@ -690,7 +690,19 @@ def create_app(
             spec = cfg.roles[name]
             out.setdefault("max_tokens", spec.max_tokens)
             if dialect_for(cfg.engines[cfg.engine_for_model(spec.model)].kind) == "mlx_vlm":
-                # mlx-vlm's names, as HTTPEngine sends them (a client's own values win)
+                # mlx-vlm's names, as HTTPEngine sends them. A client may speak vllm-mlx's (the Press Box
+                # bridge does): translate those first, so what it sent wins over the role's defaults
+                if "thinking_token_budget" in out:
+                    out.setdefault("thinking_budget", out.pop("thinking_token_budget"))
+                kwargs = out.get("chat_template_kwargs")
+                if isinstance(kwargs, dict):
+                    kwargs = dict(kwargs)
+                    if "enable_thinking" in kwargs:
+                        out.setdefault("enable_thinking", kwargs.pop("enable_thinking"))
+                    if kwargs:
+                        out["chat_template_kwargs"] = kwargs
+                    else:
+                        del out["chat_template_kwargs"]
                 for k, v in thinking_fields(
                     dialect="mlx_vlm",
                     thinking=bool(spec.thinking),
