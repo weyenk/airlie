@@ -91,7 +91,8 @@ jobs:
   # The mutants of the sources that import mlx (scripts/mutate_changed.py --mac-only), gated here.
   mutation-mac:
     runs-on: macos-15
-    timeout-minutes: 90
+    # a setup-file change (pyproject.toml, tests/unit/conftest.py) runs the whole suite first, then every mac-only source
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:
