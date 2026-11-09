@@ -1389,3 +1389,78 @@ def test_a_glob_that_matches_nothing_is_an_error(tmp_path: Path) -> None:
 
 def test_the_shipped_story_workflow_declares_its_type() -> None:
     assert load_config(Path("airlie.yaml")).workflows["story"].type == "story"
+
+
+def mlx(tmp_path: Path, engines: dict, *, roles: dict | None = None, models: dict | None = None):
+    data = {
+        **MINIMAL,
+        "engines": engines,
+        "models": models
+        or {
+            "team": {"repo": "org/team", "revision": "r0", "path": "/models/team"},
+            "base": {"repo": "org/base", "revision": "r1"},
+        },
+        "roles": {**MINIMAL["roles"], **(roles or {})},
+    }
+    return load_config(write(tmp_path, data))
+
+
+def test_mlx_vlm_engine_spells_one_model_as_model_or_models(tmp_path: Path) -> None:
+    cfg = mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team"}})
+    assert cfg.engines["main"].models == ["team"]
+    assert cfg.engines["main"].base_url == "http://127.0.0.1:8080/v1"
+    assert cfg.engine_for_model("team") == "main"
+
+
+def test_an_mlx_vlm_engine_is_addressed_by_its_exact_model_path(tmp_path: Path) -> None:
+    cfg = mlx(
+        tmp_path,
+        {
+            "main": {"kind": "mlx_vlm", "port": 8080, "model": "team"},
+            "other": {"kind": "mlx_vlm", "port": 8083, "model": "base", "autostart": False},
+        },
+    )
+    assert cfg.engines["main"].served_name("team") == "/models/team"  # models.team.path
+    assert cfg.engines["other"].served_name("base").endswith("/models--org--base/snapshots/r1")  # HF cache
+
+
+def test_an_mlx_vlm_engine_takes_no_served_alias(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="served_names"):
+        mlx(
+            tmp_path,
+            {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", "served_names": {"team": "t"}}},
+        )
+
+
+def test_mlx_vlm_engine_refuses_two_models(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="engines.main: an mlx_vlm engine serves exactly one model"):
+        mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team", "base"]}})
+
+
+def test_mlx_vlm_engine_refuses_a_buffer_cache_limit(tmp_path: Path) -> None:
+    with pytest.raises(
+        ConfigError, match="engines.main.buffer_cache_mb: mlx-vlm reads no buffer-cache limit"
+    ):
+        mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", "buffer_cache_mb": 8192}})
+
+
+def test_mlx_vlm_engine_defaults(tmp_path: Path) -> None:
+    e = mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team"}}).engines["main"]
+    assert (e.autostart, e.decision, e.kv_bits, e.prefix_cache) == (True, False, None, False)
+    assert (e.cache_memory_gb, e.cache_checkpoints, e.cache_checkpoint_interval) == (1.0, 4, 2048)
+    assert e.env == {} and e.entry is None and e.max_image_px is None
+
+
+def test_a_role_on_an_mlx_vlm_engine_may_only_pass_known_template_arguments(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="roles.coder.chat_template_kwargs: mlx_vlm engines accept only"):
+        mlx(
+            tmp_path,
+            {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team"}},
+            roles={
+                "coder": {
+                    "prompt": "prompts/roles/coder.md",
+                    "model": "team",
+                    "chat_template_kwargs": {"foo": 1},
+                }
+            },
+        )

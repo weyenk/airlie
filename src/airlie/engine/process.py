@@ -19,6 +19,7 @@ import httpx
 import psutil
 
 from airlie.config import AirlieConfig, ModelSpec
+from airlie.config.load import hf_snapshot_dir
 from airlie.engine.mtp import mtp_model_dir
 from airlie.engine.registry import (
     SERVE_ENTRY,
@@ -112,11 +113,6 @@ class HTTPProber:
                 return [str(m.get("id")) for m in r.json().get("data", [])]
         except (httpx.HTTPError, ValueError):
             return []
-
-
-def hf_snapshot_dir(m: ModelSpec, hf_cache: Path | None = None) -> Path:
-    cache = hf_cache or Path("~/.cache/huggingface/hub").expanduser()
-    return cache / f"models--{m.repo.replace('/', '--')}" / "snapshots" / m.revision
 
 
 class EngineProcess:
