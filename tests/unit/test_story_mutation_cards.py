@@ -3,6 +3,7 @@ asked of GitHub at most once an hour (mutation-nightly Task 4)."""
 
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import json
 from pathlib import Path
@@ -39,16 +40,20 @@ class Clock:
 
 
 class FakeGh:
-    """`gh run list` answers `runs`; `gh run download` writes `files` (or raises `download_error`)."""
+    """`gh run list` answers `runs`; `gh run download` writes `files` (or raises `download_error`). A kind in
+    `hang` never answers, as a gh stuck on the network."""
 
     def __init__(self, runs: list[dict[str, object]], files: dict[str, object] | None = None) -> None:
         self.runs = runs
         self.files = files if files is not None else {"status": "ran", "survivors": [_as_dict(survivor(1))]}
         self.download_error: Exception | None = None
+        self.hang: set[str] = set()
         self.asked: list[list[str]] = []
 
     async def __call__(self, args: list[str]) -> str:
         self.asked.append(args)
+        if args[2] in self.hang:
+            await asyncio.Event().wait()
         if args[1:3] == ["run", "list"]:
             return json.dumps(self.runs)
         assert args[1:3] == ["run", "download"]
@@ -99,9 +104,10 @@ async def test_survivors_of_one_function_file_one_todo_card_with_its_labels(
     assert lines == [f"{key}: mutation card filed for airlie.a.x_f (2 mutants, nightly run 7)"]
     assert gh.asked[0] == [
         "gh", "run", "list", "--workflow", "mutation-nightly.yml", "--branch", "main",
-        "--status", "completed", "--limit", "1", "--json", "databaseId,url,conclusion",
+        "--status", "completed", "--limit", "1", "--json", "databaseId,url,conclusion", "--repo", HOME,
     ]  # fmt: skip
     assert gh.asked[1][:6] == ["gh", "run", "download", "7", "--name", "mutation-survivors"]
+    assert gh.asked[1][-2:] == ["--repo", HOME]  # the home repository, whatever gh would guess from the cwd
     state = json.loads((tmp_path / "state" / "mutation-harvest.json").read_text())
     assert state["run_id"] == 7 and state["reported"] == {SIG: [survivor(1).mutant, survivor(2).mutant]}
     events = (tmp_path / "state" / "line" / "events.jsonl").read_text().splitlines()
@@ -241,6 +247,43 @@ async def test_a_nightly_that_could_not_run_files_nothing_and_says_so_once(
     assert await mutation_cards.harvest(cfg, store, gh=gh, now=clock) == []  # said once
     state = json.loads((tmp_path / "state" / "mutation-harvest.json").read_text())
     assert state["run_id"] == 8 and state["said"] == [8]
+
+
+async def test_with_no_home_repo_known_gh_is_not_given_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fixes, "home_checkout", lambda: tmp_path)
+    monkeypatch.setattr(fixes, "home_repo", lambda cfg, checkout: None)
+    gh = FakeGh([run(7)])
+    await mutation_cards.harvest(cfg_for(tmp_path), BoardStore(tmp_path / "b.sqlite"), gh=gh, now=Clock())
+    assert gh.kinds() == ["list", "download"] and not any("--repo" in a for a in gh.asked)
+
+
+@pytest.mark.parametrize("stuck", ["list", "download"])
+async def test_a_gh_that_never_answers_is_given_up_and_tried_next_hour(
+    tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch, stuck: str
+) -> None:
+    # past before the loop turns: an answer that needs no wait still lands, one that waits is given up at once
+    monkeypatch.setattr(mutation_cards, "GH_TIMEOUT_S", 1e-9)
+    store = BoardStore(tmp_path / "board.sqlite")
+    cfg, clock, gh = cfg_for(tmp_path), Clock(), FakeGh([run(7)])
+    gh.hang = {stuck}
+    lines = await mutation_cards.harvest(cfg, store, gh=gh, now=clock)
+    said = f"`gh run {stuck}` gave no answer in {mutation_cards.GH_TIMEOUT_S} s"
+    if stuck == "list":
+        assert lines == [f"nightly mutation runs not listed: {said}"]
+    else:
+        assert lines == [f"nightly mutation run 7: survivors not read (TimeoutError: {said})"]
+    state = json.loads((tmp_path / "state" / "mutation-harvest.json").read_text())
+    assert state["run_id"] is None and state["checked_at"] == clock.t
+    gh.hang = set()
+    clock.t += mutation_cards.CHECK_EVERY_S
+    await mutation_cards.harvest(cfg, store, gh=gh, now=clock)
+    assert len(mutation_fixes(store)) == 1
+
+
+def test_gh_is_given_a_minute_not_the_default_ten() -> None:
+    assert mutation_cards.GH_TIMEOUT_S == 60
 
 
 async def test_mutation_cards_off_asks_nothing(tmp_path: Path, home: Path) -> None:

@@ -168,3 +168,14 @@ def test_the_nightly_merges_nine_shards_and_uploads_the_survivors() -> None:
     uploads = {s["with"]["name"] for s in steps if "upload-artifact" in s.get("uses", "")}
     assert uploads == {"mutation-report", "mutation-survivors"}
     assert wf["jobs"]["merge"]["needs"] == ["mutation", "mutation-mac"]
+
+
+def test_the_docs_name_the_nightly_sweep_and_the_weekly_mac_run_not_the_old_workflow() -> None:
+    readme = (ROOT / "README.md").read_text()
+    story = (ROOT / "docs" / "integrations" / "story.md").read_text()
+    for doc in (readme, story):
+        assert "mutation-weekly.yml" not in doc and "5 shards" not in doc
+    for task in ("mutate:local", "mutate:launchd:install", "mutate:launchd:uninstall"):
+        assert f"`task {task}" in readme  # each has its row in the task table
+    merge = yaml.safe_load((ROOT / "Taskfile.yml").read_text())["tasks"]["mutate:merge"]["desc"]
+    assert "--expect 9" in merge  # the nightly's 8 Linux shards and the mac one

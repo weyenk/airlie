@@ -11,11 +11,14 @@ mutants changes, never filed twice; a done card is a fixed function, so its next
 `fixes.release_after_fix` closes the card once its PRs are merged and deployed.
 
 A run that could not mutate (a shard died, or no artifact) files nothing and says so once. A download that
-fails is a line, and the next hour tries the run again. The card's text is data from CI: it is stored on the
-board and never reaches a shell. What has been harvested is kept in `<state_dir>/mutation-harvest.json`."""
+fails is a line, and the next hour tries the run again. Both gh calls name the home repository (`--repo`) when
+it is known and are given GH_TIMEOUT_S: a gh that does not answer is a line, and the next hour asks again.
+The card's text is data from CI: it is stored on the board and never reaches a shell. What has been harvested
+is kept in `<state_dir>/mutation-harvest.json`."""
 
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import json
 import os
@@ -37,6 +40,8 @@ MUTATION = "mutation"
 """The label every mutation fix card carries, beside `fix`."""
 CHECK_EVERY_S = 3600
 """How often GitHub is asked for the newest nightly run."""
+GH_TIMEOUT_S = 60
+"""How long each gh call may take: a hung one would otherwise hold the beat for gh's own ten minutes."""
 STATE_FILE = "mutation-harvest.json"
 LOCK_FILE = "mutation-harvest.lock"
 """Held (flock) for a whole harvest: two beats over the same state (serve's ticker and the launchd agent)
@@ -246,7 +251,12 @@ async def _look(
     *,
     gh: fixes.GhRun,
 ) -> list[str]:
-    listed = json.loads(await gh(_NEWEST_RUN))
+    home = fixes.home_repo(cfg, checkout)
+    repo = ["--repo", home] if home else []
+    try:
+        listed = json.loads(await _ask(gh, [*_NEWEST_RUN, *repo]))
+    except TimeoutError as e:
+        return [f"nightly mutation runs not listed: {e}"]
     if not isinstance(listed, list) or not listed:
         return []
     newest = listed[0]
@@ -255,7 +265,7 @@ async def _look(
         return []
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            await gh(["gh", "run", "download", str(run_id), "--name", ARTIFACT, "--dir", tmp])
+            await _ask(gh, ["gh", "run", "download", str(run_id), "--name", ARTIFACT, "--dir", tmp, *repo])
             status, survivors = read_survivors(Path(tmp) / "survivors.json")
     except Exception as e:  # noqa: BLE001 - a failed download is a line, retried next hour
         if newest.get("conclusion") != "success" and _NO_ARTIFACT in str(e):
@@ -269,9 +279,16 @@ async def _look(
             lines.append(f"nightly mutation run {run_id} could not run: no cards ({url})")
         state["run_id"] = run_id
         return lines
-    home = fixes.home_repo(cfg, checkout)
     lines, created, commented = _file(store, survivors, home=home, run_url=url, reported=state["reported"])
     state["run_id"] = run_id
     if created or commented:
         fixes.line_event(state_dir, "mutation_cards_filed", run=run_id, created=created, commented=commented)
     return lines
+
+
+async def _ask(gh: fixes.GhRun, args: list[str]) -> str:
+    """`gh(args)`, given up after GH_TIMEOUT_S (the real one kills gh's process group when cancelled)."""
+    try:
+        return await asyncio.wait_for(gh(args), GH_TIMEOUT_S)
+    except TimeoutError:
+        raise TimeoutError(f"`{' '.join(args[:3])}` gave no answer in {GH_TIMEOUT_S} s") from None
