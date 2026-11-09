@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import re
 import shlex
@@ -15,6 +16,7 @@ import httpx
 import yaml
 
 from airlie.config import AirlieConfig, ConfigError, load_config
+from airlie.engine.mlx_vlm import MLX_VLM_ENTRY
 
 Status = Literal["ok", "warn", "fail"]
 REQUIRED_TOOLS = ("task", "uv", "git", "hf")
@@ -40,6 +42,8 @@ class SystemProbe(Protocol):
     def file_contains(self, path: Path, needle: str) -> bool | None: ...
     def model_file(self, repo: str, revision: str, file: str) -> Path | None: ...
     def process_args(self, marker: str) -> list[str] | None: ...
+    def package_version(self, dist: str) -> str | None:
+        return None
 
 
 def systemone_impl_path(binary: Path) -> Path:
@@ -156,6 +160,12 @@ class RealProbe:
                     return line.split()
         return None
 
+    def package_version(self, dist: str) -> str | None:
+        try:
+            return importlib.metadata.version(dist)
+        except importlib.metadata.PackageNotFoundError:
+            return None
+
     def tool_version(self, name: str) -> str | None:
         exe = shutil.which(name)
         if not exe:
@@ -206,8 +216,11 @@ def node_check(version: str | None, pin: str) -> CheckResult:
 
 
 def cache_memory_gb(e: Any) -> float:
-    """The prefix cache the engine is told to keep (`--cache-memory-mb N` in its extra_args), in GB; 0 when it
-    is left to the server's own default."""
+    """The prefix cache the engine is told to keep, in GB: an mlx_vlm engine's `cache_memory_gb` when its
+    prefix cache is on, a vllm_mlx engine's `--cache-memory-mb N` in its extra_args; 0 when it is left to the
+    server's own default."""
+    if e.kind == "mlx_vlm":
+        return float(e.cache_memory_gb) if e.prefix_cache else 0.0
     args = list(e.extra_args)
     for i, arg in enumerate(args[:-1]):
         if arg == "--cache-memory-mb" and args[i + 1].isdigit():
@@ -226,19 +239,23 @@ def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[
     Returns (projected GB, names of preloaded models with no estimated_memory_gb)."""
     e = cfg.engines[engine_name]
     weights = 0.0
+    cache = 0.0
     unknown: list[str] = []
     for other in cfg.engines.values():  # every managed process shares the one wired limit
-        if other.kind not in ("vllm_mlx", "llama_server"):
+        if other.kind not in ("vllm_mlx", "llama_server", "mlx_vlm"):
             continue
+        if other.kind == "mlx_vlm" and not other.autostart:
+            continue  # started by hand, not beside the others
+        cache += cache_memory_gb(other)
         for mname in other.models:
             m = cfg.models[mname]
-            if not m.preload:
-                continue
+            if other.kind != "mlx_vlm" and not m.preload:
+                continue  # an mlx_vlm engine loads its one model at start whatever `preload` says
             if m.estimated_memory_gb is None:
                 unknown.append(mname)
             else:
                 weights += m.estimated_memory_gb
-    return weights + live_kv_gb(cfg, e) + cache_memory_gb(e) + cfg.memory.os_reserve_gb, unknown
+    return weights + live_kv_gb(cfg, e) + cache + cfg.memory.os_reserve_gb, unknown
 
 
 def live_kv_gb(cfg: AirlieConfig, e: Any) -> float:
@@ -260,7 +277,11 @@ def live_kv_gb(cfg: AirlieConfig, e: Any) -> float:
 
 def projection_detail(cfg: AirlieConfig, e: Any) -> str:
     """What `project_memory_gb` counted, in words for the doctor's row."""
-    cache = cache_memory_gb(e)
+    cache = sum(
+        cache_memory_gb(o)
+        for o in cfg.engines.values()
+        if o.kind in ("vllm_mlx", "llama_server") or (o.kind == "mlx_vlm" and o.autostart)
+    )
     tail = f" + {cache:.0f} GB prefix cache" if cache else ""
     if cfg.topology.kind == "studio":
         build = cfg.roles[cfg.story.build_role]
@@ -428,6 +449,10 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
             managed_models.update(e.models)
             results.extend(_llama_server_checks(ename, e.binary, e.base_url or "", probe))
             continue
+        if e.kind == "mlx_vlm":
+            managed_models.update(e.models)
+            results.append(_mlx_vlm_binary_check(ename, e.entry, probe))
+            continue
         if e.kind != "vllm_mlx":
             continue
         managed_models.update(e.models)
@@ -520,7 +545,17 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
             results.append(CheckResult(f"model:{mname}", "ok", f"{m.repo}@{m.revision[:8]}"))
             conf = probe.model_config(m.repo, m.revision)
             hybrid = is_hybrid_attention(conf) if conf is not None else None
-            if hybrid is True:
+            on_mlx_vlm = any(e.kind == "mlx_vlm" and mname in e.models for e in cfg.engines.values())
+            if hybrid is True and on_mlx_vlm:
+                results.append(
+                    CheckResult(
+                        f"model:{mname}:attention",
+                        "ok",
+                        "hybrid (linear/SSM) attention: mlx-vlm's prefix cache stores it as checkpoints "
+                        "(`cache_checkpoints`)",
+                    )
+                )
+            elif hybrid is True:
                 results.append(
                     CheckResult(
                         f"model:{mname}:attention",
@@ -552,6 +587,19 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
                 )
             )
     return results
+
+
+def _mlx_vlm_binary_check(ename: str, entry: list[str] | None, probe: SystemProbe) -> CheckResult:
+    name = f"engine:{ename}:binary"
+    if entry:
+        v = probe.tool_version(entry[0])
+        return CheckResult(
+            name, "ok" if v else "fail", f"{v} ({' '.join(entry)})" if v else f"{entry[0]} not found"
+        )
+    v = probe.package_version("mlx-vlm")
+    if v:
+        return CheckResult(name, "ok", f"mlx-vlm {v} ({' '.join(MLX_VLM_ENTRY)})")
+    return CheckResult(name, "fail", "mlx-vlm not installed; run: uv sync")
 
 
 def _llama_server_checks(ename: str, binary: str, base_url: str, probe: SystemProbe) -> list[CheckResult]:

@@ -613,3 +613,96 @@ def test_a_missing_mtp_head_is_its_own_finding_and_names_the_pull_task(tmp_path:
     )
     present = by_name(run_checks(c, FakeProbe(snapshots={"org/model@r1", "org/model-MTP@h1"})))
     assert present["model:team:mtp"].status == "ok"
+
+
+def mlx_vlm_cfg(
+    tmp_path: Path, *, bench_autostart: bool = False, entry: list[str] | None = None
+) -> AirlieConfig:
+    main: dict = {
+        "kind": "mlx_vlm",
+        "port": 8080,
+        "model": "base",
+        "prefix_cache": True,
+        "cache_memory_gb": 8,
+    }
+    if entry:
+        main["entry"] = entry
+    data = {
+        "version": 1,
+        "engines": {
+            "main": main,
+            "reviewer": {
+                "kind": "mlx_vlm",
+                "port": 8082,
+                "model": "rev",
+                "prefix_cache": True,
+                "cache_memory_gb": 4,
+            },
+            "bench": {
+                "kind": "mlx_vlm",
+                "port": 8091,
+                "model": "bench",
+                "autostart": bench_autostart,
+                "prefix_cache": True,
+                "cache_memory_gb": 1,
+            },
+        },
+        "models": {
+            "base": {"repo": "org/base", "revision": "r1", "estimated_memory_gb": 16, "preload": False},
+            "rev": {"repo": "org/rev", "revision": "r1", "estimated_memory_gb": 19},
+            "bench": {"repo": "org/bench", "revision": "r1", "estimated_memory_gb": 20},
+        },
+        "roles": {
+            r: {"prompt": "p.md", "model": "base"} for r in ("coder", "summarizer", "judge", "aggregator")
+        },
+    }
+    (tmp_path / "p.md").write_text("x")
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    return load_config(tmp_path / "airlie.yaml")
+
+
+def test_memory_projection_counts_every_autostart_mlx_vlm_engine_and_its_cache(tmp_path: Path) -> None:
+    from airlie.doctor import live_kv_gb, project_memory_gb
+
+    cfg = mlx_vlm_cfg(tmp_path)
+    gb, unknown = project_memory_gb(cfg, "main")
+    assert gb == pytest.approx(
+        16 + 19 + 8 + 4 + live_kv_gb(cfg, cfg.engines["main"]) + cfg.memory.os_reserve_gb
+    )
+    assert unknown == []
+
+
+class PackageProbe(FakeProbe):
+    def __init__(self, versions: dict[str, str], **kw) -> None:
+        super().__init__(**kw)
+        self._versions = versions
+
+    def package_version(self, dist: str) -> str | None:
+        return self._versions.get(dist)
+
+
+def test_doctor_reports_mlx_vlm_installed_instead_of_vllm_mlx_for_mlx_vlm_engines(tmp_path: Path) -> None:
+    cfg = mlx_vlm_cfg(tmp_path)
+    probe = PackageProbe({"mlx-vlm": "0.7.12"}, tools={**TOOLS_OK, "vllm-mlx": None})
+    r = by_name(run_checks(cfg, probe))["engine:main:binary"]
+    assert r.status == "ok"
+    assert r.detail == "mlx-vlm 0.7.12 (python -m mlx_vlm.server)"
+    r = by_name(run_checks(cfg, PackageProbe({})))["engine:main:binary"]
+    assert r.status == "fail"
+    assert "uv sync" in r.detail and "task engine:install" not in r.detail
+
+
+def test_doctor_names_a_custom_mlx_vlm_entry_command(tmp_path: Path) -> None:
+    cfg = mlx_vlm_cfg(tmp_path, entry=["mlx-vlm-server", "--x"])
+    r = by_name(run_checks(cfg, PackageProbe({}, tools={**TOOLS_OK, "mlx-vlm-server": "1.2"})))
+    assert r["engine:main:binary"].status == "ok"
+    assert "mlx-vlm-server" in r["engine:main:binary"].detail
+
+
+def test_hybrid_attention_model_on_an_mlx_vlm_engine_is_ok_without_a_patch(tmp_path: Path) -> None:
+    cfg = mlx_vlm_cfg(tmp_path)
+    hybrid = {"text_config": {"layer_types": ["linear_attention", "full_attention"]}}
+    probe = ConfigProbe({"org/base@r1": hybrid}, snapshots={"org/base@r1"})
+    r = by_name(run_checks(cfg, probe))["model:base:attention"]
+    assert r.status == "ok"
+    assert "checkpoints" in r.detail and "patch" not in r.detail
