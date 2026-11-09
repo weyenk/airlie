@@ -89,6 +89,11 @@ test("the layer bundle: its inputs and outputs, item-scoped artifacts as written
   expect(line(g, "build", "costed_layer")).toEqual([{ from: "build", to: "costed_layer", artifacts: [] }]);
 });
 
+test("a target reading a name its source does not write gets an ordering line, no error", () => {
+  const g = graphOf("workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a, outputs: {x: text}, to: [b]}\n      b: {type: check, run: x.b, inputs: [y]}\n");
+  expect(g.edges).toEqual([{ from: "a", to: "b", artifacts: [] }]);
+});
+
 test("a given layout places the boxes; the others wait for autoLayout", () => {
   const { name, spec } = parseWorkflow(LAYER_YAML);
   const g = fromWorkflow(name, spec, { build: { x: 300, y: 40 } });
