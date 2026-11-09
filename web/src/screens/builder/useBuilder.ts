@@ -3,7 +3,7 @@
 import { computed, ref } from "vue";
 import type { Ref } from "vue";
 import { ApiError } from "@/api";
-import { getWorkflowDef, publishWorkflow, registryCatalog, saveDraft, validateWorkflow } from "@/api/workflow_defs";
+import { deleteDraft, EMPTY_CATALOG, getWorkflowDef, publishWorkflow, registryCatalog, saveDraft, usedBy, validateWorkflow } from "@/api/workflow_defs";
 import type { Catalog, WorkflowDetail } from "@/api/workflow_defs";
 import { addNode, emptyGraph, freeId, fromWorkflow } from "./graph";
 import type { GEdge, Graph, NodeType } from "./graph";
@@ -13,8 +13,6 @@ import { parseWorkflow, toYaml } from "./yaml";
 
 /** The name the server checks a canvas not yet named under (`new` is the builder's address, not a name). */
 const UNNAMED = "untitled";
-
-const EMPTY_CATALOG: Catalog = { roles: [], types: [], checks: [], meetings: [], prompt_files: [] };
 
 export function useBuilder(name: Ref<string>) {
   const detail = ref<WorkflowDetail | null>(null);
@@ -164,6 +162,21 @@ export function useBuilder(name: Ref<string>) {
     }
   }
 
+  /** Delete draft `as`. Resolves to true once gone; to `{ refused }` with the workflows that use it when the server
+   * answers 409; false on any other failure (shown as the error). */
+  async function remove(as: string): Promise<true | { refused: string[] } | false> {
+    try {
+      await deleteDraft(as);
+      error.value = null;
+      return true;
+    } catch (e) {
+      const users = e instanceof ApiError ? usedBy(e) : null;
+      if (users) return { refused: users };
+      error.value = e instanceof Error ? e : String(e);
+      return false;
+    }
+  }
+
   /** Open the saved draft's PR. Resolves to true once opened (the definition's `pr` set to it); false when the
    * server refused: its problems (422) shown on the canvas, nothing to publish (409) said as `publishStatus`, any
    * other failure (502 the publisher, 404 the draft gone) shown as the error. */
@@ -220,6 +233,7 @@ export function useBuilder(name: Ref<string>) {
     load,
     edit,
     place,
+    remove,
     validate,
     save,
     publish,

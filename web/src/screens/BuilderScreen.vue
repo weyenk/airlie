@@ -7,7 +7,6 @@ import type { RouteLocationNormalized } from "vue-router";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { deleteDraft } from "@/api/workflow_defs";
 import { useCardDraftStore } from "@/stores/card_draft";
 import { useWorkflowDefs } from "./board/workflow";
 import Canvas from "./builder/Canvas.vue";
@@ -137,12 +136,12 @@ const deleting = ref(false);
 async function deleteConfirmed() {
   deleting.value = false;
   const gone = detail.value?.name ?? name.value;
-  try {
-    await deleteDraft(gone);
-  } catch (e) {
-    error.value = e instanceof Error ? e : String(e);
+  const done = await b.remove(gone);
+  if (typeof done === "object") {
+    error.value = `${gone} is used by ${done.refused.join(", ")}: take it out of those first`;
     return;
   }
+  if (!done) return;
   letGo = true; // the draft is gone: its unsaved changes with it
   try {
     await router.push("/workflows");

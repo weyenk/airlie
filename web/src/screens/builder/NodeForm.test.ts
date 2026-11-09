@@ -8,6 +8,8 @@ import NodeForm from "./NodeForm.vue";
 const catalog: Catalog = {
   roles: ["architect", "coder", "product", "tester"],
   types: ["ask", "check"],
+  formats: ["text"],
+  kinds: ["text"],
   checks: [{ name: "story.intake", title: "Intake", inputs: ["card", "repo"], outputs: ["report"], formats: { report: "text" }, transient: [], every_run: false, args: [] }],
   meetings: [{ roles: ["product", "architect"], inputs: ["card"] }],
   prompt_files: [],

@@ -33,9 +33,9 @@ async function open(url = "/workflows") {
 const lastPageCall = () => api.listStories.mock.calls.map((c) => c[0]).filter((q) => q.size !== undefined).at(-1);
 
 const DEFS: WorkflowDef[] = [
-  { name: "story", type: "story", source: "file", problems: [], pr: null },
-  { name: "layer", type: null, source: "file", problems: [], pr: null, bundle: true },
-  { name: "fix", type: "bug", source: "draft", problems: ["workflow fix: node a: check needs run"], pr: { number: 241, url: "https://github.com/weyenk/airlie/pull/241" } },
+  { name: "story", type: "story", source: "file", used_by: [], problems: [], pr: null },
+  { name: "layer", type: null, source: "file", used_by: [], problems: [], pr: null, bundle: true },
+  { name: "fix", type: "bug", source: "draft", used_by: [], problems: ["workflow fix: node a: check needs run"], pr: { number: 241, url: "https://github.com/weyenk/airlie/pull/241" } },
 ];
 
 beforeEach(() => {
@@ -288,7 +288,7 @@ test("the Definitions table lists every workflow, each opening in the builder", 
 });
 
 test("a draft that edits a file is listed beside it as that file's edit", async () => {
-  const edit: WorkflowDef = { name: "story", type: "story", source: "draft", problems: [], pr: { number: 9, url: "https://github.com/weyenk/airlie/pull/9" }, superseded: true };
+  const edit: WorkflowDef = { name: "story", type: "story", source: "draft", used_by: [], problems: [], pr: { number: 9, url: "https://github.com/weyenk/airlie/pull/9" }, superseded: true };
   defsApi.listWorkflowDefs.mockResolvedValue([...structuredClone(DEFS), edit]);
   const { w } = await open();
   const rows = w.findAll("[data-def=story]");

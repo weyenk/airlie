@@ -1,5 +1,8 @@
+import { ApiError } from "@/api";
 import { callOf, stubJson } from "@/test-utils/fetch-stub";
-import { deleteDraft, getWorkflowDef, listWorkflowDefs, publishWorkflow, registryCatalog, saveDraft, validateWorkflow } from "./workflow_defs";
+import catalogJson from "@/test-utils/catalog.json";
+import { adoptWorkflow, deleteDraft, EMPTY_CATALOG, getWorkflowDef, listWorkflowDefs, publishWorkflow, registryCatalog, saveDraft, usedBy, validateWorkflow } from "./workflow_defs";
+import type { Catalog } from "./workflow_defs";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -33,4 +36,32 @@ test("validateWorkflow returns the problems, and sends the prompts only when giv
   await validateWorkflow("a: 1", { p: "x" });
   expect(callOf(fetchMock, 0)).toMatchObject({ url: "/v1/workflows/validate", method: "POST", body: { yaml: "a: 1" } });
   expect(callOf(fetchMock, 1).body).toEqual({ yaml: "a: 1", prompts: { p: "x" } });
+});
+
+test("the catalog type is the shape the shipped server answers (a recorded payload)", async () => {
+  stubJson(catalogJson);
+  const got: Catalog = await registryCatalog();
+  expect(got).toEqual(catalogJson);
+  const keys = (o: object) => Object.keys(o).sort();
+  expect(keys(got)).toEqual(keys(EMPTY_CATALOG)); // the type's fields are the payload's
+  for (const c of got.checks) expect(keys(c)).toEqual(["args", "every_run", "formats", "inputs", "name", "outputs", "title", "transient"]);
+  for (const m of got.meetings) expect(keys(m)).toEqual(["inputs", "roles"]);
+  expect(got.formats.length).toBeGreaterThan(0);
+  expect(got.kinds.length).toBeGreaterThan(0);
+  const check = got.checks.find((c) => c.name === "story.intake")!;
+  expect(check).toMatchObject({ inputs: ["card"], every_run: true, args: [] });
+  expect(got.meetings[0]).toEqual({ roles: ["product", "architect", "tester"], inputs: ["story", "layers"] });
+});
+
+test("adoptWorkflow posts to the story's adopt-workflow route and returns the move", async () => {
+  const fetchMock = stubJson({ key: "AIR 1", name: "bug", from: "story", to: "bug" });
+  await expect(adoptWorkflow("AIR 1")).resolves.toEqual({ key: "AIR 1", name: "bug", from: "story", to: "bug" });
+  expect(callOf(fetchMock)).toMatchObject({ url: "/v1/airlie/stories/AIR%201/adopt-workflow", method: "POST" });
+});
+
+test("usedBy reads a 409's used_by detail, and nothing else", () => {
+  expect(usedBy(new ApiError(409, JSON.stringify({ used_by: ["story", "layer"] })))).toEqual(["story", "layer"]);
+  expect(usedBy(new ApiError(409, "plain text"))).toBeNull();
+  expect(usedBy(new ApiError(409, JSON.stringify({ used_by: [1] })))).toBeNull();
+  expect(usedBy(new ApiError(422, JSON.stringify({ used_by: ["story"] })))).toBeNull();
 });

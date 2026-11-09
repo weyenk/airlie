@@ -1,0 +1,769 @@
+{
+  "roles": [
+    "aggregator",
+    "chief",
+    "coder",
+    "docs",
+    "judge",
+    "qa",
+    "reviewer",
+    "summarizer"
+  ],
+  "types": [
+    "ask",
+    "conversation",
+    "write",
+    "meeting",
+    "team",
+    "check",
+    "gate",
+    "bundle"
+  ],
+  "formats": [
+    "json",
+    "markdown",
+    "text",
+    "bool",
+    "list",
+    "ref:branch",
+    "ref:worktree",
+    "ref:pr",
+    "file",
+    "session"
+  ],
+  "kinds": [
+    "text",
+    "number",
+    "bool",
+    "list of \u2026",
+    "one of \u2026"
+  ],
+  "checks": [
+    {
+      "name": "story.intake",
+      "title": "Take the card in: move it to building, say where its progress is",
+      "inputs": [
+        "card"
+      ],
+      "outputs": [],
+      "formats": {},
+      "transient": [],
+      "every_run": true,
+      "args": []
+    },
+    {
+      "name": "story.take_card_as_story",
+      "title": "Take the story an epic's plan wrote on the card (refine is skipped)",
+      "inputs": [
+        "card"
+      ],
+      "outputs": [
+        "story"
+      ],
+      "formats": {
+        "story": "json"
+      },
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.base",
+      "title": "Resolve the commit the story builds on: its base",
+      "inputs": [
+        "card",
+        "repo"
+      ],
+      "outputs": [
+        "base"
+      ],
+      "formats": {
+        "base": "json"
+      },
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.gate",
+      "title": "Read the test gate the repository's AGENTS.md names at the base",
+      "inputs": [
+        "repo",
+        "base"
+      ],
+      "outputs": [
+        "gate"
+      ],
+      "formats": {
+        "gate": "json"
+      },
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.agree_plain",
+      "title": "Take the split as the agreement, with no proof plan (no meeting)",
+      "inputs": [
+        "story",
+        "layers"
+      ],
+      "outputs": [
+        "agreement"
+      ],
+      "formats": {
+        "agreement": "json"
+      },
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.costed",
+      "title": "Record what the stages named (args.stages) cost against their budgets",
+      "inputs": [
+        "card"
+      ],
+      "outputs": [],
+      "formats": {},
+      "transient": [],
+      "every_run": true,
+      "args": [
+        "stages"
+      ]
+    },
+    {
+      "name": "story.planned",
+      "title": "Mark the story planned (the planning lane's last word)",
+      "inputs": [
+        "layers"
+      ],
+      "outputs": [],
+      "formats": {},
+      "transient": [],
+      "every_run": true,
+      "args": []
+    },
+    {
+      "name": "story.covered",
+      "title": "Find the layer satisfied by the layers below, or else where it is built",
+      "inputs": [
+        "card",
+        "repo",
+        "story",
+        "layers"
+      ],
+      "outputs": [
+        "satisfied.{item}"
+      ],
+      "formats": {
+        "satisfied.{item}": "json"
+      },
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.ready_package",
+      "title": "Ready the layer's package where it is built (interim: Part 2 makes it a model node)",
+      "inputs": [
+        "card",
+        "repo",
+        "story",
+        "layers"
+      ],
+      "outputs": [
+        "package.{item}",
+        "satisfied.{item}"
+      ],
+      "formats": {
+        "package.{item}": "json",
+        "satisfied.{item}": "json"
+      },
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.build_once",
+      "title": "Build the layer once from its package (interim: Part 2 makes it a write node)",
+      "inputs": [
+        "card",
+        "repo",
+        "package.{item}",
+        "story",
+        "layers"
+      ],
+      "outputs": [
+        "built.{item}"
+      ],
+      "formats": {
+        "built.{item}": "json"
+      },
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.build_done",
+      "title": "Finish the build stage once every layer is built or satisfied",
+      "inputs": [],
+      "outputs": [],
+      "formats": {},
+      "transient": [],
+      "every_run": true,
+      "args": []
+    },
+    {
+      "name": "story.publish",
+      "title": "Open the layers' stacked draft PRs",
+      "inputs": [
+        "card",
+        "repo",
+        "story",
+        "layers"
+      ],
+      "outputs": [
+        "prs"
+      ],
+      "formats": {
+        "prs": "list"
+      },
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.finish",
+      "title": "Post the PR links, move the card to review, finish the stage",
+      "inputs": [
+        "card"
+      ],
+      "outputs": [],
+      "formats": {},
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.refine",
+      "title": "Refine the request into a story, as product (interim: Part 2 makes it an ask node)",
+      "inputs": [
+        "card"
+      ],
+      "outputs": [
+        "story"
+      ],
+      "formats": {
+        "story": "json"
+      },
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.plan_layers",
+      "title": "Split the story into layers, as the architect (interim: Part 2 makes it a conversation node)",
+      "inputs": [
+        "card",
+        "repo",
+        "story",
+        "base",
+        "survey"
+      ],
+      "outputs": [
+        "layers"
+      ],
+      "formats": {
+        "layers": "list"
+      },
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.draft_packages",
+      "title": "Draft every layer's package in one architect conversation (interim: Part 2 splits it)",
+      "inputs": [
+        "repo",
+        "base",
+        "story",
+        "layers",
+        "agreement"
+      ],
+      "outputs": [
+        "drafted",
+        "drafts_session"
+      ],
+      "formats": {
+        "drafted": "bool",
+        "drafts_session": "session"
+      },
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.layer_start",
+      "title": "Begin a layer: the lines out of it say which of its steps are still to run",
+      "inputs": [],
+      "outputs": [],
+      "formats": {},
+      "transient": [],
+      "every_run": true,
+      "args": []
+    },
+    {
+      "name": "story.request",
+      "title": "The card's request as a brief quotes it: its title on one line, its description quoted",
+      "inputs": [
+        "card"
+      ],
+      "outputs": [
+        "request"
+      ],
+      "formats": {
+        "request": "text"
+      },
+      "transient": [
+        "request"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.repo_guide",
+      "title": "The repository guide to the files the story names, at its base (the layer plan's)",
+      "inputs": [
+        "repo",
+        "story",
+        "base"
+      ],
+      "outputs": [
+        "guide"
+      ],
+      "formats": {
+        "guide": "text"
+      },
+      "transient": [
+        "guide"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.scope_guide",
+      "title": "The repository guide to the layers' scope, at the base (the packages' drafting)",
+      "inputs": [
+        "repo",
+        "base",
+        "layers"
+      ],
+      "outputs": [
+        "guide"
+      ],
+      "formats": {
+        "guide": "text"
+      },
+      "transient": [
+        "guide"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.lessons",
+      "title": "The repository's recent lessons (size blocks and how they ran)",
+      "inputs": [],
+      "outputs": [
+        "lessons"
+      ],
+      "formats": {
+        "lessons": "list"
+      },
+      "transient": [
+        "lessons"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.dossier",
+      "title": "The story's dossier: the files its studio runs read so far, at the base",
+      "inputs": [
+        "repo",
+        "base"
+      ],
+      "outputs": [
+        "dossier"
+      ],
+      "formats": {
+        "dossier": "json"
+      },
+      "transient": [
+        "dossier"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.coder_budget",
+      "title": "The coder's steps and context per layer, what a layer is sized to",
+      "inputs": [],
+      "outputs": [
+        "budget"
+      ],
+      "formats": {
+        "budget": "json"
+      },
+      "transient": [
+        "budget"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.layer_sources",
+      "title": "The files the layer changes, as they are at the base",
+      "inputs": [
+        "repo",
+        "base",
+        "layers"
+      ],
+      "outputs": [
+        "sources.{item}"
+      ],
+      "formats": {
+        "sources.{item}": "json"
+      },
+      "transient": [
+        "sources.{item}"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.layer_proof",
+      "title": "The tests the agreement holds for the layer",
+      "inputs": [
+        "agreement",
+        "layers"
+      ],
+      "outputs": [
+        "proof.{item}"
+      ],
+      "formats": {
+        "proof.{item}": "list"
+      },
+      "transient": [
+        "proof.{item}"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.lint_note",
+      "title": "What the repository's linters say a test file must keep to",
+      "inputs": [
+        "repo",
+        "base"
+      ],
+      "outputs": [
+        "lint"
+      ],
+      "formats": {
+        "lint": "text"
+      },
+      "transient": [
+        "lint"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.survey_note",
+      "title": "Keep no notes for a survey that failed, and say so (survey_done), as the story goes on",
+      "inputs": [
+        "survey"
+      ],
+      "outputs": [],
+      "formats": {},
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.refined_note",
+      "title": "Finish refine and tell the card the story, as product",
+      "inputs": [
+        "card",
+        "story"
+      ],
+      "outputs": [],
+      "formats": {},
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.layers_note",
+      "title": "Keep the layer plan and tell the card the layers, as the architect",
+      "inputs": [
+        "card",
+        "layers"
+      ],
+      "outputs": [],
+      "formats": {},
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.amigos_on",
+      "title": "Whether the three amigos meet (story.amigos.enabled)",
+      "inputs": [],
+      "outputs": [
+        "amigos_on"
+      ],
+      "formats": {
+        "amigos_on": "bool"
+      },
+      "transient": [
+        "amigos_on"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.amigos_off",
+      "title": "Whether the three amigos do not meet",
+      "inputs": [],
+      "outputs": [
+        "amigos_off"
+      ],
+      "formats": {
+        "amigos_off": "bool"
+      },
+      "transient": [
+        "amigos_off"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.to_build",
+      "title": "Whether the story goes on to build",
+      "inputs": [
+        "layers",
+        "built",
+        "satisfied"
+      ],
+      "outputs": [
+        "to_build"
+      ],
+      "formats": {
+        "to_build": "bool"
+      },
+      "transient": [
+        "to_build"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.survey_on",
+      "title": "Whether the architect surveys the story first",
+      "inputs": [
+        "survey",
+        "story"
+      ],
+      "outputs": [
+        "survey_on"
+      ],
+      "formats": {
+        "survey_on": "bool"
+      },
+      "transient": [
+        "survey_on"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.is_story_card",
+      "title": "Whether the card carries a story an epic's plan wrote, and none is stored yet",
+      "inputs": [
+        "card",
+        "story"
+      ],
+      "outputs": [
+        "is_story_card"
+      ],
+      "formats": {
+        "is_story_card": "bool"
+      },
+      "transient": [
+        "is_story_card"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.not_story_card",
+      "title": "Whether the card carries no story of its own, or one is stored already",
+      "inputs": [
+        "card",
+        "story"
+      ],
+      "outputs": [
+        "not_story_card"
+      ],
+      "formats": {
+        "not_story_card": "bool"
+      },
+      "transient": [
+        "not_story_card"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.open_layer",
+      "title": "Whether the layer is neither built nor satisfied",
+      "inputs": [
+        "built",
+        "satisfied"
+      ],
+      "outputs": [
+        "open_layer"
+      ],
+      "formats": {
+        "open_layer": "bool"
+      },
+      "transient": [
+        "open_layer"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.not_built",
+      "title": "Whether no layer is built and the packages are not drafted yet",
+      "inputs": [
+        "drafted",
+        "built",
+        "satisfied"
+      ],
+      "outputs": [
+        "not_built"
+      ],
+      "formats": {
+        "not_built": "bool"
+      },
+      "transient": [
+        "not_built"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.has_package",
+      "title": "Whether the open layer has its package ready",
+      "inputs": [
+        "built",
+        "satisfied",
+        "package.{item}"
+      ],
+      "outputs": [
+        "has_package"
+      ],
+      "formats": {
+        "has_package": "bool"
+      },
+      "transient": [
+        "has_package"
+      ],
+      "every_run": false,
+      "args": []
+    }
+  ],
+  "meetings": [
+    {
+      "roles": [
+        "product",
+        "architect",
+        "tester"
+      ],
+      "inputs": [
+        "story",
+        "layers"
+      ]
+    }
+  ],
+  "prompt_files": [
+    "amigos-architect",
+    "amigos-opening",
+    "amigos-product",
+    "amigos-proof-revision",
+    "amigos-tester",
+    "amigos-turn",
+    "audit",
+    "brief-dossier",
+    "brief-files-given",
+    "brief-layer-plan-agents-md",
+    "brief-layer-plan-build-stop",
+    "brief-layer-plan-edit-file",
+    "brief-layer-plan-no-criteria",
+    "brief-layer-size-review",
+    "brief-layers-criteria",
+    "brief-layers-lessons",
+    "brief-layers-rounds",
+    "brief-layers-rules",
+    "brief-layers-sizing",
+    "brief-layers-task",
+    "brief-package-drafts",
+    "brief-package-drafts-tools",
+    "brief-package-earlier-files",
+    "brief-package-existing-tests",
+    "brief-package-lint",
+    "brief-package-next",
+    "brief-package-next-tools",
+    "brief-package-sources",
+    "brief-package-task",
+    "brief-package-task-tools",
+    "brief-proof-revised",
+    "brief-refine-criteria",
+    "brief-refine-task",
+    "brief-reply-again",
+    "brief-survey-notes",
+    "brief-survey-task",
+    "client-bridge",
+    "coder-gate-autofix",
+    "goal-no-tools",
+    "goal-read-tools",
+    "goal-tools",
+    "output-format",
+    "package-contract",
+    "package-critic",
+    "package-tests-rules",
+    "plan-brief",
+    "plan-replan",
+    "specs-consult",
+    "specs-imagine",
+    "specs-mockup-directions",
+    "specs-mockup-look",
+    "specs-mockup-render",
+    "specs-questions",
+    "specs-read",
+    "specs-read-back",
+    "specs-revise",
+    "specs-round-due",
+    "specs-round-more",
+    "specs-round-refused",
+    "story-criteria-revision",
+    "story-survey",
+    "team-assign",
+    "team-handback",
+    "test-rules"
+  ]
+}

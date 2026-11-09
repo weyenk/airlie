@@ -22,10 +22,12 @@ const detail = (over: Partial<WorkflowDetail> = {}): WorkflowDetail => ({
   pr: null,
   ...over,
 });
-const def = (name: string, over: Partial<WorkflowDef> = {}): WorkflowDef => ({ name, type: "story", source: "file", problems: [], pr: null, ...over });
+const def = (name: string, over: Partial<WorkflowDef> = {}): WorkflowDef => ({ name, type: "story", source: "file", problems: [], pr: null, used_by: [], ...over });
 const CATALOG: Catalog = {
   roles: ["architect", "coder", "product", "tester"],
   types: ["ask", "check"],
+  formats: ["text"],
+  kinds: ["text"],
   checks: [{ name: "story.intake", title: "Intake", inputs: ["card", "repo"], outputs: ["report"], formats: { report: "text" }, transient: [], every_run: false, args: [] }],
   meetings: [{ roles: ["product", "architect"], inputs: ["card"] }],
   prompt_files: [],
@@ -300,6 +302,18 @@ test("Delete draft asks first; Keep it keeps it, Delete removes it and goes to t
   await flushPromises();
   expect(api.deleteDraft).toHaveBeenCalledWith("fix");
   expect(router.currentRoute.value.fullPath).toBe("/workflows");
+});
+
+test("a delete the server refuses (409) names the workflows that use the draft and stays", async () => {
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  api.deleteDraft.mockRejectedValueOnce(new ApiError(409, JSON.stringify({ used_by: ["story", "layer"] })));
+  const { w, router } = await open("/workflows/build/fix");
+  await w.get("[data-delete]").trigger("click");
+  await flushPromises();
+  (dialog()!.querySelector("[data-delete-confirm]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe("/workflows/build/fix");
+  expect(w.text()).toContain("used by story, layer");
 });
 
 test("a delete that fails stays and says why; a file or a new canvas has no Delete", async () => {

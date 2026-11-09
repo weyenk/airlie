@@ -1,7 +1,7 @@
 import type { WorkflowDef } from "@/api/workflow_defs";
 import { WORKFLOW_PREFIX, workflowGroups, workflowOf, withWorkflow } from "./workflow";
 
-const def = (name: string, extra: Partial<WorkflowDef> = {}): WorkflowDef => ({ name, type: "story", source: "file", problems: [], pr: null, ...extra });
+const def = (name: string, extra: Partial<WorkflowDef> = {}): WorkflowDef => ({ name, type: "story", source: "file", problems: [], pr: null, used_by: [], ...extra });
 
 test("workflowOf reads the first workflow: label, else the story workflow", () => {
   expect(WORKFLOW_PREFIX).toBe("workflow:");
