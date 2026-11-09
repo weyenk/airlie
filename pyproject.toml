@@ -48,7 +48,7 @@ dev = [
     "ruff>=0.9",
     "mypy>=1.14",
     "types-PyYAML",
-    "mutmut>=3.8.0",
+    "mutmut==3.8.0",  # exact: scripts/mutate_changed.py writes and merges its stats file (mutants/mutmut-stats.json)
     "pytest-xdist>=3.8.0",
     "pytest-playwright>=0.10.0",
     "pytest-timeout>=2.3",

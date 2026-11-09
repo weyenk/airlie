@@ -152,10 +152,14 @@ def test_the_nightly_sweeps_the_enrolled_modules_in_nine_shards_after_a_green_su
     jobs = wf["jobs"]
     assert not (ROOT / ".github" / "workflows" / "mutation-weekly.yml").exists()
     assert "workflow_dispatch" in (wf.get("on") or wf[True])  # PyYAML reads the key `on` as True
-    assert jobs["mutation"]["needs"] == "unit" and "test:unit" in run_text(jobs["unit"])
+    assert jobs["mutation"]["needs"] == ["unit", "mutation-map"] and "test:unit" in run_text(jobs["unit"])
+    assert "needs.unit.result == 'success'" in jobs["mutation"]["if"]  # a failed map job: each shard maps
+    assert jobs["mutation-map"]["needs"] == "unit" and "--build-map" in run_text(jobs["mutation-map"])
     assert len(jobs["mutation"]["strategy"]["matrix"]["shard"]) == 8
     assert "task mutate --" in run_text(jobs["mutation"]) and "--shard" in run_text(jobs["mutation"])
+    assert "--map " in run_text(jobs["mutation"])
     assert "--mac-only" in run_text(jobs["mutation-mac"]) and "needs" not in jobs["mutation-mac"]
+    assert "--split-map" in run_text(jobs["mutation-mac"])
     mac_artifact = [s["with"]["name"] for s in jobs["mutation-mac"]["steps"] if "with" in s]
     assert mac_artifact == ["mutation-shard-mac"]  # picked up by the merge's mutation-shard-* pattern
 

@@ -36,6 +36,20 @@ Sharding (CI runs a matrix of these, then one merge)
   [{"mutant", "status", "function", "diff"}]}; the file exists on every path, empty when a shard could not
   run.
 
+The map of tests to functions (CI builds it once per run, then every shard loads it)
+    uv run python scripts/mutate_changed.py --gate-only --build-map map/   # the map job: build, run nothing
+    uv run python scripts/mutate_changed.py --gate-only --map map/ --shard 2/8
+    uv run python scripts/mutate_changed.py --gate-only --mac-only --split-map
+  Before its first mutant mutmut generates every mutant of src/ and runs the whole unit suite under its
+  tracing (its stats run, one process: it cannot run under xdist) to learn which tests execute which
+  function, and it keeps that map in mutants/mutmut-stats.json. --build-map does both once, the stats run
+  split over --map-workers processes (whole test files, dealt out by test count) and merged into mutmut's own
+  file, and writes it with the generated, compiled mutants and a manifest to DIR. --map DIR starts mutants/
+  from it, so mutmut loads the map and maps only tests it lacks; when the map is missing, unreadable, or was
+  built on another platform, from other files (any tracked file), by another mutmut or under another mutmut
+  config, the run says why and builds its own, split, instead (--split-map, always). A run never goes ahead
+  on a partial map: the merge fails unless every collected test ran in exactly one part.
+
 Enrolment is `[tool.airlie.mutation].enrolled` in pyproject.toml. A mutant no test can catch (it changes
 nothing a caller can see) is listed as an inline table in `equivalent = [...]` under `[tool.airlie.mutation]`,
 `{ mutant = "...", line = "...", reason = "..." }`: its name, the mutated line (the `+` line of `mutmut show`)
@@ -51,17 +65,24 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import fnmatch
+import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
+import time
 import tomllib
 from collections import defaultdict
 from pathlib import Path
+from time import process_time
 from typing import TypedDict
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -442,6 +463,348 @@ def read_stats() -> dict[str, object]:
     return json.loads((ROOT / "mutants" / "mutmut-stats.json").read_text())  # type: ignore[no-any-return]
 
 
+# ---- the map of tests to functions, built once and split across processes ----
+
+MUTMUT_VERSION = "3.8.0"
+"""The mutmut this map code is written against (pinned exactly in pyproject.toml): it calls mutmut's own
+steps in its own processes and writes mutmut's stats file, whose format is mutmut's private business."""
+STATS_FILE = "mutmut-stats.json"
+MAP_MANIFEST = "map.json"
+MUTANTS_ARCHIVE = "mutants.tar.gz"
+STATS_KEYS = frozenset(
+    {
+        "tests_by_mangled_function_name",
+        "duration_by_test",
+        "stats_time",
+        "function_hashes",
+        "function_dependencies",
+        "config_fingerprint",
+        "watched_file_hashes",
+        "git_commit",
+    }
+)
+"""The keys of mutmut 3.8.0's mutants/mutmut-stats.json (mutmut.stats.save_stats; load_stats asserts it read
+every key). tests/unit/test_mutate_changed.py pins them against the installed mutmut."""
+
+
+class MapFailed(Exception):
+    """Building the map did not finish: a red test, a crash, or tests left unmapped."""
+
+
+def map_key() -> dict[str, object]:
+    """What a map must agree on with the runner that loads it. The map is a record of which tests execute
+    which functions *here*: a test runs other code on macOS (mac_functions, the mlx tests), so a map is only
+    good on the platform, mlx install and Python that built it, for exactly these files (every tracked file,
+    as it is in the working tree, so an uncommitted edit changes the key too: the tests read more than src/)
+    and this mutmut."""
+    digest = hashlib.sha256()
+    for path in sorted(git("ls-files")):
+        file = ROOT / path
+        digest.update(path.encode() + b"\0")
+        digest.update(file.read_bytes() if file.is_file() else b"<missing>")
+        digest.update(b"\0")
+    return {
+        "mutmut": MUTMUT_VERSION,
+        "platform": sys.platform,
+        "mlx": HAS_MLX,
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "tree": digest.hexdigest(),
+    }
+
+
+def mutmut_fingerprint() -> dict[str, str]:
+    """mutmut's config fingerprint as `mutmut run` computes it at the root (it reads pyproject.toml there)."""
+    from mutmut.configuration import config, reset_config
+
+    with contextlib.chdir(ROOT):
+        reset_config()
+        try:
+            return config().config_fingerprint()
+        finally:
+            reset_config()
+
+
+def map_slices(tests: list[str], k: int) -> list[list[str]]:
+    """The test files of `tests` (pytest node ids) dealt out over `k` parts by their test count, as shards
+    are dealt out: whole files, so a module-scoped fixture is set up once, in one part. No empty part."""
+    per_file: dict[str, int] = defaultdict(int)
+    for test in tests:
+        per_file[test.split("::")[0]] += 1
+    k = max(1, min(k, len(per_file)))
+    return [part for i in range(k) if (part := shard_of(per_file, (i + 1, k)))]
+
+
+def merge_stats(
+    base: dict[str, object], parts: list[dict[str, object]], tests: list[str]
+) -> dict[str, object]:
+    """One mutmut stats file from the parts' stats runs: the union of the tests each function ran, every
+    test's duration, and the generation step's hashes, fingerprint and baseline (`base`), the same in every
+    part. Raises MapFailed when a test is in two parts, a collected test ran in none (the map would be
+    partial), or no test reached a mutated function."""
+    by_function: dict[str, set[str]] = defaultdict(set)
+    callers: dict[str, set[str]] = defaultdict(set)
+    durations: dict[str, float] = {}
+    seconds = 0.0
+    for part in parts:
+        for name, ids in _mapping(part["tests_by_mangled_function_name"]).items():
+            by_function[name] |= set(ids)
+        for name, ids in _mapping(part["function_dependencies"]).items():
+            callers[name] |= set(ids)
+        part_durations = _mapping(part["duration_by_test"])
+        twice = durations.keys() & part_durations.keys()
+        if twice:
+            raise MapFailed(f"{len(twice)} test(s) ran in two parts, as {sorted(twice)[0]}")
+        durations.update({str(t): float(d) for t, d in part_durations.items()})
+        seconds += float(part.get("stats_time") or 0.0)  # type: ignore[arg-type]
+    missing = sorted(set(tests) - durations.keys())
+    if missing:
+        raise MapFailed(f"{len(missing)} collected test(s) did not run in any part, as {missing[0]}")
+    if not any(by_function.values()):
+        raise MapFailed("no test reached a mutated function")
+    merged: dict[str, object] = {
+        "tests_by_mangled_function_name": {k: sorted(v) for k, v in sorted(by_function.items())},
+        "duration_by_test": dict(sorted(durations.items())),
+        "stats_time": seconds,
+        "function_hashes": base["function_hashes"],
+        "function_dependencies": {k: sorted(v) for k, v in sorted(callers.items())},
+        "config_fingerprint": base["config_fingerprint"],
+        "watched_file_hashes": base["watched_file_hashes"],
+        "git_commit": base["git_commit"],
+    }
+    assert merged.keys() == STATS_KEYS
+    return merged
+
+
+def _mapping(value: object) -> dict[str, object]:
+    assert isinstance(value, dict), value
+    return value
+
+
+def _map_step(*args: str) -> subprocess.Popen[bytes]:
+    """This script in a fresh process, for one step of the map (mutmut keeps its state in globals)."""
+    return subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--map-step", *args], cwd=ROOT)
+
+
+def build_map(workers: int, out: Path | None = None) -> dict[str, object]:
+    """Build mutants/ and mutants/mutmut-stats.json as `mutmut run` would, with the stats run (every unit
+    test, recording the functions each one executes) split over `workers` processes at once; mutmut can only
+    run it in one process, under no xdist. Writes a copy and its manifest (`map_key`, plus the counts) to
+    `out` when given. Raises MapFailed when a step fails or the merged map is partial."""
+    started = time.monotonic()
+    key = map_key()  # of the files as they were when the map started: no test can move it
+    shutil.rmtree(ROOT / "mutants", ignore_errors=True)
+    with tempfile.TemporaryDirectory(prefix="mutation-map-") as tmp:
+        work = Path(tmp)
+        if _map_step("prepare", str(work / "base.json"), str(workers)).wait() != 0:
+            raise MapFailed("generating the mutants or listing the tests failed; see the log above")
+        base = json.loads((work / "base.json").read_text())
+        tests: list[str] = base.pop("tests")
+        slices = map_slices(tests, workers)
+        generated = time.monotonic()
+        steps = []
+        for i, files in enumerate(slices):
+            (work / f"tests-{i}.json").write_text(json.dumps(files))
+            steps.append(_map_step("stats", str(work / f"tests-{i}.json"), str(work / f"part-{i}.json")))
+        codes = [step.wait() for step in steps]
+        if any(codes):
+            raise MapFailed(f"a part's stats run failed (exit codes {codes}); see the log above")
+        parts = [json.loads((work / f"part-{i}.json").read_text()) for i in range(len(slices))]
+    stats = merge_stats(base, parts, tests)
+    (ROOT / "mutants" / STATS_FILE).write_text(json.dumps(stats, indent=1))
+    manifest: dict[str, object] = {
+        **key,
+        "tests": len(tests),
+        "functions": len(stats["tests_by_mangled_function_name"]),  # type: ignore[arg-type]
+        "parts": len(slices),
+        "generate_seconds": round(generated - started, 1),
+        "stats_seconds": round(time.monotonic() - generated, 1),
+    }
+    if out is not None:
+        out.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / "mutants" / STATS_FILE, out / STATS_FILE)
+        pack_mutants(out / MUTANTS_ARCHIVE)
+        (out / MAP_MANIFEST).write_text(json.dumps(manifest, indent=1, sort_keys=True))
+    return manifest
+
+
+def pack_mutants(archive: Path) -> None:
+    """The generated mutants (mutants/src: each mutated file, its .meta and its bytecode), so a runner that
+    starts from the map neither generates nor compiles them (2026-11-09 on a Mac: 169 s to generate, then
+    about 4 minutes for the first pytest process to compile them). mutmut copies the rest of mutants/ (the
+    tests, also_copy) itself on every run."""
+    with tarfile.open(archive, "w:gz", compresslevel=1) as tar:
+        tar.add(ROOT / "mutants" / "src", arcname="mutants/src")
+
+
+def compile_mutants(workers: int) -> None:
+    """Compile mutants/src to bytecode that Python checks by the source's hash, not its time: unpack_mutants
+    gives the sources a new time, and a mutant mutmut regenerates still recompiles (its hash changes)."""
+    import compileall
+    import py_compile
+
+    mode = py_compile.PycInvalidationMode.CHECKED_HASH
+    compileall.compile_dir(ROOT / "mutants" / "src", quiet=1, workers=workers, invalidation_mode=mode)
+
+
+def unpack_mutants(archive: Path) -> bool:
+    """Unpack the map's mutants under the root, each file's time set to now: mutmut regenerates a mutant
+    whose source is newer (create_mutants_for_file), and this checkout's sources are, though they are the
+    same files (map_key). Without the archive, False: mutmut generates them."""
+    if not archive.is_file():
+        return False
+    with tarfile.open(archive, "r:gz") as tar:
+        tar.extractall(ROOT, filter="data")
+    now = time.time()
+    for path in (ROOT / "mutants" / "src").rglob("*"):
+        os.utime(path, (now, now))
+    return True
+
+
+def map_problem(where: Path) -> str | None:
+    """Why the map under `where` cannot be used here, or None when it can: it must exist, have been built for
+    this runner's `map_key`, be in mutmut's format and carry the fingerprint of this mutmut config."""
+    try:
+        manifest = json.loads((where / MAP_MANIFEST).read_text())
+        stats = json.loads((where / STATS_FILE).read_text())
+    except FileNotFoundError:
+        return f"no map at {where}"
+    except (OSError, json.JSONDecodeError) as e:
+        return f"the map at {where} does not read ({e})"
+    key = map_key()
+    for name, value in key.items():
+        if manifest.get(name) != value:
+            return f"it was built for {name} {manifest.get(name)!r}, this runner has {value!r}"
+    if not isinstance(stats, dict) or stats.keys() != STATS_KEYS:
+        return "its stats file is not in the format of mutmut " + MUTMUT_VERSION
+    if stats["config_fingerprint"] != mutmut_fingerprint():
+        return "its mutmut config fingerprint differs from this one"
+    return None
+
+
+def install_map(where: Path) -> bool:
+    """Start mutants/ from the map: mutmut loads mutants/mutmut-stats.json, and then maps only the tests it
+    lacks (none, for a complete map of this tree). True when the generated mutants came with it."""
+    shutil.rmtree(ROOT / "mutants", ignore_errors=True)
+    (ROOT / "mutants").mkdir()
+    with_mutants = unpack_mutants(where / MUTANTS_ARCHIVE)
+    shutil.copyfile(where / STATS_FILE, ROOT / "mutants" / STATS_FILE)
+    return with_mutants
+
+
+def map_job(out: Path, workers: int, report: Path | None) -> int:
+    """`--build-map DIR`: the map for every runner of this platform, or COULD_NOT_RUN when it did not finish
+    (the runners then build their own, and fail the same way if a test is red)."""
+    try:
+        manifest = build_map(workers, out)
+    except MapFailed as e:
+        say([f"could not map the tests to functions: {e}"], report)
+        return COULD_NOT_RUN
+    say([map_line(manifest)], report)
+    return 0
+
+
+def map_line(manifest: dict[str, object]) -> str:
+    return (
+        f"mapped {manifest['tests']} test(s) to {manifest['functions']} function(s) over {manifest['parts']}"
+        f" process(es): mutants in {manifest['generate_seconds']} s, stats in {manifest['stats_seconds']} s"
+    )
+
+
+def start_from_map(where: Path | None, workers: int, report: Path | None) -> str | None:
+    """Start mutants/ from the map under `where` when it fits this runner, else (or with no `where`) from one
+    built here: a run never goes ahead on a map that is missing, for another platform or tree, or partial.
+    Returns why it could not, or None."""
+    problem = map_problem(where) if where is not None else None
+    if where is not None and problem is None:
+        with_mutants = install_map(where)
+        what = "and the mutants " if with_mutants else ""
+        say([f"started from the map of tests to functions {what}at {where}"], report)
+        return None
+    if problem:
+        say([f"the map was not used: {problem}; building this runner's own"], report)
+    try:
+        say([map_line(build_map(workers))], report)
+    except MapFailed as e:
+        say([f"could not map the tests to functions: {e}"], report)
+        return str(e)
+    return None
+
+
+def prepare_step(out: Path, workers: int) -> int:
+    """`--map-step prepare`: mutmut run's generation step (copy, mutate, the change-detection baseline), then
+    the list of tests it would map, written to `out` with the stats file's hashes and fingerprint."""
+    os.chdir(ROOT)
+    import mutmut.__main__ as mm
+    from mutmut.configuration import config
+    from mutmut.runners.harness import PytestRunner
+    from mutmut.state import state
+
+    started = time.monotonic()
+
+    def took(what: str) -> None:
+        print(f"map: {what} by {time.monotonic() - started:.0f} s", flush=True)
+
+    os.makedirs("mutants", exist_ok=True)
+    mm.copy_src_dir()
+    mm.copy_also_copy_files()
+    mm.setup_source_paths()
+    mm.store_lines_covered_by_tests()
+    mm.create_mutants(max(1, workers))
+    took("mutants generated")
+    compile_mutants(max(1, workers))
+    took("mutants compiled")
+    mm._refresh_change_detection_baseline()
+    mm.set_mutant_under_test("list_all_tests")
+    listing = io.StringIO()  # pytest names every test it collects: shown only when collecting fails
+    try:
+        with contextlib.redirect_stdout(listing):
+            tests = sorted(PytestRunner().list_all_tests().ids)
+    except BaseException:
+        print(listing.getvalue())
+        raise
+    took(f"{len(tests)} tests listed")
+    record = {
+        "tests": tests,
+        "function_hashes": state().current_function_hashes,
+        "config_fingerprint": config().config_fingerprint(),
+        "watched_file_hashes": state().watched_file_hashes,
+        "git_commit": state().git_commit,
+    }
+    out.write_text(json.dumps(record))
+    return 0
+
+
+def stats_step(tests_file: Path, out: Path) -> int:
+    """`--map-step stats`: mutmut's stats run (run_stats_collection's set-up and runner) over the test files
+    in `tests_file`, its result written to `out`. The checks on the result are the merge's, over all parts."""
+    os.chdir(ROOT)
+    import mutmut.__main__ as mm
+    from mutmut.configuration import config
+    from mutmut.state import state
+
+    tests = json.loads(tests_file.read_text())
+    mm.setup_source_paths()
+    runner = mm.get_mutant_runner(1)
+    mm.set_mutant_under_test("stats")
+    os.environ["PY_IGNORE_IMPORTMISMATCH"] = "1"
+    os.environ["MUTMUT_DEPENDENCY_DEPTH"] = str(config().dependency_tracking_depth)
+    started = process_time()
+    code = runner.collect_stats(tests)
+    if code != 0:
+        print(f"the stats run over {len(tests)} test file(s) failed: pytest exit code {code}")
+        return 1
+    record = {
+        "tests_by_mangled_function_name": {
+            k: sorted(v) for k, v in state().tests_by_mangled_function_name.items()
+        },
+        "duration_by_test": dict(state().duration_by_test),
+        "function_dependencies": {k: sorted(v) for k, v in state().function_dependencies.items()},
+        "stats_time": process_time() - started,
+    }
+    out.write_text(json.dumps(record))
+    return 0
+
+
 def write_results(
     path: Path | None,
     status: str,
@@ -610,7 +973,38 @@ def main() -> int:
         action="store_true",
         help="mutate only the sources that import mlx (the pipeline's mac job)",
     )
+    ap.add_argument(
+        "--build-map",
+        type=Path,
+        metavar="DIR",
+        help="build the map of tests to functions for this selection into DIR and stop (the map job)",
+    )
+    ap.add_argument(
+        "--map",
+        type=Path,
+        metavar="DIR",
+        help="start from the map --build-map wrote to DIR; when it is missing or not for here, build one",
+    )
+    ap.add_argument(
+        "--split-map",
+        action="store_true",
+        help="build this run's map of tests to functions here, split across processes, before mutmut runs",
+    )
+    ap.add_argument(
+        "--map-workers",
+        type=int,
+        default=os.cpu_count() or 2,
+        help="processes the map's stats run is split over (default: the CPUs)",
+    )
+    ap.add_argument(
+        "--map-step", nargs="+", help=argparse.SUPPRESS
+    )  # one step of build_map, in its own process
     args = ap.parse_args()
+    if args.map_step:
+        step, *rest = args.map_step
+        if step == "prepare":
+            return prepare_step(Path(rest[0]), int(rest[1]))
+        return stats_step(Path(rest[0]), Path(rest[1]))
 
     scope_files = enrolled_files()
     enrolled_modules = {module_name(f) for f in scope_files}
@@ -699,14 +1093,24 @@ def main() -> int:
         say(out, args.report)
         return 0
     say(out, args.report)
+    if args.build_map is not None:
+        return map_job(args.build_map, args.map_workers, args.report)
 
-    shutil.rmtree(ROOT / "mutants", ignore_errors=True)
+    # Started from a map, mutants/ is set up once the run needs it: before the stats are read, or else after
+    # this shard's part of the selection is known (a shard with nothing to run builds no map).
+    mapped = args.map is not None or args.split_map
+    if not mapped:
+        shutil.rmtree(ROOT / "mutants", ignore_errors=True)
     run_extra = ["--max-children", str(args.max_children)] if args.max_children else []
     if test_files and not args.gate_only:
+        if mapped and start_from_map(args.map, args.map_workers, args.report):
+            write_results(args.results, "could_not_run", {}, shard, args.scope)
+            return COULD_NOT_RUN
         # mutmut records which tests execute which functions while it collects stats, so one throwaway
-        # mutant is enough to get that map (and it is run again below if it is selected anyway).
+        # mutant is enough to get that map (and it is run again below if it is selected anyway); a run
+        # started from a map has it already.
         probe = probe_mutant(scope_files)
-        if probe is None or mutmut("run", probe) != 0:
+        if not mapped and (probe is None or mutmut("run", probe) != 0):
             say(
                 ["mutmut could not collect coverage stats (a red unit test?); see the log above"], args.report
             )
@@ -727,6 +1131,10 @@ def main() -> int:
         say(["nothing to mutate in this selection"], args.report)
         write_results(args.results, "nothing", {}, shard, args.scope)
         return 0
+    started_early = test_files and not args.gate_only
+    if mapped and not started_early and start_from_map(args.map, args.map_workers, args.report):
+        write_results(args.results, "could_not_run", {}, shard, args.scope)
+        return COULD_NOT_RUN
 
     if mutmut("run", *run_extra, *globs) != 0:
         say(["mutmut run failed (a red unit test or a crashed run); see the log above"], args.report)

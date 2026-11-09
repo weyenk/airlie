@@ -2,7 +2,8 @@
 
 It waits for the line's two lanes to be free (polling every POLL_S, giving the week up at WAIT_UNTIL_H:00),
 makes a fresh detached worktree of origin/main under ~/.local/state/airlie/mutation, runs
-`scripts/mutate_changed.py --scope project` there and writes the backlog report to `<day>.md` beside
+`scripts/mutate_changed.py --scope project --split-map` there (the map of tests to functions built over
+this Mac's CPUs, not in one process) and writes the backlog report to `<day>.md` beside
 it, keeping the newest KEEP_REPORTS. `caffeinate -w <pid>` keeps the Mac awake while the script runs.
 
 A leftover worktree (a SIGKILL's, a power cut's) is removed first, deleted outright when git no longer
@@ -81,7 +82,7 @@ def run_project(
     try:
         if run(["uv", "sync", "--frozen"], tree) != 0:
             return ProjectRun(code=None, failed="uv sync", stale_base=stale)
-        mutate = ["uv", "run", "python", "scripts/mutate_changed.py", "--scope", "project"]
+        mutate = ["uv", "run", "python", "scripts/mutate_changed.py", "--scope", "project", "--split-map"]
         code = run([*mutate, "--max-children", str(max_children), "--report", str(out / f"{day}.md")], tree)
         return ProjectRun(code=code, stale_base=stale)
     finally:
