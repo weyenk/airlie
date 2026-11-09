@@ -131,23 +131,24 @@ def test_only_a_test_over_the_cpu_budget_twice_fails_the_session_and_both_charge
     out = done.stdout
     assert done.returncode == 1, out
     found = outcomes(tmp_path)
-    # Each test over the budget ran twice, the rest once; the exempt one is never re-run.
-    assert starts(marks) == {"cheap": 1, "busy_twice": 2, "busy_once": 2, "sleeps": 1, "child_burns": 2,
+    # Each test over the budget ran three times (in the session, then alone after it: a warm-up and the
+    # measure), the rest once; the exempt one is never re-measured, and one failing its warm-up stops there.
+    assert starts(marks) == {"cheap": 1, "busy_twice": 3, "busy_once": 3, "sleeps": 1, "child_burns": 3,
                              "fails_on_its_rerun": 2, "busy_exempt": 1}  # fmt: skip
-    assert found["test_busy_twice"][0] == "passed"
-    first, second = (
-        found["test_busy_twice"][1]["airlie_cpu_seconds_first"],
-        found["test_busy_twice"][1]["airlie_cpu_seconds"],
-    )
-    assert first > 0.1 and second > 0.1
-    assert found["test_busy_once"][1]["airlie_cpu_seconds"] < 0.1  # over once, then under: it passes
+    assert all(outcome == "passed" for outcome, _ in found.values())  # the session's own runs all passed
+    first = found["test_busy_twice"][1]["airlie_cpu_seconds"]
+    assert first > 0.1
+    assert found["test_busy_once"][1]["airlie_cpu_seconds"] > 0.1  # over at first, under alone: it passes
     assert found["test_sleeps"][1]["airlie_cpu_seconds"] < 0.1  # a 0.3 s sleep costs no CPU
     assert found["test_child_burns"][1]["airlie_cpu_seconds"] > 0.1  # the child's CPU is charged
-    assert found["test_fails_on_its_rerun"][0] == "failed"  # the re-run's failure is not swallowed
-    section = out[out.index("over the 100 ms CPU budget twice") :]
-    named = [line.split()[-1] for line in section.splitlines()[1:] if " ms  " in line]
-    assert sorted(named) == ["test_work.py::test_busy_twice", "test_work.py::test_child_burns"]
-    assert f"{first * 1000:.0f} ms, {second * 1000:.0f} ms" in section
+    assert "4 over the CPU budget re-measured alone; 1 came in under it" in out
+    section = out[out.index("over the 100 ms CPU budget twice") : out.index("make each one cheaper")]
+    rows = {line.split()[-1]: line for line in section.splitlines()[1:]}
+    assert sorted(rows) == ["test_work.py::test_busy_twice", "test_work.py::test_child_burns",
+                            "test_work.py::test_fails_on_its_rerun"]  # fmt: skip
+    assert rows["test_work.py::test_busy_twice"].strip().startswith(f"{first * 1000:.0f} ms, ")
+    assert " ms alone" in rows["test_work.py::test_busy_twice"]
+    assert "failed when re-measured" in rows["test_work.py::test_fails_on_its_rerun"]  # not swallowed
 
 
 def test_with_no_budget_set_nothing_is_charged_or_run_twice(tmp_path: Path) -> None:

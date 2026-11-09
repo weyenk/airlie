@@ -49,10 +49,11 @@ jobs:
       - uses: ./.github/actions/setup
       # The budget fails the job on a test whose call phase cost over 500 ms of CPU time (the worker's own plus
       # that of the child processes it waited for) twice, that tests/unit/quarantine.toml does not list: a test
-      # over it is run once more at once, and only a second run over it counts (tests/unit/budget.py). CPU time,
-      # not wall clock, so a loaded runner does not stretch it; setup and teardown are not charged, so a worker's
-      # cold imports are not billed to its first test. Time blocked on sleeps or the network is not seen: the
-      # quarantine lists the tests that lean on the real clock.
+      # over it is re-measured once after the session, alone in a pytest of its own (at most 60 s of that), and
+      # only a second measure over it counts (tests/unit/budget.py). CPU time, not wall clock, so a loaded
+      # runner stretches it less; setup and teardown are not charged, so a worker's cold imports are not billed
+      # to its first test. Time blocked on sleeps or the network is not seen: the quarantine lists the tests
+      # that lean on the real clock.
       - run: task test:unit
         env:
           AIRLIE_TEST_BUDGET_MS: "500"

@@ -4,8 +4,8 @@
 # main (d821a99), plus six that went over in later runs of the kept suite with the budget on (one -n 8 run,
 # one serial run); those six carry the ms that run reported. A test whose cases differ is listed case by
 # case. CI's budget (AIRLIE_TEST_BUDGET_MS, tests/unit/budget.py) charges the call phase only, in CPU time (the
-# worker's plus the child processes it waited for), and runs a test over it once more: only a test over it both
-# times fails the run. The ms above are wall clock and stay as they were measured.
+# worker's plus the child processes it waited for), and re-measures a test over it once after the session, alone:
+# only a test over it both times fails the run. The ms above are wall clock and stay as they were measured.
 # clock: <why> = the test leans on the real clock (real sleeps, real timeouts that must fire, elapsed-time
 # asserts, wall-clock polling deadlines, data aged against time.time()), found by reading the suite.
 # A key is a node id without parameters (every case), an exact parametrized node id, or a whole file; a whole
@@ -46,9 +46,6 @@
 "tests/unit/test_fork_orchestrator.py::test_no_child_passes_best_effort_then_max_rounds" = "slow: 850 ms"
 "tests/unit/test_fork_orchestrator.py::test_total_step_cap_ends_the_run" = "slow: 550 ms"
 "tests/unit/test_github_app.py::test_a_revocation_github_holds_on_to_is_let_go_after_revoke_s" = "clock: a real 50 ms REVOKE_S timeout; asserts elapsed < 2 s"
-"tests/unit/test_hybrid_prefix_cache.py::test_a_rotating_clone_written_in_place_leaves_the_original_alone" = "slow: 665 ms (the worker's first mlx import can land on it)"
-"tests/unit/test_hybrid_prefix_cache.py::test_a_store_that_fails_is_a_warning_and_the_prefill_still_returns_its_logits" = "slow: 618 ms (the worker's first mlx import can land on it)"
-"tests/unit/test_hybrid_prefix_cache.py::test_the_patch_replaced_both_prefill_functions_and_the_layer_copy" = "slow: 1020 ms"
 "tests/unit/test_learned_controller.py::test_lts_admission" = "slow: 3590 ms"
 "tests/unit/test_lts_observer.py::test_after_step_returns_before_admission_and_drain_waits" = "clock: real sleeps; asserts elapsed < 0.15 s and >= 0.4 s"
 "tests/unit/test_lts_observer.py::test_injection_is_ranked_by_the_teams_context_and_inlines_once" = "clock: a controller that really sleeps"
@@ -62,7 +59,6 @@
 "tests/unit/test_mcp_server.py::test_planning_that_outlasts_the_window_hands_back_its_job_and_status_shows_the_plan" = "clock: a real 3 s call window ends the call; slow: 2190 ms"
 "tests/unit/test_mcp_server.py::test_status_waits_40_seconds_by_default_and_never_past_the_45_a_call_has" = "clock: a real 10 s call budget"
 "tests/unit/test_mcp_tools.py::test_mcp_tools_are_listed_and_callable" = "slow: 510 ms"
-"tests/unit/test_process.py::test_start_times_out_with_loading_state" = "clock: a real 10 ms start timeout"
 "tests/unit/test_prompt_trace.py" = "slow: every test, up to 800 ms"
 "tests/unit/test_run_layer.py::test_a_populated_layer_runs_pytest_on_its_directory_and_passes_the_exit_code_through" = "slow: 560 ms"
 "tests/unit/test_runs.py::test_stop_on_first_pass_cancels_other_teams" = "clock: races two teams with a real 50 ms sleep"

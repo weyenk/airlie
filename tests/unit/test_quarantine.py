@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.unit.budget import CHARGE, FIRST, Budget
+from tests.unit.budget import CHARGE, Budget
 from tests.unit.conftest import is_quarantined, load_quarantine, stale_entries
 
 
@@ -55,22 +55,45 @@ def test_an_entry_covers_every_case_of_its_test_and_a_file_entry_every_test_in_i
     assert not is_quarantined("tests/unit/test_a.py::test_b[fast]", one_case)
 
 
-def test_the_budget_names_each_test_over_it_twice_that_is_not_quarantined_costliest_first() -> None:
+def test_the_budget_names_each_test_over_it_both_times_that_is_not_quarantined_costliest_first() -> None:
     entries = load_quarantine()
     listed = next(iter(entries))
     budget = Budget(0.5, lambda nodeid: is_quarantined(nodeid, entries))
-    rows = [("tests/unit/test_a.py::cheap", None, 0.1), ("tests/unit/test_a.py::once", 0.7, 0.3),
-            ("tests/unit/test_a.py::twice", 0.7, 0.6), ("tests/unit/test_a.py::twice_more[x]", 0.9, 0.8),
-            (f"{listed}[p]", None, 5.0)]  # fmt: skip
-    for nodeid, first, charge in rows:
-        props = [[CHARGE, charge]] + ([[FIRST, first]] if first is not None else [])  # lists, as from xdist
-        for when in ("setup", "call", "teardown"):  # only the call report carries a charge
-            report = SimpleNamespace(nodeid=nodeid, when=when, duration=9.0, user_properties=props)
+    first = {"tests/unit/test_a.py::cheap": 0.1, "tests/unit/test_a.py::calm_alone": 0.7,
+             "tests/unit/test_a.py::twice": 0.65, "tests/unit/test_a.py::twice_more[x]": 0.9,
+             "tests/unit/test_a.py::left": 0.6, f"{listed}[p]": 5.0}  # fmt: skip
+    for nodeid, charge in first.items():
+        for when in ("setup", "call", "teardown"):  # only the call report's charge is read
+            props = [[CHARGE, 9.0 if when != "call" else charge]]  # lists, as from xdist
+            report = SimpleNamespace(nodeid=nodeid, when=when, passed=True, user_properties=props)
             budget.pytest_runtest_logreport(report)  # type: ignore[arg-type]
-    budget.pytest_runtest_logreport(
-        SimpleNamespace(nodeid="x::failed_setup", when="call", user_properties=[])
-    )  # type: ignore[arg-type]
+    failed = SimpleNamespace(nodeid="x::failed", when="call", passed=False, user_properties=[[CHARGE, 9.0]])
+    budget.pytest_runtest_logreport(failed)  # type: ignore[arg-type]  # a failed call is not re-measured
+    assert budget.offenders() == [
+        "tests/unit/test_a.py::twice_more[x]",
+        "tests/unit/test_a.py::calm_alone",
+        "tests/unit/test_a.py::twice",
+        "tests/unit/test_a.py::left",
+    ]
+    budget.again = {
+        "tests/unit/test_a.py::twice_more[x]": 0.8,
+        "tests/unit/test_a.py::calm_alone": 0.3,
+        "tests/unit/test_a.py::twice": 0.6,
+        "tests/unit/test_a.py::left": "not re-measured (time)",
+    }
     assert budget.over() == [
         ("tests/unit/test_a.py::twice_more[x]", 0.9, 0.8),
-        ("tests/unit/test_a.py::twice", 0.7, 0.6),
+        ("tests/unit/test_a.py::twice", 0.65, 0.6),
+        ("tests/unit/test_a.py::left", 0.6, "not re-measured (time)"),
     ]
+
+
+def test_once_the_re_measure_time_is_spent_the_offenders_left_count_as_over(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("tests.unit.budget.REMEASURE_S", 0.0)
+    budget = Budget(0.5, lambda nodeid: False)
+    report = SimpleNamespace(nodeid="t::slow", when="call", passed=True, user_properties=[[CHARGE, 0.7]])
+    budget.pytest_runtest_logreport(report)  # type: ignore[arg-type]
+    budget.remeasure_all(None)  # type: ignore[arg-type]  # no time left: no pytest is started
+    assert budget.over() == [("t::slow", 0.7, "not re-measured (time)")]
