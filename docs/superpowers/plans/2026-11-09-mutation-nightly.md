@@ -49,7 +49,8 @@ Decisions:
    `release_after_fix` marks the card done once its PR is merged and deployed.
 5. **Whole project, locally (Noah, 2026-11-09, after #272 merged):** a launchd agent runs `--scope project`
    every Sunday at 01:00 in a throwaway worktree of `origin/main`, never the home checkout. On the Mac,
-   vllm-mlx is installed, so the mac-only modules run with the rest, and there is no 4-hour limit. It waits
+   mlx is installed, so the mac-only modules (those that import `mlx`; `HAS_MLX` and `MAC_IMPORT` after #270,
+   which removes vllm-mlx) run with the rest, and there is no 4-hour limit. It waits
    while a lane lock is held, keeps the Mac awake with `caffeinate -i`, and writes the score table to
    `~/.local/state/airlie/mutation/<date>.md`. Its survivors are backlog, not cards: the enrolled modules
    already get cards from the nightly sweep. (Task 6.)
@@ -65,8 +66,10 @@ Decisions:
 - The weekly local run never writes in the home checkout (`~/git/airlie`): mutmut's `mutants/` tree lives in
   its own worktree, and the line keeps running from the home checkout.
 - `--defer-setup` and the nightly sweep must not change what `task mutate:changed` does locally without the flag.
-- #270 also edits `.github/workflows/pipeline.yml` (the 180-minute `mutation-mac` limit). Whichever lands
-  second rebases its edit onto the other's.
+- Build on top of #270 (mlx-vlm becomes the only local engine; vllm-mlx and llama-server leave). It edits
+  `.github/workflows/pipeline.yml` (the 180-minute `mutation-mac` limit) and `scripts/mutate_changed.py`
+  (`HAS_VLLM` becomes `HAS_MLX`; the mac-only rule is files that import `mlx`). Use its names, and never
+  reintroduce vllm-mlx. If #270 has not merged when the build starts, rebase onto it once it does.
 
 ## Review Focus
 
