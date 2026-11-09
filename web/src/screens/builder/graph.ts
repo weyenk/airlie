@@ -108,16 +108,16 @@ function entryOf(edge: GEdge): Line {
 }
 
 /** What a line from `from` to `to` carries: `from`'s output names that `to` reads, in `from`'s order. */
-function carried(from: GNode | undefined, to: GNode | undefined): string[] {
+function carried(graph: Graph, from: GNode | undefined, to: GNode | undefined): string[] {
   if (!from || !to) return [];
   const reads = new Set(inputsOf(to.spec));
-  return outputsOf(from.spec).filter((o) => reads.has(o));
+  return outputsOfNode(graph, from.id).filter((o) => reads.has(o));
 }
 
 /** The graph with every line's artifacts worked out again from its ends' fields. */
 function relabel(graph: Graph): Graph {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
-  return { ...graph, edges: graph.edges.map((e) => ({ ...e, artifacts: carried(byId.get(e.from), byId.get(e.to)) })) };
+  return { ...graph, edges: graph.edges.map((e) => ({ ...e, artifacts: carried(graph, byId.get(e.from), byId.get(e.to)) })) };
 }
 
 /** The boxes and lines of one workflow: a box per node in the file's order, a line per `to` entry. */
@@ -255,22 +255,36 @@ export function renameNode(graph: Graph, id: string, to: string): Graph {
   });
 }
 
+/** The output names a box offers: its declared `outputs`, or, for a bundle box that declares none, the outputs of
+ * the workflow it runs (a `name.{item}` output is `name`). The canvas's ports and `connect`'s check both read this. */
+export function outputsOfNode(graph: Graph, id: string): string[] {
+  const spec = graph.nodes.find((n) => n.id === id)?.spec ?? {};
+  const named = outputsOf(spec);
+  if (named.length) return named;
+  const run = graph.bundles[typeof spec.workflow === "string" ? spec.workflow : ""];
+  return [...new Set((run?.outputs ?? []).map((o) => o.replace(/\.\{item\}$/, "")))];
+}
+
 /** The graph with a line `from` → `to`: each of `artifacts` (outputs of `from`) joins the target's inputs if it
- * is not there yet, and `when` and `loop` say when the line is taken and its bound. A line already between the two
- * boxes is replaced in place. Throws on a box that is not there, an artifact `from` does not write, or a loop
- * without its max. */
+ * is not there yet, and `when` and `loop` say when the line is taken and its bound. A line already between the
+ * two boxes is merged into, in place: the new artifacts join what it carries, and its `when` and `loop` stay
+ * unless this call gives new ones. Throws on a box that is not there, an artifact `from` does not write, or a
+ * loop without its max. */
 export function connect(graph: Graph, from: string, to: string, opts: LineOpts = {}): Graph {
-  const source = nodeOf(graph, from);
+  nodeOf(graph, from);
   nodeOf(graph, to);
   const artifacts = opts.artifacts ?? [];
-  const writes = outputsOf(source.spec);
+  const writes = outputsOfNode(graph, from);
   for (const a of artifacts) if (!writes.includes(a)) throw new Error(`${from} writes no ${a}`);
   if (opts.loop && !hasMax(opts.loop.max)) throw new Error("a loop needs its max");
 
-  const edge: GEdge = { from, to, artifacts: [] };
-  if (opts.when) edge.when = opts.when;
-  if (opts.loop) edge.loop = opts.loop.carry ? { max: opts.loop.max, carry: opts.loop.carry } : { max: opts.loop.max };
   const at = graph.edges.findIndex((e) => e.from === from && e.to === to);
+  const old = at < 0 ? undefined : graph.edges[at];
+  const edge: GEdge = { from, to, artifacts: [] };
+  const when = opts.when ? opts.when : old?.when;
+  if (when) edge.when = when;
+  const loop = opts.loop ?? old?.loop;
+  if (loop) edge.loop = loop.carry ? { max: loop.max, carry: loop.carry } : { max: loop.max };
   const edges = at < 0 ? [...graph.edges, edge] : graph.edges.map((e, i) => (i === at ? edge : e));
   const g = editing(graph, [to], (s) => {
     const have = inputsOf(s);

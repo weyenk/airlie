@@ -34,7 +34,7 @@ test("connect draws the line and adds each artifact it carries to the target's i
   expect(toWorkflow(g).spec.nodes.a.to).toEqual(["b", "c"]);
 });
 
-test("connect adds an input once: a second line between the same nodes replaces the first", () => {
+test("connect adds an input once: a second line between the same nodes is merged into the first", () => {
   let g = connect(small(), "a", "c", { artifacts: ["verdict"] });
   g = connect(g, "a", "c", { artifacts: ["verdict", "notes"], when: "verdict == yes" });
   expect(specOf(g, "c").inputs).toEqual(["verdict", "notes"]);
@@ -200,4 +200,20 @@ test("toWorkflow: the inputs, outputs and nodes in the graph's order; a line is 
   expect(spec.nodes.c).not.toHaveProperty("to");
   expect(layout.a).toEqual({ x: 480, y: 0 });
   expect(toWorkflow(emptyGraph("new")).spec).toEqual({ inputs: ["card", "repo"], outputs: [], nodes: {} });
+});
+
+test("connect merges into the line between a pair: artifacts join, when and loop stay", () => {
+  let g = connect(small(), "a", "c", { artifacts: ["verdict"], when: "verdict == yes" });
+  g = connect(g, "a", "c", { artifacts: ["notes"] });
+  expect(lineOf(g, "a", "c")).toEqual([{ from: "a", to: "c", artifacts: ["verdict", "notes"], when: "verdict == yes" }]);
+  g = connect(g, "a", "c", { artifacts: ["notes"], when: "verdict == no" });
+  expect(lineOf(g, "a", "c")[0].when).toBe("verdict == no");
+});
+
+test("a bundle box with no outputs of its own writes the outputs of the workflow it runs", () => {
+  const layer = fromWorkflow("layer", { inputs: [], outputs: ["drafted", "built.{item}"], nodes: {} });
+  const base = fromWorkflow("w", { inputs: [], outputs: [], nodes: { b: { type: "bundle", workflow: "layer", each: "layers" }, c: { type: "check", run: "x" } } });
+  const g = connect({ ...base, bundles: { layer } }, "b", "c", { artifacts: ["built"] });
+  expect(lineOf(g, "b", "c")[0].artifacts).toEqual(["built"]);
+  expect(() => connect({ ...base, bundles: { layer } }, "b", "c", { artifacts: ["nope"] })).toThrow(/b writes no nope/);
 });

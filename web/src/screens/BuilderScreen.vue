@@ -59,10 +59,11 @@ function openBox(id: string) {
 }
 
 // a wire: one just drawn (no edge yet) or one clicked
-const wire = ref<{ from: string; to: string; edge: GEdge | null } | null>(null);
+/** `opts` are what the canvas drew it with (the artifact of the port it left), kept until the line is made. */
+const wire = ref<{ from: string; to: string; edge: GEdge | null; opts?: LineOpts } | null>(null);
 const wireEnds = computed(() => (wire.value ? { from: nodeOf(wire.value.from), to: nodeOf(wire.value.to) } : null));
-function drawn(from: string, to: string) {
-  wire.value = { from, to, edge: null };
+function drawn(from: string, to: string, opts: LineOpts = {}) {
+  wire.value = { from, to, edge: null, opts };
   selected.value = null;
   selectedEdge.value = null;
 }
@@ -88,7 +89,7 @@ function lineOpts(move: Move, opts: MoveOpts): LineOpts {
 function applyWire(move: Move, opts: MoveOpts) {
   const w = wire.value!;
   // a second line between the same boxes replaces the first
-  if (b.edit((g) => connect(g, w.from, w.to, lineOpts(move, opts)))) closeWire();
+  if (b.edit((g) => connect(g, w.from, w.to, { ...w.opts, ...lineOpts(move, opts) }))) closeWire();
 }
 function dropWire() {
   const e = wire.value?.edge;

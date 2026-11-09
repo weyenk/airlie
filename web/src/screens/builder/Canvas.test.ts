@@ -292,7 +292,7 @@ test("a bundle box that declares no outputs shows the workflow's declared ones",
   const graph = graphOf("workflows:\n  w:\n    nodes:\n      b: {type: bundle, workflow: layer, each: layers}\n");
   const layer = graphOf(LAYER_YAML);
   const w = editable({ ...graph, bundles: { layer } });
-  expect(w.findAll("[data-port=out][data-node=b]").map((p) => p.text())).toEqual(layer.outputs);
+  expect(w.findAll("[data-port=out][data-node=b]").map((p) => p.text())).toEqual(["drafted.{item}", "built.{item}", "satisfied.{item}"]);
 });
 
 test("the selected box shows its card; Edit and a double-click open the box", async () => {
@@ -313,4 +313,87 @@ test("a double-click on a line opens it", async () => {
   const w = editable(graph);
   await w.get("[data-edge-hit][data-from=intake][data-to=base]").trigger("dblclick");
   expect(w.emitted("openEdge")).toEqual([[graph.edges.find((e) => e.from === "intake" && e.to === "base")]]);
+});
+
+// ---- fix round 1 ----
+
+test("a drag from the layer bundle's built port to a downstream box connects with built", async () => {
+  const graph = graphOf(STORY_YAML);
+  const w = editable(graph);
+  const to = pos(graph, "story_card");
+  await press(w.get("[data-port=out][data-node=build_layers][data-artifact=built]"), 0, 0);
+  pointer("pointerup", to.x + 60, to.y + 20);
+  expect(w.emitted("connect")).toEqual([["build_layers", "story_card", { artifacts: ["built"] }]]);
+});
+
+test("a bundle box that declares no outputs offers the workflow's, and a drag from one connects", async () => {
+  const graph = graphOf("workflows:\n  w:\n    nodes:\n      b: {type: bundle, workflow: layer, each: layers}\n      c: {type: check, run: x.c}\n");
+  const layer = graphOf(LAYER_YAML);
+  const w = editable({ ...graph, bundles: { layer } });
+  const to = pos(graph, "c");
+  await press(w.get("[data-port=out][data-node=b][data-artifact=built]"), 0, 0);
+  pointer("pointerup", to.x + 60, to.y + 20);
+  expect(w.emitted("connect")).toEqual([["b", "c", { artifacts: ["built"] }]]);
+});
+
+test("read-only, a click shows no box card", async () => {
+  const w = mountCanvas(graphOf(STORY_YAML), "gate");
+  expect(w.find("[data-box-card]").exists()).toBe(false);
+});
+
+test("the box card stays inside the canvas, even for the lowest box", () => {
+  const graph = graphOf(STORY_YAML);
+  const lowest = [...graph.nodes].sort((a, b) => b.y - a.y)[0];
+  const w = editable(graph, { selected: lowest.id });
+  const canvas = w.get("[data-canvas]").attributes("style") ?? "";
+  const height = Number(/height: ([\d.]+)px/.exec(canvas)![1]);
+  const width = Number(/width: ([\d.]+)px/.exec(canvas)![1]);
+  const style = w.get("[data-box-card]").attributes("style") ?? "";
+  expect(Number(/top: ([\d.]+)px/.exec(style)![1])).toBeLessThan(height);
+  expect(Number(/left: ([\d.]+)px/.exec(style)![1])).toBeLessThan(width);
+});
+
+test("a line whose first artifact is not one of the source's ports leaves from the edge port", () => {
+  const text = "workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a, outputs: {one: text, two: text}, to: [b]}\n      b: {type: check, run: x.b, inputs: [one]}\n";
+  const graph = graphOf(text);
+  const stray = { ...graph, edges: graph.edges.map((e) => ({ ...e, artifacts: ["ghost"] })) };
+  const w = editable(stray);
+  const edgeTop = Number(/top: ([\d.]+)px/.exec(w.get("[data-port=edge][data-node=a]").attributes("style") ?? "")![1]);
+  expect(w.get("[data-edge=line][data-from=a]").attributes("d")).toMatch(new RegExp(`^M 144 ${edgeTop} `));
+});
+
+test("the ports of a box do not overlap", () => {
+  const text = "workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a, outputs: {one: text, two: text, three: text}}\n";
+  const w = editable(graphOf(text));
+  const tops = w
+    .findAll("[data-node=a]")
+    .filter((p) => ["out", "edge"].includes(p.attributes("data-port") ?? ""))
+    .map((p) => Number(/top: ([\d.]+)px/.exec(p.attributes("style") ?? "")![1]));
+  for (let i = 1; i < tops.length; i++) expect(tops[i]).toBeGreaterThanOrEqual(tops[i - 1] + 12); // a port is 12 px tall
+});
+
+test("labels read exactly: the artifact, the condition and order, the loop", () => {
+  const w = editable(graphOf(STORY_YAML));
+  const label = (from: string, to: string) => w.get(`[data-edge=line][data-from=${from}][data-to=${to}]`).element.parentElement!.querySelector("[data-edge-label]")!.textContent;
+  expect(label("survey", "survey_note")).toBe("survey");
+  expect(label("gate", "request")).toBe("if config.story.survey · order");
+  expect(label("intake", "base")).toBe("order");
+  const layer = editable(graphOf(LAYER_YAML));
+  const loop = layer.get("[data-edge=loop]");
+  expect(loop.element.parentElement!.querySelector("[data-edge-label]")!.textContent).toMatch(/^(if .+ · )?.+ · loop ×\S+$/);
+});
+
+test("a cancelled pointer clears the wire being drawn: no preview line, no connect", async () => {
+  const graph = graphOf(STORY_YAML);
+  const w = editable(graph);
+  const to = pos(graph, "refine");
+  await press(w.get("[data-port=out][data-node=survey]"), 0, 0);
+  pointer("pointermove", to.x + 60, to.y + 20);
+  await w.vm.$nextTick();
+  expect(w.find("[data-wire-draft]").exists()).toBe(true);
+  window.dispatchEvent(new PointerEvent("pointercancel"));
+  await w.vm.$nextTick();
+  expect(w.find("[data-wire-draft]").exists()).toBe(false);
+  pointer("pointerup", to.x + 60, to.y + 20); // the listeners are gone
+  expect(w.emitted("connect")).toBeUndefined();
 });

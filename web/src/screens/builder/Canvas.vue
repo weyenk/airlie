@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, useId, useTemplateRef } from "vue";
 import BoxCard from "./BoxCard.vue";
 import BuilderBox from "./BuilderBox.vue";
-import { inputsOf, outputsOf } from "./graph";
+import { inputsOf, outputsOfNode } from "./graph";
 import type { GEdge, GNode, Graph, LineOpts, NodeType } from "./graph";
 
 defineOptions({ name: "AirlieBuilderCanvas" });
@@ -51,23 +51,23 @@ const placeOf = (id: string, x: number, y: number) => (drag.value?.id === id ? {
 const at = computed(() => new Map(props.graph.nodes.map((n) => [n.id, ((p) => ({ x: p.x + PAD, y: p.y + PAD }))(placeOf(n.id, n.x, n.y))])));
 
 type Port = { artifact: string; label: string };
-/** A box's out-ports: one per output it declares (a bundle box's `name.{item}` when it runs once per item; the
- * bundle workflow's declared outputs when the box declares none). The edge port is drawn after them. */
+/** A box's out-ports: one per output it offers (`outputsOfNode`, the list `connect` checks against); a bundle box
+ * that runs once per item shows each as `name.{item}`. The edge port is drawn after them. */
 function portsOf(n: GNode): Port[] {
   const each = n.type === "bundle" && !!n.spec.each;
-  const named = outputsOf(n.spec);
-  if (named.length) return named.map((artifact) => ({ artifact, label: each ? `${artifact}.{item}` : artifact }));
-  const run = props.graph.bundles[typeof n.spec.workflow === "string" ? n.spec.workflow : ""];
-  return (run?.outputs ?? []).map((o) => ({ artifact: o.replace(/\.\{item\}$/, ""), label: o }));
+  return outputsOfNode(props.graph, n.id).map((artifact) => ({ artifact, label: each ? `${artifact}.{item}` : artifact }));
 }
 const PORT_STEP = 16;
+const CARD_W = 220;
+const CARD_H = 44;
 const ports = computed(() => new Map(props.graph.nodes.map((n) => [n.id, portsOf(n)])));
 /** A box is taller when it has more ports than fit down its right edge. */
 const hOf = (id: string) => Math.max(H, 12 + PORT_STEP * ((ports.value.get(id)?.length ?? 0) + 1));
 /** Where a port sits down a box's right edge: the outputs in order, the edge port last. */
 const portY = (id: string, artifact: string | null) => {
   const list = ports.value.get(id) ?? [];
-  const i = artifact === null ? list.length : Math.max(0, list.findIndex((p) => p.artifact === artifact));
+  const found = artifact === null ? -1 : list.findIndex((p) => p.artifact === artifact);
+  const i = found < 0 ? list.length : found; // a name that is no port of the box leaves from its edge port
   const n = list.length + 1;
   return (at.value.get(id)?.y ?? 0) + hOf(id) / 2 + (i - (n - 1) / 2) * PORT_STEP;
 };
@@ -77,7 +77,7 @@ const size = computed(() => {
   const room = props.readonly ? 0 : 160;
   const pts = props.graph.nodes.map((n) => at.value.get(n.id)!);
   const bottom = Math.max(0, ...props.graph.nodes.map((n) => at.value.get(n.id)!.y - PAD + hOf(n.id)));
-  return { width: Math.max(0, ...pts.map((p) => p.x - PAD)) + W + 2 * PAD + room, height: bottom + 2 * PAD + loops + room / 2 };
+  return { width: Math.max(0, ...pts.map((p) => p.x - PAD)) + W + 2 * PAD + room, height: bottom + 2 * PAD + loops + room / 2 + (props.readonly ? 0 : CARD_H) };
 });
 
 type Wire = { key: string; edge: GEdge; d: string; selected: boolean; label: { x: number; y: number; text: string } };
@@ -108,6 +108,12 @@ const wires = computed<Wire[]>(() =>
     return [{ key: `${i}-${edge.from}-${edge.to}`, edge, d, selected: same(edge, props.selectedEdge), label: { ...label, text: labelOf(edge) } }];
   }),
 );
+
+/** Where a box's card sits: under the box, kept inside the canvas (whose size reserves room for it). */
+function cardAt(id: string) {
+  const p = at.value.get(id)!;
+  return { left: `${Math.max(0, Math.min(p.x, size.value.width - CARD_W))}px`, top: `${Math.max(0, Math.min(p.y + hOf(id) + 6, size.value.height - CARD_H))}px` };
+}
 
 /** An in-port's hover: what the box reads; a bundle box's, what its workflow is handed. */
 function inTitle(n: GNode): string {
@@ -332,10 +338,10 @@ function onDrop(e: DragEvent) {
         ></span>
       </template>
       <BoxCard
-        v-if="selected === n.id && !drag?.moved"
+        v-if="!readonly && selected === n.id && !drag?.moved"
         :node="n"
         class="absolute z-30"
-        :style="{ left: `${at.get(n.id)!.x}px`, top: `${at.get(n.id)!.y + hOf(n.id) + 6}px` }"
+        :style="cardAt(n.id)"
         @edit="emit('open', n.id)"
       />
     </template>

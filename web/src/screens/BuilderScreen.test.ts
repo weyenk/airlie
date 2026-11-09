@@ -115,6 +115,15 @@ test("a click on a box shows its fields in the side panel", async () => {
   expect(w.get("[data-box][data-node=survey]").attributes("aria-pressed")).toBe("true");
 });
 
+
+test("a line drawn from an artifact port carries that artifact once the wire is confirmed", async () => {
+  const { w } = await open();
+  w.findComponent({ name: "AirlieBuilderCanvas" }).vm.$emit("connect", "survey", "refine", { artifacts: ["survey"] });
+  await flushPromises();
+  await w.get("[data-wire-apply]").trigger("click");
+  await flushPromises();
+  expect(w.get("[data-edge-hit][data-from=survey][data-to=refine] title").text()).toMatch(/^survey: survey/);
+});
 test("the YAML tab shows the definition's text", async () => {
   const { w } = await open();
   expect(w.find("[data-yaml]").exists()).toBe(false);
