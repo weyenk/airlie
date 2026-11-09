@@ -10,6 +10,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -273,12 +274,25 @@ def test_the_gh_directory_goes_when_its_process_exits_and_not_when_a_fork_of_it_
     assert alive == "True" and not Path(made).exists(), out.stderr
 
 
-async def test_killing_a_group_that_is_already_gone_is_no_error() -> None:
+@pytest.mark.parametrize("error", [ProcessLookupError, PermissionError])
+async def test_killing_a_group_that_is_already_gone_is_no_error(
+    monkeypatch: pytest.MonkeyPatch, error: type[OSError]
+) -> None:
+    """ESRCH (no such group) or EPERM (the id was reused by a group that is not ours) is no error. The
+    kernel's answer is injected: a real reaped pid can be reused at any moment under load."""
     proc = await asyncio.create_subprocess_exec(
         "true", stdout=asyncio.subprocess.PIPE, start_new_session=True
     )
-    await asyncio.wait_for(proc.wait(), 10)  # reaped: there is no group left to kill
+    await asyncio.wait_for(proc.wait(), 10)
+    seen: list[tuple[int, int]] = []
+
+    def refuse(pgid: int, sig: int) -> None:
+        seen.append((pgid, sig))
+        raise error
+
+    monkeypatch.setattr(subproc.os, "killpg", refuse)
     await asyncio.wait_for(subproc.kill_group(proc), 10)
+    assert seen == [(proc.pid, signal.SIGKILL)]
 
 
 async def test_draining_stops_when_a_process_outside_the_group_holds_the_pipe(

@@ -174,7 +174,9 @@ async def kill_group(proc: asyncio.subprocess.Process) -> None:
     """SIGKILL a command and everything it started (start it with `start_new_session=True`: its own process
     group), then read its pipes until they close, for DRAIN_S at most. A command left running would go on
     (pushing, or holding the pipes), and output that nobody reads keeps the command from being reaped."""
-    with contextlib.suppress(ProcessLookupError):  # nothing of it is left
+    # ESRCH: nothing of it is left. EPERM: the id now belongs to a group we did not start (or, on macOS, to
+    # a zombie): the kernel refused, so nothing was signalled, and our group is gone either way.
+    with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(proc.pid, signal.SIGKILL)
     with contextlib.suppress(TimeoutError):  # something that left the group still holds a pipe
         await asyncio.wait_for(proc.communicate(), DRAIN_S)
