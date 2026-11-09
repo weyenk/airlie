@@ -11,14 +11,15 @@ import { deleteDraft } from "@/api/workflow_defs";
 import { useCardDraftStore } from "@/stores/card_draft";
 import { useWorkflowDefs } from "./board/workflow";
 import Canvas from "./builder/Canvas.vue";
-import { canRemove, connect, isChild, moveNode, readable, removeEdge, removeNode, renameNode, updateNode } from "./builder/graph";
-import type { GEdge, Move, MoveOpts, NodeSpec } from "./builder/graph";
+import { connect, moveNode, readable, removeEdge, removeNode, renameNode, updateNode } from "./builder/graph";
+import type { GEdge, LineOpts, NodeSpec } from "./builder/graph";
 import NodeForm from "./builder/NodeForm.vue";
 import Palette from "./builder/Palette.vue";
 import Problems from "./builder/Problems.vue";
 import SaveDialog from "./builder/SaveDialog.vue";
 import { useBuilder } from "./builder/useBuilder";
 import WireForm from "./builder/WireForm.vue";
+import type { Move, MoveOpts } from "./builder/WireForm.vue";
 import WorkflowForm from "./builder/WorkflowForm.vue";
 
 /** The builder (`/workflows/build/<name>`, or `new` for an empty canvas): the palette, the workflow drawn as boxes
@@ -68,9 +69,20 @@ function closeWire() {
   wire.value = null;
   selectedEdge.value = null;
 }
+/** The old wire form's move as a v2 line (until the wire modal replaces the form): a loop keeps its bound (its
+ * `when` the line's), a branch value becomes the line's condition. */
+function lineOpts(move: Move, opts: MoveOpts): LineOpts {
+  if (move === "loop" && opts.loop) {
+    const { when, ...loop } = opts.loop;
+    return when ? { loop, when } : { loop };
+  }
+  if (move === "branch" && opts.branch) return { when: `${opts.branch.on} == ${opts.branch.value}` };
+  return {};
+}
 function applyWire(move: Move, opts: MoveOpts) {
   const w = wire.value!;
-  if (b.edit((g) => connect(w.edge ? removeEdge(g, w.edge) : g, w.from, w.to, move, opts))) closeWire();
+  // a second line between the same boxes replaces the first
+  if (b.edit((g) => connect(g, w.from, w.to, lineOpts(move, opts)))) closeWire();
 }
 function dropWire() {
   const e = wire.value?.edge;
@@ -113,9 +125,10 @@ async function saveClick() {
   }
   await saveAs(detail.value?.name ?? name.value, graph.value.type);
 }
-/** The workflow's own fields (type, loose, start), from the panel shown while nothing is selected. */
+/** The workflow's own fields (its type, and its inputs, which the old form calls loose), from the panel shown
+ * while nothing is selected. */
 function updateWorkflow(change: { type?: string | null; loose?: string[]; start?: string }) {
-  b.edit((g) => ({ ...g, ...change }));
+  b.edit((g) => ({ ...g, ...(change.type !== undefined ? { type: change.type } : {}), ...(change.loose ? { inputs: change.loose } : {}) }));
 }
 
 // Delete draft: asked first; the draft goes (an edit of a file leaves the file as it is) and the builder returns
@@ -269,10 +282,10 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
           :from="wireEnds.from"
           :to="wireEnds.to"
           :existing="wire.edge"
-          :removable="wire.edge ? canRemove(graph, wire.edge) : false"
+          :removable="!!wire.edge"
           :bundles="bundles"
           :predicates="catalog.predicates"
-          :from-child="isChild(graph, wire.from)"
+          :from-child="false"
           @apply="applyWire"
           @remove="dropWire"
           @cancel="closeWire"
@@ -293,9 +306,9 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
         <WorkflowForm
           v-else
           :type="graph.type"
-          :loose="graph.loose"
-          :start="graph.start"
-          :nodes="graph.nodes.filter((n) => !isChild(graph, n.id)).map((n) => n.id)"
+          :loose="graph.inputs"
+          start=""
+          :nodes="[]"
           :types="cardTypes"
           @update="updateWorkflow"
         />

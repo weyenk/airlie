@@ -1,8 +1,15 @@
+<script lang="ts">
+// The old schema's five moves, kept only until the wire modal (Task 5) replaces this form: BuilderScreen turns a
+// move into a v2 line (a loop bound, a branch's condition as `when`).
+export type Move = "sequence" | "parallel" | "loop" | "branch" | "each";
+export type MoveOpts = { loop?: { max: number | string; when?: string; carry?: string }; branch?: { on: string; value: string }; each?: { workflow: string } };
+const MOVES: readonly Move[] = ["sequence", "parallel", "loop", "branch", "each"];
+</script>
+
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { Button } from "@/components/ui/button";
-import { CHILD_DROPS, MOVES } from "./graph";
-import type { GEdge, GNode, Move, MoveOpts } from "./graph";
+import type { GEdge, GNode } from "./graph";
 
 defineOptions({ name: "AirlieBuilderWireForm" });
 
@@ -44,22 +51,22 @@ const value = ref("");
 const workflow = ref("");
 
 const outputs = computed(() => (typeof props.from.spec.outputs === "object" && props.from.spec.outputs !== null ? Object.keys(props.from.spec.outputs) : []));
-const eachBox = computed(() => (props.to.type === "each" ? props.to : props.from.type === "each" ? props.from : null));
+const eachBox = computed(() => (props.to.type === "bundle" ? props.to : props.from.type === "bundle" ? props.from : null));
 
 function reset() {
   const e = props.existing;
-  move.value = e?.kind ?? "sequence";
+  move.value = e?.loop ? "loop" : "sequence";
   max.value = e?.loop ? String(e.loop.max) : "";
-  when.value = e?.loop?.when ?? "";
+  when.value = e?.when ?? "";
   carry.value = e?.loop?.carry ?? "";
-  on.value = e?.kind === "branch" && typeof props.from.spec.on === "string" ? props.from.spec.on : "";
-  value.value = e?.kind === "branch" ? (e.label ?? "") : "";
+  on.value = "";
+  value.value = "";
   workflow.value = typeof eachBox.value?.spec.workflow === "string" ? eachBox.value.spec.workflow : "";
 }
 watch(() => [props.from, props.to, props.existing], reset, { immediate: true });
 
 /** What a parallel move drops from the target, which as a child may carry none of it. */
-const clears = computed(() => [...CHILD_DROPS.filter((k) => props.to.spec[k] !== undefined), ...(typeof props.to.spec.on_fail === "object" && props.to.spec.on_fail !== null ? ["on_fail loop"] : [])]);
+const clears = computed<string[]>(() => []); // schema v2 has no parallel child to clear
 
 const opts = computed<MoveOpts | null>(() => {
   if (props.fromChild) return null;

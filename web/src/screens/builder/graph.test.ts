@@ -1,104 +1,106 @@
+// The graph read from the shipped workflow files (schema v2): a box per node, a line per `to` entry carrying the
+// artifacts its source writes and its target reads.
 import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
-import { fromWorkflow } from "./graph";
-import type { GEdge, Graph } from "./graph";
+import { fromWorkflow, KINDS, NODE_TYPES } from "./graph";
+import type { Graph } from "./graph";
+import { SHAPE, shapeOf } from "./shapes";
 import { parseWorkflow } from "./yaml";
 
 const graphOf = (text: string): Graph => {
   const { name, spec, layout } = parseWorkflow(text);
   return fromWorkflow(name, spec, layout);
 };
-const edgesOf = (g: Graph, kind: GEdge["kind"]) => g.edges.filter((e) => e.kind === kind).map((e) => `${e.from}>${e.to}`);
-const outOf = (g: Graph, id: string) => g.edges.filter((e) => e.from === id);
+const line = (g: Graph, from: string, to: string) => g.edges.filter((e) => e.from === from && e.to === to);
+const lines = (g: Graph) => g.edges.map((e) => `${e.from}>${e.to}`);
 
-test("the shipped story workflow: a node per entry, in the file's order, with its type, start and loose names", () => {
+test("the node types are schema v2's: no parallel or each, a team and a bundle", () => {
+  expect(NODE_TYPES).toEqual(["ask", "conversation", "write", "meeting", "team", "check", "gate", "bundle"]);
+  expect(KINDS).toEqual(["text", "number", "bool", "list of …", "one of …"]);
+});
+
+test("the shipped story workflow: a node per entry, in the file's order, with its type, inputs and fields", () => {
   const g = graphOf(STORY_YAML);
   expect(g.name).toBe("story");
   expect(g.type).toBe("story");
-  expect(g.start).toBe("intake");
-  expect(g.loose).toEqual(["card", "repo"]);
-  // every entry under nodes: (the plan said 17; the shipped file has 19, survey and refine counted)
+  expect(g.inputs).toEqual(["card", "repo"]);
+  expect(g.outputs).toEqual([]);
   expect(g.nodes.map((n) => n.id)).toEqual([
-    "intake", "base", "gate", "take_card_as_story", "plan_story", "survey", "refine", "costed_refine", "layers", "costed_plan",
-    "agree_plain", "amigos", "costed_amigos", "planned", "build_layers", "built", "publish", "costed_publish", "review",
+    "intake", "base", "to_build", "gate", "request", "story_card", "take_card_as_story", "refine", "survey", "survey_note", "costed_refine",
+    "layers", "costed_plan", "agree_plain", "amigos", "costed_amigos", "planned", "build_layers", "built", "publish", "costed_publish", "review",
   ]);
-  expect(g.nodes.find((n) => n.id === "base")).toMatchObject({ type: "check", spec: { run: "story.base", outputs: { base: "json" } } });
-  expect(g.nodes.find((n) => n.id === "base")?.spec).not.toHaveProperty("type");
+  const base = g.nodes.find((n) => n.id === "base")!;
+  expect(base).toMatchObject({ type: "check", spec: { run: "story.base", inputs: ["card", "repo"], outputs: { base: "json" } } });
+  expect(base.spec).not.toHaveProperty("type");
+  expect(base.spec).not.toHaveProperty("to"); // the lines are the edges
+  expect(g.nodes.find((n) => n.id === "to_build")!.spec.outputs).toEqual({ to_build: { format: "bool", transient: true } });
 });
 
-test("plan_story fans out to refine and survey, which both rejoin at costed_refine; nothing else wires to them", () => {
+test("a line per to entry, in the file's order", () => {
   const g = graphOf(STORY_YAML);
-  expect(edgesOf(g, "parallel")).toEqual(["plan_story>refine", "plan_story>survey", "refine>costed_refine", "survey>costed_refine"]);
-  expect(outOf(g, "plan_story").every((e) => e.kind === "parallel")).toBe(true);
-  expect(g.edges.filter((e) => e.kind !== "parallel" && ["refine", "survey"].includes(e.to))).toEqual([]);
-  expect(edgesOf(g, "sequence")).toContain("take_card_as_story>plan_story");
-});
-
-test("the sequence follows the file's order, the last node going nowhere", () => {
-  const g = graphOf(STORY_YAML);
-  expect(edgesOf(g, "sequence")).toEqual([
-    "intake>base", "base>gate", "gate>take_card_as_story", "take_card_as_story>plan_story", "costed_refine>layers", "layers>costed_plan",
-    "costed_plan>agree_plain", "agree_plain>amigos", "amigos>costed_amigos", "costed_amigos>planned", "planned>build_layers",
-    "build_layers>built", "built>publish", "publish>costed_publish", "costed_publish>review",
+  expect(g.edges).toHaveLength(30);
+  expect(lines(g).slice(0, 9)).toEqual([
+    "intake>base", "base>to_build", "base>build_layers", "to_build>gate", "to_build>request", "to_build>story_card",
+    "gate>request", "gate>story_card", "gate>build_layers",
   ]);
-  expect(outOf(g, "review")).toEqual([]);
+  expect(g.edges.filter((e) => e.from === "review")).toEqual([]);
 });
 
-test("build_layers is one each node naming its bundle", () => {
+test("a line carries the outputs of its source that its target reads", () => {
+  const g = graphOf(STORY_YAML);
+  expect(line(g, "survey", "survey_note")).toEqual([{ from: "survey", to: "survey_note", artifacts: ["survey"] }]);
+  expect(line(g, "base", "build_layers")[0].artifacts).toEqual(["base"]);
+  expect(line(g, "gate", "build_layers")[0].artifacts).toEqual(["gate"]);
+  // in the source's order, every output the bundle reads
+  expect(line(g, "amigos", "build_layers")[0].artifacts).toEqual(["agreement", "story", "layers"]);
+});
+
+test("a line that carries nothing is an ordering line", () => {
+  const g = graphOf(STORY_YAML);
+  expect(line(g, "intake", "base")).toEqual([{ from: "intake", to: "base", artifacts: [] }]);
+  expect(line(g, "base", "to_build")[0].artifacts).toEqual([]); // to_build reads no base
+  expect(line(g, "request", "story_card")[0].artifacts).toEqual([]);
+});
+
+test("a condition is the line's when; two lines out of one node are two edges", () => {
+  const g = graphOf(STORY_YAML);
+  expect(line(g, "to_build", "gate")).toEqual([{ from: "to_build", to: "gate", artifacts: [], when: "to_build" }]);
+  expect(line(g, "to_build", "story_card")[0]).not.toHaveProperty("when");
+  expect(line(g, "story_card", "refine")).toEqual([{ from: "story_card", to: "refine", artifacts: [], when: "not is_story_card" }]);
+  expect(line(g, "story_card", "survey")).toEqual([
+    { from: "story_card", to: "survey", artifacts: [], when: "not is_story_card and config.story.survey and not survey exists and not story exists" },
+  ]);
+  expect(line(g, "gate", "request")).toHaveLength(1);
+  expect(line(g, "gate", "story_card")).toHaveLength(1);
+});
+
+test("build_layers is a bundle node naming its workflow and the list it runs over", () => {
   const n = graphOf(STORY_YAML).nodes.find((x) => x.id === "build_layers");
-  expect(n).toMatchObject({ type: "each", spec: { over: "layers", workflow: "layer" } });
+  expect(n).toMatchObject({ type: "bundle", spec: { workflow: "layer", each: "layers", outputs: { built: "json", satisfied: "json" } } });
 });
 
-test("a loop is a loop wire back to its target carrying its max and carry, and the sequence still goes on", () => {
+test("the layer bundle: its inputs and outputs, item-scoped artifacts as written, and a loop line with its bound", () => {
   const g = graphOf(LAYER_YAML);
   expect(g.type).toBeNull();
-  expect(g.edges.filter((e) => e.kind === "loop")).toEqual([{ from: "build", to: "package", kind: "loop", loop: { max: "story.layer_attempts", carry: "feedback" } }]);
-  expect(edgesOf(g, "sequence")).toContain("build>costed_layer");
+  expect(g.inputs).toEqual(["card", "repo", "story", "layers", "base", "gate", "agreement"]);
+  expect(g.outputs).toEqual(["drafted", "built.{item}", "satisfied.{item}"]);
+  expect(line(g, "package", "build")).toEqual([{ from: "package", to: "build", artifacts: ["package.{item}"], when: "package.{item} exists and not satisfied.{item} exists" }]);
+  expect(line(g, "drafts", "package")[0].artifacts).toEqual(["drafts_session"]);
+  expect(line(g, "build", "package")).toEqual([{ from: "build", to: "package", artifacts: [], loop: { max: "story.layer_attempts", carry: "feedback" } }]);
+  expect(line(g, "build", "costed_layer")).toEqual([{ from: "build", to: "costed_layer", artifacts: [] }]);
 });
 
-const SMALL = `workflows:
-  w:
-    start: a
-    nodes:
-      a:
-        type: check
-        run: x.a
-        on: verdict
-        branch: {yes: c, no: d}
-      b:
-        type: check
-        run: x.b
-      c:
-        type: check
-        run: x.c
-        next: e
-        on_fail: {to: a, max: 2, when: x.retry}
-      d:
-        type: check
-        run: x.d
-        on: verdict
-        branch: {"*": e}
-      e:
-        type: gate
-        run: x.e
-`;
-
-test("a branch is a wire per value, labelled; without a * default the node still falls through", () => {
-  const g = graphOf(SMALL);
-  expect(g.edges.filter((e) => e.kind === "branch")).toEqual([
-    { from: "a", to: "c", kind: "branch", label: "yes" },
-    { from: "a", to: "d", kind: "branch", label: "no" },
-    { from: "d", to: "e", kind: "branch", label: "*" },
-  ]);
-  expect(edgesOf(g, "sequence")).toEqual(["a>b", "b>c", "c>e"]); // d's * default leaves no fall-through; c's next wins
+test("a given layout places the boxes; the others wait for autoLayout", () => {
+  const { name, spec } = parseWorkflow(LAYER_YAML);
+  const g = fromWorkflow(name, spec, { build: { x: 300, y: 40 } });
+  expect(g.nodes.find((n) => n.id === "build")).toMatchObject({ x: 300, y: 40, placed: true });
+  expect(g.nodes.find((n) => n.id === "start")).toMatchObject({ placed: false });
 });
 
-test("an on_fail loop is a loop wire too", () => {
-  const g = graphOf(SMALL);
-  expect(g.edges.filter((e) => e.kind === "loop")).toEqual([{ from: "c", to: "a", kind: "loop", loop: { max: 2, when: "x.retry" } }]);
-});
-
-test("a given layout places the boxes", () => {
-  const { name, spec } = parseWorkflow(SMALL);
-  const g = fromWorkflow(name, spec, { b: { x: 300, y: 40 } });
-  expect(g.nodes.find((n) => n.id === "b")).toMatchObject({ x: 300, y: 40 });
+test("shapes: a model step, a team too; a check is code; a gate a gate; a bundle a bundle", () => {
+  expect(shapeOf("bundle")).toBe("bundle");
+  expect(shapeOf("team")).toBe("model");
+  expect(shapeOf("meeting")).toBe("model");
+  expect(shapeOf("check")).toBe("code");
+  expect(shapeOf("gate")).toBe("gate");
+  expect(Object.keys(SHAPE)).toEqual([...NODE_TYPES]);
 });
