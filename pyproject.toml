@@ -7,7 +7,8 @@ requires-python = ">=3.12,<3.13"
 license = { text = "PolyForm-Noncommercial-1.0.0" }
 dependencies = [
     # Spec 01 §3 dependency list, floors raised to current releases (2026-10-12).
-    "mlx>=0.32.2; sys_platform == 'darwin'",
+    "mlx>=0.32.4; sys_platform == 'darwin'",
+    "mlx-vlm==0.7.12; sys_platform == 'darwin'",
     "mlx-lm==0.32.0; sys_platform == 'darwin'",
     "vllm-mlx==0.5.0; sys_platform == 'darwin'",
     "torch>=2.8", # used solely for LTS controller RL training (spec 03)

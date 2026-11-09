@@ -4,7 +4,11 @@
         --enable-auto-tool-choice --tool-call-parser qwen --offline
     uv run python scripts/record_fixtures.py --base-url http://127.0.0.1:8099/v1 --model <served name>
 
-Writes the bodies verbatim into tests/fixtures/vllm_mlx/. HTTPEngine is written against these, not docs."""
+Writes the bodies verbatim into tests/fixtures/<--out>/. HTTPEngine is written against these, not docs.
+
+For mlx-vlm's own server, start it with
+`python -m mlx_vlm.server --model <snapshot> --host 127.0.0.1 --port 8094` and run with
+`--out mlx_vlm --dialect mlx_vlm --model <snapshot>` (the exact --model string)."""
 
 from __future__ import annotations
 
@@ -14,15 +18,25 @@ from pathlib import Path
 
 import httpx
 
-OUT = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "vllm_mlx"
+FIXTURES = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base-url", default="http://127.0.0.1:8099/v1")
     ap.add_argument("--model", required=True)
+    ap.add_argument("--out", default="vllm_mlx", help="fixture subdirectory under tests/fixtures")
+    ap.add_argument("--tool-parser", default="qwen3_coder", help="mlx_vlm only: per-request tool_parser")
+    ap.add_argument("--dialect", choices=["vllm_mlx", "mlx_vlm"], default="vllm_mlx")
     a = ap.parse_args()
     root = a.base_url.removesuffix("/v1")
+    OUT = FIXTURES / a.out
+    vlm = a.dialect == "mlx_vlm"
+
+    def thinking(on: bool) -> dict:
+        # mlx-vlm reads a top-level enable_thinking; vllm-mlx reads chat_template_kwargs.
+        return {"enable_thinking": on} if vlm else {"chat_template_kwargs": {"enable_thinking": on}}
+
     OUT.mkdir(parents=True, exist_ok=True)
     c = httpx.Client(timeout=300)
 
@@ -39,13 +53,15 @@ def main() -> None:
 
     once("health", "GET", f"{root}/health")
     once("models", "GET", f"{a.base_url}/models")
+    if vlm:
+        once("metrics", "GET", f"{root}/v1/metrics")
     base = {"model": a.model, "stream": True, "stream_options": {"include_usage": True}, "temperature": 0}
     stream(
         "plain",
         {
             **base,
             "max_tokens": 32,
-            "chat_template_kwargs": {"enable_thinking": False},
+            **thinking(False),
             "messages": [
                 {"role": "system", "content": "Reply in one short sentence."},
                 {"role": "user", "content": "Name three primary colours."},
@@ -57,7 +73,8 @@ def main() -> None:
         {
             **base,
             "max_tokens": 256,
-            "chat_template_kwargs": {"enable_thinking": True},
+            **thinking(True),
+            **({"thinking_budget": 128} if vlm else {}),
             "messages": [
                 {"role": "user", "content": "What is 17 * 23? Think briefly, then answer with the number."}
             ],
@@ -68,7 +85,7 @@ def main() -> None:
         {
             **base,
             "max_tokens": 128,
-            "chat_template_kwargs": {"enable_thinking": False},
+            **thinking(False),
             "tools": [
                 {
                     "type": "function",
@@ -84,6 +101,7 @@ def main() -> None:
                 }
             ],
             "tool_choice": "auto",
+            **({"tool_parser": a.tool_parser} if vlm else {}),
             "messages": [{"role": "user", "content": "Read the file README.md using the tool."}],
         },
     )
@@ -93,7 +111,7 @@ def main() -> None:
         {
             **base,
             "max_tokens": 32,
-            "chat_template_kwargs": {"enable_thinking": False},
+            **thinking(False),
             "messages": [
                 {"role": "system", "content": "Reply in one short sentence."},
                 {"role": "user", "content": "Name three primary colours."},
@@ -102,24 +120,25 @@ def main() -> None:
             ],
         },
     )
-    once(
-        "logprobs",
-        "POST",
-        f"{a.base_url}/chat/completions",
-        {
-            "model": a.model,
-            "stream": False,
-            "max_tokens": 1,
-            "temperature": 0,
-            "logprobs": True,
-            "top_logprobs": 5,
-            "chat_template_kwargs": {"enable_thinking": False},
-            "messages": [
-                {"role": "system", "content": "Answer with exactly one word: YES or NO."},
-                {"role": "user", "content": "Is water wet?"},
-            ],
-        },
-    )
+    if not vlm:
+        once(
+            "logprobs",
+            "POST",
+            f"{a.base_url}/chat/completions",
+            {
+                "model": a.model,
+                "stream": False,
+                "max_tokens": 1,
+                "temperature": 0,
+                "logprobs": True,
+                "top_logprobs": 5,
+                **thinking(False),
+                "messages": [
+                    {"role": "system", "content": "Answer with exactly one word: YES or NO."},
+                    {"role": "user", "content": "Is water wet?"},
+                ],
+            },
+        )
     once(
         "nonstream",
         "POST",
@@ -129,7 +148,7 @@ def main() -> None:
             "stream": False,
             "max_tokens": 16,
             "temperature": 0,
-            "chat_template_kwargs": {"enable_thinking": False},
+            **thinking(False),
             "messages": [{"role": "user", "content": "Say hello."}],
         },
     )
