@@ -1,6 +1,6 @@
 // The graph's editing functions (graph.ts) on schema v2: a line is a `to` entry, what it carries is what its source
 // writes and its target reads, and every edit keeps the node fields and the lines in step.
-import { addNode, connect, emptyGraph, fromWorkflow, moveNode, readable, removeEdge, removeNode, renameNode, renameOutput, toWorkflow, updateNode } from "./graph";
+import { addNode, connect, emptyGraph, fromWorkflow, moveNode, readable, removeEdge, removeNode, renameNode, renameOutput, toWorkflow, updateEdge, updateNode } from "./graph";
 import type { Graph } from "./graph";
 import { parseWorkflow } from "./yaml";
 
@@ -216,4 +216,32 @@ test("a bundle box with no outputs of its own writes the outputs of the workflow
   const g = connect({ ...base, bundles: { layer } }, "b", "c", { artifacts: ["built"] });
   expect(lineOf(g, "b", "c")[0].artifacts).toEqual(["built"]);
   expect(() => connect({ ...base, bundles: { layer } }, "b", "c", { artifacts: ["nope"] })).toThrow(/b writes no nope/);
+});
+
+test("updateEdge replaces what a line carries, and sets or clears its when and loop", () => {
+  let g = connect(small(), "a", "c", { artifacts: ["verdict"], when: "verdict == yes" });
+  g = updateEdge(g, "a", "c", { artifacts: ["notes"], when: "verdict == no", loop: { max: 2, carry: "notes" } });
+  expect(lineOf(g, "a", "c")).toEqual([{ from: "a", to: "c", artifacts: ["notes"], when: "verdict == no", loop: { max: 2, carry: "notes" } }]);
+  // the artifact the line no longer carries leaves the target's inputs; the new one joins
+  expect(specOf(g, "c").inputs).toEqual(["notes"]);
+  // absent when and loop clear them: the YAML entry goes back to a bare name
+  g = updateEdge(g, "a", "c", { artifacts: ["notes"] });
+  expect(lineOf(g, "a", "c")).toEqual([{ from: "a", to: "c", artifacts: ["notes"] }]);
+  expect(toWorkflow(g).spec.nodes.a.to).toEqual(["b", "c"]);
+});
+
+test("updateEdge with no artifacts is an ordering line; an input another line brings stays", () => {
+  let g = connect(small(), "a", "b", { artifacts: ["notes"] });
+  g = updateEdge(g, "a", "b", { artifacts: [] });
+  expect(specOf(g, "b").inputs).toEqual([]);
+  expect(lineOf(g, "a", "b")).toEqual([{ from: "a", to: "b", artifacts: [] }]);
+  const both = updateEdge(connect(small(), "d", "b", { artifacts: ["notes"] }), "a", "b", { artifacts: [] });
+  expect(specOf(both, "b").inputs).toEqual(["notes"]);
+});
+
+test("updateEdge refuses an artifact the source does not write, a loop without its max, and a missing line", () => {
+  expect(() => updateEdge(small(), "a", "b", { artifacts: ["nope"] })).toThrow(/a writes no nope/);
+  expect(() => updateEdge(small(), "a", "b", { artifacts: [], loop: { max: "" } })).toThrow(/needs its max/);
+  expect(() => updateEdge(small(), "a", "c", { artifacts: [] })).toThrow(/no line/);
+  expect(updateEdge(small(), "a", "b", { artifacts: ["notes"], loop: { max: "config.story.layer_attempts" } }).edges[0].loop).toEqual({ max: "config.story.layer_attempts" });
 });

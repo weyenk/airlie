@@ -145,6 +145,7 @@ def workflows_router(
             "prompts": dict(draft.prompts),
             "pr": _pr(draft),
             "edits_file": edits_file(cfg, draft.name),
+            "upgraded": text != draft.yaml,
         }
 
     def get_draft(name: str) -> WorkflowDraft:

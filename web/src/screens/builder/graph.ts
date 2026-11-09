@@ -294,6 +294,33 @@ export function connect(graph: Graph, from: string, to: string, opts: LineOpts =
   return relabel({ ...g, edges });
 }
 
+/** The graph with the line `from` → `to` set to `patch`: it carries exactly `patch.artifacts` (none: an ordering
+ * line), and says `when` and `loop` only if the patch does, so a patch without them clears them. A newly carried
+ * artifact joins the target's inputs; one no longer carried leaves them unless another line or a workflow input
+ * still brings it. Throws on a line that is not there, an artifact `from` does not write, or a loop without its max. */
+export function updateEdge(graph: Graph, from: string, to: string, patch: { artifacts: string[]; when?: string; loop?: LoopBound }): Graph {
+  const current = relabel(graph);
+  const at = current.edges.findIndex((e) => e.from === from && e.to === to);
+  if (at < 0) throw new Error(`no line from ${from} to ${to}`);
+  const writes = outputsOfNode(graph, from);
+  for (const a of patch.artifacts) if (!writes.includes(a)) throw new Error(`${from} writes no ${a}`);
+  if (patch.loop && !hasMax(patch.loop.max)) throw new Error("a loop needs its max");
+
+  const old = current.edges[at];
+  const edge: GEdge = { from, to, artifacts: [] };
+  if (patch.when) edge.when = patch.when;
+  if (patch.loop) edge.loop = patch.loop.carry ? { max: patch.loop.max, carry: patch.loop.carry } : { max: patch.loop.max };
+  const edges = current.edges.map((e, i) => (i === at ? edge : e));
+  const elsewhere = new Set([...graph.inputs, ...edges.filter((e, i) => i !== at && e.to === to).flatMap((e) => e.artifacts)]);
+  const drop = old.artifacts.filter((a) => !patch.artifacts.includes(a) && !elsewhere.has(a));
+  const g = editing(graph, [to], (s) => {
+    const have = inputsOf(s);
+    if (!Array.isArray(s.inputs) && !patch.artifacts.length) return;
+    s.inputs = [...have.filter((i) => !drop.includes(i)), ...patch.artifacts.filter((a) => !have.includes(a))];
+  });
+  return relabel({ ...g, edges });
+}
+
 const sameLine = (a: GEdge, b: GEdge) => a.from === b.from && a.to === b.to && a.when === b.when;
 
 /** The graph without the line `edge`, and without the target's inputs that line alone carried: an artifact

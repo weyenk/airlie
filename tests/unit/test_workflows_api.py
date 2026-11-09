@@ -109,6 +109,7 @@ def test_a_draft_saved_is_read_back_with_its_prompts_and_told_to_the_feed(tmp_pa
         "prompts": {"mini-note": NOTE},
         "pr": None,
         "edits_file": False,
+        "upgraded": False,
     }
     assert seen == [("workflows", "mini")]
 
@@ -139,6 +140,7 @@ def test_an_old_schema_draft_is_read_upgraded_and_its_stored_text_is_untouched(t
     assert got["layout"] == {"intake": {"x": 10.0, "y": 20.0}}
     assert yaml.safe_load(got["yaml"])["workflows"]["old"]["layout"] == {"intake": {"x": 10, "y": 20}}
     assert s.draft("old").yaml == OLD
+    assert got["upgraded"] is True  # the title bar says so until the person saves
     assert (
         "workflow old: node gate: condition 'is_big' was code; write it as an expression" in got["problems"]
     )
