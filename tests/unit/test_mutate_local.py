@@ -81,9 +81,10 @@ def test_the_run_uses_a_fresh_worktree_of_origin_main_and_always_removes_it(tmp_
     add = ["git", "-C", str(home), "worktree", "add", "--detach", str(tree), "origin/main"]
     assert add in cmds
     mut = next(c for c in calls if "scripts/mutate_changed.py" in c[0])
-    assert mut[0][-6:] == [
+    assert mut[0][-7:] == [
         "--scope",
         "project",
+        "--split-map",
         "--max-children",
         "4",
         "--report",
