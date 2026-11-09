@@ -284,7 +284,7 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
           :existing="wire.edge"
           :removable="!!wire.edge"
           :bundles="bundles"
-          :predicates="catalog.predicates"
+          :predicates="[]"
           :from-child="false"
           @apply="applyWire"
           @remove="dropWire"

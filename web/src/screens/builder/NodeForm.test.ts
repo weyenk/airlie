@@ -8,14 +8,9 @@ import NodeForm from "./NodeForm.vue";
 const catalog: Catalog = {
   roles: ["architect", "coder", "product", "tester"],
   types: ["ask", "check"],
-  prompts: ["story.plan", "story.survey"],
-  parsers: ["story.plan_json"],
-  checks: ["story.base", "story.intake"],
-  predicates: ["story.amigos_on"],
-  afters: ["story.comment"],
-  turns: ["story.turn"],
-  meetings: ["story.amigos"],
-  prompt_files: ["plan-replan"],
+  checks: [{ name: "story.intake", title: "Intake", inputs: ["card", "repo"], outputs: ["report"], formats: { report: "text" }, transient: [], every_run: false, args: [] }],
+  meetings: [{ roles: ["product", "architect"], inputs: ["card"] }],
+  prompt_files: [],
 };
 const ask: GNode = { id: "survey", type: "ask", spec: { role: "architect", prompt: "story.survey", inputs: ["card"], outputs: { survey: "markdown" } }, x: 0, y: 0 };
 const check: GNode = { id: "base", type: "check", spec: { run: "story.base", outputs: { base: "json" } }, x: 0, y: 0 };

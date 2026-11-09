@@ -14,7 +14,7 @@ import { parseWorkflow, toYaml } from "./yaml";
 /** The name the server checks a canvas not yet named under (`new` is the builder's address, not a name). */
 const UNNAMED = "untitled";
 
-const EMPTY_CATALOG: Catalog = { roles: [], types: [], prompts: [], parsers: [], checks: [], predicates: [], afters: [], turns: [], meetings: [], prompt_files: [] };
+const EMPTY_CATALOG: Catalog = { roles: [], types: [], checks: [], meetings: [], prompt_files: [] };
 
 export function useBuilder(name: Ref<string>) {
   const detail = ref<WorkflowDetail | null>(null);

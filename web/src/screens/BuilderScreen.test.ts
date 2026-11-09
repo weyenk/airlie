@@ -24,15 +24,10 @@ const detail = (over: Partial<WorkflowDetail> = {}): WorkflowDetail => ({
 });
 const def = (name: string, over: Partial<WorkflowDef> = {}): WorkflowDef => ({ name, type: "story", source: "file", problems: [], pr: null, ...over });
 const CATALOG: Catalog = {
-  roles: ["architect", "coder"],
+  roles: ["architect", "coder", "product", "tester"],
   types: ["ask", "check"],
-  prompts: ["x.fix"],
-  parsers: [],
-  checks: ["x.intake"],
-  predicates: [],
-  afters: [],
-  turns: [],
-  meetings: [],
+  checks: [{ name: "story.intake", title: "Intake", inputs: ["card", "repo"], outputs: ["report"], formats: { report: "text" }, transient: [], every_run: false, args: [] }],
+  meetings: [{ roles: ["product", "architect"], inputs: ["card"] }],
   prompt_files: [],
 };
 const FIX_YAML = `workflows:
