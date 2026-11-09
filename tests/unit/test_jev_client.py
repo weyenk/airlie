@@ -95,6 +95,45 @@ async def test_answer_without_probabilities_is_empty() -> None:
     assert ans.probabilities == {} and ans.choice == "coder"
 
 
+async def test_confidence_falls_back_to_the_answers_metadata() -> None:
+    transport, _ = answering(ok_payload(metadata={"confidence": 0.7}))
+    ans = await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
+    assert ans.confidence == 0.7
+
+
+async def test_a_value_answer_without_confidence_uses_its_top_probability() -> None:
+    transport, _ = answering(
+        {"answers": {"role": {"value": "coder", "probabilities": {"coder": 0.8, "qa": 0.2}}}}
+    )
+    ans = await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
+    assert ans.choice == "coder" and ans.confidence == 0.8
+
+
+async def test_a_value_answer_without_probabilities_has_zero_confidence() -> None:
+    transport, _ = answering({"answers": {"role": {"value": "coder", "probabilities": {}}}})
+    ans = await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
+    assert ans.confidence == 0.0
+
+
+async def test_a_choice_answer_without_confidence_has_zero_even_with_probabilities() -> None:
+    transport, _ = answering(ok_payload())
+    ans = await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
+    assert ans.confidence == 0.0
+
+
+async def test_errors_name_the_endpoint_without_its_slashes() -> None:
+    transport, _ = answering({}, status=503, text="down")
+    client = JevClient("http://k/v1", endpoint="/decisions", transport=transport)
+    with pytest.raises(httpx.HTTPStatusError) as ei:
+        await client.ask("s", "role", "i", CRITERIA)
+    assert str(ei.value) == "decisions returned 503: down"
+    transport, _ = answering({"answers": {}})
+    client = JevClient("http://k/v1", endpoint="/decisions", transport=transport)
+    with pytest.raises(ValueError) as ev:
+        await client.ask("s", "role", "i", CRITERIA)
+    assert str(ev.value).startswith("decisions answered without 'role'")
+
+
 def router(transport: httpx.MockTransport) -> JevRouter:
     return JevRouter(JevClient("http://k/v1", transport=transport), ambiguous_gap=0.15, min_confidence=0.5)
 

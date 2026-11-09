@@ -626,6 +626,17 @@ async def test_yes_no_sends_the_constrained_request() -> None:
     assert e.stats().requests == 1 and e.stats().errors == 0
 
 
+async def test_yes_no_turns_thinking_off_explicitly_in_both_dialects() -> None:
+    e, seen = make({CHAT: verdict("NO")})
+    await e.yes_no("judge", [Message("user", "Is it?")])
+    body = json.loads(seen[0].content)
+    assert body["chat_template_kwargs"]["enable_thinking"] is False and body["enable_thinking"] is False
+    e, seen = make({CHAT: verdict("NO")}, dialect="mlx_vlm")
+    await e.yes_no("judge", [Message("user", "Is it?")])
+    body = json.loads(seen[0].content)
+    assert body["enable_thinking"] is False and "chat_template_kwargs" not in body
+
+
 @pytest.mark.parametrize(
     ("content", "expected"),
     [

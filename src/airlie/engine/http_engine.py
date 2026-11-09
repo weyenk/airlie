@@ -302,7 +302,12 @@ class HTTPEngine:
             "stream": False,
             "max_tokens": 3,
             "temperature": 0.0,
-            **thinking_fields(dialect=self._dialect, thinking=False, budget=None, chat_template_kwargs={}),
+            **thinking_fields(
+                dialect=self._dialect,
+                thinking=False,  # pragma: no mutate  (None is falsy too: bool(None) is False)
+                budget=None,
+                chat_template_kwargs={},
+            ),
         }
         self._stats.requests += 1
         r = await self._c().post(f"{self.base_url}/chat/completions", json=body)
