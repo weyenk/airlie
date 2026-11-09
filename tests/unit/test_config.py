@@ -1480,3 +1480,28 @@ def test_a_role_on_an_mlx_vlm_engine_may_only_pass_known_template_arguments(tmp_
 def test_mlx_vlm_engine_refuses_out_of_range_cache_settings(tmp_path: Path, field: str, value: float) -> None:
     with pytest.raises(ConfigError, match=f"engines.main.{field}"):
         mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", field: value}})
+
+
+def test_hf_snapshot_dir_defaults_to_the_home_huggingface_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.config.load import hf_snapshot_dir
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    m = load_config(write(tmp_path, MINIMAL)).models["team"]
+    got = hf_snapshot_dir(m, None)
+    assert (
+        got
+        == tmp_path
+        / ".cache/huggingface/hub"
+        / "models--mlx-community--Qwen3.8-27B-4bit"
+        / "snapshots/abc123"
+    )
+
+
+def test_hf_snapshot_dir_honours_an_explicit_cache(tmp_path: Path) -> None:
+    from airlie.config.load import hf_snapshot_dir
+
+    m = load_config(write(tmp_path, MINIMAL)).models["team"]
+    got = hf_snapshot_dir(m, tmp_path / "elsewhere")
+    assert got == tmp_path / "elsewhere" / "models--mlx-community--Qwen3.8-27B-4bit" / "snapshots" / "abc123"
