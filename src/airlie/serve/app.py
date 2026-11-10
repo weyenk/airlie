@@ -29,7 +29,12 @@ from airlie.board import BoardStore
 from airlie.board.api import board_router
 from airlie.board.model import WorkflowDraft
 from airlie.config import AirlieConfig
-from airlie.engine.dialect import dialect_for, thinking_fields
+from airlie.engine.dialect import (
+    dialect_for,
+    normalize_mlx_vlm_messages,
+    remap_mlx_vlm_reasoning_effort,
+    thinking_fields,
+)
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
 from airlie.prompts import text as hub_text
@@ -714,6 +719,10 @@ def create_app(
                     tools=bool(out.get("tools")),
                 ).items():
                     out.setdefault(k, v)
+        proxy_model = cfg.roles[name].model if name in cfg.roles else name
+        if dialect_for(cfg.engines[cfg.engine_for_model(proxy_model)].kind) == "mlx_vlm":
+            remap_mlx_vlm_reasoning_effort(out)
+            out["messages"] = normalize_mlx_vlm_messages(list(out.get("messages") or []))
         tool_role = CHAT_SKILL_TOOL_ROLES.get(str(skill)) if skill is not None and name == "chat" else None
         if tool_role is not None:
             if out.get("stream"):
