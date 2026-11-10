@@ -1,0 +1,81 @@
+# The test image: the layers below e2e (unit in CI, functional, contract, integration) on Linux. One image for
+# both places it runs: Apple's `container` on the Mac (task test:<layer>) and Docker in GitHub
+# (TEST_ENGINE=docker), built from the repository root:  container build -f ops/test/Containerfile .
+#
+# Only the tools and dependencies are baked in. When a layer runs, the checkout is mounted read-only over /src
+# and the outside network is off (Taskfile.yml, test:image:run), so a test that reaches past the container
+# fails on its first run here instead of passing on a Mac that happens to be online.
+
+# node at the major web/package.json pins (`engines`), for the tests that shell out to it.
+FROM node:26-slim AS node
+
+FROM python:3.12-slim-bookworm
+# uv is the release the lockfile was written with (as in ops/e2e/Containerfile).
+COPY --from=ghcr.io/astral-sh/uv:0.6.0 /uv /uvx /usr/local/bin/
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+# git for the tests that build real repositories, with an identity and a default branch of its own: nothing
+# of a developer's ~/.gitconfig (their name, an `insteadOf` rewrite) reaches a test here. The mounted checkout
+# belongs to the host's user, not the image's: safe.directory lets git read that one repository (tests that ask
+# git about airlie's own), and trusts nothing else. procps is pgrep (the story-stop tests); libatomic1 is node's.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates procps libatomic1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --system user.name airlie-test \
+    && git config --system user.email test@airlie.invalid \
+    && git config --system init.defaultBranch main \
+    && git config --system safe.directory /src
+
+# Task, for the tests that run the real Taskfile (tests/integration/test_web_task_skips.py), checked against
+# the sha256 its release's task_checksums.txt lists. The architecture is the image's own (dpkg), so a builder
+# that sets no TARGETARCH builds it too; bump the version and both sums together.
+ARG TASK_VERSION=3.54.0
+ARG TASK_SHA256_AMD64=680859dbb4d881a9c72d4d9a8f510825450849af8567deacd7302c01124416fb
+ARG TASK_SHA256_ARM64=d7189d439d4a6058e39e1b2acd7c8b27acd4856691b408f23b242e4294e1df5b
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in amd64) sum="$TASK_SHA256_AMD64" ;; arm64) sum="$TASK_SHA256_ARM64" ;; *) exit 1 ;; esac \
+    && python -c "import sys, urllib.request as u; u.urlretrieve(sys.argv[1], '/tmp/task.tgz')" \
+        "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_${arch}.tar.gz" \
+    && echo "$sum  /tmp/task.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/task.tgz -C /usr/local/bin task \
+    && rm /tmp/task.tgz
+
+# The environment lives outside the source tree. Bytecode goes to /opt/pycache, never beside the sources: the
+# checkout is read-only here, and the __pycache__ a Mac left in it names the Mac's paths, which would then
+# show in every traceback. The pytest cache would be written into the checkout, so it is off.
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_COMPILE_BYTECODE=1 \
+    PYTHONPYCACHEPREFIX=/opt/pycache \
+    PYTEST_ADDOPTS="-p no:cacheprovider" \
+    PATH=/opt/venv/bin:$PATH \
+    AIRLIE_TEST_IMAGE=1
+
+WORKDIR /src
+
+# Exactly uv.lock with the dev group (pytest, ruff, mypy, ...), less torch and its CUDA stack (5 GB on Linux):
+# only the LTS controller's training uses them, as in ops/e2e/Containerfile.
+COPY pyproject.toml uv.lock README.md ./
+ARG SKIP="torch triton cuda-bindings cuda-pathfinder cuda-toolkit nvidia-cublas nvidia-cuda-cupti \
+    nvidia-cuda-nvrtc nvidia-cuda-runtime nvidia-cudnn-cu13 nvidia-cufft nvidia-cufile nvidia-curand \
+    nvidia-cusolver nvidia-cusparse nvidia-cusparselt-cu13 nvidia-nccl-cu13 nvidia-nvjitlink nvidia-nvshmem-cu13 \
+    nvidia-nvtx"
+RUN uv sync --frozen --no-install-project $(printf -- '--no-install-package %s ' $SKIP)
+# airlie itself, editable: a stand-in package is enough to install it, and the path it records is /src/src,
+# which the mounted checkout fills at run time. The image so depends on pyproject.toml and uv.lock alone, and
+# a change to airlie's code rebuilds nothing.
+RUN mkdir -p src/airlie && touch src/airlie/__init__.py \
+    && uv sync --frozen $(printf -- '--no-install-package %s ' $SKIP) \
+    && rm -rf /src/*
+
+# Not root, as on a developer's machine: a test that takes a permission away (chmod 000) and expects to be
+# refused would pass for root. Its home is its own and empty; it may add airlie's bytecode to /opt/pycache.
+RUN useradd --create-home --uid 1000 airlie && chown -R airlie /opt/pycache
+USER airlie
+
+# Arguments after the image name are scripts/run_layer.py's: <layer> [pytest args]
+ENTRYPOINT ["python", "scripts/run_layer.py"]

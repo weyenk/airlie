@@ -19,7 +19,7 @@ from airlie.story.harvest import (
 )
 from airlie.story.model import StoryError
 from airlie.story.package import joined_tests
-from tests.unit.git_helpers import git
+from tests.support.git import git
 
 OLD = "tests/unit/test_old.py"
 OLD_TEXT = "def test_one():\n    assert 1\n\n\ndef test_two():\n    assert 2\n"

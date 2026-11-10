@@ -12,7 +12,7 @@ import pytest
 
 from airlie.serve.app import create_app
 from airlie.serve.server import Server, run
-from tests.unit.test_serve import FakeUpstream, cfg
+from tests.support.serve import FakeUpstream, cfg
 
 
 async def test_shutdown_ends_an_open_event_stream_so_the_server_can_stop(tmp_path: Path) -> None:

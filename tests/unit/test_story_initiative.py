@@ -21,6 +21,7 @@ from airlie.story.initiative import (
     parse_question_reply,
 )
 from airlie.story.model import StoryError
+from tests.support.story_initiative import epic_obj, epics_obj
 
 
 def initiative_item(
@@ -106,34 +107,6 @@ def test_a_question_reply_parses_and_a_flawed_one_says_why() -> None:
 
 INITIATIVE = Initiative("AIR-40", "Linear feel", "text", ("o/r", "o/s"), None, False, ())
 SEATS = ["architect", "ux", "design"]
-
-
-def epic_obj(eid: str = "E1", kind: str = "core", **over: object) -> dict[str, object]:
-    """One epic as product writes it (D5)."""
-    base: dict[str, object] = {
-        "id": eid,
-        "kind": kind,
-        "title": f"Epic {eid}",
-        "why": "The board feels slow.",
-        "goals": ["feels fast"],
-        "non_goals": ["a redesign"],
-        "anti_goals": ["losing a card"],
-        "decisions": [{"what": "keep the board", "why": "people know it"}],
-        "constraints": ["no new dependency"],
-        "criteria": [{"id": "EC1", "text": "a card moves in one keystroke"}],
-        "repositories": ["o/r"],
-        "stories": [{"title": "keys", "size": "S", "scope": "keyboard moves"}],
-        "risks": ["focus bugs"],
-        "viability": {"verdict": "viable", "reasons": ["the app is small"]},
-        "needs_mockups": False,
-        "depends_on": [],
-        "open": [],
-    }
-    return {**base, **over}
-
-
-def epics_obj(*epics: dict[str, object]) -> dict[str, object]:
-    return {"type": "epics", "summary": "Make the board fast.", "epics": list(epics or [epic_obj()])}
 
 
 def imagine(obj: dict[str, object] | None, **kw: object) -> object:

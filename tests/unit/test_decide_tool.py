@@ -11,7 +11,7 @@ from airlie.engine import ToolCall
 from airlie.router import JevClient
 from airlie.tools import ToolContext, ToolRegistry
 from airlie.tools.decide import Decide
-from tests.unit.test_router import decisions
+from tests.support.router import decisions
 
 
 def decide(handler) -> Decide:  # type: ignore[no-untyped-def]
@@ -253,7 +253,7 @@ async def test_attach_decide_wires_thresholds_and_transport_from_the_config(tmp_
 
 def test_decide_tool_attaches_for_an_mlx_vlm_decision_engine(tmp_path: Path) -> None:
     from airlie.tools.decide import attach_decide
-    from tests.unit.test_router import _decision_cfg
+    from tests.support.router import _decision_cfg
 
     reg = ToolRegistry([], ToolContext(worktree=tmp_path))
     assert attach_decide(reg, _decision_cfg(tmp_path, decision=True)) is True and reg.names() == ["decide"]

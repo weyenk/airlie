@@ -4,8 +4,8 @@ import pytest
 
 from airlie.flow.store import BundleStore, MemoryStore, Sessions, StateStore
 from airlie.story.state import StoryState
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_story_pipeline import text_card
+from tests.support.git import repo_with_marker_tests
+from tests.support.story import text_card
 
 
 def test_memory_store_treats_empty_values_as_absent():

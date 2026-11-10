@@ -21,7 +21,7 @@ from airlie.board import BoardStore
 from airlie.serve.app import create_app
 from airlie.serve.feed import Feed
 from airlie.serve.watch import Watcher
-from tests.unit.test_serve import FakeUpstream, cfg
+from tests.support.serve import FakeUpstream, cfg
 
 
 @pytest.fixture

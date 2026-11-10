@@ -20,11 +20,11 @@ from airlie.story.local_board import LocalBoard
 from airlie.story.phase import paused, set_paused
 from airlie.story.state import StoryState, lane_lock, lock_held
 from airlie.story.workflows import draft_spec
-from tests.unit.test_board_api import NO_RUN
-from tests.unit.test_story_epic_pipeline import plan_obj, reply
-from tests.unit.test_story_factory import started_log
-from tests.unit.test_story_tick_epics import TickRig, specs_rig
-from tests.unit.test_story_workflows import MINI
+from tests.support.board_api import NO_RUN
+from tests.support.story_epic_pipeline import plan_obj, reply
+from tests.support.story_factory import started_log
+from tests.support.story_tick_epics import TickRig, specs_rig
+from tests.support.story_workflows import MINI
 
 # ---- Task 6: two lanes, two locks ----
 
@@ -244,9 +244,9 @@ async def test_a_paused_line_does_bookkeeping_and_starts_no_job(
 
 def test_the_pause_route_and_tasks(tmp_path: Path) -> None:
     from airlie.serve.app import create_app
+    from tests.support.serve import FakeUpstream
+    from tests.support.serve import cfg as serve_cfg
     from tests.unit.serve_helpers import TestClient
-    from tests.unit.test_serve import FakeUpstream
-    from tests.unit.test_serve import cfg as serve_cfg
 
     c = serve_cfg(tmp_path)
     app = create_app(c, transport=httpx.MockTransport(FakeUpstream()), api_key="k")

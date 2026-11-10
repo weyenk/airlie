@@ -14,39 +14,18 @@ import pytest
 
 from airlie.engine import FakeEngine, FakeReply
 from airlie.obs import EventSink
-from airlie.router import ChiefRouter
 from airlie.serve.app import create_app
 from airlie.serve.jobs import Jobs, read_events
 from airlie.story import factory
 from airlie.story.board import BoardError, text_card
 from airlie.story.model import StorySetupError
 from airlie.story.state import StoryState, lane_lock
-from airlie.topology.studio import StudioOrchestrator
+from tests.support.git import repo_with_marker_tests
+from tests.support.serve import FakeUpstream
+from tests.support.serve_jobs import app_for, finish
+from tests.support.story import STORY_ROLES
+from tests.support.studio import APPROVE, DONE, PLAN, RUN, WRITE_PASS, cfg_for
 from tests.unit.serve_helpers import TestClient
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_serve import FakeUpstream
-from tests.unit.test_story_pipeline import STORY_ROLES
-from tests.unit.test_studio_orchestrator import APPROVE, DONE, PLAN, RUN, WRITE_PASS, cfg_for
-
-
-def finish(client: TestClient, job: str) -> dict[str, Any]:
-    """Follow a job to its end with long polls; the last status, with every event."""
-    body = client.get(f"/v1/airlie/jobs/{job}", params={"wait": 10}).json()
-    events = list(body["events"])
-    while body["state"] == "running":
-        body = client.get(f"/v1/airlie/jobs/{job}", params={"since": body["next"], "wait": 10}).json()
-        events += body["events"]
-    return {**body, "events": events}
-
-
-def app_for(tmp_path: Path, engine: FakeEngine, **kw: Any) -> Any:
-    def factory(cfg, k, topology=None):  # type: ignore[no-untyped-def]
-        assert topology == "studio"
-        return StudioOrchestrator(cfg, engine, router=ChiefRouter())
-
-    return create_app(
-        cfg_for(tmp_path), transport=httpx.MockTransport(FakeUpstream()), orchestrator_factory=factory, **kw
-    )
 
 
 def test_a_plan_job_then_the_edited_plan_runs_as_a_job(tmp_path: Path) -> None:
@@ -351,9 +330,9 @@ def test_a_blank_repo_is_no_repository_all_the_way_to_the_story(
 ) -> None:
     """Not a path made of blanks (no git repository there: a 400). An issue's story is placed by its label
     and a written request's in story.repo, as when the request names no repo."""
-    from tests.unit.test_story_board import FakeJira
-    from tests.unit.test_story_board import board as jira_board_for
-    from tests.unit.test_story_pipeline import checkout_of
+    from tests.support.story import checkout_of
+    from tests.support.story_board import FakeJira
+    from tests.support.story_board import board as jira_board_for
 
     repo = checkout_of(tmp_path / "git", "o/repo")  # FakeJira's AIR-7 is labelled repo:o/repo
     story = {"repos_root": str(tmp_path / "git"), "repo": str(repo)}
@@ -516,9 +495,9 @@ def test_a_story_already_running_is_a_409_before_its_issue_is_touched(
     """A second POST for a story whose job runs: refused as the job's duplicate, before `placed` can note on
     the issue or move it (here its checkout has gone since, which would have the issue told and moved to
     Blocked while the first job builds it)."""
-    from tests.unit.test_story_board import FakeJira
-    from tests.unit.test_story_board import board as jira_board_for
-    from tests.unit.test_story_pipeline import checkout_of
+    from tests.support.story import checkout_of
+    from tests.support.story_board import FakeJira
+    from tests.support.story_board import board as jira_board_for
 
     repo = checkout_of(tmp_path / "git", "o/repo")  # FakeJira's AIR-7 is labelled repo:o/repo
     cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"repos_root": str(tmp_path / "git")}})

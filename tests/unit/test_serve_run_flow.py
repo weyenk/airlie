@@ -9,24 +9,15 @@ import json
 from pathlib import Path
 from typing import Any
 
-import httpx
 import pytest
 
-from airlie.engine import FakeEngine, FakeReply
-from airlie.obs.run_dir import RunDir
-from airlie.serve.app import create_app
 from airlie.serve.flow import OBSERVATION_CHARS, job_detail, trace_of
 from airlie.serve.run_flow import run_flow, run_job_detail
 from airlie.serve.tree import RunNotFound
-from tests.unit.serve_helpers import TestClient
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_serve import FakeUpstream
-from tests.unit.test_serve_jobs import app_for, finish
-from tests.unit.test_serve_tree import FORK, STUDIO_DONE, STUDIO_START, ev, step
-from tests.unit.test_serve_tree import write_run as write_log
-from tests.unit.test_story_flow import KEY as STORY
-from tests.unit.test_story_flow import write_story
-from tests.unit.test_studio_orchestrator import PLAN, cfg_for
+from tests.support.serve_tree import FORK, STUDIO_DONE, STUDIO_START, ev, step
+from tests.support.serve_tree import write_run as write_log
+from tests.support.story_flow import KEY as STORY
+from tests.support.story_flow import write_story
 
 
 def write_run(state: Path, run: str, events: list[dict[str, Any]]) -> Path:
@@ -565,68 +556,3 @@ def test_story_job_detail_is_unchanged_after_the_trace_helper(tmp_path: Path) ->
     layers = trace_part("layers", "layers")
     assert layers["output"]["layers"][0] == layer and len(layers["output"]["layers"]) == 2
     assert {k: layers[k] for k in ("input", "input_note", "steps")} == no_trace
-
-
-# ---- the routes ----
-
-
-def test_the_flow_route_adds_the_plan_of_a_finished_plan_job_and_404s_an_unknown_run(tmp_path: Path) -> None:
-    repo = repo_with_marker_tests(tmp_path)
-    with TestClient(app_for(tmp_path, FakeEngine({"chief": [PLAN]}))) as client:
-        job = client.post("/v1/airlie/plans", json={"goal": "fix the build", "repo": str(repo)}).json()[
-            "job_id"
-        ]
-        planned = finish(client, job)
-        assert planned["state"] == "done" and planned["result"]["type"] == "plan"
-        r = client.get(f"/v1/airlie/runs/{job}/flow")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["plan"] == planned["result"]["plan"]
-        assert [s["id"] for s in body["plan"]["subtasks"]] == ["fix", "note"]
-        assert body["job"] == "done" and body["key"] == job and body["kind"] == "run"
-        assert body["mode"] == "plan" and lanes(body) == [("plan", "passed", [("chief", "passed")])]
-        chief = client.get(f"/v1/airlie/runs/{job}/flow/plan/chief")
-        assert chief.status_code == 200 and chief.json()["job"]["id"] == "chief"
-        for path in ("nope/flow", "nope/flow/plan/chief", f"{job}/flow/nope/chief", f"{job}/flow/plan/nope"):
-            assert client.get(f"/v1/airlie/runs/{path}").status_code == 404, path
-        state = tmp_path / "state"
-        write_run(state, "20261024-000000-dead", STUDIO_START)  # a run this server did not start
-        other = client.get("/v1/airlie/runs/20261024-000000-dead/flow").json()
-        assert other["job"] is None and other["plan"] is None and other["stage"] == "running"
-
-
-def test_a_plan_job_that_answered_instead_has_no_plan_to_approve(tmp_path: Path) -> None:
-    repo = repo_with_marker_tests(tmp_path)
-    answer = FakeReply(text=json.dumps({"type": "answer", "answer": "it is 42"}))
-    with TestClient(app_for(tmp_path, FakeEngine({"chief": [answer]}))) as client:
-        job = client.post("/v1/airlie/plans", json={"goal": "6 x 7?", "repo": str(repo)}).json()["job_id"]
-        assert finish(client, job)["result"]["type"] == "answer"
-        body = client.get(f"/v1/airlie/runs/{job}/flow").json()
-    assert body["job"] == "done" and body["plan"] is None
-
-
-def test_a_run_whose_job_failed_before_its_run_done_is_done(tmp_path: Path) -> None:
-    config = cfg_for(tmp_path)
-    repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
-
-    class Breaks:
-        def __init__(self) -> None:
-            self.run_dir = RunDir.create(config.observability.state_dir, "20261024-000000-beef")
-
-        async def plan(self, goal: str, **_: Any) -> Any:
-            self.run_dir.events_path.write_text(json.dumps(STUDIO_START[0]) + "\n")  # its run_start, no more
-            raise RuntimeError("engine fell over")
-
-    app = create_app(
-        config, transport=httpx.MockTransport(FakeUpstream()), orchestrator_factory=lambda *a, **k: Breaks()
-    )
-    with TestClient(app) as client:
-        job = client.post("/v1/airlie/plans", json={"goal": "g", "repo": str(repo)}).json()["job_id"]
-        assert finish(client, job)["state"] == "failed"
-        body = client.get(f"/v1/airlie/runs/{job}/flow").json()
-        chief = client.get(f"/v1/airlie/runs/{job}/flow/plan/chief").json()
-    assert body["job"] == "failed" and body["stage"] == "done" and body["plan"] is None
-    assert body["topology"] == "studio" and not running_anything(body)
-    assert lanes(body) == [("plan", "failed", [("chief", "failed")]), ("specialists", "pending", [])]
-    assert chief["job"]["status"] == "failed"  # the job detail agrees with the flow

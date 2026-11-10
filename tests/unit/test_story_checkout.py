@@ -11,7 +11,7 @@ import pytest
 from airlie.story.checkout import check_checkout, find_checkout, repo_label, repo_labels
 from airlie.story.github_app import masked
 from airlie.story.model import RepositoryError, StorySetupError
-from tests.unit.git_helpers import git
+from tests.support.git import git
 
 # ---- the label ----
 

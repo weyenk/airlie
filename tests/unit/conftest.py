@@ -21,15 +21,13 @@ ATLASSIAN = ("ATLASSIAN_API_KEY", "ATLASSIAN_EMAIL", "ATLASSIAN_BASE_URL", "ATLA
 ROOT = Path(__file__).resolve().parents[2]
 
 MAC_ONLY = ("test_learned_controller.py",)
-"""The test modules that import mlx, which installs on macOS only (pyproject.toml): where it is missing
-(the Linux CI runners, 2026-11-02) these are not collected, and `task test:mac` runs them on a Mac."""
-MAC_ONLY_TESTS = (
-    "test_trainer.py::test_train_reduces_loss_and_saves_checkpoint",
-    "test_trainer.py::test_evaluate_reports_usage_weighted_precision",
-    "test_cli_controller.py::test_dataset_train_eval",
-)
-"""The tests of other modules that reach mlx at run time (the LTS trainer): skipped where mlx is missing
-(pytest_collection_modifyitems), run by `task test:mac`."""
+"""The unit modules that import mlx, which installs on macOS only (pyproject.toml), or torch, which the Linux
+test image leaves out (ops/test/Containerfile): where mlx is missing these are not collected. Each is marked
+`mac` too, and `task test:mac` runs them on a Mac. test_trainer.py and test_cli_controller.py also import
+torch at the top; they left the unit layer for tests/integration on 2026-11-09 (its conftest guards them)."""
+MAC_ONLY_TESTS: tuple[str, ...] = ()
+"""Single tests of other modules that reach mlx at run time: skipped where mlx is missing
+(pytest_collection_modifyitems), run by `task test:mac`. A new one is marked `mac` as well."""
 HAS_MLX = not os.environ.get("AIRLIE_TEST_WITHOUT_MLX") and importlib.util.find_spec("mlx") is not None
 """Whether mlx is importable here; AIRLIE_TEST_WITHOUT_MLX=1 runs the suite as the Linux runners do."""
 collect_ignore = [] if HAS_MLX else list(MAC_ONLY)
@@ -251,13 +249,17 @@ def _no_atlassian_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def _no_forced_colour(monkeypatch: pytest.MonkeyPatch) -> None:
     """A developer's shell (Claude Code sets FORCE_COLOR=3) can force ANSI colour, which splits
     the text a CLI test asserts on. rich reads these variables when a Console is built, and cli.py builds its
-    two at import, so the variables are set for the test and the module consoles are rebuilt under them."""
+    two at import, so the variables are set for the test and the module consoles are rebuilt under them.
+
+    A console built while COLUMNS is set keeps that width, and a test that gives the CLI a wider COLUMNS of
+    its own would then see its table cut. GNU readline sets COLUMNS=80 and LINES=24 in the environment of
+    the process that imports it, so on Linux (the test image) every xdist worker started with them."""
     from rich.console import Console
 
     from airlie import cli
 
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("CLICOLOR_FORCE", raising=False)
+    for name in ("FORCE_COLOR", "CLICOLOR_FORCE", "COLUMNS", "LINES"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setattr(cli, "console", Console())
     monkeypatch.setattr(cli, "err", Console(stderr=True))

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from airlie.config import ConfigError, load_config
-from tests.unit.test_config import MINIMAL, write
+from tests.support.config import MINIMAL, write
 
 REPO = Path(__file__).resolve().parents[2]
 

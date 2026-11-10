@@ -1,40 +1,12 @@
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from airlie.supervisor.answer import Answer
-from airlie.supervisor.ledger import Intervention, Ledger, LedgerError
-
-
-def intervention(**kw: Any) -> Intervention:
-    answer = kw.pop("answer", "default")
-    if answer == "default":
-        answer = Answer(
-            category=kw.pop("category", "missing_import"),
-            owner="coder",
-            diagnosis="the import is missing",
-            evidence=("line 3",),
-            message="add the import",
-            would_route_to="coder",
-            fix_if_attempt=kw.pop("fix_if_attempt", None),
-        )
-    return Intervention(
-        story=kw.pop("story", "AIR-1"),
-        layer=kw.pop("layer", "01"),
-        studio_run="run-1",
-        subtask="s1",
-        role="coder",
-        trigger=kw.pop("trigger", "precode_retry"),
-        kinds=kw.pop("kinds", ("passes_before_code",)),
-        answer=answer,
-        fallback=kw.pop("fallback", None),
-        model="muse",
-        seconds=1.5,
-        tokens=100,
-    )
+from airlie.supervisor.ledger import Ledger, LedgerError
+from tests.support.supervisor_ledger import intervention
 
 
 def test_a_recorded_intervention_reads_back_with_its_latest_outcome(tmp_path: Path) -> None:

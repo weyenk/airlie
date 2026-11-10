@@ -23,7 +23,7 @@ from airlie.story.diagnosis import (
 )
 from airlie.story.model import StoryError
 from airlie.teams.protocol import cut_off_text
-from tests.unit.git_helpers import git
+from tests.support.git import git
 
 BLOCKS = Path(__file__).parent / "data" / "blocks"
 KEYS = {

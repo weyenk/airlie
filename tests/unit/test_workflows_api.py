@@ -23,12 +23,13 @@ from airlie.serve.app import create_app
 from airlie.serve.workflows_api import workflows_router
 from airlie.story.publish import CannotStart, Publisher
 from airlie.story.workflow_publish import NothingToPublish, publish_workflow
-from tests.unit.git_helpers import git
+from tests.support.git import git
+from tests.support.story import WORKFLOWS, RecordedGh
+from tests.support.story_workflows import MINI, MINI_EACH, MINI_NOTE, NOTE, TINY
+from tests.support.studio import cfg_for
+from tests.support.workflow_publish import home_with_origin
+from tests.support.workflows_api import cfg, store
 from tests.unit.serve_helpers import TestClient
-from tests.unit.test_story_pipeline import WORKFLOWS, RecordedGh
-from tests.unit.test_story_workflows import MINI, MINI_EACH, MINI_NOTE, NOTE, TINY
-from tests.unit.test_studio_orchestrator import cfg_for
-from tests.unit.test_workflow_publish import home_with_origin
 
 KEY = "k"
 AUTH = {"Authorization": f"Bearer {KEY}"}
@@ -36,23 +37,9 @@ BROKEN = "workflows: {broken: {start: x, nodes: {}}}\n"
 PR = "https://github.com/o/r/pull/7"
 
 
-def cfg(tmp_path: Path):  # type: ignore[no-untyped-def]
-    """The shipped story and layer workflows, as airlie.yaml includes them."""
-    workflows = {
-        name: spec
-        for part in ("story", "layer")
-        for name, spec in yaml.safe_load((WORKFLOWS / f"{part}.yaml").read_text())["workflows"].items()
-    }
-    return cfg_for(tmp_path, extra={"workflows": workflows})
-
-
 def client(tmp_path: Path) -> tuple[TestClient, Any]:
     c = cfg(tmp_path)
     return TestClient(create_app(c, api_key=KEY)), c
-
-
-def store(c: Any) -> BoardStore:
-    return BoardStore(c.observability.state_dir.expanduser() / "board.sqlite", prefix=c.board.prefix)
 
 
 def bare(c: Any, s: BoardStore, publisher: Any = None) -> tuple[TestClient, list[tuple[str, str | None]]]:

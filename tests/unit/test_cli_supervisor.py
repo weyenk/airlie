@@ -8,8 +8,8 @@ from typer.testing import CliRunner
 
 from airlie import cli
 from airlie.supervisor.ledger import Ledger
-from tests.unit.test_studio_orchestrator import cfg_for
-from tests.unit.test_supervisor_ledger import intervention
+from tests.support.studio import cfg_for
+from tests.support.supervisor_ledger import intervention
 
 runner = CliRunner()
 
@@ -69,7 +69,7 @@ def calc_repo(tmp_path: Path, test: str) -> tuple[Path, str]:
     import shlex
     import sys
 
-    from tests.unit.test_story_layer_checks import commit, repo
+    from tests.support.story_layer_checks import commit, repo
 
     root, base = repo(
         tmp_path, {"calc.py": CALC, "AGENTS.md": GATE_MD.format(py=shlex.quote(sys.executable))}
@@ -79,7 +79,7 @@ def calc_repo(tmp_path: Path, test: str) -> tuple[Path, str]:
 
 
 def try_cfg(tmp_path: Path) -> Path:
-    from tests.unit.test_studio_orchestrator import ROLES
+    from tests.support.studio import ROLES
 
     roles = {**ROLES, "supervisor": ("You triage.", ["read_file", "list_dir", "grep"])}
     roles["architect"] = ("# architect", None)
@@ -93,8 +93,8 @@ def test_try_triages_the_worktree_and_writes_no_ledger_row(tmp_path: Path, monke
     import json
 
     from airlie.engine.fake import FakeEngine, FakeReply
-    from tests.unit.test_supervisor_evidence import write_step
-    from tests.unit.test_supervisor_triage import GOOD
+    from tests.support.supervisor_evidence import write_step
+    from tests.support.supervisor_triage import GOOD
 
     root, base = calc_repo(tmp_path, NO_IMPORT)
     source = try_cfg(tmp_path)
@@ -136,8 +136,8 @@ def test_try_leaves_the_worktree_as_it_was(tmp_path: Path, monkeypatch) -> None:
     import json
 
     from airlie.engine.fake import FakeEngine, FakeReply
-    from tests.unit.git_helpers import git
-    from tests.unit.test_supervisor_triage import GOOD
+    from tests.support.git import git
+    from tests.support.supervisor_triage import GOOD
 
     root, base = calc_repo(tmp_path, "import os\n\n\n" + NO_IMPORT)  # os unused: the fixer removes it
     before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file() and ".git" not in p.parts}

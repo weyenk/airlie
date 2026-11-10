@@ -36,11 +36,11 @@ from airlie.serve.mcp_server import (
 )
 from airlie.story import factory
 from airlie.story.state import StoryState
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_serve import FakeUpstream
-from tests.unit.test_serve_jobs import app_for
-from tests.unit.test_story_pipeline import STORY_ROLES
-from tests.unit.test_studio_orchestrator import APPROVE, DONE, PLAN, RUN, SYNTH, WRITE_PASS, cfg_for
+from tests.support.git import repo_with_marker_tests
+from tests.support.serve import FakeUpstream
+from tests.support.serve_jobs import app_for
+from tests.support.story import STORY_ROLES
+from tests.support.studio import APPROVE, DONE, PLAN, RUN, SYNTH, WRITE_PASS, cfg_for
 
 ROOT = Path(__file__).resolve().parents[2]
 ONE = {"subtasks": [{"id": "b", "role": "coder", "brief": "write PASS"}]}

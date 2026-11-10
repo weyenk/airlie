@@ -18,18 +18,9 @@ from airlie.supervisor.triage import RunOneTest, Triage, TriageFailed, triage_fo
 from airlie.tools.fs import ReadFile
 from airlie.tools.protocol import ToolContext
 from airlie.tools.registry import ToolRegistry
+from tests.support.supervisor_triage import GOOD
 
 REPO = Path(__file__).resolve().parents[2]
-
-GOOD: dict[str, Any] = {
-    "category": "missing_import",
-    "owner": "tester",
-    "diagnosis": "Path is not imported.",
-    "evidence": ["NameError: name 'Path' is not defined"],
-    "message": "Import Path, then edit.",
-    "would_route_to": "tester",
-    "fix_if_attempt": None,
-}
 
 
 def an_input(**kw: object) -> TriageInput:

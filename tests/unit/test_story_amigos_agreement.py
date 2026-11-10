@@ -7,7 +7,6 @@ from airlie.story.amigos import (
     Agreement,
     Objection,
     ProofTest,
-    agreement_note,
     criteria_note,
     prune_references,
     unbuildable,
@@ -72,18 +71,6 @@ def test_an_agreement_with_a_criterion_nobody_owns_or_proves_is_unbuildable() ->
     assert kinds == {"split_invalid", "criterion_unproven"}
     no_tests = replace(whole, proof=PROOF[:2])
     assert {f.kind for f in unbuildable(no_tests)} == {"criterion_unproven", "layer_unproven"}
-
-
-def test_the_agreement_is_said_on_the_card_with_criteria_layers_and_the_proof_table() -> None:
-    agreed = Agreement(ORIGINAL, LAYERS, PROOF, 6, decided_by_owner=("proof",))
-    text = agreement_note(agreed)
-    assert text.startswith("agreement of product, the architect and the tester (6 turns)")
-    assert "**AC2** Given a stored avatar" in text
-    assert "1. Storage (AC1, AC3): src/store.py" in text and "2. Profile (AC2): src/profile.py (new)" in text
-    assert "def save()" in text
-    assert "| AC2 | profile | unit | tests/unit/test_x.py::test_b | the \\| page |" in text
-    assert "decided by their owner at the turn cap: proof" in text
-    assert "decided by their owner" not in agreement_note(replace(agreed, decided_by_owner=()))
 
 
 def test_the_criteria_the_meeting_reworded_added_or_dropped_are_said_and_nothing_is_said_of_none() -> None:

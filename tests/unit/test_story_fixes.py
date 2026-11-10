@@ -20,10 +20,9 @@ from airlie.story.diagnosis import Classified, Diagnosis, Pack, Paths, write_dia
 from airlie.story.local_board import LocalBoard
 from airlie.story.pipeline import StoryPipeline
 from airlie.story.state import StoryState
-from tests.unit.git_helpers import git
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_story_pipeline import RecordingBoard, kinds, pipeline
-from tests.unit.test_studio_orchestrator import cfg_for
+from tests.support.git import git, repo_with_marker_tests
+from tests.support.story import RecordingBoard, kinds, pipeline
+from tests.support.studio import cfg_for
 
 TRACEBACK = (
     "Traceback (most recent call last):\n"
@@ -343,7 +342,7 @@ async def test_the_beat_runs_the_bookkeeping_first_and_adds_its_lines(
 
 
 def _named(name: str) -> str:
-    from tests.unit.test_story_workflows import MINI
+    from tests.support.story_workflows import MINI
 
     return MINI.replace("  mini:", f"  {name}:")
 

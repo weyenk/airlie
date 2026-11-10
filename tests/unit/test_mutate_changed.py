@@ -127,7 +127,7 @@ def test_names_and_globs_are_dotted_modules() -> None:
 
 def test_fork_unsafe_tests_are_listed_from_the_mutmut_config() -> None:
     ignored = mc.mutation_ignored_tests()
-    assert "tests/unit/test_trainer.py" in ignored
+    assert "tests/integration/test_trainer.py" in ignored
     assert all(f.startswith("tests/") and (SCRIPT.parents[1] / f).is_file() for f in ignored)
 
 

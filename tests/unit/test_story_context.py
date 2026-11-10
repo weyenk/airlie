@@ -6,7 +6,7 @@ from pathlib import Path
 
 from airlie.config import load_config
 from airlie.story.context import FILE_HEAD_CHARS, guide_budget, named_paths, repo_guide, whole_paths
-from tests.unit.git_helpers import git
+from tests.support.git import git
 
 
 def repo_with(tmp_path: Path, files: dict[str, str]) -> tuple[Path, str]:

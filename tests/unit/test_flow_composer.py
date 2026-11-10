@@ -8,7 +8,7 @@ from airlie.config import ConfigError
 from airlie.flow import Composer, EndRun, MemoryStore, Registry, Sessions, Stalled, resolve_count
 from airlie.flow.spec import WorkflowSpec, check_workflows
 from airlie.story.asking import StoryBlocked
-from tests.unit.test_studio_orchestrator import cfg_for
+from tests.support.studio import cfg_for
 
 
 def composer(tmp_path, workflows: dict, runners: dict, *, store=None, registry=None, extra=None):
@@ -717,8 +717,8 @@ async def test_end_run_from_a_gate_returns_the_gate_and_from_inside_a_bundle_the
 async def test_a_loop_on_a_state_store_clears_and_records_done_without_saving_the_carry(tmp_path):
     from airlie.flow import StateStore
     from airlie.story.state import StoryState
-    from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-    from tests.unit.test_story_pipeline import text_card
+    from tests.support.git import repo_with_marker_tests
+    from tests.support.story import text_card
 
     repo = repo_with_marker_tests(tmp_path)
     st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)

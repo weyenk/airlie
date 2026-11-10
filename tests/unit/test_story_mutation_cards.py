@@ -13,7 +13,7 @@ import pytest
 from airlie.board import BoardStore
 from airlie.story import fixes, mutation_cards
 from airlie.story.mutation_cards import Survivor
-from tests.unit.test_studio_orchestrator import cfg_for
+from tests.support.studio import cfg_for
 
 HOME = "weyenk/airlie"
 RUN_URL = "https://github.com/weyenk/airlie/actions/runs/7"

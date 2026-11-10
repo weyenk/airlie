@@ -18,8 +18,8 @@ from airlie.board.api import board_router
 from airlie.serve.app import create_app
 from airlie.serve.feed import Change, Feed, event_stream
 from airlie.serve.jobs import Jobs
+from tests.support.serve import FakeUpstream, cfg
 from tests.unit.serve_helpers import TestClient
-from tests.unit.test_serve import FakeUpstream, cfg
 
 
 async def test_a_subscriber_gets_what_is_published_in_order() -> None:

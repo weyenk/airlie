@@ -13,8 +13,8 @@ from airlie.story.model import Criterion, Layer, Story
 from airlie.story.package import Interface, Package, PackageFile
 from airlie.story.provenance import SHORT, Provenance, gather_provenance, layer_cost
 from airlie.story.state import StoryState
-from tests.unit.test_story_pipeline import STORY_ROLES
-from tests.unit.test_studio_orchestrator import cfg_for
+from tests.support.story import STORY_ROLES
+from tests.support.studio import cfg_for
 
 BASE = "a" * 40
 SHA1 = "b" * 40

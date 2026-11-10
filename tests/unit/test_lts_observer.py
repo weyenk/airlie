@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
+import pytest
 import yaml
 
 from airlie.config import AirlieConfig, ControllerSpec, SummarizerSpec, load_config
@@ -275,3 +278,31 @@ async def test_injection_is_ranked_by_the_teams_context_and_inlines_once(tmp_pat
     assert text2.count("Value") == 1 and "inventory/cli.py tests/" in text2
     text_own = await obs.before_step("team-2", 3)
     assert text_own is not None and "test_total_cost" not in text_own and "git log" in text_own
+
+
+async def test_drain_ends_when_the_admissions_are_done_but_their_bookkeeping_has_not_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An admission that finished just before drain: its done callback (the discard from the pending set) is
+    queued on the loop but has not run. gather over futures that are all done completes without yielding to
+    the loop (Python 3.12), so a drain that waited for those callbacks to empty the set spun forever, as
+    test_orchestrator_wires_lts did on Linux. That spin never yields either, so a wait_for could not bound it:
+    a count of gathers does."""
+    obs, _ = make_observer(tmp_path)
+    finished = asyncio.get_running_loop().create_future()
+    finished.set_result(None)
+    obs._pending.add(finished)  # type: ignore[arg-type]
+    finished.add_done_callback(obs._pending.discard)  # queued, not run: nothing has yielded since
+    gathers = 0
+    real_gather = asyncio.gather
+
+    def counted(*futures: Any, **kwargs: Any) -> Any:
+        nonlocal gathers
+        gathers += 1
+        if gathers > 10:
+            raise AssertionError("drain is still looping over admissions that are done")
+        return real_gather(*futures, **kwargs)
+
+    monkeypatch.setattr(asyncio, "gather", counted)
+    await obs.drain()
+    assert not obs._pending and gathers == 1

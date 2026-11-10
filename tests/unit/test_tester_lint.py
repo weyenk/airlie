@@ -17,8 +17,8 @@ from airlie.story.tester_lint import (
     ruff_steps,
     wrap_long_lines,
 )
-from tests.unit.git_helpers import git
-from tests.unit.test_story_layer_checks import commit, repo
+from tests.support.git import git
+from tests.support.story_layer_checks import commit, repo
 
 RUFF = f"{shlex.quote(sys.executable)} -m ruff"
 GATE = (f"{RUFF} check .", f"{RUFF} format --check .", f"{sys.executable} -m pytest -q")

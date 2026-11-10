@@ -4,28 +4,11 @@ shape LoggingObserver.after_step writes."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from airlie.supervisor.evidence import TriageInput, layer_events, trace_tail, triage_message
 from airlie.supervisor.ledger import Row
-
-
-def write_step(
-    folder: Path, n: int, reasoning: str = "", text: str = "", tool: str | None = None, obs: str = ""
-) -> None:
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"step-{n:03d}.json").write_text(
-        json.dumps(
-            {
-                "u_t": {"name": tool or "", "arguments": {"path": "a.py"} if tool else {}},
-                "o_t": obs,
-                "ok": True,
-                "assistant_text": text,
-                "reasoning": reasoning,
-            }
-        )
-    )
+from tests.support.supervisor_evidence import write_step
 
 
 def row(i: int, **kw: object) -> Row:

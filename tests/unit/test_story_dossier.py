@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from airlie.story.dossier import DOSSIER_FILES, dossier, read_paths, story_dossier
-from tests.unit.test_story_layer_checks import repo
+from tests.support.story_layer_checks import repo
 
 
 def step(run: Path, team: str, n: int, name: str, args: object) -> None:
@@ -54,7 +54,7 @@ def test_each_brief_carries_the_dossier_and_a_package_brief_not_its_own_sources_
     from airlie.story.brief_recipe import BriefInputs, assemble, load_recipe
     from airlie.story.briefs import critic_brief, dossier_section, layers_brief, package_brief
     from airlie.story.package import Package
-    from tests.unit.test_story_briefs import LAYERS, STORY
+    from tests.support.story_briefs import LAYERS, STORY
 
     files = {"src/app.py": "x = 1\n", "README.md": "# hi\n"}
     heading = dossier_section(files)[0].splitlines()[0]
@@ -95,7 +95,7 @@ def test_a_dossier_leaves_out_what_the_guide_shows_whole_and_lists_what_does_not
 
 def test_a_package_brief_carries_no_dossier_file_its_guide_shows_whole() -> None:
     from airlie.story.briefs import package_brief
-    from tests.unit.test_story_briefs import LAYERS, STORY
+    from tests.support.story_briefs import LAYERS, STORY
 
     guide = "### src/x.py (whole, 1 lines)\n```py\nx = 1\n```"
     text = package_brief(

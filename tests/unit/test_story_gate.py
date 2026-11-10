@@ -12,7 +12,7 @@ import pytest
 from airlie.story.gate import Gate, gate_commands, missing_gate, read_gate
 from airlie.story.model import NoTestGate
 from airlie.subproc import without_hooks
-from tests.unit.git_helpers import git
+from tests.support.git import git
 
 GATE = """# OpenHand
 

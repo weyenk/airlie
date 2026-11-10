@@ -25,7 +25,7 @@ from airlie.story.amigos import (
 from airlie.story.lessons import Lesson
 from airlie.story.model import Criterion, Layer, NotActionable, ScopedPath, Story
 from airlie.tools import ToolContext, ToolRegistry
-from tests.unit.test_story_layer_checks import repo
+from tests.support.story_layer_checks import repo
 
 ROOT = Path(__file__).resolve().parents[2]
 CFG = load_config(ROOT / "airlie.yaml", ROOT / "no-local-overrides.yaml")

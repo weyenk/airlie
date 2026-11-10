@@ -27,7 +27,7 @@ from airlie.story.epic_plan import (
     story_card_of,
 )
 from airlie.story.model import Criterion, EpicHeader, Story, StoryError
-from tests.unit.git_helpers import git
+from tests.support.git import git
 
 EPIC = EpicSpec(
     ("o/r",),

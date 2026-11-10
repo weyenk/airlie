@@ -18,8 +18,8 @@ from airlie.serve.uploads import UploadStore
 from airlie.tools.lhr import LhrCreateDraft, LhrPreview, LhrPublish, LhrUploadPhoto
 from airlie.tools.lhr_session import LhrSessionStore
 from airlie.tools.protocol import ToolContext
+from tests.support.serve import FakeUpstream
 from tests.unit.serve_helpers import TestClient
-from tests.unit.test_serve import FakeUpstream
 
 
 class StubAuthoring:

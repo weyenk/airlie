@@ -10,6 +10,9 @@
 #
 # Stages 3-5 run `task test:<layer>`, which succeeds while tests/<layer>/ is empty; add tests there and the
 # stage starts enforcing them. Only the e2e stage serves the application: its web app, in a container.
+# Unit, functional, contract and integration run in the Linux test image (ops/test/Containerfile) under the
+# runner's Docker with `--network none`: loopback only, so a test that reaches outside fails here. The
+# test-image job builds that image once per run and hands it to them.
 name: pipeline
 
 on:
@@ -29,7 +32,7 @@ jobs:
   # ---- stage 1: static ----
   static:
     # Linux since 2026-11-02: mlx installs on macOS only (pyproject.toml), and the tests and mutants
-    # that need them run on the `mac` and `mutation-mac` jobs (tests/unit/conftest.py MAC_ONLY, MAC_ONLY_TESTS)
+    # that need them run on the `mac` and `mutation-mac` jobs (the tests marked `mac`; tests/conftest.py)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -39,21 +42,58 @@ jobs:
       - run: task web:gate
       - run: task hub:gate
 
-  # ---- stage 2: the lowest level of the pyramid ----
-  unit:
-    needs: static
+  # The Linux test image (ops/test/Containerfile) the unit, functional, contract and integration jobs run in,
+  # built once per run and handed to them as an artifact (`docker load`). It starts with the pipeline, beside
+  # `static`, so unit does not wait on it. Its layers live in the Actions cache: with pyproject.toml, uv.lock and
+  # the Containerfile unchanged the build is a cache hit, and the job is mostly the export and the upload.
+  test-image:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-      # The budget fails the job on a test whose call phase took over 500 ms and that tests/unit/quarantine.toml
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ops/test/Containerfile
+          tags: airlie-test:latest
+          cache-from: type=gha,scope=test-image
+          cache-to: type=gha,mode=max,scope=test-image
+          outputs: type=docker,dest=/tmp/airlie-test.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: airlie-test-image
+          path: /tmp/airlie-test.tar
+          retention-days: 1
+          compression-level: 1
+
+  # ---- stage 2: the lowest level of the pyramid ----
+  unit:
+    needs: [static, test-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: airlie-test-image
+          path: /tmp
+      - run: docker load -i /tmp/airlie-test.tar
+      # In the Linux test image with the outside network off, as the layers above it run. The tests marked
+      # `mac` skip there and run on the `mac` job.
+      # The budget fails the job on a test whose call phase took over 1 s and that tests/unit/quarantine.toml
       # does not list (setup and teardown are not timed, so a worker's cold imports are not charged to its first
-      # test; tests/unit/conftest.py). No multiplier: these 2-worker runners are not slower per test than a
-      # Mac under -n 8 (2026-11-09: 4217 tests summed ~910 worker-seconds here against ~1770 locally).
-      - run: task test:unit
+      # test; tests/unit/conftest.py). No multiplier: these runners are not slower per test than a Mac under
+      # -n 8 (2026-11-09: 4217 tests summed ~910 worker-seconds here against ~1770 locally).
+      - run: task test:unit:image
         env:
-          AIRLIE_TEST_BUDGET_MS: "500"
+          TEST_ENGINE: docker
+          TEST_IMAGE_LOADED: "1"
+          AIRLIE_TEST_BUDGET_MS: "1000"
 
   # The map mutmut needs before it runs a mutant: which unit tests execute which function (its stats run, the
   # whole suite under mutmut's tracing). Every shard used to build it, serially, before its first mutant; this
@@ -181,37 +221,76 @@ jobs:
 
   # ---- stage 3: units in concert ----
   functional:
-    needs: unit
+    needs: [unit, test-image]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
+      - uses: arduino/setup-task@v2
+        if: hashFiles('tests/functional/**/test_*.py') != ''
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        if: hashFiles('tests/functional/**/test_*.py') != ''
+        with:
+          name: airlie-test-image
+          path: /tmp
+      - run: docker load -i /tmp/airlie-test.tar
         if: hashFiles('tests/functional/**/test_*.py') != ''
       - run: task test:functional
         if: hashFiles('tests/functional/**/test_*.py') != ''
+        env:
+          TEST_ENGINE: docker
+          TEST_IMAGE_LOADED: "1"
 
   contract:
-    needs: unit
+    needs: [unit, test-image]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
+      - uses: arduino/setup-task@v2
+        if: hashFiles('tests/contract/**/test_*.py') != ''
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        if: hashFiles('tests/contract/**/test_*.py') != ''
+        with:
+          name: airlie-test-image
+          path: /tmp
+      - run: docker load -i /tmp/airlie-test.tar
         if: hashFiles('tests/contract/**/test_*.py') != ''
       - run: task test:contract
         if: hashFiles('tests/contract/**/test_*.py') != ''
+        env:
+          TEST_ENGINE: docker
+          TEST_IMAGE_LOADED: "1"
 
   integration:
-    needs: unit
+    needs: [unit, test-image]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
+      - uses: arduino/setup-task@v2
+        if: hashFiles('tests/integration/**/test_*.py') != ''
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        if: hashFiles('tests/integration/**/test_*.py') != ''
+        with:
+          name: airlie-test-image
+          path: /tmp
+      - run: docker load -i /tmp/airlie-test.tar
         if: hashFiles('tests/integration/**/test_*.py') != ''
       - run: task test:integration
         if: hashFiles('tests/integration/**/test_*.py') != ''
+        env:
+          TEST_ENGINE: docker
+          TEST_IMAGE_LOADED: "1"
 
   # ---- stage 4: behavioural ----
   # The web app in Chromium, in the e2e image (ops/e2e/Containerfile): the image a Mac runs under Apple's

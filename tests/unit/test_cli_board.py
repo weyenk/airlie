@@ -14,8 +14,8 @@ from airlie import cli
 from airlie.board import BoardStore
 from airlie.story import jira
 from airlie.story.board import BoardError
-from tests.unit.test_config import MINIMAL, write
-from tests.unit.test_jira_import import HDS, FakeClient
+from tests.support.config import MINIMAL, write
+from tests.support.jira_import import HDS, FakeClient
 
 runner = CliRunner()
 

@@ -23,9 +23,8 @@ from airlie.story.model import StoryRunning
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restart import FRESH, Restarted, RestartError, RestartIncomplete, restart
 from airlie.story.state import StoryState, lane_lock
-from tests.unit.git_helpers import git
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_story_pipeline import (
+from tests.support.git import git, repo_with_marker_tests
+from tests.support.story import (
     LAYERS,
     NOTE,
     PKG2,
@@ -37,8 +36,8 @@ from tests.unit.test_story_pipeline import (
     pipeline,
     worktrees,
 )
-from tests.unit.test_story_restack import trunk_commit
-from tests.unit.test_studio_orchestrator import APPROVE, DONE, RUN, WRITE_PASS, cfg_for
+from tests.support.story_restack import trunk_commit
+from tests.support.studio import APPROVE, DONE, RUN, WRITE_PASS, cfg_for
 
 
 class GitHubPrs(RecordedGh):
@@ -298,7 +297,7 @@ async def test_a_card_on_a_draft_workflow_restarted_from_a_step_runs_its_own_sna
 ) -> None:
     """A restart keeps the snapshot: the card resumes the workflow it started on (its node ids are named by
     the snapshot alone), not the story, and the snapshot is what it was, whatever the draft says since."""
-    from tests.unit.test_story_workflows import MINI, MINI_MORE
+    from tests.support.story_workflows import MINI, MINI_MORE
 
     repo = github_repo(tmp_path)
     board, store, key = story_card(tmp_path)
