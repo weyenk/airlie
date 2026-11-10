@@ -198,6 +198,34 @@ def test_other_client_template_kwargs_survive_the_translation(tmp_path: Path) ->
     assert sent["enable_thinking"] is True and sent["chat_template_kwargs"] == {"x": 1}
 
 
+def test_the_serve_proxy_remaps_reasoning_effort_high_for_an_mlx_vlm_role(tmp_path: Path) -> None:
+    up, client, _ = mlx_vlm_upstream(tmp_path)
+    ask = {"messages": [{"role": "user", "content": "yo"}], "reasoning_effort": "high"}
+    client.post("/v1/chat/completions", json={"model": "coder", **ask})
+    assert json.loads(up.requests[0].content)["reasoning_effort"] == "xhigh"
+
+
+def test_tool_loop_follow_ups_gain_a_user_turn_on_the_proxy(tmp_path: Path) -> None:
+    up, client, _ = mlx_vlm_upstream(tmp_path)
+    body = {
+        "model": "coder",
+        "messages": [
+            {"role": "user", "content": "run"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "done"},
+        ],
+    }
+    client.post("/v1/chat/completions", json=body)
+    sent = json.loads(up.requests[0].content)["messages"]
+    assert sent[-1] == {"role": "user", "content": "Continue."}
+
+
 def test_an_mlx_vlm_role_gets_its_tool_parser_when_tools_are_sent_and_its_reasoning_effort(
     tmp_path: Path,
 ) -> None:

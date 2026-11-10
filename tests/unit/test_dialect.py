@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from airlie.engine.dialect import dialect_for, thinking_fields
+from airlie.engine.dialect import (
+    MLX_VLM_TOOL_TURN_USER,
+    dialect_for,
+    normalize_mlx_vlm_messages,
+    remap_mlx_vlm_reasoning_effort,
+    thinking_fields,
+)
 
 
 def test_mlx_vlm_fields_use_its_names_and_map_reasoning_strength() -> None:
@@ -28,6 +34,30 @@ def test_mlx_vlm_fields_omit_what_is_unset() -> None:
 def test_the_dialect_follows_the_engine_kind() -> None:
     assert dialect_for("mlx_vlm") == "mlx_vlm"
     assert dialect_for("openai_http") == "openai"
+
+
+def test_mlx_vlm_reasoning_effort_from_clients_is_remapped() -> None:
+    body: dict = {"reasoning_effort": "high"}
+    remap_mlx_vlm_reasoning_effort(body)
+    assert body["reasoning_effort"] == "xhigh"
+    body = {"chat_template_kwargs": {"reasoning_strength": "minimal"}}
+    remap_mlx_vlm_reasoning_effort(body)
+    assert body["chat_template_kwargs"]["reasoning_strength"] == "low"
+    body = {"reasoning_effort": "medium"}
+    remap_mlx_vlm_reasoning_effort(body)
+    assert body["reasoning_effort"] == "medium"
+
+
+def test_mlx_vlm_messages_gain_a_user_turn_after_tool_results() -> None:
+    thread = [
+        {"role": "user", "content": "find it"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1", "type": "function", "function": {}}]},
+        {"role": "tool", "tool_call_id": "1", "content": "ok"},
+    ]
+    out = normalize_mlx_vlm_messages(thread)
+    assert out[-1] == {"role": "user", "content": MLX_VLM_TOOL_TURN_USER}
+    alone = [{"role": "user", "content": "hi"}]
+    assert normalize_mlx_vlm_messages(alone) == alone
 
 
 def test_the_openai_dialect_sends_only_template_kwargs() -> None:
