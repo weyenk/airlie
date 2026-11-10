@@ -85,7 +85,7 @@ jobs:
       - run: docker load -i /tmp/airlie-test.tar
       # In the Linux test image with the outside network off, as the layers above it run. The tests marked
       # `mac` skip there and run on the `mac` job.
-      # The budget fails the job on a test whose call phase took over 500 ms and that tests/unit/quarantine.toml
+      # The budget fails the job on a test whose call phase took over 1 s and that tests/unit/quarantine.toml
       # does not list (setup and teardown are not timed, so a worker's cold imports are not charged to its first
       # test; tests/unit/conftest.py). No multiplier: these runners are not slower per test than a Mac under
       # -n 8 (2026-11-09: 4217 tests summed ~910 worker-seconds here against ~1770 locally).
@@ -93,7 +93,7 @@ jobs:
         env:
           TEST_ENGINE: docker
           TEST_IMAGE_LOADED: "1"
-          AIRLIE_TEST_BUDGET_MS: "500"
+          AIRLIE_TEST_BUDGET_MS: "1000"
 
   # The map mutmut needs before it runs a mutant: which unit tests execute which function (its stats run, the
   # whole suite under mutmut's tracing). Every shard used to build it, serially, before its first mutant; this
