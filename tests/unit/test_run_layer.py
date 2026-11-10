@@ -93,6 +93,14 @@ def test_pytest_args_come_after_the_xdist_defaults_so_they_win(tmp_path: Path, m
     assert cmd[-6:] == ["-n", "auto", "--maxprocesses", "8", "-n", "0"]
 
 
-def test_layers_above_unit_run_serially(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    cmd = _ran("integration", ["-q"], tmp_path, monkeypatch)
-    assert "-n" not in cmd
+def test_the_integration_layer_runs_under_xdist_with_a_ci_safe_worker_cap(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    cmd = _ran("integration", [], tmp_path, monkeypatch)
+    assert cmd[-4:] == ["-n", "auto", "--maxprocesses", "4"]
+
+
+def test_functional_and_contract_layers_run_serially(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    for layer in ("functional", "contract"):
+        cmd = _ran(layer, ["-q"], tmp_path, monkeypatch)
+        assert "-n" not in cmd
