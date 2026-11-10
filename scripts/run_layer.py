@@ -14,9 +14,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LAYERS = ("unit", "functional", "contract", "integration", "e2e", "journey", "performance", "security")
-# The unit layer runs under pytest-xdist exactly as the AGENTS.md test gate does, so CI and the gate agree.
-# Given before the caller's args, so `-n 0` from the caller still wins.
-LAYER_ARGS = {"unit": ["-n", "auto", "--maxprocesses", "8"]}
+# Unit and integration run under pytest-xdist (unit matches the AGENTS.md gate; integration caps at four
+# workers for CI memory). Given before the caller's args, so `-n 0` from the caller still wins.
+LAYER_ARGS = {
+    "unit": ["-n", "auto", "--maxprocesses", "8"],
+    "integration": ["-n", "auto", "--maxprocesses", "4"],
+}
 
 
 def has_tests(layer_dir: Path) -> bool:
