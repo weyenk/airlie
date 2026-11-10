@@ -420,6 +420,7 @@ def create_app(
     transport: httpx.AsyncBaseTransport | None = None,
     orchestrator_factory: Callable[..., Any] | None = None,
     api_key: str | None = None,
+    accepted_api_keys: tuple[str, ...] | None = None,
     story_job: Callable[..., Any] | None = None,
     initiative_job: Callable[..., Any] | None = None,
     story_restart: Callable[..., Any] | None = None,
@@ -496,7 +497,7 @@ def create_app(
         return images
 
     store = auth_store or AuthStore(cfg.observability.state_dir.expanduser() / "auth.sqlite")
-    resolver = Resolver(store, cfg.auth, api_key)
+    resolver = Resolver(store, cfg.auth, api_key, accepted_api_keys=accepted_api_keys)
 
     @app.middleware("http")
     async def _require_principal(request: Request, call_next: Callable[..., Any]) -> Any:

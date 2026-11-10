@@ -80,8 +80,21 @@ def _bearer_matches_api_key(provided: str, expected: str) -> bool:
 
 
 class Resolver:
-    def __init__(self, store: AuthStore, cfg: AuthSpec, api_key: str | None) -> None:
+    def __init__(
+        self,
+        store: AuthStore,
+        cfg: AuthSpec,
+        api_key: str | None,
+        *,
+        accepted_api_keys: tuple[str, ...] | None = None,
+    ) -> None:
         self.store, self.cfg, self.api_key = store, cfg, api_key
+        if accepted_api_keys is not None:
+            self._accepted_api_keys = accepted_api_keys
+        elif api_key:
+            self._accepted_api_keys = (api_key,)
+        else:
+            self._accepted_api_keys = ()
 
     async def resolve(self, request: Request) -> Principal | None:
         """The request's principal, or None for nobody. Raises NotInvited for a trusted Tailscale login that
@@ -89,12 +102,10 @@ class Resolver:
         auth = request.headers.get("authorization", "")
         # Wrong/stale Bearer must not block Tailscale or a passkey session cookie (SPA may keep an old
         # admin key in localStorage while the person signs in with a passkey).
-        if (
-            self.api_key
-            and auth.startswith("Bearer ")
-            and _bearer_matches_api_key(auth.removeprefix("Bearer "), self.api_key)
-        ):
-            return API_KEY_PRINCIPAL
+        if self._accepted_api_keys and auth.startswith("Bearer "):
+            bearer = auth.removeprefix("Bearer ")
+            if any(_bearer_matches_api_key(bearer, key) for key in self._accepted_api_keys):
+                return API_KEY_PRINCIPAL
         login = request.headers.get(TAILSCALE_HEADER)
         unknown_login: str | None = None
         if login and self.cfg.tailscale and tailnet_peer(request):
@@ -109,6 +120,6 @@ class Resolver:
                 return Principal(user.id, user.name, user.role, "session")
         if unknown_login is not None:
             raise NotInvited(unknown_login)
-        if self.api_key is None and is_direct_loopback(request) and not self.store.users():
+        if not self._accepted_api_keys and is_direct_loopback(request) and not self.store.users():
             return BOOTSTRAP
         return None

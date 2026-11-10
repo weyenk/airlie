@@ -601,18 +601,24 @@ def serve(
 ) -> None:
     """OpenAI-compatible endpoint in front of airlie: roles and catalog models, plus POST /v1/airlie/run."""
     from airlie.serve import create_app
-    from airlie.serve.bridge.session import resolve_serve_api_key
+    from airlie.serve.bridge.session import (
+        accepted_serve_api_keys,
+        ensure_serve_api_key_stores,
+        resolve_serve_api_key,
+    )
     from airlie.serve.server import run
 
     cfg = _load(config)
     # --api-key only; do not bind envvar here or a stale shell export overrides bridge.env
+    ensure_serve_api_key_stores(cfg)
     api_key = resolve_serve_api_key(cfg, explicit=api_key)
+    accepted = accepted_serve_api_keys(cfg, explicit=api_key)
     raw = [m for m in cfg.models if m not in cfg.roles]
     console.print(
         f"airlie serve on http://{host}:{port}/v1  (roles: {', '.join(cfg.roles)}; "
         f"catalog models: {', '.join(raw)}; api key: {'required' if api_key else 'none'})"
     )
-    run(create_app(cfg, api_key=api_key), host=host, port=port)
+    run(create_app(cfg, api_key=api_key, accepted_api_keys=accepted), host=host, port=port)
 
 
 @app.command()
