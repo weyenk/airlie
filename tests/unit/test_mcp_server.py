@@ -32,6 +32,7 @@ from airlie.serve.mcp_server import (
     allowed_test_cmds,
     build_server,
     install_opencode,
+    mcp_client_env,
     opencode_entry,
 )
 from airlie.story import factory
@@ -346,6 +347,19 @@ async def test_a_run_without_a_test_command_uses_the_first_configured_one_or_has
         assert gate is (used is None) and ("Leave test_cmd out to use 'make test'," in refused) is (
             used is not None
         )
+
+
+def test_mcp_client_env_reads_bridge_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    airlie_cfg = home / ".config" / "airlie"
+    airlie_cfg.mkdir(parents=True)
+    dotenv = airlie_cfg / "bridge.env"
+    dotenv.write_text("AIRLIE_SERVE_API_KEY=file-key\n")
+    dotenv.chmod(0o600)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("AIRLIE_SERVE_API_KEY", raising=False)
+    cfg = cfg_for(tmp_path)
+    assert mcp_client_env(cfg)["AIRLIE_SERVE_API_KEY"] == "file-key"
 
 
 async def test_the_api_key_goes_only_to_an_https_or_loopback_airlie_and_nowhere_else(tmp_path: Path) -> None:

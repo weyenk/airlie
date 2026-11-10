@@ -61,6 +61,18 @@ def test_the_bearer_key_is_the_admin_principal_named_api_key(store: AuthStore) -
     assert probe(r, ELSEWHERE).json() is None
 
 
+def test_dual_serve_api_keys_both_authorize(store: AuthStore) -> None:
+    r = Resolver(
+        store,
+        AuthSpec(),
+        api_key="bridge-key",
+        accepted_api_keys=("bridge-key", "legacy-key"),
+    )
+    for key in ("bridge-key", "legacy-key"):
+        assert probe(r, ELSEWHERE, headers={"Authorization": f"Bearer {key}"}).json()["via"] == "api-key"
+    assert probe(r, ELSEWHERE, headers={"Authorization": "Bearer other"}).json() is None
+
+
 def test_a_tailscale_login_on_loopback_is_its_user(store: AuthStore) -> None:
     u = store.add_user("Noah", "admin", login="noah@github")
     r = Resolver(store, AuthSpec(tailscale=True), api_key=None)
@@ -196,6 +208,19 @@ def test_serve_refuses_v1_to_nobody_with_a_json_401_and_leaves_health_open(tmp_p
         assert r.status_code == 401
         assert r.json() == {"error": "not signed in"}
         assert c.get("/v1/models", headers={"Authorization": "Bearer s3cret"}).status_code == 200
+
+
+def test_serve_accepts_either_key_during_a_dual_key_transition(tmp_path: Path) -> None:
+    app = create_app(
+        cfg(tmp_path),
+        transport=httpx.MockTransport(FakeUpstream()),
+        api_key="bridge-key",
+        accepted_api_keys=("bridge-key", "legacy-key"),
+    )
+    with TestClient(app, client=ELSEWHERE) as c:
+        for key in ("bridge-key", "legacy-key"):
+            assert c.get("/v1/models", headers={"Authorization": f"Bearer {key}"}).status_code == 200
+        assert c.get("/v1/models", headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
 def test_serve_answers_an_unknown_tailscale_login_with_401_not_invited(tmp_path: Path) -> None:

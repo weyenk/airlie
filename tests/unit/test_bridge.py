@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import stat
 import tempfile
 import uuid
 from pathlib import Path
@@ -187,6 +188,85 @@ def test_resolve_serve_api_key_reads_bridge_dotenv(tmp_path: Path, monkeypatch: 
 
     assert resolve_serve_api_key(cfg) == "serve-secret-from-file"
     assert resolve_serve_api_key(cfg, explicit="cli-wins") == "cli-wins"
+
+
+def _airlie_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    home = tmp_path / "home"
+    airlie_cfg = home / ".config" / "airlie"
+    airlie_cfg.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    for key in ("BRIDGE_WORKER_SECRET", "AIRLIE_SERVE_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    return airlie_cfg
+
+
+def test_ensure_never_overwrites_existing_bridge_env_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    airlie_cfg = _airlie_home(tmp_path, monkeypatch)
+    dotenv = airlie_cfg / "bridge.env"
+    dotenv.write_text("AIRLIE_SERVE_API_KEY=keep-me\n")
+    dotenv.chmod(0o600)
+    (airlie_cfg / "serve-key").write_text("legacy-only\n")
+    cfg = _cfg_with_bridge(bridge_cfg(tmp_path))
+    from airlie.serve.bridge.session import ensure_serve_api_key_stores
+
+    ensure_serve_api_key_stores(cfg, bridge_path=dotenv)
+    assert dotenv.read_text() == "AIRLIE_SERVE_API_KEY=keep-me\n"
+
+
+def test_serve_key_alone_promotes_into_bridge_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    airlie_cfg = _airlie_home(tmp_path, monkeypatch)
+    legacy = airlie_cfg / "serve-key"
+    legacy.write_text("legacy-key\n")
+    legacy.chmod(0o600)
+    dotenv = airlie_cfg / "bridge.env"
+    cfg = _cfg_with_bridge(bridge_cfg(tmp_path))
+    from airlie.serve.bridge.session import ensure_serve_api_key_stores, resolve_serve_api_key
+
+    ensure_serve_api_key_stores(cfg, bridge_path=dotenv)
+    assert dotenv.read_text().strip() == "AIRLIE_SERVE_API_KEY=legacy-key"
+    assert legacy.read_text().strip() == "legacy-key"
+    assert resolve_serve_api_key(cfg) == "legacy-key"
+
+
+def test_dual_keys_both_accepted_for_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    airlie_cfg = _airlie_home(tmp_path, monkeypatch)
+    dotenv = airlie_cfg / "bridge.env"
+    dotenv.write_text("AIRLIE_SERVE_API_KEY=bridge-key\n")
+    dotenv.chmod(0o600)
+    (airlie_cfg / "serve-key").write_text("legacy-key\n")
+    cfg = _cfg_with_bridge(bridge_cfg(tmp_path))
+    from airlie.serve.bridge.session import accepted_serve_api_keys
+
+    assert accepted_serve_api_keys(cfg) == ("bridge-key", "legacy-key")
+
+
+def test_accepted_keys_include_only_legacy_when_bridge_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    airlie_cfg = _airlie_home(tmp_path, monkeypatch)
+    (airlie_cfg / "serve-key").write_text("only-legacy\n")
+    cfg = _cfg_with_bridge(bridge_cfg(tmp_path))
+    from airlie.serve.bridge.session import accepted_serve_api_keys, resolve_serve_api_key
+
+    assert resolve_serve_api_key(cfg) == "only-legacy"
+    assert accepted_serve_api_keys(cfg) == ("only-legacy",)
+
+
+def test_ensure_generates_bridge_env_when_no_key_anywhere(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    airlie_cfg = _airlie_home(tmp_path, monkeypatch)
+    dotenv = airlie_cfg / "bridge.env"
+    cfg = _cfg_with_bridge(bridge_cfg(tmp_path))
+    from airlie.serve.bridge.session import ensure_serve_api_key_stores, resolve_serve_api_key
+
+    ensure_serve_api_key_stores(cfg, bridge_path=dotenv)
+    key = resolve_serve_api_key(cfg)
+    assert key and len(key) > 20
+    assert dotenv.read_text().startswith("AIRLIE_SERVE_API_KEY=")
+    assert stat.S_IMODE(dotenv.stat().st_mode) == 0o600
 
 
 def test_bridge_dotenv_wins_over_stale_shell_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

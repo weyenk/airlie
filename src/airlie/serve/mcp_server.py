@@ -552,11 +552,26 @@ def guard_config(config: Path | None) -> tuple[AirlieConfig | None, str]:
         return None, str(e)
 
 
+def mcp_client_env(cfg: AirlieConfig | None) -> Mapping[str, str]:
+    """Process env merged with bridge.env (and resolve_serve_api_key) like task serve."""
+    env = dict(os.environ)
+    if cfg is None:
+        return env
+    from airlie.serve.bridge.session import credential_env, resolve_serve_api_key
+
+    env.update(credential_env(cfg))
+    key = resolve_serve_api_key(cfg)
+    if key:
+        env[cfg.bridge.serve_api_key_env] = key
+    return env
+
+
 async def serve_stdio(config: Path | None = None) -> None:
     """`airlie mcp`: serve the tools over stdin and stdout until the client closes them."""
     cfg, why = guard_config(config)
-    async with airlie_http(os.environ) as http:
-        test_cmds = allowed_test_cmds(cfg, os.environ)
+    env = mcp_client_env(cfg)
+    async with airlie_http(env) as http:
+        test_cmds = allowed_test_cmds(cfg, env)
         await build_server(http, test_cmds=test_cmds, cwd=Path.cwd(), no_config=why).run_stdio_async()
 
 
