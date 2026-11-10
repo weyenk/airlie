@@ -107,9 +107,9 @@ pytest_add_cli_args = [
     "tests/unit/test_mcp_tools.py::test_mcp_tools_are_listed_and_callable",
     "--deselect",
     "tests/unit/test_mcp_server.py::test_airlie_mcp_serves_the_five_tools_over_stdio",
-    "--ignore=tests/unit/test_trainer.py",
+    "--ignore=tests/integration/test_trainer.py",
     "--ignore=tests/unit/test_learned_controller.py",
-    "--ignore=tests/unit/test_cli_controller.py",
+    "--ignore=tests/integration/test_cli_controller.py",
     # the release test reads .github/workflows/pipeline.yml, which mutmut does not copy into the mutant dir
     # (it still runs in the unit stage)
     "--ignore=tests/unit/test_pipeline_release.py",

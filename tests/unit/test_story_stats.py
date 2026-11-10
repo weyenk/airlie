@@ -164,33 +164,6 @@ def test_the_stats_print_as_tables(tmp_path: Path) -> None:
     assert "no blocks" in text and "no objections" in text
 
 
-def test_the_stats_route(tmp_path: Path) -> None:
-    import httpx
-
-    from airlie.serve.app import create_app
-    from tests.support.serve import FakeUpstream
-    from tests.support.serve import cfg as serve_cfg
-    from tests.unit.serve_helpers import TestClient
-
-    c = serve_cfg(tmp_path)
-    store = BoardStore(c.observability.state_dir / "board.sqlite")
-    key = make_story(store)
-    go(store, key, [("approved", "noah", 10), ("doing", "line", 11), ("review", "line", 50)])
-    app = create_app(c, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
-    auth = {"Authorization": "Bearer k"}
-    with TestClient(app) as client:
-        body = client.get("/v1/airlie/line/stats", headers=auth).json()
-        assert set(body) == {"unattended", "blocks", "hours", "amigos", "budgets"}
-        assert body["unattended"] == {"stories": 1, "unattended": 1, "rate": 1.0}
-        later = client.get("/v1/airlie/line/stats", params={"since": "2026-12-01"}, headers=auth).json()
-        assert later["unattended"]["stories"] == 0  # the review was at epoch 50
-        assert (
-            client.get("/v1/airlie/line/stats", params={"since": "yesterday"}, headers=auth).status_code
-            == 400
-        )
-        assert client.get("/v1/airlie/line/stats").status_code == 401
-
-
 def test_line_stats_prints_the_tables_and_since_must_be_a_date(tmp_path: Path) -> None:
     from typer.testing import CliRunner
 

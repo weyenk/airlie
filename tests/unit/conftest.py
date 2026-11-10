@@ -20,11 +20,11 @@ os.environ.setdefault("NO_PROXY", "*")
 ATLASSIAN = ("ATLASSIAN_API_KEY", "ATLASSIAN_EMAIL", "ATLASSIAN_BASE_URL", "ATLASSIAN_PROJECT_KEY")
 ROOT = Path(__file__).resolve().parents[2]
 
-MAC_ONLY = ("test_learned_controller.py", "test_trainer.py", "test_cli_controller.py")
-"""The test modules that import mlx, which installs on macOS only (pyproject.toml), or torch, which the Linux
+MAC_ONLY = ("test_learned_controller.py",)
+"""The unit modules that import mlx, which installs on macOS only (pyproject.toml), or torch, which the Linux
 test image leaves out (ops/test/Containerfile): where mlx is missing these are not collected. Each is marked
-`mac` too, and `task test:mac` runs them on a Mac. test_trainer.py and test_cli_controller.py were single
-tests below until 2026-11-09, when the unit layer moved into the image: they import torch at the top."""
+`mac` too, and `task test:mac` runs them on a Mac. test_trainer.py and test_cli_controller.py also import
+torch at the top; they left the unit layer for tests/integration on 2026-11-09 (its conftest guards them)."""
 MAC_ONLY_TESTS: tuple[str, ...] = ()
 """Single tests of other modules that reach mlx at run time: skipped where mlx is missing
 (pytest_collection_modifyitems), run by `task test:mac`. A new one is marked `mac` as well."""

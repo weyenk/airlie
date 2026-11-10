@@ -13,7 +13,7 @@ from tests.support.git import git
 from tests.support.studio import cfg_for
 
 runner = CliRunner()
-BLOCKS = Path(__file__).parent / "data" / "blocks"
+BLOCKS = Path(__file__).resolve().parents[1] / "unit" / "data" / "blocks"
 
 
 def state_with(tmp_path: Path, case: str) -> Path:
