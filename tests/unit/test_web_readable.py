@@ -7,7 +7,7 @@ from pathlib import Path
 
 from airlie.tools.protocol import ToolContext
 from airlie.tools.web import MAX_BODY_BYTES, UNTRUSTED_MARKER, UrllibClient, WebFetch, html_to_text
-from tests.unit.test_web_tools import FakeClient, FakeResolver, FakeResponse
+from tests.support.web_tools import FakeClient, FakeResolver, FakeResponse
 
 PAGE = """<!doctype html><html lang=en><head><title> Release  notes </title>
 <meta charset=utf-8><style>body { color: red }</style><script>var secret = "do not show";</script></head>

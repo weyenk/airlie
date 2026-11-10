@@ -13,79 +13,27 @@ from typing import Any
 import httpx
 import pytest
 
-from airlie.board import BoardStore
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.serve.app import create_app
 from airlie.story import factory
 from airlie.story.epic_state import EpicState
 from airlie.story.factory import stories_dir, tick
-from airlie.story.publish import Publisher
 from airlie.story.state import lane_lock
-from tests.unit.git_helpers import git
-from tests.unit.test_serve import FakeUpstream
-from tests.unit.test_story_epic import fenced as block
-from tests.unit.test_story_epic_pipeline import EPIC_TEXT, SPEC, plan_obj, reply
-from tests.unit.test_story_factory import Intake, cfg_for, github_answers, started_log
-from tests.unit.test_story_pipeline import (
+from tests.support.git import git
+from tests.support.serve import FakeUpstream
+from tests.support.story import (
     STORY_ROLES,
     RecordedGh,
-    checkout_of,
     fenced,
     kinds,
     layer,
     package_reply,
 )
-from tests.unit.test_studio_orchestrator import APPROVE, DONE, RUN, WRITE_PASS
-
-
-class TickRig:
-    """A tick over the local board: o/r's checkout is in story.repos_root, GitHub answers, gh is recorded,
-    and every pipeline the tick makes runs on `engine`."""
-
-    def __init__(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        engine: FakeEngine | None = None,
-        **story_extra: Any,
-    ) -> None:
-        root = tmp_path / "git"
-        self.tmp = tmp_path
-        self.repo = checkout_of(root, "o/r")
-        self.trunk = git(self.repo, "branch", "--show-current")
-        story = {
-            "repos_root": str(root),
-            "trunk": self.trunk,
-            "plan": {"round_steps": 0},
-            "layer_attempts": 1,
-            **story_extra,
-        }
-        self.cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": story})
-        self.engine = engine or FakeEngine({"architect": []})
-        self.gh = RecordedGh()
-        monkeypatch.setattr(factory, "_engine", lambda cfg: self.engine)
-        monkeypatch.setattr(
-            factory,
-            "Publisher",
-            lambda *, remote, app, publish: Publisher(remote=remote, run=self.gh, app=app, publish=publish),
-        )
-        github_answers(monkeypatch)
-        self.store = BoardStore(self.cfg.observability.state_dir / "board.sqlite")
-
-    def epic(self, description: str | None = None, status: str = "approved") -> str:
-        text = EPIC_TEXT + block(SPEC.to_dict()) if description is None else description
-        key = self.store.create(level="epic", title="Avatars", description=text, labels=["repo:o/r"]).key
-        self.store.update(key, status=status)  # type: ignore[arg-type]
-        return key
-
-    def stories(self, epic: str) -> list[str]:
-        return [s.key for s in self.store.list(level="story", parent=epic)]
-
-    def status(self, key: str) -> str:
-        return self.store.get(key).status
-
-    def epic_events(self, epic: str) -> Path:
-        return self.cfg.observability.state_dir / "epics" / epic / "events.jsonl"
+from tests.support.story_epic import fenced as block
+from tests.support.story_epic_pipeline import EPIC_TEXT, SPEC, plan_obj, reply
+from tests.support.story_factory import Intake, cfg_for, started_log
+from tests.support.story_tick_epics import TickRig, specs_rig
+from tests.support.studio import APPROVE, DONE, RUN, WRITE_PASS
 
 
 async def planned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TickRig, str, list[str]]:
@@ -624,15 +572,6 @@ def kinds_of(path: Path) -> list[dict[str, Any]]:
 
 def question_reply(text: str) -> FakeReply:
     return FakeReply(text="I read the README.\n" + block({"type": "question", "text": text}))
-
-
-def specs_rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine: FakeEngine, **specs: Any) -> TickRig:
-    return TickRig(
-        tmp_path,
-        monkeypatch,
-        engine,
-        specs={"enabled": True, "consultable": ["architect"], **specs},
-    )
 
 
 def bearer() -> dict[str, str]:

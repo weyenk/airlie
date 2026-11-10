@@ -22,7 +22,7 @@ from airlie.flow.store import MemoryStore, Sessions
 from airlie.prompts.hub import PromptError
 from airlie.story.board import text_card
 from airlie.story.workflows import WorkflowError, closure_prompts
-from tests.unit.test_studio_orchestrator import cfg_for
+from tests.support.studio import cfg_for
 
 REPRODUCE = """\
 ---

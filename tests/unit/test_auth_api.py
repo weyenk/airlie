@@ -12,9 +12,9 @@ import pytest
 
 from airlie.auth.store import AuthStore
 from airlie.serve.app import create_app
+from tests.support.auth_store import Clock
+from tests.support.serve import FakeUpstream, cfg
 from tests.unit.serve_helpers import TestClient
-from tests.unit.test_auth_store import Clock
-from tests.unit.test_serve import FakeUpstream, cfg
 from tests.unit.webauthn_helpers import SoftAuthenticator
 
 ORIGIN = "http://localhost:8090"

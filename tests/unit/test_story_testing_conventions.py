@@ -11,7 +11,7 @@ from airlie.story.testing_conventions import (
     conventions_text,
 )
 from airlie.teams.worktree import tree_paths
-from tests.unit.test_story_layer_checks import repo
+from tests.support.story_layer_checks import repo
 
 MOD = "def test_x():\n    assert True\n"
 

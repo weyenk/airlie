@@ -25,8 +25,8 @@ from airlie.engine import FakeReply
 from airlie.engine import http_engine as http_engine_module
 from airlie.story import factory
 from airlie.story.publish import Publisher
-from tests.unit.git_helpers import git
-from tests.unit.test_story_pipeline import STORY_ROLES, RecordedGh, agents_md
+from tests.support.git import git
+from tests.support.story import STORY_ROLES, RecordedGh, agents_md
 
 ROOT = Path(__file__).resolve().parents[2]
 GITHUB_REPO = "o/calc"

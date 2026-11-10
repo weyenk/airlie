@@ -9,36 +9,9 @@ import httpx
 import pytest
 
 from airlie.router import ChiefRouter, JevClient, JevRouter, RoutingLog, policy, ranked
+from tests.support.router import _decision_cfg, decisions
 
 CRITERIA = {"coder": "Implement or change code", "qa": "Tests and edge cases", "docs": "README and guides"}
-
-
-def decisions(answers: dict[str, float], confidence: float, choice: str | None = None):  # type: ignore[no-untyped-def]
-    """A MockTransport handler answering /v1/decisions with the given probabilities."""
-    seen: list[dict] = []  # type: ignore[type-arg]
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v1/decisions"
-        body = json.loads(request.content)
-        seen.append(body)
-        q = next(iter(body["questions"]))
-        top = choice or max(answers, key=lambda k: answers[k])
-        return httpx.Response(
-            200,
-            json={
-                "answers": {
-                    q: {
-                        "type": "choice",
-                        "value": top,
-                        "probabilities": answers,
-                        "metadata": {"confidence": confidence},
-                    }
-                },
-                "usage": {"input_tokens": 42},
-            },
-        )
-
-    return handler, seen
 
 
 def jev(handler, **kw) -> JevRouter:  # type: ignore[no-untyped-def]
@@ -138,31 +111,6 @@ def test_policy_thresholds_are_strict() -> None:
     assert policy([("a", 0.75), ("b", 0.25)], 0.5, ambiguous_gap=0.25, min_confidence=0.5) == "clear"
     assert policy([("a", 0.75)], 0.1, ambiguous_gap=0.25, min_confidence=0.5) == "low-confidence"
     assert policy([("a", 0.5), ("b", 0.5)], 0.1, ambiguous_gap=0.25, min_confidence=0.5) == "ambiguous"
-
-
-def _decision_cfg(tmp_path, *, decision: bool = True):  # type: ignore[no-untyped-def]
-    import yaml
-
-    from airlie.config import load_config
-
-    (tmp_path / "p.md").write_text("x")
-    data = {
-        "version": 1,
-        "engines": {
-            "main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]},
-            "dec": {"kind": "mlx_vlm", "port": 8084, "model": "clef", "decision": decision},
-        },
-        "models": {
-            "team": {"repo": "org/t", "revision": "r"},
-            "clef": {"repo": "org/c", "revision": "r", "path": "/models/clef"},
-        },
-        "roles": {
-            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
-        },
-        "router": {"kind": "jev" if decision else "chief", "model": "clef"},
-    }
-    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
-    return load_config(tmp_path / "airlie.yaml")
 
 
 async def test_jev_client_targets_decisions_on_an_mlx_vlm_decision_engine(tmp_path) -> None:  # type: ignore[no-untyped-def]

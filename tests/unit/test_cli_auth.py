@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 
 from airlie import cli
 from airlie.auth.store import AuthStore, Credential
-from tests.unit.test_serve import cfg
+from tests.support.serve import cfg
 
 runner = CliRunner()
 

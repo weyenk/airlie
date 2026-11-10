@@ -22,8 +22,8 @@ from airlie.story.package_checks import (
     package_feedback_said,
     place_package,
 )
-from tests.unit.git_helpers import git
-from tests.unit.test_story_layer_checks import CALC, OLD_TESTS, repo
+from tests.support.git import git
+from tests.support.story_layer_checks import CALC, OLD_TESTS, repo
 
 PYTEST = f"{shlex.quote(sys.executable)} -m pytest -q"
 RUFF = f"{shlex.quote(sys.executable)} -m ruff"

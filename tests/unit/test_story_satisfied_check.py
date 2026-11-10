@@ -11,8 +11,8 @@ from pathlib import Path
 from airlie.story.layer_checks import checks_for
 from airlie.story.package import Satisfied
 from airlie.story.satisfied_check import unproven
-from tests.unit.git_helpers import git
-from tests.unit.test_story_layer_checks import CALC, OLD_TESTS, repo
+from tests.support.git import git
+from tests.support.story_layer_checks import CALC, OLD_TESTS, repo
 
 PYTEST = f"{shlex.quote(sys.executable)} -m pytest -q"
 FAILING = "from calc import add\n\n\ndef test_add_wrong():\n    assert add(1, 2) == 4\n"

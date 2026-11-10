@@ -32,8 +32,8 @@ from tests.integration.story_harness import (
     story_yaml,
     wire,
 )
-from tests.unit.git_helpers import git
-from tests.unit.test_story_pipeline import RecordedGh, fenced, package_reply
+from tests.support.git import git
+from tests.support.story import RecordedGh, fenced, package_reply
 
 runner = CliRunner()
 

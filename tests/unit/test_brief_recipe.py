@@ -22,8 +22,8 @@ from airlie.story.brief_recipe import (
 from airlie.story.context import CHARS_PER_TOKEN
 from airlie.story.model import Criterion, Layer, Story
 from airlie.story.package import Interface, Package, PackageFile
-from tests.unit.git_helpers import git
-from tests.unit.test_story_briefs import LAYERS, PACKAGE, STORY
+from tests.support.git import git
+from tests.support.story_briefs import LAYERS, PACKAGE, STORY
 
 BIG = "".join(f"def f{i}():\n    return {i}\n\n" for i in range(120))
 

@@ -30,10 +30,10 @@ from airlie.bench.story_bench import (
 )
 from airlie.story import factory
 from airlie.story.state import StoryState
-from tests.unit.git_helpers import git
-from tests.unit.test_story_bench import CASES, write_events
-from tests.unit.test_story_pipeline import STORY_ROLES
-from tests.unit.test_studio_orchestrator import cfg_for
+from tests.support.git import git
+from tests.support.story import STORY_ROLES
+from tests.support.story_bench import CASES, write_events
+from tests.support.studio import cfg_for
 
 BASE = "c0399cdf5c2ee2d1d8eddc08812ea5e0a4a4ebb0"
 LOOP = ("air55", "air59", "air61", "air62")

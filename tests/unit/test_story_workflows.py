@@ -14,7 +14,7 @@ import pytest
 from airlie.board import BoardStore
 from airlie.config import load_config
 from airlie.engine import FakeReply
-from airlie.story.board import Card, text_card
+from airlie.story.board import text_card
 from airlie.story.workflows import (
     WorkflowError,
     card_workflow,
@@ -27,80 +27,30 @@ from airlie.story.workflows import (
     workflow_label,
     workflow_problems,
 )
-from tests.unit.test_story_pipeline import (
+from tests.support.story import (
     RecordingBoard,
     happy_engine,
     kinds_all,
     pipeline,
     repo_with_marker_tests,
 )
-
-MINI = """\
-workflows:
-  mini:
-    type: bug
-    inputs: [card, repo]
-    nodes:
-      intake: {type: check, run: story.intake, inputs: [card], to: [base]}
-      base: {type: check, run: story.base, inputs: [card, repo], outputs: {base: json}, to: [gate]}
-      gate: {type: check, run: story.gate, inputs: [repo, base], outputs: {gate: json}, to: [review]}
-      review: {type: gate, run: story.finish, inputs: [card]}
-"""
-
-
-def before_review(text: str, *nodes: str) -> str:
-    """`text` (MINI, or one made from it) with `nodes` (each `name: {...}`, with no `to`) drawn in order
-    between the gate and the review."""
-    names = [n.split(":", 1)[0] for n in nodes]
-    drawn = "".join(
-        f"      {n[:-1]}, to: [{to}]}}\n" for n, to in zip(nodes, [*names[1:], "review"], strict=True)
-    )
-    return text.replace("to: [review]}", f"to: [{names[0]}]}}").replace(
-        "      review:", drawn + "      review:"
-    )
-
-
-MINI_MORE = before_review(
-    MINI, "costed: {type: check, run: story.costed, inputs: [card], args: {stages: [plan]}}"
-)
-MINI_EACH = before_review(
-    MINI.replace("    inputs: [card, repo]\n", "    inputs: [card, repo, layers]\n"),
-    "build_layers: {type: bundle, workflow: tiny, each: layers, inputs: [layers, card]}",
-)
-NOTE = """\
----
-kind: rule
-roles: [product]
-fields: [card]
-why: The mini workflow's note, written in the builder.
----
-Write one line about this card: {card}
-"""
-MINI_NOTE = before_review(
+from tests.support.story_workflows import (
     MINI,
-    "note: {type: ask, role: product, prompt: 'prompt:mini-note', inputs: [card],"
-    " outputs: {artifacts.note: text}}",
+    MINI_EACH,
+    MINI_MORE,
+    MINI_NOTE,
+    NOTE,
+    TINY,
+    before_review,
+    mini_card,
+    started,
 )
+
 MINI_REPRO = before_review(
     MINI,
     "repro: {type: ask, role: product, prompt: 'prompt:mini-note', inputs: [card], outputs: {repro: text}}",
     "read_repro: {type: check, run: story.costed, args: {stages: [plan]}, inputs: [card, repro]}",
 )
-TINY = """\
-workflows:
-  tiny:
-    inputs: [card]
-    nodes:
-      note: {type: check, run: story.costed, inputs: [card], args: {stages: [layer]}}
-"""
-
-
-def mini_card(text: str = "fix the marker") -> Card:
-    return replace(text_card(text), labels=("workflow:mini",))
-
-
-def started(path: Path) -> list[tuple[str, str | None]]:
-    return [(e["node"], e.get("item")) for e in kinds_all(path) if e["kind"] == "node_started"]
 
 
 def test_card_workflow_defaults_to_story_and_reads_the_label() -> None:
@@ -422,7 +372,7 @@ async def test_a_story_card_with_no_label_still_runs_the_driver_when_the_flag_is
 async def test_make_pipeline_reads_the_boards_drafts(tmp_path: Path) -> None:
     from airlie.story.factory import make_pipeline, stories_dir
     from airlie.story.local_board import LocalBoard
-    from tests.unit.test_story_factory import STORY_ROLES, cfg_for
+    from tests.support.story_factory import STORY_ROLES, cfg_for
 
     repo = repo_with_marker_tests(tmp_path)
     cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"composer": False}})

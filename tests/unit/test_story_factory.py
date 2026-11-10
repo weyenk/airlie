@@ -15,7 +15,6 @@ import pytest
 from airlie.board import BoardStore
 from airlie.engine import EngineHealth, FakeEngine
 from airlie.story import factory
-from airlie.story import github_app as github_app_module
 from airlie.story.board import NOTE_PREFIX, BoardError, Card, Column, NullBoard, text_card
 from airlie.story.factory import (
     Place,
@@ -43,12 +42,8 @@ from airlie.story.model import RepositoryError, StorySetupError
 from airlie.story.publish import Checked, Publisher
 from airlie.story.state import StoryState, lane_lock
 from airlie.topology.studio import StudioOrchestrator
-from tests.unit.git_helpers import git
-from tests.unit.github_helpers import FakeGitHub, app_spec, fake_app, key_file
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_story_board import FakeJira
-from tests.unit.test_story_board import board as jira_board_for
-from tests.unit.test_story_pipeline import (
+from tests.support.git import git, repo_with_marker_tests
+from tests.support.story import (
     STORY_ROLES,
     FailingGh,
     ReadingGh,
@@ -59,22 +54,10 @@ from tests.unit.test_story_pipeline import (
     fenced,
     happy_engine,
 )
-from tests.unit.test_studio_orchestrator import cfg_for as studio_cfg_for
-
-
-def cfg_for(tmp_path: Path, *, extra: dict[str, Any] | None = None, **kw: Any) -> Any:
-    """The studio tests' config with the story settings that keep these tests' scripted replies in order:
-    planning in one go and no survey (the rounds and the survey have tests of their own)."""
-    extra = dict(extra or {})
-    # no tester: it is a subtask per layer with scripted replies of its own (one test runs with it)
-    extra["story"] = {
-        "plan_round_steps": 0,
-        "survey": False,
-        "amigos": {"enabled": False},  # the story meeting has tests of its own (test_story_pipeline.py)
-        **extra.get("story", {}),
-    }
-    kw.setdefault("done_check", False)  # it costs the coder one scripted reply per layer
-    return studio_cfg_for(tmp_path, extra=extra, **kw)
+from tests.support.story_board import FakeJira
+from tests.support.story_board import board as jira_board_for
+from tests.support.story_factory import Intake, cfg_for, github_answers, started_log
+from tests.unit.github_helpers import FakeGitHub, app_spec, fake_app, key_file
 
 
 @pytest.fixture(autouse=True)
@@ -314,25 +297,6 @@ async def test_an_issue_is_fetched_from_the_board_when_the_card_is_asked_for(
 # ---- tick: one scheduler beat, one line for the log ----
 
 
-class Intake:
-    """A board whose intake query returns `top`; it counts how often it was asked."""
-
-    def __init__(self, top: Card | None) -> None:
-        self.top = top
-        self.asked = 0
-
-    async def card(self, ref: str) -> Card:
-        raise BoardError("not needed here")
-
-    async def next_card(self) -> Card | None:
-        self.asked += 1
-        return self.top
-
-    async def move(self, card: Card, column: Column) -> None: ...
-
-    async def comment(self, card: Card, text: str, role: str | None = None) -> None: ...
-
-
 class Engine:
     """Answers the health probe of a tick."""
 
@@ -348,25 +312,6 @@ class Engine:
 
 
 TOP = Card("AIR-7", "10007", "AIR-7", "Avatar upload", "", labels=("repo:o/repo",))
-
-
-def github_answers(
-    monkeypatch: pytest.MonkeyPatch,
-    answer: Callable[[httpx.Request], httpx.Response] = lambda request: httpx.Response(200, json={}),
-) -> list[httpx.Request]:
-    """GitHub's API as a tick that publishes as you pings it (github_app.ping), answering with `answer` (200
-    by default); returns the requests it got. A tick that publishes as the bot asks its app instead."""
-    asked: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        asked.append(request)
-        return answer(request)
-
-    async def ping(api_url: str) -> None:
-        await github_app_module.ping(api_url, transport=httpx.MockTransport(handler))
-
-    monkeypatch.setattr(factory, "ping", ping)
-    return asked
 
 
 def tick_setup(
@@ -439,24 +384,6 @@ class Rows:
         self.store.create(level="story", title="approved two", labels=["repo:o/repo"])
         self.store.move("AIR-2", "approved")
         self.board = LocalBoard(self.store, stories_dir=tmp_path / "state" / "stories")
-
-
-def started_log(monkeypatch: pytest.MonkeyPatch) -> list[Card]:
-    started: list[Card] = []
-
-    class Built:
-        async def run(self, card: Card) -> StoryState:
-            started.append(card)
-            return StoryState(path=Path("s"), card=card.to_dict(), repo="r", stage="review")
-
-        async def plan(self, card: Card) -> StoryState:
-            return StoryState(path=Path("s"), card=card.to_dict(), repo="r", stage="layers")
-
-        async def build(self, card: Card) -> StoryState:
-            return await self.run(card)
-
-    monkeypatch.setattr(factory, "make_pipeline", lambda cfg, **kw: Built())
-    return started
 
 
 async def test_a_tick_over_the_local_board_says_the_column_it_took_the_story_from(

@@ -29,12 +29,12 @@ from airlie.story.jira import JiraBoard
 from airlie.story.model import StorySetupError
 from airlie.story.publish import Checked, Publisher
 from airlie.story.state import StoryState, lane_lock
-from tests.unit.git_helpers import git
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_story_board import FakeJira
-from tests.unit.test_story_board import board as jira_board_for
-from tests.unit.test_story_pipeline import STORY_ROLES, checkout_of
-from tests.unit.test_studio_orchestrator import cfg_for
+from tests.support.cli_story import story_cfg
+from tests.support.git import git, repo_with_marker_tests
+from tests.support.story import STORY_ROLES, checkout_of
+from tests.support.story_board import FakeJira
+from tests.support.story_board import board as jira_board_for
+from tests.support.studio import cfg_for
 
 runner = CliRunner()
 
@@ -47,12 +47,6 @@ def _no_real_requests(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError(f"a unit test sent a real request: {request.method} {request.url.host}")
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", refuse)
-
-
-def story_cfg(tmp_path: Path, **story: object) -> Path:
-    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": story})
-    assert cfg.source_path is not None
-    return cfg.source_path
 
 
 def test_run_needs_exactly_one_of_an_issue_or_text(tmp_path: Path) -> None:

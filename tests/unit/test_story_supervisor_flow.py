@@ -17,7 +17,8 @@ from airlie.story.board import NOTE_PREFIX, text_card
 from airlie.story.state import StoryState
 from airlie.supervisor.advice import SUPERVISOR
 from airlie.supervisor.ledger import Ledger, Row
-from tests.unit.test_story_layer_checks_flow import (
+from tests.support.story import STORY, kinds, pipeline
+from tests.support.story_layer_checks_flow import (
     BROKEN,
     FEATURE,
     FIXED,
@@ -28,8 +29,7 @@ from tests.unit.test_story_layer_checks_flow import (
     VACUOUS,
     calc_repo,
 )
-from tests.unit.test_story_pipeline import STORY, kinds, pipeline
-from tests.unit.test_studio_orchestrator import APPROVE, DONE, ROLES
+from tests.support.studio import APPROVE, DONE, ROLES
 
 SUPERVISOR_ROLES = {
     **ROLES,

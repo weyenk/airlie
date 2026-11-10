@@ -13,26 +13,12 @@ from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.engine.types import GenRequest, Message
 from airlie.prompts import text
 from airlie.tools.loop import generate_with_tools
-from airlie.tools.protocol import ToolContext, ToolResult
+from airlie.tools.protocol import ToolContext
 from airlie.tools.registry import ToolRegistry
 from airlie.topology.review import Reviewer
+from tests.support.tool_loop import Lookup, search
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-class Lookup:
-    """A tool that answers from a table and records what it was asked."""
-
-    name = "web_search"
-    description = "look something up"
-    parameters = {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
-
-    def __init__(self) -> None:
-        self.asked: list[str] = []
-
-    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        self.asked.append(str(args["query"]))
-        return ToolResult(True, f"[untrusted web text]\nanswer to {args['query']}")
 
 
 def registry(tool: Lookup, tmp_path: Path) -> ToolRegistry:
@@ -49,10 +35,6 @@ def request(role: str = "chief") -> GenRequest:
         sampling=Sampling(),
         max_tokens=256,
     )
-
-
-def search(query: str, call_id: str = "c1") -> FakeReply:
-    return FakeReply(tool_calls=[ToolCall(call_id, "web_search", json.dumps({"query": query}))])
 
 
 async def test_with_no_registry_or_no_tools_it_is_the_plain_single_call(tmp_path: Path) -> None:

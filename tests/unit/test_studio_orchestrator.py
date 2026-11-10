@@ -11,9 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 
-from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.prompts import text as hub_text  # not `text`: several tests have a local of that name
 from airlie.router import ChiefRouter, RouteDecision
@@ -22,80 +20,10 @@ from airlie.teams.worktree import commit_wip, head_sha, own_changes
 from airlie.topology.protocol import build_topology
 from airlie.topology.studio import HANDOFF_CHARS, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, Subtask
+from tests.support.git import repo_with_marker_tests
+from tests.support.studio import APPROVE, CHANGES, DONE, PLAN, RUN, SYNTH, WRITE_PASS, cfg_for
 from tests.unit.advisor_doubles import RaisingAdvisor, RecordingAdvisor, SettleRaisingAdvisor
 from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-
-ROLES: dict[str, tuple[str, list[str] | None]] = {
-    "chief": ("---\nsummary: no\nroutable: false\n---\n# chief\nJSON only.", []),
-    "coder": ("---\nsummary: Implement or change code\n---\n# coder", None),
-    "qa": ("---\nsummary: Tests and edge cases\n---\n# qa", ["read_file", "write_file", "run_tests"]),
-    "docs": ("---\nsummary: README and guides\n---\n# docs", ["read_file", "list_dir"]),
-    "reviewer": ("---\nsummary: no\nroutable: false\n---\n# reviewer", []),
-    "summarizer": ("# summarizer", None),
-    "judge": ("# judge", None),
-    "aggregator": ("# aggregator", None),
-}
-
-
-def cfg_for(
-    tmp_path: Path,
-    *,
-    roles: dict[str, tuple[str, list[str] | None]] | None = None,
-    extra: dict[str, object] | None = None,
-    **studio: object,
-):  # type: ignore[no-untyped-def]
-    d = tmp_path / "cfg"
-    d.mkdir(exist_ok=True)
-    role_cfg: dict[str, dict[str, object]] = {}
-    for name, (text, tools) in (roles or ROLES).items():
-        (d / f"{name}.md").write_text(text)
-        role_cfg[name] = {"prompt": f"{name}.md", "model": "base", "thinking": False}
-        if tools is not None:
-            role_cfg[name]["tools"] = tools
-    data = {
-        "version": 1,
-        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
-        "models": {"base": {"repo": "org/m", "revision": "r"}},
-        "roles": role_cfg,
-        "teams": {"orchestrator": "native", "max_steps": 6},
-        "tools": {"builtin": ["read_file", "write_file", "list_dir", "run_tests"]},
-        "topology": {"kind": "studio"},
-        "router": {"kind": "chief"},
-        "studio": {"parallel": 2, "review": {"enabled": True, "roles": ["coder"], "rounds": 1}, **studio},
-        "repo_map": {"enabled": False},
-        "observability": {"state_dir": str(tmp_path / "state")},
-        **(extra or {}),
-    }
-    (d / "airlie.yaml").write_text(
-        yaml.safe_dump(data, sort_keys=False)
-    )  # node order in a workflow is meaningful
-    return load_config(d / "airlie.yaml")
-
-
-PLAN = FakeReply(
-    text=json.dumps(
-        {
-            "type": "plan",
-            "assumptions": ["a1"],
-            "subtasks": [
-                {"id": "fix", "role": "coder", "brief": "make the check pass"},
-                {"id": "note", "role": "docs", "brief": "describe the repo", "depends_on": ["fix"]},
-            ],
-        }
-    )
-)
-SYNTH = FakeReply(text=json.dumps({"type": "synthesis", "answer": "all done", "open_questions": []}))
-WRITE_PASS = FakeReply(
-    tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "PASS", "content": "ok\n"}))]
-)
-RUN = FakeReply(tool_calls=[ToolCall("t", "run_tests", "{}")])
-DONE = FakeReply(text="done")
-APPROVE = FakeReply(text='{"verdict": "approve", "findings": []}')
-CHANGES = FakeReply(
-    text='{"verdict": "request_changes", "findings": [{"severity": "blocking", "file": "PASS", "line": 1, '
-    '"claim": "wrong content", "evidence": "x"}]}'
-)
 
 
 def events(report):  # type: ignore[no-untyped-def]
@@ -1173,9 +1101,6 @@ TESTS_THEN_BUILD = Plan(
 WRITE_NOTE = FakeReply(
     tool_calls=[ToolCall("n", "write_file", json.dumps({"path": "note.txt", "content": "the contract\n"}))]
 )
-WRITE_PASS = FakeReply(
-    tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "PASS", "content": "ok\n"}))]
-)
 
 
 async def test_a_checkpoint_that_says_no_stops_the_plan_before_the_next_subtask(tmp_path: Path) -> None:
@@ -1645,7 +1570,7 @@ async def test_the_chief_and_the_reviewer_record_no_more_tools_as_steer_events(t
     """The single-call loop (tools/loop.py) reports no-more-tools to studio, which records it as an event."""
     from airlie.tools.protocol import ToolContext
     from airlie.tools.registry import ToolRegistry
-    from tests.unit.test_tool_loop import Lookup, search
+    from tests.support.tool_loop import Lookup, search
 
     repo = repo_with_marker_tests(tmp_path)
     looks = [search("q", str(i)) for i in range(4)]  # the loop's default of four calls, all used

@@ -14,7 +14,7 @@ from airlie.auth.principal import NotInvited, Principal, Resolver
 from airlie.auth.store import AuthStore
 from airlie.config.schema import AuthSpec
 from airlie.serve.app import create_app
-from tests.unit.test_serve import FakeUpstream, cfg
+from tests.support.serve import FakeUpstream, cfg
 
 LOOPBACK = ("127.0.0.1", 40000)
 ELSEWHERE = ("10.0.0.5", 40000)

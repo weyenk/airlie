@@ -13,7 +13,7 @@ from airlie.story.board import NullBoard
 from airlie.story.lessons import ENDINGS, Lesson, LessonsStore
 from airlie.story.pipeline import StoryPipeline
 from airlie.story.publish import Publisher
-from tests.unit.test_studio_orchestrator import cfg_for
+from tests.support.studio import cfg_for
 
 # The AC1 fields, exactly: what a size-blocked layer's lesson records.
 AC1_FIELDS = ("title", "acceptance", "source_files", "test_files", "steps", "context_tokens", "ending")

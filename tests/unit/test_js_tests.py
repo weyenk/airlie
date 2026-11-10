@@ -112,7 +112,7 @@ def test_vitest_report_and_red_findings(tmp_path: Path) -> None:
 
 def test_the_changed_vitest_tests_of_a_layer_are_its_new_and_edited_ones(tmp_path: Path) -> None:
     from airlie.story.js_tests import changed_js_tests, unparseable_js_tests
-    from tests.unit.test_story_layer_checks import git, repo
+    from tests.support.story_layer_checks import git, repo
 
     old = 'it("kept", () => { expect(1).toBe(1) })\nit("edited", () => { expect(1).toBe(1) })\n'
     root, base = repo(tmp_path, {"web/src/a.test.ts": old})

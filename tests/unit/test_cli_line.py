@@ -9,8 +9,8 @@ import pytest
 from typer.testing import CliRunner
 
 from airlie import cli
-from tests.unit.git_helpers import git
-from tests.unit.test_studio_orchestrator import cfg_for
+from tests.support.git import git
+from tests.support.studio import cfg_for
 
 runner = CliRunner()
 BLOCKS = Path(__file__).parent / "data" / "blocks"

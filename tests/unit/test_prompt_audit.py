@@ -14,7 +14,7 @@ from airlie.engine.fake import FakeEngine, FakeReply
 from airlie.engine.types import EngineHealth
 from airlie.prompts import Kind, PromptText, load, text
 from airlie.prompts.audit import audit, instruction_sets
-from tests.unit.test_studio_orchestrator import ROLES, cfg_for
+from tests.support.studio import ROLES, cfg_for
 
 runner = CliRunner()
 

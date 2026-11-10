@@ -20,10 +20,11 @@ from airlie.story.workflow_publish import (
     same_definition,
     with_layout,
 )
-from tests.unit.git_helpers import git
-from tests.unit.test_story_pipeline import WORKFLOWS, RecordedGh
-from tests.unit.test_story_workflows import MINI
-from tests.unit.test_studio_orchestrator import cfg_for
+from tests.support.git import git
+from tests.support.story import WORKFLOWS, RecordedGh
+from tests.support.story_workflows import MINI
+from tests.support.studio import cfg_for
+from tests.support.workflow_publish import home_with_origin
 
 STORY = (WORKFLOWS / "story.yaml").read_text()
 MINI_LAID_OUT = MINI + "    layout:\n      intake: {x: 0, y: 0}\n      review: {x: 240.5, y: 80}\n"
@@ -67,21 +68,6 @@ def test_same_definition_ignores_layout_and_formatting() -> None:
     assert same_definition(STORY, with_layout(STORY, {"intake": Layout(x=1, y=2)}))
     assert not same_definition(MINI, MINI.replace("story.finish", "story.costed"))
     assert not same_definition("not: [yaml", MINI)
-
-
-def home_with_origin(tmp_path: Path, files: dict[str, str] | None = None) -> tuple[Path, Path]:
-    """airlie's checkout as serve runs it (`home`, on main) and the bare repository its origin names."""
-    origin, home = tmp_path / "origin.git", tmp_path / "home"
-    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
-    git(tmp_path, "init", "-q", "-b", "main", str(home))
-    for path, text in {"README.md": "airlie\n", **(files or {})}.items():
-        (home / path).parent.mkdir(parents=True, exist_ok=True)
-        (home / path).write_text(text)
-    git(home, "add", ".")
-    git(home, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
-    git(home, "remote", "add", "origin", str(origin))
-    git(home, "push", "-q", "origin", "main")
-    return home, origin
 
 
 def draft(name: str, text: str, *, type: str | None = "bug", prompts: dict[str, str] | None = None) -> Any:

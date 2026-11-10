@@ -11,7 +11,7 @@ import yaml
 
 from airlie.config import AirlieConfig, ConfigError, load_config
 from airlie.config.schema import TOPOLOGY_KINDS
-from tests.unit.test_config import MINIMAL, write
+from tests.support.config import MINIMAL, write
 
 ROLES = "['aggregator', 'coder', 'judge', 'summarizer']"
 KINDS = ", ".join(TOPOLOGY_KINDS)

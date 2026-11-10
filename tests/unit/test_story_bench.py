@@ -18,8 +18,8 @@ from airlie.bench.story_bench import (
     oracle,
     verdict,
 )
+from tests.support.story_bench import CASES, write_events
 
-CASES = Path(__file__).resolve().parents[2] / "evals" / "stories"
 ROMAN = """_VALUES = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"), (50, "L"),
            (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
 
@@ -130,11 +130,6 @@ def test_mutants_change_the_code_and_the_score_counts_what_the_tests_catch(tmp_p
     assert 0 < score["killed"] <= score["total"] == score["killed"] + len(score["survived"])
     assert (checkout / "sandbox" / "roman.py").read_text() == ROMAN  # put back
     assert count_tests(checkout) == {"tests": 2, "asserts": 3}
-
-
-def write_events(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
 
 
 def test_a_runs_cost_is_read_from_the_story_and_its_studio_runs(tmp_path: Path) -> None:
@@ -315,7 +310,6 @@ def test_a_record_of_a_remote_branch_deleted_on_the_remote_is_pruned(tmp_path: P
 def test_a_stack_whose_branches_are_gone_is_dropped_from_gh_stacks_record(tmp_path: Path) -> None:
     """A/B run 3 (2026-10-29): the run's branches were deleted but gh stack kept their stack, and the next run
     with the same branch name was refused at publish as "already part of a stack"."""
-    import json
     import subprocess
 
     from airlie.bench.story_bench import prune_stale_stacks

@@ -14,10 +14,10 @@ from airlie.engine import FakeEngine
 from airlie.story.board import text_card
 from airlie.story.restack import RestackError
 from airlie.story.state import StoryState
-from tests.unit.git_helpers import git
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_story_pipeline import B1, B2, LAYERS, NOTE, PKG2, PKGS, STORY, kinds, pipeline
-from tests.unit.test_studio_orchestrator import APPROVE, DONE, RUN, WRITE_PASS
+from tests.support.git import git, repo_with_marker_tests
+from tests.support.story import B1, B2, LAYERS, NOTE, PKG2, PKGS, STORY, kinds, pipeline
+from tests.support.story_restack import trunk_commit
+from tests.support.studio import APPROVE, DONE, RUN, WRITE_PASS
 
 CARD = text_card("avatars")
 
@@ -38,15 +38,6 @@ async def stopped_after_layer_01(tmp_path: Path) -> tuple[Path, StoryState]:
     assert "01" in st.built and st.blocked is not None and "changed nothing" in st.blocked
     assert st.attempt is not None and st.attempt["branch"] == B2
     return repo, st
-
-
-def trunk_commit(repo: Path, files: dict[str, str], message: str = "trunk moves on") -> str:
-    """A commit on the repository's trunk (checked out in `repo`): the mirrored fetch then finds it there."""
-    for name, text in files.items():
-        (repo / name).write_text(text)
-    git(repo, "add", "-A")
-    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", message)
-    return git(repo, "rev-parse", "HEAD")
 
 
 def state_on_disk(st: StoryState) -> dict[str, object]:

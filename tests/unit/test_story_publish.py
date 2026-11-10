@@ -44,18 +44,17 @@ from airlie.story.publish import (
 from airlie.story.state import StoryState  # noqa: E402
 from airlie.subproc import NO_HOOKS, url_credential_helpers, with_git_config
 from airlie.teams.worktree import add_worktree, checkout_worktree, commit_wip, remove_worktree
-from tests.unit import github_helpers
-from tests.unit.git_helpers import git
-from tests.unit.github_helpers import BOT, FakeGitHub, app_spec, fake_app, fake_gh
-from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_studio_orchestrator import (  # noqa: E402
+from tests.support.git import git, repo_with_marker_tests
+from tests.support.studio import (  # noqa: E402
     APPROVE,
     DONE,
     ROLES,
     RUN,
     WRITE_PASS,
 )
+from tests.unit import github_helpers
+from tests.unit.github_helpers import BOT, FakeGitHub, app_spec, fake_app, fake_gh
+from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
 
 
 class Recorded:

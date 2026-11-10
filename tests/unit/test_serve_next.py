@@ -9,8 +9,8 @@ from pathlib import Path
 import httpx
 
 from airlie.serve.app import create_app
+from tests.support.serve import FakeUpstream, cfg
 from tests.unit.serve_helpers import TestClient
-from tests.unit.test_serve import FakeUpstream, cfg
 
 
 def client_with(tmp_path: Path, *, built: bool) -> TestClient:

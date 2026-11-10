@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from airlie.obs.step_report import Segment, render, story_segments
-from tests.unit.git_helpers import git
+from tests.support.git import git
 
 STORY = "AIR-1"
 RUN = "run-1"

@@ -15,9 +15,9 @@ from airlie.story.board import BoardError
 from airlie.story.model import StoryRunning
 from airlie.story.publish import PublishError
 from airlie.story.restart import Restarted, RestartError, RestartIncomplete
+from tests.support.serve import FakeUpstream
+from tests.support.studio import cfg_for
 from tests.unit.serve_helpers import TestClient
-from tests.unit.test_serve import FakeUpstream
-from tests.unit.test_studio_orchestrator import cfg_for
 
 DONE = Restarted("AIR-7", "layer-02", [11, 12], ["AIR-7-x-02-y"], [], "/s/archive/stories/AIR-7-from-x", "n")
 

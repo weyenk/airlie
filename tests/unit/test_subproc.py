@@ -38,10 +38,10 @@ from airlie.teams import TeamResult
 from airlie.teams.worktree import commit_wip
 from airlie.tools import ToolContext, ToolRegistry
 from airlie.topology.studio import StudioOrchestrator
+from tests.support.git import cfg_for as fork_cfg
+from tests.support.git import repo_with_marker_tests
+from tests.support.studio import cfg_for as studio_cfg
 from tests.unit.proc_helpers import eventually, running, unique_sleep
-from tests.unit.test_fork_orchestrator import cfg_for as fork_cfg
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_studio_orchestrator import cfg_for as studio_cfg
 
 URL = "https://example.invalid"
 HELPER = "!f() { echo username=planted; echo password=planted-secret; }; f"

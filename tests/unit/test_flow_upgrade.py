@@ -38,16 +38,15 @@ from airlie.story.workflows import (
     used_by,
     workflow_problems,
 )
-from tests.unit.serve_helpers import TestClient
-from tests.unit.test_serve import FakeUpstream
-from tests.unit.test_story_pipeline import (
+from tests.support.serve import FakeUpstream
+from tests.support.story import (
     RecordingBoard,
     happy_engine,
     kinds_all,
     pipeline,
     repo_with_marker_tests,
 )
-from tests.unit.test_story_workflows import (
+from tests.support.story_workflows import (
     MINI,
     MINI_EACH,
     MINI_MORE,
@@ -57,7 +56,8 @@ from tests.unit.test_story_workflows import (
     mini_card,
     started,
 )
-from tests.unit.test_studio_orchestrator import cfg_for
+from tests.support.studio import cfg_for
+from tests.unit.serve_helpers import TestClient
 
 MINI_V1 = """\
 workflows:
@@ -424,7 +424,7 @@ async def test_adopting_is_refused_while_the_story_runs_or_when_it_keeps_no_snap
 async def test_adopt_one_adopts_for_a_card_on_the_board(tmp_path: Path) -> None:
     from airlie.story.factory import make_pipeline, stories_dir
     from airlie.story.local_board import LocalBoard
-    from tests.unit.test_story_factory import STORY_ROLES
+    from tests.support.story_factory import STORY_ROLES
 
     repo = repo_with_marker_tests(tmp_path)
     cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"composer": False}})
@@ -504,7 +504,7 @@ def test_the_adopt_route_needs_a_sign_in(tmp_path: Path) -> None:
 def test_story_adopt_workflow_says_what_it_did_and_why_it_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tests.unit.test_cli_story import story_cfg
+    from tests.support.cli_story import story_cfg
 
     runner = CliRunner()
     p = str(story_cfg(tmp_path))
@@ -538,7 +538,7 @@ def _router(c: Any, s: BoardStore) -> FastAPI:
 
 
 def _shipped(tmp_path: Path) -> tuple[Any, BoardStore]:
-    from tests.unit.test_workflows_api import cfg, store
+    from tests.support.workflows_api import cfg, store
 
     c = cfg(tmp_path)
     return c, store(c)
@@ -740,7 +740,7 @@ async def test_adopting_a_changed_meeting_holds_the_meeting_again_on_the_story_w
     as a restart from there clears them (the story and the plan as they stood before it), so the next plan
     holds the meeting again instead of finding the layers stage done and taking the split as the agreement;
     the note names what runs again, and refine is not among them (its story is kept)."""
-    from tests.unit.test_story_pipeline import (
+    from tests.support.story import (
         EASY_MEETING,
         MEETING,
         MEETING_ROLES,

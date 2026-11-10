@@ -15,8 +15,8 @@ import pytest
 
 from airlie.serve.app import create_app
 from airlie.serve.running import ACTIVE_S, run_progress, running, story_progress
+from tests.support.serve import FakeUpstream, cfg
 from tests.unit.serve_helpers import TestClient
-from tests.unit.test_serve import FakeUpstream, cfg
 
 NOW = 1_000_000.0
 

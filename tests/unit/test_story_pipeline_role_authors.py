@@ -17,8 +17,8 @@ from pathlib import Path
 from airlie.board import BoardStore
 from airlie.story.board import NOTE_PREFIX, Card
 from airlie.story.local_board import LocalBoard
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_story_pipeline import happy_engine, pipeline
+from tests.support.git import repo_with_marker_tests
+from tests.support.story import happy_engine, pipeline
 
 
 def _local_board(tmp_path: Path, role_names: set[str]) -> tuple[LocalBoard, Card]:

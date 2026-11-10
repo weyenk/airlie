@@ -11,7 +11,7 @@ from airlie.story.board import NOTE_PREFIX, BoardError, Card, NullBoard, note
 from airlie.story.epic_state import EpicState
 from airlie.story.factory import _note_and_move, make_board
 from airlie.story.local_board import LocalBoard
-from tests.unit.test_config import MINIMAL, write
+from tests.support.config import MINIMAL, write
 
 
 def filled(tmp_path: Path) -> tuple[BoardStore, LocalBoard]:

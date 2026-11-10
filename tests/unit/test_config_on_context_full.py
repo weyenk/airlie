@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from airlie.config import ConfigError, load_config
-from tests.unit.test_config import MINIMAL, write
+from tests.support.config import MINIMAL, write
 
 
 def test_on_context_full_validation_truth_table(tmp_path: Path) -> None:

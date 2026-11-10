@@ -19,12 +19,12 @@ from airlie.serve.app import create_app
 from airlie.serve.mcp_server import airlie_http, build_server, opencode_entry
 from airlie.story import factory
 from airlie.story.state import StoryState
+from tests.support.git import repo_with_marker_tests
+from tests.support.serve import FakeUpstream
+from tests.support.serve_jobs import finish
+from tests.support.story import STORY_ROLES
+from tests.support.studio import cfg_for
 from tests.unit.serve_helpers import TestClient
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_serve import FakeUpstream
-from tests.unit.test_serve_jobs import finish
-from tests.unit.test_story_pipeline import STORY_ROLES
-from tests.unit.test_studio_orchestrator import cfg_for
 
 ROOT = Path(__file__).resolve().parents[2]
 OC = ROOT / "docs/integrations/opencode"

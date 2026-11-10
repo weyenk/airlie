@@ -12,9 +12,9 @@ from airlie import cli
 from airlie.board import BoardStore
 from airlie.story import factory
 from airlie.story.epic import epic_of
-from tests.unit.test_cli_story import story_cfg
-from tests.unit.test_config import MINIMAL, write
-from tests.unit.test_story_epic import SPEC
+from tests.support.cli_story import story_cfg
+from tests.support.config import MINIMAL, write
+from tests.support.story_epic import SPEC
 
 runner = CliRunner()
 

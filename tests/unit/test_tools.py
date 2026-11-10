@@ -18,19 +18,8 @@ from airlie.tools import ToolContext, ToolRegistry, ToolResult, resolve
 from airlie.tools import confine as confine_mod
 from airlie.tools.sandbox import cap
 from airlie.tools.shell import run_cmd, run_steps
+from tests.support.tools import ctx
 from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
-
-
-def ctx(tmp_path: Path, **kw) -> ToolContext:
-    wt = tmp_path / "wt"
-    wt.mkdir(exist_ok=True)
-    return ToolContext(
-        worktree=wt,
-        shell_timeout_s=kw.pop("timeout", 5.0),
-        output_cap_chars=kw.pop("cap", 2000),
-        test_cmd=kw.pop("test_cmd", "echo tests-ok"),
-        test_steps=tuple(kw.pop("test_steps", ())),
-    )
 
 
 def test_resolve_keeps_paths_inside_worktree(tmp_path: Path) -> None:

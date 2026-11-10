@@ -10,9 +10,10 @@ from airlie.board import BoardStore
 from airlie.flow.spec import check_workflows
 from airlie.serve.app import create_app
 from airlie.story.workflows import draft_spec
+from tests.support.board_api import NO_RUN
+from tests.support.serve import FakeUpstream, cfg
+from tests.support.story_workflows import MINI
 from tests.unit.serve_helpers import TestClient
-from tests.unit.test_serve import FakeUpstream, cfg
-from tests.unit.test_story_workflows import MINI
 
 
 def client(tmp_path: Path, **kw: object) -> TestClient:
@@ -147,8 +148,6 @@ def test_a_move_through_the_api_is_recorded_as_the_principals(tmp_path: Path) ->
 
 
 # ---- the card's workflow (docs/superpowers/specs/2026-11-07-workflow-builder-design.md) ----
-
-NO_RUN = MINI.replace("intake: {type: check, run: story.intake,", "intake: {type: check,")
 
 
 def test_a_label_naming_an_unknown_workflow_is_refused_with_422(tmp_path: Path) -> None:

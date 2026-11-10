@@ -3,25 +3,15 @@ inner step and the hover card the workflow screen draws."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 from airlie.serve.flow import story_flow
-from tests.unit.test_story_flow import KEY, by_id, write_events
+from tests.support.story_flow import KEY, by_id, write_events
+from tests.support.story_flow_plan import make_story
 
 PLAN_IDS = ["intake", "base", "gate", "survey", "refine", "layers", "amigos", "planned"]
 SHA = "e8146e0aa11bb22cc33dd44ee55ff66778899aab"
-
-
-def make_story(root: Path, events: list[dict[str, Any]], **state: Any) -> Path:
-    """Story KEY under `root` with `state` over a blank one at stage `new`, and `events` as its log."""
-    story = root / "stories" / KEY
-    story.mkdir(parents=True)
-    base: dict[str, Any] = {"card": {"key": KEY, "title": "t"}, "repo": "/r", "stage": "new", "layers": []}
-    (story / "state.json").write_text(json.dumps({**base, **state}))
-    write_events(story / "events.jsonl", events)
-    return root
 
 
 def nodes_of(root: Path) -> list[dict[str, Any]]:

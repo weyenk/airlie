@@ -14,10 +14,10 @@ from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.story.board import text_card
 from airlie.story.package import PACKAGE_TOOLS_CONTRACT
 from airlie.story.state import StoryState
-from tests.unit.git_helpers import git
-from tests.unit.test_story_layer_checks_flow import PYTEST, calc_repo, write
-from tests.unit.test_story_pipeline import MEETING_ROLES, STORY, fenced, kinds, package_reply, pipeline
-from tests.unit.test_studio_orchestrator import APPROVE, DONE
+from tests.support.git import git
+from tests.support.story import MEETING_ROLES, STORY, fenced, kinds, package_reply, pipeline
+from tests.support.story_layer_checks_flow import PYTEST, calc_repo, write
+from tests.support.studio import APPROVE, DONE
 
 PATH = "tests/test_calc.py"
 TWO_LAYERS = fenced(

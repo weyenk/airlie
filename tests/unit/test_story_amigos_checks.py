@@ -14,7 +14,7 @@ from airlie.story.amigos_checks import (
 )
 from airlie.story.layer_checks import Finding
 from airlie.story.model import Criterion, Layer, ScopedPath, Story
-from tests.unit.test_story_layer_checks import repo
+from tests.support.story_layer_checks import repo
 
 STORY = Story(
     "Avatars",

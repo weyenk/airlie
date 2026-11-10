@@ -24,10 +24,10 @@ from airlie.flow.team import Handback, _result, team_runner
 from airlie.story.board import text_card
 from airlie.story.flow import story_runners
 from airlie.story.model import StoryError
-from tests.unit.git_helpers import git
-from tests.unit.test_story_flow import bare_state, briefs_to, run_context, v2
-from tests.unit.test_story_pipeline import fenced, pipeline, repo_with_marker_tests
-from tests.unit.test_studio_orchestrator import APPROVE
+from tests.support.git import git
+from tests.support.story import fenced, pipeline, repo_with_marker_tests
+from tests.support.story_flow import bare_state, briefs_to, run_context, v2
+from tests.support.studio import APPROVE
 
 
 class TeamEngine(FakeEngine):

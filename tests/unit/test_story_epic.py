@@ -3,13 +3,13 @@ of a Markdown spec (P3 of the planning line, 2026-10-24)."""
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
 
 from airlie.story.epic import EPIC_CONTRACT, EpicCriterion, EpicSpec, epic_from_markdown, epic_of, parse_epic
 from airlie.story.model import StoryError
+from tests.support.story_epic import SPEC, fenced
 
 BLOCK: dict[str, Any] = {
     "type": "epic",
@@ -18,30 +18,6 @@ BLOCK: dict[str, Any] = {
     "constraints": ["PNG only"],
     "links": ["https://example.org/mockup"],
 }
-
-SPEC = """# Avatars
-
-Why: users want faces.
-
-## Constraints
-
-- PNG only
-- 1 MB at most
-
-## Acceptance criteria
-
-- A user can upload an avatar
-- The avatar is shown on the profile
-  and on comments
-
-## Left open
-
-- the size
-"""
-
-
-def fenced(obj: dict[str, Any]) -> str:
-    return "```json\n" + json.dumps(obj) + "\n```\n"
 
 
 def test_an_epic_block_parses_and_round_trips() -> None:

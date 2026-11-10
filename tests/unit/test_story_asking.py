@@ -16,7 +16,7 @@ import pytest
 from airlie.story import asking, phase
 from airlie.story.asking import Asker, MapUse
 from airlie.story.phase import fanout, read_phase, wait_for_gap, write_phase
-from tests.unit.test_studio_orchestrator import cfg_for
+from tests.support.studio import cfg_for
 
 
 class Record:

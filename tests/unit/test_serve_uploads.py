@@ -21,9 +21,9 @@ from airlie.auth.principal import SESSION_COOKIE
 from airlie.auth.store import AuthStore
 from airlie.serve.app import create_app
 from airlie.serve.uploads import fence, sniff
+from tests.support.serve import FakeUpstream
+from tests.support.serve_chat import chat_cfg
 from tests.unit.serve_helpers import TestClient
-from tests.unit.test_serve import FakeUpstream
-from tests.unit.test_serve_chat import chat_cfg
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 64

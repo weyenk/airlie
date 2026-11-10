@@ -10,9 +10,9 @@ from pathlib import Path
 from airlie.serve.flow import job_detail, story_flow
 from airlie.serve.flow_now import story_live
 from airlie.serve.running import ACTIVE_S
-from tests.unit.test_story_flow import KEY, by_id
-from tests.unit.test_story_flow_build import air47_at_16_12, from_fixture, layered, story_files
-from tests.unit.test_story_flow_plan import make_story
+from tests.support.story_flow import KEY, by_id
+from tests.support.story_flow_build import air47_at_16_12, from_fixture, layered, story_files
+from tests.support.story_flow_plan import make_story
 
 
 def last_ts(root: Path, key: str) -> float:

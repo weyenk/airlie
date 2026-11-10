@@ -64,7 +64,7 @@ from airlie.story.package_checks import package_feedback_said
 from airlie.teams.native_team import _goal_message
 from airlie.topology.diversify import nudge_text
 from airlie.topology.studio_plan import Plan
-from tests.unit.test_story_briefs import (
+from tests.support.story_briefs import (
     CARD,
     EPIC,
     EPIC_TEXT,

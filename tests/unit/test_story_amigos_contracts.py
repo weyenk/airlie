@@ -19,7 +19,7 @@ from airlie.story.amigos import (
     parse_verdict,
 )
 from airlie.story.model import StoryError
-from tests.unit.test_story_briefs import LAYERS, STORY
+from tests.support.story_briefs import LAYERS, STORY
 
 LEVELS = {"unit": 12, "integration": 3, "live": 1}
 GUIDELINES = {"unit", "integration", "e2e"}

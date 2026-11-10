@@ -22,8 +22,8 @@ from airlie.story.model import parse_layers, parse_story
 from airlie.story.pipeline import StoryPipeline
 from airlie.story.state import StoryState
 from airlie.topology.studio_plan import extract_json_block
-from tests.unit.git_helpers import git
-from tests.unit.test_story_pipeline import (
+from tests.support.git import git
+from tests.support.story import (
     LAYERS,
     STORY,
     happy_engine,

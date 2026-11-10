@@ -9,14 +9,7 @@ from pathlib import Path
 import pytest
 
 from airlie.auth.store import AuthStore, Credential
-
-
-class Clock:
-    def __init__(self, t: float = 1_000_000.0) -> None:
-        self.t = t
-
-    def __call__(self) -> float:
-        return self.t
+from tests.support.auth_store import Clock
 
 
 @pytest.fixture

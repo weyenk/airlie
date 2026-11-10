@@ -19,9 +19,9 @@ from airlie.config import load_config
 from airlie.serve.app import create_app
 from airlie.serve.jobs import Jobs
 from airlie.serve.listing import epics, recent_runs, repo_names, repos, stories, story_page
-from tests.unit.test_serve import FakeUpstream
-from tests.unit.test_serve import cfg as base_cfg
-from tests.unit.test_story_flow import write_epic
+from tests.support.serve import FakeUpstream
+from tests.support.serve import cfg as base_cfg
+from tests.support.story_flow import write_epic
 
 
 def cfg(tmp_path: Path, **story: Any):  # type: ignore[no-untyped-def]
@@ -563,7 +563,7 @@ def test_the_epic_routes_list_and_draw_an_epic_with_the_boards_statuses(tmp_path
 
 def initiative_app(tmp_path: Path) -> tuple[Any, Any, str, str, str]:
     """The app over a delivered initiative whose core has option pages 1 and 3 on disk."""
-    from tests.unit.test_story_flow import delivered_initiative
+    from tests.support.story_flow import delivered_initiative
 
     state = tmp_path / "state"
     state.mkdir()

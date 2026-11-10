@@ -10,8 +10,8 @@ from pathlib import Path
 from airlie.engine import FakeEngine
 from airlie.router import ChiefRouter
 from airlie.topology.studio import StudioOrchestrator
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_studio_orchestrator import (
+from tests.support.git import repo_with_marker_tests
+from tests.support.studio import (
     APPROVE,
     CHANGES,
     DONE,

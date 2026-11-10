@@ -12,8 +12,8 @@ import httpx
 
 from airlie.board import BoardStore
 from airlie.serve.app import create_app
+from tests.support.serve import FakeUpstream, cfg
 from tests.unit.serve_helpers import TestClient
-from tests.unit.test_serve import FakeUpstream, cfg
 
 API_KEY = "k"
 AUTH = {"Authorization": f"Bearer {API_KEY}"}

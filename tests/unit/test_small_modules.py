@@ -17,7 +17,7 @@ from airlie.tools import shell as shell_mod
 from airlie.tools.protocol import ToolResult
 from airlie.tools.sandbox import cap
 from airlie.tools.shell import Git, RunTests, Shell, quote, run_cmd
-from tests.unit.test_tools import ctx
+from tests.support.tools import ctx
 
 # ---- heuristic controller ----
 

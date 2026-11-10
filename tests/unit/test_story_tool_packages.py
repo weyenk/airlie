@@ -14,7 +14,8 @@ from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.prompts import text as hub_text
 from airlie.story.package import PACKAGE_CONTRACT, PACKAGE_TOOLS_CONTRACT
 from airlie.story.state import StoryState
-from tests.unit.test_story_layer_checks_flow import (
+from tests.support.story import kinds, package_reply
+from tests.support.story_layer_checks_flow import (
     DONE,
     FEATURE,
     MUL_INTERFACE,
@@ -27,7 +28,6 @@ from tests.unit.test_story_layer_checks_flow import (
     steers,
     write,
 )
-from tests.unit.test_story_pipeline import kinds, package_reply
 
 TOOLS = {"package_tools": True}
 PATH = "tests/test_calc.py"

@@ -227,7 +227,7 @@ def test_an_old_schema_workflow_is_refused_naming_the_field():
 
 def test_the_config_rejects_a_bad_workflow(tmp_path):
     from airlie.config import ConfigError, load_config
-    from tests.unit.test_config import MINIMAL, write
+    from tests.support.config import MINIMAL, write
 
     data = {**MINIMAL, "workflows": {"w": {"nodes": {"a": {"type": "ask", "inputs": ["ghost"]}}}}}
     with pytest.raises(ConfigError, match="node a"):
@@ -236,7 +236,7 @@ def test_the_config_rejects_a_bad_workflow(tmp_path):
 
 def test_a_workflow_in_the_old_schema_fails_the_load_naming_what_is_old(tmp_path):
     from airlie.config import ConfigError, load_config
-    from tests.unit.test_config import MINIMAL, write
+    from tests.support.config import MINIMAL, write
 
     old = {"start": "a", "loose": ["card"], "nodes": {"a": {"type": "check", "run": "r", "next": "b"}}}
     with pytest.raises(ConfigError, match="field 'start' is the old schema; run the workflow upgrade"):
@@ -271,7 +271,7 @@ def test_rule_nine_holds_a_catalog_transient_output_transient_on_the_node():
 
 def test_story_composer_defaults_off(tmp_path):
     from airlie.config import load_config
-    from tests.unit.test_config import MINIMAL, write
+    from tests.support.config import MINIMAL, write
 
     assert load_config(write(tmp_path, MINIMAL)).story.composer is False
 
@@ -281,7 +281,7 @@ def test_story_composer_defaults_off(tmp_path):
 )
 def test_the_composer_on_without_its_workflows_is_a_problem(tmp_path, names, missing):
     from airlie.config import ConfigError, load_config
-    from tests.unit.test_config import MINIMAL, write
+    from tests.support.config import MINIMAL, write
 
     workflows = {n: {"nodes": {"a": {"type": "check", "run": "story.build_done"}}} for n in names}
     data = {**MINIMAL, "story": {**MINIMAL.get("story", {}), "composer": True}, "workflows": workflows}
@@ -295,7 +295,7 @@ def test_the_composer_on_without_its_workflows_is_a_problem(tmp_path, names, mis
 
 def test_the_composer_on_with_both_workflows_loads(tmp_path):
     from airlie.config import load_config
-    from tests.unit.test_config import MINIMAL, write
+    from tests.support.config import MINIMAL, write
 
     check = {"type": "check", "run": "story.build_done"}
     workflows = {n: {"nodes": {"a": check}} for n in ("story", "layer")}

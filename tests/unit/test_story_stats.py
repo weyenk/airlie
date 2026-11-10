@@ -168,9 +168,9 @@ def test_the_stats_route(tmp_path: Path) -> None:
     import httpx
 
     from airlie.serve.app import create_app
+    from tests.support.serve import FakeUpstream
+    from tests.support.serve import cfg as serve_cfg
     from tests.unit.serve_helpers import TestClient
-    from tests.unit.test_serve import FakeUpstream
-    from tests.unit.test_serve import cfg as serve_cfg
 
     c = serve_cfg(tmp_path)
     store = BoardStore(c.observability.state_dir / "board.sqlite")
@@ -195,7 +195,7 @@ def test_line_stats_prints_the_tables_and_since_must_be_a_date(tmp_path: Path) -
     from typer.testing import CliRunner
 
     from airlie import cli
-    from tests.unit.test_serve import cfg as serve_cfg
+    from tests.support.serve import cfg as serve_cfg
 
     c = serve_cfg(tmp_path)
     assert c.source_path is not None

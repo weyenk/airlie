@@ -7,8 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.git_helpers import git
-from tests.unit.test_fork_orchestrator import repo_with_marker_tests
+from tests.support.git import git, repo_with_marker_tests
 
 
 def script(path: Path, mark: Path, code: int = 0) -> None:
