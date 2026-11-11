@@ -14,6 +14,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -415,7 +416,9 @@ def _ended(job: Job | None) -> bool:
     return job is not None and job.state in ("failed", "cancelled")
 
 
-def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = None) -> Any:
+def _default_factory(
+    cfg: AirlieConfig, k: int | None, topology: str | None = None, *, manager: Manager | None = None
+) -> Any:
     from airlie.cli import _orchestrator, apply_k, select_topology
     from airlie.config import TOPOLOGY_KINDS
 
@@ -423,7 +426,7 @@ def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = No
         raise HTTPException(400, f"unknown topology '{topology}'; use one of {', '.join(TOPOLOGY_KINDS)}")
     cfg = select_topology(cfg, topology)
     cfg = apply_k(cfg if cfg.source_path is not None else cfg.model_copy(deep=True), k)
-    return _orchestrator(cfg)
+    return _orchestrator(cfg, manager=manager)
 
 
 def _workflow_publisher(cfg: AirlieConfig) -> Callable[[WorkflowDraft], Awaitable[tuple[int, str]]]:
@@ -518,6 +521,8 @@ def create_app(
     leases = Leases(manager, ttl_s=cfg.manager.lease_ttl_s)
     managed = {s.name for s in manager.status()}
     app.state.manager = manager
+    if orchestrator_factory is None:
+        factory = partial(_default_factory, manager=manager)  # its engine calls hold through this manager
     engine_tasks: list[asyncio.Task[Any]] = []
 
     def workflow_check(name: str) -> str | None:
@@ -850,7 +855,7 @@ def create_app(
             from airlie.tools.protocol import ToolContext
 
             role = cfg.roles[tool_role]
-            engine = _http_engine(cfg, cfg.engine_for_role(tool_role), transport=transport)
+            engine = _http_engine(cfg, cfg.engine_for_role(tool_role), transport=transport, manager=manager)
             await engine.start()
             try:
                 ctx = ToolContext(

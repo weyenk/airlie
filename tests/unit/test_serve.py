@@ -365,7 +365,7 @@ def test_default_factory_selects_single_profile(tmp_path: Path) -> None:
     import airlie.cli as cli_mod
 
     original = cli_mod._orchestrator
-    cli_mod._orchestrator = lambda cfg, run_id=None: captured.append(cfg)  # type: ignore[assignment]
+    cli_mod._orchestrator = lambda cfg, run_id=None, manager=None: captured.append(cfg)  # type: ignore[assignment]
     try:
         _default_factory(c, None, topology="single")
     finally:
@@ -383,7 +383,7 @@ def test_default_factory_with_k_above_one_selects_teams(tmp_path: Path) -> None:
     import airlie.cli as cli_mod
 
     original = cli_mod._orchestrator
-    cli_mod._orchestrator = lambda cfg, run_id=None: captured.append(cfg)  # type: ignore[assignment]
+    cli_mod._orchestrator = lambda cfg, run_id=None, manager=None: captured.append(cfg)  # type: ignore[assignment]
     try:
         _default_factory(c, 3)
     finally:

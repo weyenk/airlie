@@ -20,6 +20,7 @@ from airlie.story.state import StoryState
 
 if TYPE_CHECKING:
     from airlie.engine.protocol import Engine
+    from airlie.manager.core import Manager
     from airlie.supervisor.ledger import Ledger
 
 app = typer.Typer(
@@ -356,20 +357,24 @@ def _http_engine(
     model_override: str | None = None,
     *,
     transport: httpx.AsyncBaseTransport | None = None,
+    manager: Manager | None = None,
 ) -> Engine:
     """One HTTPEngine on `engine_name`; when `model_override` is not set and some role's model is served by
-    another engine, a RoutedEngine over one HTTPEngine per engine that serves a role."""
+    another engine, a RoutedEngine over one HTTPEngine per engine that serves a role. Each managed (mlx_vlm)
+    engine's calls hold it: through `manager` inside serve, else serve's lease routes, else a start here. A
+    scripted `transport` (tests) goes without."""
     from airlie.engine.dialect import dialect_for
     from airlie.engine.http_engine import HTTPEngine
     from airlie.engine.routed import RoutedEngine
+    from airlie.manager.client import LazyHolder, ManagedEngine, holder_for
 
     # only a transport given: passing None would override one HTTPEngine already carries (the story harness
     # wraps HTTPEngine with a scripted transport; None sent its runs to the network)
     given: dict[str, Any] = {"transport": transport} if transport is not None else {}
 
-    def one(name: str) -> HTTPEngine:
+    def one(name: str) -> Engine:
         e = cfg.engines[name]
-        return HTTPEngine(
+        http = HTTPEngine(
             e.base_url or "",
             lambda role: e.served_name(model_override or cfg.roles[role].model),
             lambda role: cfg.roles[role],
@@ -378,6 +383,9 @@ def _http_engine(
             model_spec_for=lambda role: cfg.models[model_override or cfg.roles[role].model],
             dialect=dialect_for(e.kind),
         )
+        if e.kind != "mlx_vlm" or (transport is not None and manager is None):
+            return http
+        return ManagedEngine(http, name, LazyHolder(lambda: holder_for(cfg, manager=manager)))
 
     owners = {role: cfg.engine_for_role(role) for role in cfg.roles}  # a role no engine serves raises
     if model_override or set(owners.values()) <= {engine_name}:
@@ -1128,12 +1136,12 @@ def apply_k(cfg: AirlieConfig, k: int | None) -> AirlieConfig:
     return cfg
 
 
-def _orchestrator(cfg: AirlieConfig, run_id: str | None = None):  # type: ignore[no-untyped-def]
+def _orchestrator(cfg: AirlieConfig, run_id: str | None = None, manager: Manager | None = None):  # type: ignore[no-untyped-def]
     """Factory, patched in tests: the topology named by cfg.topology.kind over the HTTP engine."""
     from airlie.topology.protocol import build_topology
 
     role = cfg.roles[cfg.teams.role]
-    engine = _http_engine(cfg, cfg.engine_for_model(role.model))
+    engine = _http_engine(cfg, cfg.engine_for_model(role.model), manager=manager)
     return build_topology(cfg, engine, run_id=run_id)
 
 
