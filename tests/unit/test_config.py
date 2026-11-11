@@ -349,7 +349,7 @@ def test_the_qwen25_experiment_is_a_profile_beside_the_default() -> None:
     assert cfg.roles["chief"].model == "generalist"
 
 
-def test_committed_config_declares_four_autostart_engines_and_the_bench_engines() -> None:
+def test_committed_config_declares_five_autostart_engines_and_the_bench_engines() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     kinds = {n: e.kind for n, e in cfg.engines.items()}
     assert kinds == {
@@ -357,11 +357,12 @@ def test_committed_config_declares_four_autostart_engines_and_the_bench_engines(
         "reviewer": "mlx_vlm",
         "small": "mlx_vlm",
         "decision": "mlx_vlm",
+        "gemma": "mlx_vlm",
         "llama70b": "mlx_vlm",
         "qwen25_32b": "mlx_vlm",
     }
     autostart = [n for n, e in cfg.engines.items() if e.autostart]
-    assert autostart == ["main", "reviewer", "small", "decision"]
+    assert autostart == ["main", "reviewer", "small", "decision", "gemma"]
     assert cfg.engines["main"].models == ["generalist"] and cfg.engines["main"].port == 8080
     assert [n for n, e in cfg.engines.items() if e.decision] == ["decision"]
     assert cfg.engines["decision"].port == 8081 and cfg.router.model == "decider_2b"  # the 4b gate's pick
@@ -377,6 +378,21 @@ def test_committed_config_declares_four_autostart_engines_and_the_bench_engines(
     )  # the HF-cache snapshot: the exact --model string
     assert cfg.models["generalist"].tool_call_parser == "qwen3_coder"
     assert cfg.models["reviewer"].tool_call_parser == "atem"
+    gemma = cfg.models["gemma4"]
+    assert (gemma.repo, gemma.revision, gemma.mtp_block_size, gemma.tool_call_parser) == (
+        "mlx-community/gemma-4-26B-A4B-it-bf16",
+        "e13fae2a81ec07e3092a3ebb70c80970b640dc3c",
+        4,
+        "gemma4",
+    )
+    assert (gemma.mtp.repo, gemma.mtp.revision) == (
+        "mlx-community/gemma-4-26B-A4B-it-assistant-bf16",
+        "cda74908f1dbe7d3dbd3030e66576a7d4094144f",
+    )
+    assert cfg.roles["chat"].model == cfg.roles["design"].model == cfg.roles["ux"].model == "gemma4"
+    assert cfg.engine_for_role("chat") == cfg.engine_for_role("design") == "gemma"
+    ge = cfg.engines["gemma"]
+    assert (ge.port, ge.max_image_px, ge.model) == (8084, 1536, "gemma4")
     assert cfg.models["qwen25_32b"].tool_call_parser is None  # mlx-vlm has no `qwen` parser: inferred
     assert cfg.models["llama70b"].tool_call_parser is None  # nor `llama`; an unknown name is a 422
 

@@ -37,6 +37,17 @@ def _cfg(tmp_path: Path, *, main: dict[str, Any]) -> AirlieConfig:
     return load_config(tmp_path / "airlie.yaml")
 
 
+def test_an_mtp_head_with_block_size_passes_draft_block_size(tmp_path: Path) -> None:
+    cfg = _cfg(
+        tmp_path,
+        main={"kind": "mlx_vlm", "port": 8080, "model": "base"},
+    )
+    cfg.models["base"].mtp_block_size = 4
+    argv, _ = build_mlx_vlm_command(cfg, "main", snap)
+    i = argv.index("--draft-kind")
+    assert argv[i : i + 4] == ["--draft-kind", "mtp", "--draft-block-size", "4"]
+
+
 def test_main_engine_command_pins_the_spec_flags(tmp_path: Path) -> None:
     cfg = _cfg(
         tmp_path,

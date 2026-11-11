@@ -61,6 +61,11 @@ class ModelSpec(Strict):
         description="an MTP head published apart from the body (mlx_vlm engines): served beside it as the "
         "--draft-model, with speculative decoding on",
     )
+    mtp_block_size: int | None = Field(
+        default=None,
+        ge=1,
+        description="mlx_vlm --draft-block-size when `mtp` is set (Gemma 4 MTP requires 4)",
+    )
     estimated_memory_gb: float | None = Field(
         default=None, description="weights only; feeds the engine memory budget"
     )

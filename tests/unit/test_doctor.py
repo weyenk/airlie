@@ -397,19 +397,19 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, unknown = project_memory_gb(studio, "main")
-    # 42.0 GB of weights (small, generalist, reviewer, decider-2b) + the build lane's one sequence at the
-    # coder's 65.536k × 64 MB/1k = 4.1 GB + 4 asks at 8.192k = 2.0 GB + 12 GB reserve = 59.6 GB, and the
-    # caches the autostart mlx-vlm engines set aside (main 8, reviewer 3.5, small 1)
+    # 54.5 GB of weights (small, generalist, reviewer, decider-2b, gemma4) + the build lane's one sequence
+    # at the coder's 65.536k × 64 MB/1k = 4.1 GB + 4 asks at 8.192k = 2.0 GB + 12 GB reserve = 73.6 GB;
+    # caches the autostart mlx-vlm engines set aside (main 8, reviewer 3.5, small 1, gemma 4)
     assert cache_memory_gb(studio.engines["main"]) == 8.0
-    assert (round(projected, 1), unknown) == (72.6, [])
-    assert projected < studio.memory.wired_limit_mb / 1024  # 104 GB
+    assert (round(projected, 1), unknown) == (89.1, [])
+    assert projected < studio.memory.wired_limit_mb / 1024  # 124 GB
     monkeypatch.setattr(
         "airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name
     )  # the profiles reload from the file
     base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     qwen = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen25")
     projected, unknown = project_memory_gb(qwen, "main")
-    assert (round(projected, 1), unknown) == (103.9, [])
+    assert (round(projected, 1), unknown) == (120.4, [])
     assert projected < qwen.memory.wired_limit_mb / 1024
     row = by_name(run_checks(base, FakeProbe()))["engine:main:memory_projection[studio-qwen25]"]
     assert row.status == "ok", row
@@ -430,7 +430,7 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
     wider = studio.model_copy(deep=True)
     wider.line.fanout = 8
     assert live_kv_gb(wider, e) > live_kv_gb(studio, e)  # more asks, more KV
-    assert "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 12 GB prefix cache" in projection_detail(
+    assert "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 16 GB prefix cache" in projection_detail(
         studio, e
     )
     teams = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="teams")

@@ -49,6 +49,18 @@ engines:
     model: decider_2b
     decision: true
     max_num_seqs: 4
+  gemma:                           # Gemma 4 26B-A4B for chat, design, ux; MTP assistant with --draft-block-size 4
+    kind: mlx_vlm
+    port: 8084
+    model: gemma4
+    max_num_seqs: 8
+    max_kv_size: 131072
+    kv_bits: 8
+    prefill_step_size: 2048
+    prefix_cache: true              # same as main; mlx-vlm Gemma 4 MTP docs do not disable APC (issue #1471 is DFlash/EAGLE)
+    cache_memory_gb: 4
+    cache_checkpoints: 8
+    max_image_px: 1536
   # bench engines: start one by hand with `airlie engine up <name>`
   llama70b: { kind: mlx_vlm, port: 8092, model: llama70b, autostart: false, max_kv_size: 65536, kv_bits: 8 }
   qwen25_32b: { kind: mlx_vlm, port: 8093, model: qwen25_32b, autostart: false, max_kv_size: 65536, kv_bits: 8 }
@@ -163,7 +175,7 @@ aggregator:                        # spec 01 §4 step 9
 
 # ---- Host + observability -----------------------------------------------------------------------------------------
 memory:                            # docs/wiki/build-spec/01 §1; `task doctor` projects the total
-  wired_limit_mb: 106496
+  wired_limit_mb: 126976            # 124 GB: studio ~89 GB with Gemma 4; studio-qwen25 ~120 GB
   os_reserve_gb: 12
 observability:
   state_dir: ~/.local/state/airlie
