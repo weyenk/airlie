@@ -41,6 +41,16 @@ def test_the_task_sets_it_now_and_installs_the_daemon() -> None:
     assert "launchctl bootstrap system" in cmds
 
 
+def test_the_task_stops_on_an_empty_limit_before_any_sudo() -> None:
+    script = "\n".join(taskfile()["tasks"]["gpu:limit"]["cmds"])
+    guard = (
+        'test -n "$MB" || { echo "gpu:limit: airlie host wired-limit printed nothing; nothing set" >&2; '
+        "exit 1; }"
+    )
+    assert guard in script
+    assert script.index(guard) < script.index("sudo")
+
+
 def test_host_wired_limit_prints_the_configured_value() -> None:
     result = runner.invoke(app, ["host", "wired-limit", "--config", str(ROOT / "airlie.yaml")])
     assert result.stdout.strip() == "126976"

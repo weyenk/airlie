@@ -186,6 +186,7 @@ tasks:
     cmds:
       - |
         MB=$({{.RUN}} airlie host wired-limit)
+        test -n "$MB" || { echo "gpu:limit: airlie host wired-limit printed nothing; nothing set" >&2; exit 1; }
         sudo sysctl iogpu.wired_limit_mb=$MB
         sed "s|__MB__|$MB|" docs/integrations/gpu-limit.plist | sudo tee /Library/LaunchDaemons/dev.airlie.gpu-limit.plist >/dev/null
         sudo chown root:wheel /Library/LaunchDaemons/dev.airlie.gpu-limit.plist
