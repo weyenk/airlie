@@ -137,6 +137,7 @@ also_copy = [
 # Enrol a module once its tests are thorough; everything else is reported, never failed.
 enrolled = [
     "src/airlie/models_download.py",
+    "src/airlie/manager/core.py",
     "src/airlie/router/policy.py",
     "src/airlie/scheduler/states.py",
     "src/airlie/tools/decide.py",
@@ -159,6 +160,12 @@ enrolled = [
 # is caught, or whose line no longer matches, is reported as stale. Entries are inline tables in this array:
 equivalent = [
     # { mutant = "airlie.x.xǁC.f__mutmut_3", line = "+    return None", reason = "..." },
+    { mutant = "airlie.manager.core.xǁManagerǁ_stop__mutmut_17", line = "slot.stop_failed = None", reason = "None and False are both falsy: every reader tests the flag's truth only" },
+    { mutant = "airlie.manager.core.xǁManagerǁ_forget_the_dead__mutmut_5", line = "slot.stop_failed = None", reason = "None and False are both falsy: every reader tests the flag's truth only" },
+    { mutant = "airlie.manager.core.xǁManagerǁ_make_room__mutmut_7", line = "if self._used_gb(None) + need <= self._budget_gb:", reason = "the slot being made room for is never in use or stop_failed when this runs, so excluding it changes no sum" },
+    { mutant = "airlie.manager.core.xǁManagerǁ_make_room__mutmut_9", line = "return", reason = "break leaves the try and the function ends: return does the same" },
+    { mutant = "airlie.manager.core.xǁManagerǁ_make_room__mutmut_11", line = "victim = self._victim(None)", reason = "the slot being made room for is never ready, so it is never its own victim" },
+    { mutant = "airlie.manager.core.xǁManagerǁ_start__mutmut_33", line = "slot.last_used = None", reason = "hold sets last_used on release before anything reads it, and no await sits between the start and the holder entry" },
 ]
 # Functions whose code runs only on macOS (module:function, or module:Class.method): their mutants are run on
 # the mac job (scripts/mutate_changed.py --mac-only), as a file that imports mlx is. On Linux no

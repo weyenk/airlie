@@ -648,3 +648,140 @@ async def test_start_pinned_starts_the_rest_when_one_fails() -> None:
     await m.start_pinned()
     assert state(m, "p").state == "failed" and state(m, "p").detail == "no weights"
     assert state(m, "q").state == "ready"
+
+
+async def test_a_manager_built_with_defaults_gives_up_waiting_after_1800_seconds() -> None:
+    a, b = FakeResource("a", 10), FakeResource("b", 10)
+    clock = FakeClock()
+    m = Manager([a, b], budget_gb=15, clock=clock)
+    async with m.hold("a", "chat:1"):
+        with pytest.raises(EngineError, match=r"b: gave up waiting for memory after 1800s"):
+            async with m.hold("b", "o"):
+                pass
+
+
+async def test_status_carries_the_resources_kind() -> None:
+    m, _ = manager(FakeResource("a"))
+    assert state(m, "a").kind == "engine"
+
+
+async def test_the_starting_status_has_no_detail() -> None:
+    seen: list[Status] = []
+    m, _ = manager(FakeResource("a"), on_change=seen.append)
+    await _hold(m, "a")
+    assert [(s.state, s.detail) for s in seen[:2]] == [("starting", ""), ("ready", "")]
+
+
+async def test_a_resource_stopped_by_reap_is_reported_stopped_once() -> None:
+    a, b = FakeResource("a", 10), FakeResource("b", 10)
+    seen: list[str] = []
+    m, clock = manager(
+        a, b, budget_gb=15, on_change=lambda s: seen.append(s.state) if s.name == "a" else None
+    )
+    await _hold(m, "a")
+    clock.now += 600.0
+    await m.reap()
+    seen.clear()
+    await _hold(m, "b")  # makes room: nothing left to forget on a
+    assert seen == []
+
+
+async def test_a_resource_that_fits_the_budget_exactly_starts_without_evicting() -> None:
+    a, b = FakeResource("a", 10), FakeResource("b", 10)
+    m, _ = manager(a, b, budget_gb=20)
+    await _hold(m, "a")
+    await _hold(m, "b")
+    assert a.stops == 0 and b.starts == 1
+
+
+async def test_a_waiting_resource_reports_its_reason_once_however_often_it_re_checks() -> None:
+    a, b = FakeResource("a", 10), FakeResource("b", 10)
+    waiting: list[str] = []
+    m, _ = manager(
+        a,
+        b,
+        budget_gb=15,
+        wait_timeout_s=5,
+        on_change=lambda s: waiting.append(s.detail) if s.name == "b" and s.state == "waiting" else None,
+    )
+    async with m.hold("a", "chat:1"):
+        with pytest.raises(EngineError):
+            await _hold(m, "b")
+    assert waiting == ["waiting for memory: chat:1"]
+
+
+async def test_a_waiting_resource_follows_its_blockers_as_they_change() -> None:
+    a, b = FakeResource("a", 10), FakeResource("b", 10)
+    m, _ = manager(a, b, budget_gb=15, wait_timeout_s=5)
+    release = asyncio.Event()
+
+    async def holder(owner: str) -> None:
+        async with m.hold("a", owner):
+            await release.wait()
+
+    first = asyncio.create_task(holder("chat:1"))
+    await settle()
+    w = asyncio.create_task(_hold(m, "b"))
+    await settle()
+    second = asyncio.create_task(holder("chat:2"))
+    await settle()
+    assert state(m, "b").detail == "waiting for memory: chat:1, chat:2"
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, second, w), 5)
+
+
+async def test_a_start_that_raises_with_no_message_is_failed_with_the_exception_name() -> None:
+    r = FakeResource("a")
+    r.fail = ""
+    m, _ = manager(r)
+    with pytest.raises(EngineError):
+        await _hold(m, "a")
+    assert state(m, "a").detail == "EngineError"
+
+
+async def test_start_pinned_holds_a_resource_as_start() -> None:
+    seen: list[tuple[str, ...]] = []
+    m, _ = manager(FakeResource("p", lifecycle="pinned"), on_change=lambda s: seen.append(s.holders))
+    await m.start_pinned()
+    assert ("start",) in seen
+
+
+async def test_start_pinned_leaves_a_ready_pinned_resource_alone() -> None:
+    p = FakeResource("p", lifecycle="pinned")
+    seen: list[Status] = []
+    m, _ = manager(p)
+    await m.start_pinned()
+    m._on_change = seen.append
+    await m.start_pinned()
+    assert seen == [] and p.starts == 1
+
+
+async def test_reap_goes_on_past_a_resource_it_may_not_stop() -> None:
+    p, r = FakeResource("p", lifecycle="pinned"), FakeResource("r", idle_unload_s=60)
+    m, clock = manager(p, r)
+    await _hold(m, "p")
+    await _hold(m, "r")
+    clock.now += 60.0
+    assert await m.reap() == ["r"]
+
+
+async def test_reap_goes_on_past_a_resource_not_idle_long_enough() -> None:
+    fresh, old = FakeResource("fresh", idle_unload_s=600), FakeResource("old", idle_unload_s=60)
+    m, clock = manager(fresh, old)
+    await _hold(m, "old")
+    clock.now += 100.0
+    await _hold(m, "fresh")
+    assert await m.reap() == ["old"]
+
+
+async def test_a_reap_that_raises_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    clock = StopsAfter(1)
+    m, _ = manager(FakeResource("a"), clock=clock)
+
+    async def boom() -> None:
+        raise RuntimeError("sweep blew up")
+
+    m.before_reap = boom
+    with caplog.at_level("ERROR", logger="airlie.manager.core"), pytest.raises(asyncio.CancelledError):
+        await m.run(every_s=30)
+    assert [r.getMessage() for r in caplog.records] == ["resource manager: reap failed"]
