@@ -5,15 +5,29 @@ import { computed, onUnmounted, ref } from "vue";
 import { ApiError } from "@/api";
 import { createInvite, deleteUser, inviteAgain } from "@/api/auth";
 import type { Invite, Role, User } from "@/api/auth";
+import EmptyState from "@/components/EmptyState.vue";
+import EngineStatusLine from "@/components/EngineStatusLine.vue";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useConfirm } from "@/composables/useConfirm";
 import { ago, initials, passkeys, shortDate } from "@/lib/people";
+import type { EngineState } from "@/api/engines";
 import { useBootstrapStore } from "@/stores/bootstrap";
+import { useEngines } from "@/stores/engines";
 import { usePeopleStore } from "@/stores/people";
 import { useSessionStore } from "@/stores/session";
 
+const engines = useEngines();
+const STATE_CHIP: Record<EngineState, string> = {
+  ready: "bg-ok text-ok-foreground",
+  failed: "bg-danger text-danger-foreground",
+  waiting: "bg-warn text-warn-foreground",
+  downloading: "bg-info text-info-foreground",
+  starting: "bg-info text-info-foreground",
+  stopping: "bg-chip text-chip-foreground",
+  stopped: "bg-chip text-chip-foreground",
+};
 const people = usePeopleStore();
 const bootstrap = useBootstrapStore();
 people.attach();
@@ -166,6 +180,42 @@ async function copy(): Promise<void> {
           </div>
         </li>
       </ul>
+    </section>
+
+    <section aria-labelledby="engines-heading" class="rounded-xl border border-border bg-card shadow-card">
+      <div class="flex items-center gap-2.5 border-b border-border px-[18px] py-3.5">
+        <h2 id="engines-heading" class="text-[15px] font-semibold">Engines</h2>
+      </div>
+      <div v-if="engines.error" class="flex items-center gap-2.5 p-[18px]">
+        <ErrorBanner class="flex-1" :error="`Can't reach the engines: ${engines.error.message}`" />
+        <Button variant="outline" size="sm" class="h-[30px] px-2.5 text-xs font-medium" @click="engines.refresh()">Retry</Button>
+      </div>
+      <EmptyState v-if="!engines.loaded && !engines.error" text="Loading engines…" />
+      <EmptyState v-else-if="engines.loaded && !engines.list.length" text="No engines are set up." />
+      <div v-if="engines.list.length" class="overflow-x-auto">
+        <table class="w-full text-left text-[13px]">
+          <thead class="text-xs text-muted-foreground">
+            <tr class="border-b border-border">
+              <th scope="col" class="px-[18px] py-2.5 font-semibold">Engine</th>
+              <th scope="col" class="px-2 py-2.5 font-semibold">State</th>
+              <th scope="col" class="px-2 py-2.5 font-semibold">Lifecycle</th>
+              <th scope="col" class="px-2 py-2.5 font-semibold">Held by</th>
+              <th scope="col" class="px-[18px] py-2.5 font-semibold">Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="e in engines.list" :key="e.name" :data-engine="e.name" class="border-b border-border last:border-b-0">
+              <th scope="row" class="px-[18px] py-2.5 font-semibold">{{ e.name }}</th>
+              <td class="px-2 py-2.5">
+                <span :class="['inline-flex rounded-md px-2 py-0.5 text-xs font-bold', STATE_CHIP[e.state]]">{{ e.state }}</span>
+              </td>
+              <td class="px-2 py-2.5">{{ e.lifecycle }}</td>
+              <td class="px-2 py-2.5 font-mono text-xs">{{ e.holders.join(", ") || "—" }}</td>
+              <td class="px-[18px] py-2.5"><EngineStatusLine :status="e" /></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <section v-if="!forbidden" class="rounded-xl border border-border bg-card shadow-card">

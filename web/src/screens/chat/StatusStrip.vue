@@ -2,6 +2,8 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { ApiError, request } from "@/api";
 import { listStories } from "@/api/workflows";
+import EngineStatusLine from "@/components/EngineStatusLine.vue";
+import { useEngines } from "@/stores/engines";
 import { liveResource } from "@/stores/live";
 import { useFeedStore } from "@/stores/feed";
 import { useWorkflowsStore } from "@/stores/workflows";
@@ -14,6 +16,9 @@ const feed = useFeedStore();
 const blocked = liveResource("stories", () => listStories({ blocked: true, size: 1 }));
 const needs = computed(() => blocked.data.value?.total ?? 0);
 const running = computed(() => workflows.running.length);
+// the chat's engine, said while it is not ready (the line shows nothing when it is)
+const engines = useEngines();
+const chatEngine = computed(() => engines.forRole("chat"));
 
 // Studio is online while the engine answers /v1/models; nothing in the feed says when it stops, so ask again
 const studio = ref<"online" | "offline" | null>(null);
@@ -48,5 +53,6 @@ const pill = "inline-flex items-center gap-1.5 rounded-full px-2.5 py-[3px] text
     <span v-if="studio" data-strip="studio" :class="[pill, studio === 'online' ? 'bg-ok text-ok-foreground' : 'bg-danger text-danger-foreground']">
       <span class="size-[7px] rounded-full bg-current" />Studio {{ studio }}
     </span>
+    <EngineStatusLine v-if="chatEngine" :status="chatEngine" />
   </div>
 </template>

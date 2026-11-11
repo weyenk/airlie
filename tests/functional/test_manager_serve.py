@@ -98,6 +98,13 @@ def test_a_failed_start_is_a_503_naming_the_engine(
         assert up.requests == [] and status(manager).state == "failed"
 
 
+def test_the_engines_route_names_the_roles_each_engine_serves(tmp_path: Path, manager: Manager) -> None:
+    with TestClient(serve(tmp_path, manager)) as c:
+        row = c.get("/v1/airlie/engines").json()[0]
+
+    assert row["roles"] == ["aggregator", "coder", "judge", "summarizer"]
+
+
 def test_the_engines_route_lists_state_and_progress(
     tmp_path: Path, manager: Manager, engine: FakeEngine
 ) -> None:
@@ -113,6 +120,7 @@ def test_the_engines_route_lists_state_and_progress(
                 "progress": None,
                 "holders": [],
                 "lifecycle": "on_demand",
+                "roles": ["aggregator", "coder", "judge", "summarizer"],
             }
         ]
 

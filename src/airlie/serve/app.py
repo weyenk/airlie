@@ -666,6 +666,8 @@ def create_app(
             },
             "holders": list(s.holders),
             "lifecycle": s.lifecycle,
+            # the roles this engine serves, so a page can find its chat role's engine without naming it
+            "roles": [r for r in cfg.roles if cfg.engine_for_role(r) == s.name],
         }
 
     def engine_failed(name: str, e: EngineError) -> JSONResponse:

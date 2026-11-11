@@ -15,6 +15,8 @@ vi.mock("../../feed", () => ({
 }));
 const api = vi.hoisted(() => ({ listRunning: vi.fn(), listStories: vi.fn() }));
 vi.mock("@/api/workflows", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/workflows")>()), ...api }));
+const engines = vi.hoisted(() => ({ listEngines: vi.fn() }));
+vi.mock("@/api/engines", () => engines);
 const http = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock("@/api", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api")>()), ...http }));
 
@@ -34,6 +36,7 @@ beforeEach(() => {
   useFeedStore().start();
   api.listRunning.mockReset().mockResolvedValue(running(2));
   api.listStories.mockReset().mockResolvedValue(blocked(1));
+  engines.listEngines.mockReset().mockResolvedValue([]);
   http.request.mockReset().mockResolvedValue({ data: [] });
 });
 afterEach(() => vi.useRealTimers());
@@ -74,6 +77,49 @@ test("Studio goes offline when the engine does not answer, and online again when
   http.request.mockResolvedValue({ data: [] });
   await vi.advanceTimersByTimeAsync(15000);
   expect(w.get("[data-strip=studio]").text()).toBe("Studio online");
+});
+
+const gemma = (over: object) => ({
+  name: "gemma",
+  kind: "engine",
+  state: "ready",
+  detail: "",
+  progress: null,
+  holders: [],
+  lifecycle: "on_demand",
+  roles: ["chat"],
+  ...over,
+});
+
+test("it says what the chat's engine is doing while it is not ready", async () => {
+  engines.listEngines.mockResolvedValue([
+    gemma({ state: "downloading", progress: { done_bytes: 7.2e9, total_bytes: 19.4e9, rate_bps: 1e7, eta_s: 180 } }),
+  ]);
+
+  const w = await open();
+
+  expect(w.get("[role=status]").text()).toBe("Downloading gemma: 7.2 of 19.4 GB, 3 min left");
+  expect(w.find("[role=progressbar]").exists()).toBe(true);
+});
+
+test("it follows the chat's engine as the feed changes it, and says nothing once it is ready", async () => {
+  engines.listEngines.mockResolvedValue([gemma({ state: "starting" })]);
+  const w = await open();
+  expect(w.get("[role=status]").text()).toBe("Starting gemma");
+
+  engines.listEngines.mockResolvedValue([gemma({ state: "ready" })]);
+  feed.opts!.onChange({ topic: "engines", key: "gemma" });
+  await flushPromises();
+
+  expect(w.find("[role=status]").exists()).toBe(false);
+});
+
+test("it says nothing about an engine that serves another role", async () => {
+  engines.listEngines.mockResolvedValue([gemma({ name: "reviewer", state: "starting", roles: ["reviewer"] })]);
+
+  const w = await open();
+
+  expect(w.find("[role=status]").exists()).toBe(false);
 });
 
 test("it stops asking when it is gone", async () => {
