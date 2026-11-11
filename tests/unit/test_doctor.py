@@ -409,13 +409,8 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
         "airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name
     )  # the profiles reload from the file
     base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    qwen = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen25")
-    projected, unknown = project_memory_gb(qwen, "main")
-    # the Qwen2.5 coder engine (19 GB, its lane at 256 MB/1k) does not fit beside Gemma 4, which `task up`
-    # starts whatever the profile: the doctor says so rather than the experiment finding out
-    assert (round(projected, 1), unknown) == (135.0, [])
-    row = by_name(run_checks(base, FakeProbe()))["engine:main:memory_projection[studio-qwen25]"]
-    assert row.status == "fail" and "projected 135 GB" in row.detail, row
+    rows = [r for r in run_checks(base, FakeProbe()) if "memory_projection" in r.name]
+    assert rows and all(r.status == "ok" for r in rows), rows  # every committed profile fits
 
 
 def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
@@ -549,8 +544,6 @@ def test_the_story_line_gates_on_the_build_engines_config_not_a_profile(
     stale[stale.index("--max-num-seqs") + 1] = "2"
     bad = engine_matches_profile(cfg, MlxVlmProcesses([stale]), "studio")
     assert bad.status == "fail" and "--max-num-seqs 2 (config: 16)" in bad.detail
-    # the qwen25 experiment builds on its own engine (port 8093), which nothing runs
-    assert engine_matches_profile(cfg, MlxVlmProcesses([main]), "studio-qwen25").status == "warn"
 
 
 def test_real_probe_lists_every_matching_process(
@@ -573,20 +566,17 @@ def test_real_probe_lists_every_matching_process(
     assert ports == ["8080", "8082"]
 
 
-def test_a_bench_engine_mismatch_is_restarted_by_name_not_by_task_restart(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from airlie.doctor import engine_matches_profile, start_command
+def test_a_bench_engine_mismatch_is_restarted_by_name_not_by_task_restart(tmp_path: Path) -> None:
+    from airlie.doctor import engine_matches_config, start_command
 
-    cfg = committed_cfg(monkeypatch)
-    qwen = mlx_vlm_argv(cfg, "qwen25_32b")
-    stale = list(qwen)
+    cfg = mlx_vlm_cfg(tmp_path)  # `bench` is autostart: false
+    stale = mlx_vlm_argv(cfg, "bench")
     stale[stale.index("--max-kv-size") + 1] = "4096"
-    bad = engine_matches_profile(cfg, MlxVlmProcesses([stale]), "studio-qwen25")
-    assert bad.name == "engine:config[qwen25_32b]" and bad.status == "fail", bad
-    assert bad.detail.endswith("restart it: uv run airlie engine restart qwen25_32b"), bad.detail
+    bad = engine_matches_config(cfg, MlxVlmProcesses([stale]), "bench")
+    assert bad.name == "engine:config[bench]" and bad.status == "fail", bad
+    assert bad.detail.endswith("restart it: uv run airlie engine restart bench"), bad.detail
     assert "task restart" not in bad.detail
-    assert start_command(cfg.engines["qwen25_32b"], "qwen25_32b") == "uv run airlie engine up qwen25_32b"
+    assert start_command(cfg.engines["bench"], "bench") == "uv run airlie engine up bench"
     assert start_command(cfg.engines["main"], "main") == "task restart"
 
 

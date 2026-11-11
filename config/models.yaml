@@ -1,26 +1,12 @@
 # ---- Model catalog (pinned HF revisions; `task models:pull` fetches exactly these) ---------------------------------
-# Spec 01 §1 names Llama-3.3-70B-Instruct-4bit or Qwen2.5-32B-Instruct-4bit for the base-model slot (20.5–42.5 GB).
-# Noah 2026-10-12: a modern model for the same slot is fine as long as it stays configurable and benchmarkable, so the
-# spec's two models stay here, pinned, loadable on demand, and in `task bench:models`.
+# Spec 01 §1 names Llama-3.3-70B-Instruct-4bit or Qwen2.5-32B-Instruct-4bit for the base-model slot. Noah 2026-10-12:
+# a modern model for the same slot is fine as long as it stays configurable and benchmarkable; the spec's two left the
+# catalog with the mlx-vlm engine (design 2026-11-08), never benched.
 # The team model is `generalist` (Qwen3.8-27B, hybrid attention): the engine's hybrid prefix cache (engine/patches/
 # hybrid_prefix_cache.py) keeps a resumed turn from re-prefilling its whole prompt. Qwen3-Coder was dropped as the
 # team model (Noah 2026-10-18: AIR-5 showed its 6-bit fidelity too low for the speed).
 # To swap the team model: change `roles.coder.model`.
 models:
-  llama70b:                        # spec 01 §1 / 02 §1 named model
-    repo: mlx-community/Llama-3.3-70B-Instruct-4bit
-    revision: de2dfaf56839b7d0e834157d2401dee02726874d   # 2024-12-06
-    bench: true
-    tags: [spec]
-    estimated_memory_gb: 40
-    kv_mb_per_1k_tokens: 320
-  qwen25_32b:                      # spec 01 §1 named model
-    repo: mlx-community/Qwen2.5-32B-Instruct-4bit
-    revision: 2938092373e5f97b95538884112085364c2da315   # 2024-09-18
-    bench: true
-    tags: [spec]
-    estimated_memory_gb: 19
-    kv_mb_per_1k_tokens: 256
   small:
     repo: mlx-community/Qwen3-4B-4bit
     revision: 4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25   # 2025-04-28

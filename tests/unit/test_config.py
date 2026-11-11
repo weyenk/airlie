@@ -181,7 +181,7 @@ def test_committed_default_config_is_valid() -> None:
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")  # never the person's own
     assert {"coder", "summarizer", "judge", "aggregator"} <= set(cfg.roles)
-    assert {"generalist", "llama70b", "qwen25_32b"} <= {n for n, m in cfg.models.items() if m.bench}
+    assert {"generalist"} <= {n for n, m in cfg.models.items() if m.bench}
     assert cfg.engines["main"].kind == "mlx_vlm"
     for name, m in cfg.models.items():
         assert m.revision, f"models.{name} must pin a revision"
@@ -335,20 +335,6 @@ def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_w
     assert (coder.model, coder.thinking, coder.max_tokens) == ("generalist", False, 10240)  # no thinking
 
 
-def test_the_qwen25_experiment_is_a_profile_beside_the_default() -> None:
-    """Noah 2026-10-18: Qwen2.5-32B in the coder seat as an experiment; the default stays. The profile changes
-    no engine or model entry: its engine is a bench engine started by hand (`airlie engine up qwen25_32b`)."""
-    base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    assert base.roles["coder"].model == "generalist"
-    assert load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"].model == "generalist"
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen25")
-    coder = cfg.roles["coder"]
-    assert (coder.model, coder.thinking, coder.max_tokens) == ("qwen25_32b", False, 10240)
-    assert cfg.engines == base.engines and cfg.models == base.models
-    assert cfg.engines["qwen25_32b"].autostart is False
-    assert cfg.roles["chief"].model == "generalist"
-
-
 def test_committed_config_declares_five_autostart_engines_and_the_bench_engines() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     kinds = {n: e.kind for n, e in cfg.engines.items()}
@@ -358,8 +344,6 @@ def test_committed_config_declares_five_autostart_engines_and_the_bench_engines(
         "small": "mlx_vlm",
         "decision": "mlx_vlm",
         "gemma": "mlx_vlm",
-        "llama70b": "mlx_vlm",
-        "qwen25_32b": "mlx_vlm",
     }
     autostart = [n for n, e in cfg.engines.items() if e.autostart]
     assert autostart == ["main", "reviewer", "small", "decision", "gemma"]
@@ -393,8 +377,6 @@ def test_committed_config_declares_five_autostart_engines_and_the_bench_engines(
     assert cfg.engine_for_role("chat") == cfg.engine_for_role("design") == "gemma"
     ge = cfg.engines["gemma"]
     assert (ge.port, ge.max_image_px, ge.model) == (8084, 1536, "gemma4")
-    assert cfg.models["qwen25_32b"].tool_call_parser is None  # mlx-vlm has no `qwen` parser: inferred
-    assert cfg.models["llama70b"].tool_call_parser is None  # nor `llama`; an unknown name is a 422
 
 
 def test_profiles_carry_no_engine_or_model_overrides() -> None:
@@ -411,8 +393,6 @@ def test_catalog_kv_constants_follow_each_models_attention_geometry() -> None:
     models = load_config(ROOT / "airlie.yaml", NO_LOCAL).models
     assert models["generalist"].kv_mb_per_1k_tokens == 64  # 16 full-attention layers × 4 heads × 256 dim
     assert models["small"].kv_mb_per_1k_tokens == 144  # 36 layers × 8 heads × 128 dim
-    assert models["qwen25_32b"].kv_mb_per_1k_tokens == 256  # 64 layers × 8 heads × 128 dim
-    assert models["llama70b"].kv_mb_per_1k_tokens == 320  # 80 layers × 8 heads × 128 dim
     # 5 full-attention layers × 2 heads × 512 dim = 20, + the 25 sliding layers' fixed 1024-token window
     assert models["gemma4"].kv_mb_per_1k_tokens == 22
 
