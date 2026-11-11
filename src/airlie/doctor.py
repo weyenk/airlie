@@ -211,8 +211,82 @@ def _resident_engines(cfg: AirlieConfig) -> list[Any]:
     return [e for n, e in cfg.engines.items() if e.kind != "openai_http" and (e.autostart or n in used)]
 
 
+def _weights(cfg: AirlieConfig, e: Any) -> tuple[float, list[str]]:
+    """An engine's resident weights (each model and its MTP head) and the names with no estimate."""
+    total = 0.0
+    unknown: list[str] = []
+    for mname in e.models:
+        m = cfg.models[mname]
+        parts = [(mname, m.estimated_memory_gb)]
+        if m.mtp and not e.decision:  # served beside the body (engine/mlx_vlm.py)
+            parts.append((f"{mname} MTP head", m.mtp.estimated_memory_gb))
+        for label, gb in parts:
+            if gb is None:
+                unknown.append(label)
+            else:
+                total += gb
+    return total, unknown
+
+
+def _kv_gb(cfg: AirlieConfig, e: Any, engine_name: str) -> float:
+    """The KV one engine holds: the lane KV when it is a lane engine, else its `other_engines_kv` sequence."""
+    if cfg.topology.kind == "studio":
+        lane = 0.0
+        if cfg.engine_for_role(cfg.story.build_role) == engine_name:
+            build = cfg.roles[cfg.story.build_role]
+            lane += (
+                build.max_context
+                / 1000.0
+                * cfg.models[build.model].kv_mb_per_1k_tokens
+                / 1024.0
+                * kv_scale(e)
+            )
+        if cfg.engine_for_role(cfg.story.architect_role) == engine_name:
+            ask = cfg.roles[cfg.story.architect_role]
+            lane += (
+                cfg.line.fanout
+                * (cfg.line.consult_context / 1000.0)
+                * cfg.models[ask.model].kv_mb_per_1k_tokens
+                / 1024.0
+                * kv_scale(e)
+            )
+        if lane:
+            return lane
+    elif engine_name in _lane_engines(cfg):
+        return live_kv_gb(cfg, e)
+    seq = _sequence_kv(cfg, engine_name)
+    return seq[1] if seq else 0.0
+
+
+def _footprint(cfg: AirlieConfig, name: str) -> tuple[float, list[str]]:
+    e = cfg.engines[name]
+    weights, unknown = _weights(cfg, e)
+    return weights + _kv_gb(cfg, e, name) + cache_memory_gb(e), unknown
+
+
+def engine_footprint_gb(cfg: AirlieConfig, name: str) -> float:
+    """What one engine holds while it runs: its weights and MTP head, its KV (the lane KV for a lane engine,
+    else its `other_engines_kv` sequence) and its prefix cache. A model with no estimate counts 0."""
+    return _footprint(cfg, name)[0]
+
+
+def _sum_footprints(cfg: AirlieConfig, names: list[str]) -> tuple[float, list[str]]:
+    total = 0.0
+    unknown: list[str] = []
+    for name in names:
+        gb, miss = _footprint(cfg, name)
+        total += gb
+        unknown += miss
+    return total + cfg.memory.os_reserve_gb, unknown
+
+
+def _mlx_vlm_names(cfg: AirlieConfig, engines: list[Any]) -> list[str]:
+    return [n for n, e in cfg.engines.items() if e.kind == "mlx_vlm" and e in engines]
+
+
 def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[str]]:
-    """Spec 01 §1 budget: preloaded weights + the live KV + the prefix cache + OS reserve.
+    """Spec 01 §1 budget: preloaded weights + the live KV + the prefix cache + OS reserve, over every engine
+    that can be resident at once (`_resident_engines`).
 
     The weights are each resident model's and its MTP head's (the --draft-model loads beside the body). The
     live KV of the single, teams and fork topologies is K × max_kv_size. The studio's is its two lanes'
@@ -223,27 +297,16 @@ def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[
     aside.
 
     Returns (projected GB, names of preloaded models or MTP heads with no estimated_memory_gb)."""
-    e = cfg.engines[engine_name]
-    weights = 0.0
-    cache = 0.0
-    unknown: list[str] = []
-    resident = _resident_engines(cfg)
-    for other in cfg.engines.values():  # every managed process shares the one wired limit
-        if other.kind != "mlx_vlm" or other not in resident:
-            continue
-        cache += cache_memory_gb(other)
-        for mname in other.models:
-            m = cfg.models[mname]
-            parts = [(mname, m.estimated_memory_gb)]
-            if m.mtp and not other.decision:  # served beside the body (engine/mlx_vlm.py)
-                parts.append((f"{mname} MTP head", m.mtp.estimated_memory_gb))
-            for label, gb in parts:
-                if gb is None:
-                    unknown.append(label)
-                else:
-                    weights += gb
-    others = sum(gb for _, gb in other_engines_kv(cfg).values())
-    return weights + live_kv_gb(cfg, e) + others + cache + cfg.memory.os_reserve_gb, unknown
+    return _sum_footprints(cfg, _mlx_vlm_names(cfg, _resident_engines(cfg)))
+
+
+def _pinned_engines(cfg: AirlieConfig) -> list[Any]:
+    return [e for e in _resident_engines(cfg) if e.lifecycle == "pinned"]
+
+
+def pinned_floor_gb(cfg: AirlieConfig) -> float:
+    """The same sum over the pinned engines only: what stays resident whatever the on-demand ones do."""
+    return _sum_footprints(cfg, _mlx_vlm_names(cfg, _pinned_engines(cfg)))[0]
 
 
 def _lane_engines(cfg: AirlieConfig) -> set[str]:
@@ -264,15 +327,21 @@ def other_engines_kv(cfg: AirlieConfig) -> dict[str, tuple[int, float]]:
     for name, e in cfg.engines.items():
         if e.kind != "mlx_vlm" or name in lanes or e not in resident:
             continue
-        seqs = [
-            (tokens, tokens / 1000.0 * cfg.models[r.model].kv_mb_per_1k_tokens / 1024.0 * kv_scale(e))
-            for r in cfg.roles.values()
-            if r.model in e.models
-            for tokens in [min(r.max_context, e.max_kv_size)]
-        ]
-        if seqs:
-            out[name] = max(seqs, key=lambda s: s[1])
+        if seq := _sequence_kv(cfg, name):
+            out[name] = seq
     return out
+
+
+def _sequence_kv(cfg: AirlieConfig, name: str) -> tuple[int, float] | None:
+    """One sequence at the longest context a role on the engine asks, as (tokens, GB), else None."""
+    e = cfg.engines[name]
+    seqs = [
+        (tokens, tokens / 1000.0 * cfg.models[r.model].kv_mb_per_1k_tokens / 1024.0 * kv_scale(e))
+        for r in cfg.roles.values()
+        if r.model in e.models
+        for tokens in [min(r.max_context, e.max_kv_size)]
+    ]
+    return max(seqs, key=lambda s: s[1]) if seqs else None
 
 
 _KV_GROUP = 64  # mlx-vlm's KV quantization group (mlx_vlm/generate/common.py DEFAULT_KV_GROUP_SIZE)
@@ -439,8 +508,23 @@ def _projection_rows(
         )
         if unknown:
             detail += f"; no estimated_memory_gb for {', '.join(unknown)}"
-        status: Status = "fail" if projected > limit_gb else ("warn" if unknown else "ok")
+        floor = pinned_floor_gb(pcfg)
+        status: Status = "ok"
+        if projected > limit_gb:
+            # over only with everything resident: the manager queues or stops idle on-demand engines
+            status = "fail" if floor > limit_gb else "warn"
+            if status == "warn":
+                detail += "; the manager will queue or stop idle engines"
+        elif unknown:
+            status = "warn"
         rows.append(CheckResult(name, status, detail))
+        rows.append(
+            CheckResult(
+                f"engine:memory_floor[{pname}]",
+                "fail" if floor > limit_gb else "ok",
+                f"pinned engines {floor:.0f} GB vs wired limit {limit_gb:.0f} GB",
+            )
+        )
     return rows
 
 

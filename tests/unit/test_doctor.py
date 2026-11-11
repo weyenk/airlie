@@ -755,3 +755,48 @@ def test_a_keyed_engines_health_row_sends_its_key_and_blames_a_wrong_one(tmp_pat
     cfg.engines["main"].api_key = None  # no key set: a 401 is only "not answering well", never a key blame
     keyless = by_name(run_checks(cfg, KeyedProbe("other", **snaps)))["engine:main:health"]
     assert "not running" in keyless.detail
+
+
+def test_the_pinned_floor_is_the_projection_without_the_on_demand_engines() -> None:
+    """The committed studio keeps reviewer and small on demand: the floor is the 111.0 GB projection minus
+    reviewer's 25.1 GB (19.4 weights + 2.2 KV + 3.5 cache) and small's 6.3 GB (3 + 2.3 + 1)."""
+    from airlie.doctor import engine_footprint_gb, pinned_floor_gb, project_memory_gb
+
+    studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
+    assert studio.engines["reviewer"].lifecycle == "on_demand"
+    assert studio.engines["small"].lifecycle == "on_demand"
+    assert round(engine_footprint_gb(studio, "reviewer"), 1) == 25.1
+    assert round(engine_footprint_gb(studio, "small"), 1) == 6.3
+    projected, _ = project_memory_gb(studio, "main")
+    floor = pinned_floor_gb(studio)
+    assert round(floor, 1) == 79.6
+    assert floor == pytest.approx(
+        projected - engine_footprint_gb(studio, "reviewer") - engine_footprint_gb(studio, "small")
+    )
+    rows = by_name(run_checks(studio, FakeProbe()))
+    assert rows["engine:memory_floor[studio]"].status == "ok"
+
+
+def test_an_overcommit_that_only_everything_resident_causes_is_a_warn(tmp_path: Path) -> None:
+    """Pinned 16 GB of weights + 12 GB reserve fits; the on-demand engine's 90 GB does not fit beside it."""
+    data = {
+        "version": 1,
+        "engines": {
+            "main": {"kind": "mlx_vlm", "port": 8080, "model": "team", "max_kv_size": 1024},
+            "big": {"kind": "mlx_vlm", "port": 8081, "model": "huge", "lifecycle": "on_demand"},
+        },
+        "models": {
+            "team": {"repo": "org/t", "revision": "r1", "estimated_memory_gb": 16},
+            "huge": {"repo": "org/h", "revision": "r1", "estimated_memory_gb": 90},
+        },
+        "roles": {r: {"prompt": "p.md", "model": "team"} for r in TEAM_ROLES},
+        "teams": {"k": 1},
+    }
+    (tmp_path / "p.md").write_text("x")
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    cfg = load_config(tmp_path / "airlie.yaml")
+    rows = by_name(run_checks(cfg, FakeProbe(snapshots={"org/t@r1", "org/h@r1"})))
+    row = rows["engine:big:memory_projection[teams]"]  # the row sits under the first autostart engine
+    assert row.status == "warn"
+    assert "the manager will queue or stop idle engines" in row.detail
+    assert rows["engine:memory_floor[teams]"].status == "ok"
