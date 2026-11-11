@@ -757,24 +757,65 @@ def test_a_keyed_engines_health_row_sends_its_key_and_blames_a_wrong_one(tmp_pat
     assert "not running" in keyless.detail
 
 
-def test_the_pinned_floor_is_the_projection_without_the_on_demand_engines() -> None:
-    """The committed studio keeps reviewer and small on demand: the floor is the 111.0 GB projection minus
-    reviewer's 25.1 GB (19.4 weights + 2.2 KV + 3.5 cache) and small's 6.3 GB (3 + 2.3 + 1)."""
-    from airlie.doctor import engine_footprint_gb, pinned_floor_gb, project_memory_gb
+def test_the_pinned_floor_counts_on_demand_engines_separately() -> None:
+    """The committed studio keeps reviewer and small on demand: they are excluded from the pinned floor."""
+    from airlie.doctor import engine_footprint_gb
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     assert studio.engines["reviewer"].lifecycle == "on_demand"
     assert studio.engines["small"].lifecycle == "on_demand"
     assert round(engine_footprint_gb(studio, "reviewer"), 1) == 25.1
     assert round(engine_footprint_gb(studio, "small"), 1) == 6.3
+
+
+def test_the_pinned_floor_is_the_projection_without_the_on_demand_engines() -> None:
+    """The floor is the 111.0 GB projection minus reviewer's 25.1 GB (19.4 weights + 2.2 KV + 3.5 cache)
+    and small's 6.3 GB (3 + 2.3 + 1), yielding 79.6 GB."""
+    from airlie.doctor import engine_footprint_gb, pinned_floor_gb, project_memory_gb
+
+    studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, _ = project_memory_gb(studio, "main")
     floor = pinned_floor_gb(studio)
     assert round(floor, 1) == 79.6
     assert floor == pytest.approx(
         projected - engine_footprint_gb(studio, "reviewer") - engine_footprint_gb(studio, "small")
     )
+
+
+def test_pinned_floor_within_limit_is_ok_row() -> None:
+    """The floor row is ok when pinned engines fit within the wired limit."""
+    studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     rows = by_name(run_checks(studio, FakeProbe()))
     assert rows["engine:memory_floor[studio]"].status == "ok"
+
+
+def test_pinned_floor_exceeding_limit_is_fail_row(tmp_path: Path) -> None:
+    """When pinned engines exceed the wired limit, the floor and projection rows are both fail."""
+    data = {
+        "version": 1,
+        "engines": {
+            "main": {"kind": "mlx_vlm", "port": 8080, "model": "team", "max_kv_size": 1024},
+            "big": {"kind": "mlx_vlm", "port": 8081, "model": "huge", "lifecycle": "on_demand"},
+        },
+        "models": {
+            "team": {"repo": "org/t", "revision": "r1", "estimated_memory_gb": 70},
+            "huge": {"repo": "org/h", "revision": "r1", "estimated_memory_gb": 20},
+        },
+        "roles": {r: {"prompt": "p.md", "model": "team"} for r in TEAM_ROLES},
+        "teams": {"k": 1},
+        "memory": {"wired_limit_mb": 65536},  # 64 GB limit
+    }
+    (tmp_path / "p.md").write_text("x")
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    cfg = load_config(tmp_path / "airlie.yaml")
+    rows = by_name(run_checks(cfg, FakeProbe(snapshots={"org/t@r1", "org/h@r1"})))
+    assert rows["engine:memory_floor[teams]"].status == "fail"
+    assert rows["engine:memory_floor[teams]"].detail.startswith("pinned engines")
+    assert "vs wired limit 64" in rows["engine:memory_floor[teams]"].detail
+    # projection row is under the first autostart engine (main)
+    assert any("memory_projection" in k for k in rows), list(rows.keys())
+    proj_row = next(r for r in rows.values() if "memory_projection" in r.name)
+    assert proj_row.status == "fail"
 
 
 def test_an_overcommit_that_only_everything_resident_causes_is_a_warn(tmp_path: Path) -> None:
