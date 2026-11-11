@@ -21,7 +21,7 @@ const percent = computed(() => {
 
 /** What the engine is doing, said for a person; null when there is nothing to say (ready, or idle until asked). */
 const text = computed<string | null>(() => {
-  const { name, state, detail, holders, progress: p } = props.status;
+  const { name, state, detail, progress: p } = props.status;
   switch (state) {
     case "downloading":
       if (!p || p.total_bytes <= 0) return `Downloading ${name}`;
@@ -29,7 +29,8 @@ const text = computed<string | null>(() => {
     case "starting":
       return `Starting ${name}…`;
     case "waiting":
-      return holders.length ? `Waiting for memory: ${holders.join(", ")}` : "Waiting for memory";
+      // the manager's reason: "waiting for memory: " and the holders that block the start
+      return detail ? detail.charAt(0).toUpperCase() + detail.slice(1) : "Waiting for memory";
     case "stopping":
       return `Stopping ${name}`;
     case "failed":

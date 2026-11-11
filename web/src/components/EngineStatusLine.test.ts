@@ -41,7 +41,7 @@ test("a download that has not reported a size is a bar with no number", () => {
 });
 
 test("waiting for memory names who holds it", () => {
-  const w = show({ state: "waiting", holders: ["chat:1", "role:reviewer"] });
+  const w = show({ state: "waiting", detail: "waiting for memory: chat:1, role:reviewer" });
 
   expect(w.text()).toBe("Waiting for memory: chat:1, role:reviewer");
   expect(w.find('[role="progressbar"]').exists()).toBe(false);

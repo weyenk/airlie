@@ -227,6 +227,29 @@ async def test_a_pinned_resource_is_not_evicted() -> None:
     assert a.stops == 0
 
 
+async def test_a_waiting_resource_names_every_blocking_holder_joined_by_comma_space() -> None:
+    a, b = FakeResource("a", 10), FakeResource("b", 10)
+    m, _ = manager(a, b, budget_gb=15, wait_timeout_s=5)
+    release = asyncio.Event()
+
+    async def holder(owner: str) -> None:
+        async with m.hold("a", owner):
+            await release.wait()
+
+    async def want() -> None:
+        async with m.hold("b", "story:2"):
+            pass
+
+    holders = [asyncio.create_task(holder("chat:1")), asyncio.create_task(holder("role:reviewer"))]
+    await settle()
+    w = asyncio.create_task(want())
+    await settle()
+
+    assert state(m, "b").detail == "waiting for memory: chat:1, role:reviewer"
+    release.set()
+    await asyncio.wait_for(asyncio.gather(*holders, w), 5)
+
+
 async def test_waits_with_a_reason_then_starts_when_a_holder_releases() -> None:
     a, b = FakeResource("a", 10), FakeResource("b", 10)
     m, _ = manager(a, b, budget_gb=15)

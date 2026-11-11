@@ -304,7 +304,7 @@ const ENGINE = { kind: "engine", detail: "", progress: null, holders: [], lifecy
 test("the Engines table lists each engine with its state, lifecycle and what holds it", async () => {
   engineApi.listEngines.mockResolvedValue([
     { ...ENGINE, name: "gemma", state: "ready", holders: ["chat:1"], roles: ["chat"] },
-    { ...ENGINE, name: "reviewer", state: "waiting", holders: ["chat:1", "role:reviewer"], lifecycle: "pinned" },
+    { ...ENGINE, name: "reviewer", state: "waiting", detail: "waiting for memory: chat:1, role:reviewer", lifecycle: "pinned" },
   ]);
 
   const w = await open();
