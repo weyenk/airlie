@@ -56,7 +56,7 @@ Where to look when something feels off: generation and prefill speed, stories in
 ### Admin
 
 Who can sign in, their role, passkeys and Tailscale login, and an Engines table (each engine's state: `stopped`,
-`starting`, `ready`, `stopping`, who holds it and why a caller is waiting). First admin and invites:
+`downloading`, `starting`, `ready`, `waiting`, `stopping`, `failed`, who holds it and why a caller is waiting). First admin and invites:
 `task auth:admin` / `task auth:invite` ([`docs/integrations/sign-in.md`](docs/integrations/sign-in.md)).
 
 <p align="center">
@@ -100,7 +100,7 @@ Run `task` to list them. The ones that exist today:
 | `task searxng:up` / `:status` / `:down` / `:destroy` | SearXNG for the web roles' `web_search`, in a Tart Linux VM reached at `127.0.0.1:8888` (the first `up` downloads a few GB and installs it); `docs/integrations/web-tools.md` |
 | `task web:e2e [-- --roles chief,ux]` | asks every web-enabled role (chief, research, ux, design, reviewer) about something after its training data and checks it searched and cited what it found |
 | `task models:list` / `task models:pull [-- name…]` | show the catalog with pinned revisions / download exactly those revisions (the same downloader an engine's first start uses: progress line, disk check, one download per snapshot) |
-| `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop the pinned engines in `airlie.yaml` (`main`, `decision`: decider-2b on `/v1/decisions`, and any other without `lifecycle: on_demand`); the on-demand ones (`reviewer`, `small`) start when a call needs them, see *Engines on demand*; `airlie engine up <name>` starts any engine by hand; status shows pid and per-model readiness |
+| `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop the pinned engines in `airlie.yaml` (`main`, `gemma`, `decision`: decider-2b on `/v1/decisions`, and any other without `lifecycle: on_demand`); the on-demand ones (`reviewer`, `small`) start when a call needs them, see *Engines on demand*; `airlie engine up <name>` starts any engine by hand; status shows pid and per-model readiness |
 | `task gpu:limit` | set `iogpu.wired_limit_mb` to `memory.wired_limit_mb` now and at every boot (a LaunchDaemon; asks for your password) |
 | `task run -- "goal" --repo PATH [--topology fork] [--k 3] [--test-cmd "pytest -q"]` | run a topology on a goal (default `topology.kind: single`; `single` / `teams` / `fork` are experimental — use `task studio` or `--topology studio` for the supported path); every team/branch works in its own git worktree under the run directory and the report lists each one's outcome, branch and trace |
 | `task eval -- lang_detect [--topology fork] [--k 1]` | materialize a graded task from `evals/tasks/`, run it, grade every worktree with the hidden tests (same topology note as `task run`) |
@@ -258,8 +258,8 @@ profile across every managed engine. Profiles carry no engine flags: the engines
 
 ## Engines on demand
 
-Each engine in `airlie.yaml` has a `lifecycle`. `pinned` (the default): `task up` starts it and it stays up (`main` and
-`decision`). `on_demand` (`reviewer`, `small`): nothing starts it until a call needs it, and it is stopped once it has
+Each engine in `airlie.yaml` has a `lifecycle`. `pinned` (the default): `task up` starts it and it stays up (`main`, `decision` and
+`gemma`, which sets no `lifecycle`). `on_demand` (`reviewer`, `small`): nothing starts it until a call needs it, and it is stopped once it has
 been unused and unheld for `idle_unload_s` (default 600). Every role call holds its engine for its duration, so a
 busy engine is never stopped; when memory is short the manager stops idle on-demand engines to make room, and a
 caller that must wait gets the reason (shown in the chat strip and the Admin Engines table).
@@ -268,8 +268,9 @@ caller that must wait gets the reason (shown in the chat strip and the Admin Eng
   that are already running (by their pid files) rather than starting a second copy.
 - A process outside serve (`task story`, `airlie run`, the tick) takes a lease from serve
   (`POST /v1/airlie/engines/{name}/leases`, renewed with `PUT`, released with `DELETE`; it expires after
-  `manager.lease_ttl_s`, default 120 s). With no serve answering, it starts the engine itself, serialized with other
-  starters, and stops it when it is done.
+  `manager.lease_ttl_s`, default 120 s). With no serve answering, it starts the engine itself and leaves it running for
+  serve's reaper to stop later. Starts are serialized within one process, and a start that loses the race to another
+  process is tolerated.
 - Weights download on first use: the engine's start fetches the pinned snapshot with a progress line and fails early
   when the disk is too small. `task models:pull` fetches ahead of time.
 - The `manager:` block tunes it: `margin_gb`, `start_timeout_s`, `wait_timeout_s`, `reap_every_s`, `lease_ttl_s`.
