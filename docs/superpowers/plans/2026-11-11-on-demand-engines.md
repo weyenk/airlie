@@ -14,6 +14,13 @@
 
 - Every task passes the gate from the repository root, in order: `uv sync --frozen`, `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy`, `uv run pytest -q -n auto --maxprocesses 8`, `task web:gate`.
 - Unit tests over 500 ms or on the real clock go in `tests/unit/quarantine.toml`. Manager tests use `airlie.serve.bridge.clock.FakeClock` (`monotonic`, `wall`, `async sleep`) and fake resources, never real engines.
+- Tests follow `skills/qa/*.md` (the layer guidelines):
+  - Unit (`tests/unit`): one behaviour per test, named for the scenario and outcome, arranged Arrange-Act-Assert, no loops or conditionals in the body; fakes over mocks, doubles only at seams (clock, network, process, disk); no real clock, network or engine.
+  - A test that drives a FastAPI app through `TestClient` goes in `tests/functional`: real routes and middleware, doubles only beyond the module boundary, one request per test, and for each new route the happy path, 401, 422 or 400, 404 and a dependency failure, asserting the body and not just the status.
+  - Fakes are rebuilt per test (fixtures), never shared; every new test is seen red before the code is written.
+  - New modules that hold logic are enrolled in `[tool.airlie.mutation].enrolled` once `task mutate:changed` is clean for them; changes to an already enrolled module (`config/schema.py`, `engine/http_engine.py`) need tests that catch every new mutant.
+  - Web tests (vitest) follow `component.md`: query by role or text, mock at the network boundary, cover loading, error and empty states, never sleep.
+  - E2E is only for critical journeys: this plan adds none (engine status is covered by component tests and the live checks).
 - Dependencies through uv only. No Docker.
 - Unload means stopping the process (`EngineProcess.stop`: SIGTERM, then SIGKILL after 15 s), never mlx-vlm's in-process swap; serve always sends the engine's served model name.
 - The manager never stops a resource that has a holder.
@@ -91,12 +98,13 @@ git commit -m "gemma: chat at 262144 on one engine; the QAT MTP pairing checked 
 
 **Files:**
 - Create: `docs/integrations/gpu-limit.plist` (a LaunchDaemon template), `tests/unit/test_gpu_limit.py`
-- Modify: `Taskfile.yml` (task `gpu:limit`), `src/airlie/cli.py` (`airlie host wired-limit`), `src/airlie/doctor.py:484-494` (the fix text), `README.md:383`
+- Modify: `Taskfile.yml` (task `gpu:limit`), `src/airlie/cli.py` (`airlie host wired-limit`), `src/airlie/doctor.py:484-494` (the fix text), `README.md:383`, `tests/unit/test_doctor.py` (imports the helpers)
+- Create (also): `tests/support/doctor.py`
 
 **Interfaces:**
 - Produces: `airlie host wired-limit` prints `memory.wired_limit_mb` from the resolved config, and nothing else; `task gpu:limit` uses it.
 
-- [ ] **Step 1: Write the failing tests** in `tests/unit/test_gpu_limit.py`, in the style of `tests/unit/test_story_launchd.py` (plistlib and the Taskfile read through `yaml.safe_load`; never run launchctl or sudo). `taskfile()`, `cfg_with_limit()` and the CLI runner are small helpers local to this file; `FakeProbe` and `by_name` come from `tests/unit/test_doctor.py`:
+- [ ] **Step 1: Write the failing tests** in `tests/unit/test_gpu_limit.py`, in the style of `tests/unit/test_story_launchd.py` (plistlib and the Taskfile read through `yaml.safe_load`; never run launchctl or sudo). `taskfile()`, `cfg_with_limit()` and the CLI runner are small helpers local to this file; `FakeProbe` and `by_name` are imported from `tests/support/doctor.py` (move them there from `tests/unit/test_doctor.py`, so one test file never imports another):
 
 ```python
 def test_the_daemon_sets_the_sysctl_at_boot() -> None:
@@ -141,7 +149,7 @@ Run: `uv run pytest tests/unit/test_gpu_limit.py tests/unit/test_doctor.py -q` �
 - [ ] **Step 6: Commit**
 
 ```bash
-git add docs/integrations/gpu-limit.plist Taskfile.yml src/airlie/cli.py src/airlie/doctor.py README.md tests/unit/test_gpu_limit.py
+git add docs/integrations/gpu-limit.plist Taskfile.yml src/airlie/cli.py src/airlie/doctor.py README.md tests/unit/test_gpu_limit.py tests/unit/test_doctor.py tests/support/doctor.py
 git commit -m "host: task gpu:limit sets iogpu.wired_limit_mb now and at boot from memory.wired_limit_mb"
 ```
 
@@ -168,17 +176,19 @@ git commit -m "host: task gpu:limit sets iogpu.wired_limit_mb now and at boot fr
 
 Run: `uv add "huggingface_hub>=2.2"` → `uv sync --frozen` → exit 0.
 
-- [ ] **Step 2: Write the failing tests** in `tests/unit/test_models_download.py` with a fake `fetch` (a dry-run list of fake `DryRunFileInfo`-like objects, and a real call that drives the given `tqdm_class` through `update(n)` calls):
+- [ ] **Step 2: Write the failing tests** in `tests/unit/test_models_download.py` with a fake `fetch` (a dry-run list of fake `DryRunFileInfo`-like objects, and a real call that drives the given `tqdm_class` through `update(n)` calls), `FakeClock` passed as `clock` (no real time), and `tmp_path` for `cache_dir`:
 
 ```python
 async def test_progress_reports_bytes_rate_and_eta(tmp_path) -> None: ...
 async def test_two_callers_share_one_download(tmp_path) -> None: ...      # fetch called once (real), both get the path
 async def test_not_enough_disk_is_refused_before_downloading(tmp_path) -> None: ...  # DownloadError, real fetch never called
-async def test_a_failed_download_is_reported_and_can_retry(tmp_path) -> None: ...    # first real fetch raises → DownloadError; second ensure calls fetch again
+async def test_progress_is_forwarded_at_most_once_a_second(tmp_path) -> None: ...    # 50 updates inside one fake second → one call plus the final one
+async def test_a_failed_download_raises_download_error(tmp_path) -> None: ...        # the real fetch raises → DownloadError naming the repo
+async def test_a_download_can_be_retried_after_it_failed(tmp_path) -> None: ...      # after the failure the next ensure calls fetch again and returns the path
 async def test_a_cached_snapshot_downloads_nothing(tmp_path) -> None: ...  # dry run all is_cached → no progress beyond one final 100%
 ```
 
-In `tests/unit/test_models_cmd.py`, `pull` with a fake downloader calls it for the body and the MTP head of each planned model. A `DownloadError` gives status 1 for that plan.
+In `tests/unit/test_models_cmd.py`, two tests with a fake downloader: `test_pull_downloads_the_body_and_the_mtp_head_of_each_planned_model` and `test_a_download_error_gives_status_1_for_that_plan`.
 
 - [ ] **Step 3: Run them to see them fail**
 
@@ -186,9 +196,9 @@ Run: `uv run pytest tests/unit/test_models_download.py tests/unit/test_models_cm
 
 - [ ] **Step 4: Implement** as above. `airlie models pull` prints one line per model with the progress refreshed in place (`\r{name}: 7.2 of 19.4 GB, 3 min left`).
 
-- [ ] **Step 5: Run the tests**
+- [ ] **Step 5: Run the tests, then enrol the module**
 
-Run: the Step 3 command → PASS.
+Run: the Step 3 command → PASS. Run `task mutate:changed` and kill every survivor in `models_download.py` with a test (or list it in `equivalent` with a reason); then add `src/airlie/models_download.py` to `[tool.airlie.mutation].enrolled` in `pyproject.toml`.
 
 - [ ] **Step 6: Commit**
 
@@ -201,7 +211,7 @@ git commit -m "models: download pinned snapshots through huggingface_hub with pr
 
 **Files:**
 - Create: `src/airlie/manager/__init__.py`, `src/airlie/manager/core.py`, `tests/unit/test_manager.py`
-- Modify: `src/airlie/config/schema.py` (`EngineSpec.lifecycle`, `EngineSpec.idle_unload_s`, `ManagerSpec`, `AirlieConfig.manager`), `airlie.yaml` (`reviewer` and `small`: `lifecycle: on_demand`), `tests/unit/test_config.py`
+- Modify: `src/airlie/config/schema.py` (`EngineSpec.lifecycle`, `EngineSpec.idle_unload_s`, `ManagerSpec`, `AirlieConfig.manager`), `airlie.yaml` (`reviewer` and `small`: `lifecycle: on_demand`), `tests/unit/test_config.py`, `pyproject.toml` (enrol `src/airlie/manager/core.py`)
 
 **Interfaces:**
 - Produces:
@@ -243,17 +253,24 @@ add holder; yield; finally remove holder, set last_used = clock.monotonic(), not
 
 ```python
 async def test_concurrent_holds_share_one_start() -> None: ...         # two holds on a stopped resource → start called once, both enter
-async def test_idle_on_demand_stops_after_its_idle_time_pinned_never() -> None: ...
-async def test_a_held_resource_is_never_stopped() -> None: ...          # reap while held; and as an eviction candidate
+async def test_an_idle_on_demand_resource_is_stopped_after_its_idle_time() -> None: ...
+async def test_a_pinned_resource_is_never_reaped() -> None: ...
+async def test_a_held_resource_is_not_reaped() -> None: ...
+async def test_a_held_resource_is_not_evicted_to_make_room() -> None: ...   # the only candidate is held → the new hold waits
 async def test_room_is_made_by_stopping_the_least_recently_used_idle() -> None: ...  # budget 30, a=10 (used t=1), b=10 (used t=2), c=15 → a stopped
 async def test_waits_with_a_reason_then_starts_when_a_holder_releases() -> None: ...  # status shows "waiting for memory: chat:1"
 async def test_waiting_gives_up_after_wait_timeout() -> None: ...      # EngineError naming the resource
 async def test_a_dead_engine_is_failed_and_the_next_hold_restarts_it() -> None: ...
+async def test_a_start_that_raises_leaves_the_resource_failed_and_raises_to_the_holder() -> None: ...
+async def test_releasing_a_hold_notifies_a_waiter_and_records_last_used() -> None: ...
 async def test_adopt_marks_running_resources_ready_without_starting() -> None: ...
 async def test_status_changes_are_reported() -> None: ...              # on_change sees stopped→starting→ready
 ```
 
-In `tests/unit/test_config.py`, check the committed config: `reviewer` and `small` are `on_demand`; `main`, `decision` and `gemma` are `pinned`.
+In `tests/unit/test_config.py` (`config/schema.py` is enrolled in mutation, so every new field needs a test that pins it):
+  - `test_the_committed_lifecycles`: `reviewer` and `small` are `on_demand`; `main`, `decision` and `gemma` are `pinned`.
+  - `test_manager_spec_defaults`: each `ManagerSpec` default and `EngineSpec.idle_unload_s` (600.0).
+  - `test_manager_spec_rejects_unknown_keys_and_a_bad_lifecycle`.
 
 - [ ] **Step 2: Run them to see them fail**
 
@@ -261,22 +278,22 @@ Run: `uv run pytest tests/unit/test_manager.py tests/unit/test_config.py -v` →
 
 - [ ] **Step 3: Implement** as above. `task up` and `airlie engine up` with no name start only engines with `autostart` and `lifecycle == "pinned"` (`cli.py:239`); update `tests/unit/test_cli_engine.py`'s expectations.
 
-- [ ] **Step 4: Run the tests**
+- [ ] **Step 4: Run the tests, then enrol the module**
 
-Run: `uv run pytest tests/unit/test_manager.py tests/unit/test_config.py tests/unit/test_cli_engine.py -q` → PASS.
+Run: `uv run pytest tests/unit/test_manager.py tests/unit/test_config.py tests/unit/test_cli_engine.py -q` → PASS. Run `task mutate:changed`; kill every survivor in `core.py` and the new `schema.py` lines with a test; then add `src/airlie/manager/core.py` to `[tool.airlie.mutation].enrolled`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/airlie/manager src/airlie/config/schema.py airlie.yaml src/airlie/cli.py tests/unit
+git add src/airlie/manager src/airlie/config/schema.py airlie.yaml src/airlie/cli.py pyproject.toml tests/unit
 git commit -m "manager: hold, start once, make room by stopping idle on-demand resources, wait with a reason, reap"
 ```
 
 ### Task 5: Engines as resources, and the doctor's two numbers
 
 **Files:**
-- Create: `src/airlie/manager/engines.py`, `tests/unit/test_manager_engines.py`
-- Modify: `src/airlie/doctor.py` (`engine_footprint_gb`, the floor row), `tests/unit/test_doctor.py`
+- Create: `src/airlie/manager/engines.py`, `tests/unit/test_manager_engines.py`, `tests/support/process.py`
+- Modify: `src/airlie/doctor.py` (`engine_footprint_gb`, the floor row), `tests/unit/test_doctor.py`, `tests/unit/test_process.py` (imports the helpers)
 
 **Interfaces:**
 - Consumes: `EngineProcess` (`start(timeout_s)`, `stop()`, `status()`, its `prober.health_ok()`), `Downloader.ensure`, `RealProbe.model_snapshot_dir`.
@@ -293,7 +310,7 @@ git commit -m "manager: hold, start once, make room by stopping idle on-demand r
     - The existing `engine:{e}:memory_projection[{profile}]` becomes a warn, not a fail, when only everything-resident is over, with detail "… the manager will queue or stop idle engines".
 
 - [ ] **Step 1: Write the failing tests**
-  - `tests/unit/test_manager_engines.py`, with `FakeRunner` and `FakeProber` from `tests/unit/test_process.py` and a fake downloader:
+  - `tests/unit/test_manager_engines.py`, with `FakeRunner` and `FakeProber` (imported from `tests/support/process.py`; move them there from `tests/unit/test_process.py`) and a fake downloader, `tmp_path` for the state dir, no real process:
     - `test_a_missing_model_downloads_before_start`: reports `downloading` then `starting`; spawn comes after the downloader.
     - `test_running_engines_are_adopted`: the prober is healthy and no pidfile exists, so `running()` is true and `adopt` does not spawn.
     - `test_a_start_failure_reports_the_log_tail`: the process dies, so the `EngineError` text includes `tail_log(20)`.
@@ -315,7 +332,7 @@ Run: the Step 2 command → PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/airlie/manager/engines.py src/airlie/doctor.py tests/unit/test_manager_engines.py tests/unit/test_doctor.py
+git add src/airlie/manager/engines.py src/airlie/doctor.py tests/unit/test_manager_engines.py tests/unit/test_doctor.py tests/unit/test_process.py tests/support/process.py
 git commit -m "manager: engines as resources (download, start, adopt); doctor: the pinned floor and everything resident"
 ```
 
@@ -341,7 +358,7 @@ git commit -m "manager: engines as resources (download, start, adopt); doctor: t
     - For a stream, it releases in the `StreamingResponse`'s `finally`.
     - A failed hold returns 503 `{"error": "<engine> failed: <reason>", "engine": name}`, never a bare 500.
 
-- [ ] **Step 1: Write the failing tests** in `tests/functional/test_manager_serve.py`, with a manager over fake resources passed to `create_app` and `FakeUpstream` for the engine HTTP:
+- [ ] **Step 1: Write the failing tests** in `tests/functional/test_manager_serve.py` (through the real routes with `TestClient`, one request per test), with a manager over fake resources and a `FakeClock` passed to `create_app`, `FakeUpstream` for the engine HTTP, a deterministic test API key, and fakes rebuilt per test by fixtures:
   - `test_chat_to_a_stopped_engine_starts_it_and_answers`.
   - `test_a_stream_holds_the_engine_until_it_ends`: during the stream, `status()` shows one holder; afterwards, none.
   - `test_a_failed_start_is_a_503_naming_the_engine`.
@@ -349,6 +366,11 @@ git commit -m "manager: engines as resources (download, start, adopt); doctor: t
   - `test_leases_hold_renew_and_release`.
   - `test_an_expired_lease_is_released`: advance the fake clock past `lease_ttl_s` with no renewal, so the holder is gone.
   - `test_status_changes_publish_an_engines_hint`: the feed sees `("engines", name)`.
+  - Required by the functional guideline for every new route (assert the body, not just the status):
+    - `test_the_engines_route_without_a_key_is_401`, and the same for the lease routes.
+    - `test_a_lease_request_without_an_owner_is_422`.
+    - `test_a_lease_on_an_unknown_engine_is_404`.
+    - `test_renewing_or_deleting_an_unknown_lease_is_404`.
 
 - [ ] **Step 2: Run them to see them fail**
 
@@ -370,8 +392,8 @@ git commit -m "serve: owns the manager; chat waits for its engine; /v1/airlie/en
 ### Task 7: Every engine path goes through the manager
 
 **Files:**
-- Create: `src/airlie/manager/client.py`, `tests/unit/test_manager_client.py`
-- Modify: `src/airlie/cli.py:326-360` (`_http_engine`), `src/airlie/serve/app.py:385` (`_default_factory`)
+- Create: `src/airlie/manager/client.py`, `tests/unit/test_manager_client.py`, `tests/functional/test_manager_lease.py`
+- Modify: `src/airlie/cli.py:326-360` (`_http_engine`), `src/airlie/serve/app.py:385` (`_default_factory`), `pyproject.toml` (enrol `src/airlie/manager/client.py` once `task mutate:changed` is clean for it)
 
 **Interfaces:**
 - Consumes: Task 6's lease routes; `Manager.hold`; `EngineProcess`.
@@ -388,11 +410,16 @@ git commit -m "serve: owns the manager; chat waits for its engine; /v1/airlie/en
   - `ManagedEngine(inner: Engine, engine_name: str, holder: Holder)` implements the `Engine` protocol (`airlie/engine/protocol.py:21`). `generate` and `yes_no` run inside `holder.hold(engine_name, owner=f"role:{req.role}")`; the other methods delegate.
   - `_http_engine` wraps each per-engine `HTTPEngine` in `ManagedEngine` before `RoutedEngine` combines them.
 
-- [ ] **Step 1: Write the failing tests** in `tests/unit/test_manager_client.py`:
-  - `test_a_renewed_lease_keeps_the_engine_past_idle`: a `LeaseHolder` against a `TestClient` app with a fake manager. While a hold lasts 3 × `lease_ttl_s` on `FakeClock`, the renewals keep the holder, and it is released at the end.
-  - `test_generate_runs_inside_a_hold`: `ManagedEngine` over `engine/fake.py`'s fake engine records hold enter and exit around `generate`.
-  - `test_holder_for_prefers_in_process_then_serve_then_local`.
-  - `test_local_holder_starts_a_down_engine_and_leaves_it`.
+- [ ] **Step 1: Write the failing tests.**
+  - In `tests/functional/test_manager_lease.py` (a `LeaseHolder` against serve's real lease routes through `TestClient`, a fake manager, `FakeClock`):
+    - `test_a_renewed_lease_keeps_the_engine_past_idle`: while a hold lasts 3 × `lease_ttl_s`, the renewals keep the holder.
+    - `test_leaving_the_hold_deletes_the_lease`.
+  - In `tests/unit/test_manager_client.py` (fakes only; `httpx.MockTransport` for serve; `FakeRunner` and `FakeProber` for `LocalHolder`):
+    - `test_generate_runs_inside_a_hold`: `ManagedEngine` over `engine/fake.py`'s fake engine records hold enter and exit around `generate`.
+    - `test_yes_no_runs_inside_a_hold`, and `test_other_methods_do_not_hold`.
+    - `test_holder_for_uses_the_in_process_manager_when_given`, `test_holder_for_uses_serve_when_its_health_answers`, `test_holder_for_falls_back_to_local_when_serve_is_down`.
+    - `test_local_holder_starts_a_down_engine_and_leaves_it`.
+    - `test_the_hold_is_released_when_the_call_raises`.
 
 - [ ] **Step 2: Run them to see them fail**
 
@@ -402,12 +429,12 @@ Run: `uv run pytest tests/unit/test_manager_client.py -v` → FAIL.
 
 - [ ] **Step 4: Run the tests and the contract suite**
 
-Run: `uv run pytest tests/unit/test_manager_client.py tests/unit/engine_contract.py -q` → PASS, then the full gate.
+Run: `uv run pytest tests/unit/test_manager_client.py tests/functional/test_manager_lease.py tests/unit/engine_contract.py -q` → PASS, then the full gate.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/airlie/manager/client.py src/airlie/cli.py src/airlie/serve/app.py tests/unit/test_manager_client.py
+git add src/airlie/manager/client.py src/airlie/cli.py src/airlie/serve/app.py pyproject.toml tests/unit/test_manager_client.py tests/functional/test_manager_lease.py
 git commit -m "engines: every role call holds its engine: in serve directly, from the tick by lease, else starts it locally"
 ```
 
@@ -423,10 +450,11 @@ git commit -m "engines: every role call holds its engine: in serve directly, fro
   - `useEngines()`: a Pinia store with `list: EngineStatus[]` and `byName(name)`. It refetches on an `engines` hint.
   - `EngineStatusLine` takes the prop `status: EngineStatus` and renders the Global Constraints copy, with a progress bar while `downloading`.
 
-- [ ] **Step 1: Write the failing tests:**
-  - The store refetches on a hint.
+- [ ] **Step 1: Write the failing tests** (vitest, `component.md` rules: mock `fetch` at the network boundary and reset it after each test, query by role or text, no sleeps, names that state what the user sees):
+  - The store refetches on a hint, and keeps the last list with an error when the refetch fails.
   - The line renders "Downloading reviewer: 7.2 of 19.4 GB, 3 min left" for a `downloading` status with those bytes and `eta_s` of 180, "Waiting for memory: chat:1" for `waiting`, and nothing for `ready`.
-  - The Admin table lists each engine with its state and lifecycle.
+  - The Admin table lists each engine with its state and lifecycle; shows a loading state before the first answer, an empty state for no engines, and an error with a retry when the fetch fails.
+  - The progress bar is `role="progressbar"` with `aria-valuenow`, and the test queries it by role.
 
 - [ ] **Step 2: Run them to see them fail**
 
@@ -451,7 +479,7 @@ git commit -m "web: engine status in the chat strip and an engines table in Admi
 - Modify: `README.md` (engines start on demand; `task up` starts the pinned ones; lifecycle and `idle_unload_s` in `airlie.yaml`; `task gpu:limit`; downloads happen on first use with progress), `AGENTS.md` (one line under Configuration on `lifecycle`)
 
 - [ ] **Step 1: Write the docs** as listed.
-- [ ] **Step 2: Run the full gate** (the six commands in Global Constraints) → all exit 0.
+- [ ] **Step 2: Run the full gate** (the six commands in Global Constraints) → all exit 0; `task test:quarantine` → exit 0 (no new quarantine entries expected); `task mutate:changed` → no survivor in the enrolled new modules.
 - [ ] **Step 3: Live checks on the Studio** (with Noah's go to restart serve; kill the old serve on :8090 and check the listener PID after the restart):
   1. Stop the reviewer (`uv run airlie engine down reviewer`), then start a story review or send `POST /v1/chat/completions` with `model: "reviewer"`.
      - Expect: the Admin table shows `starting`, then `ready`; the request answers.
@@ -468,3 +496,39 @@ git commit -m "web: engine status in the chat strip and an engines table in Admi
 git add README.md AGENTS.md
 git commit -m "docs: engines on demand, the pinned set, task gpu:limit, downloads on first use"
 ```
+
+### Task 10: Write plan 3 — turn route, plain chat, superpowers
+
+**Files:**
+- Create: `docs/superpowers/plans/2026-11-1x-turn-route-and-plain-chat.md`
+
+- [ ] **Step 1:** Invoke the `superpowers:writing-plans` skill.
+- [ ] **Step 2:** Read the spec sections "Two kinds of chat", "Superpowers in chat", "Thread, transport, and the redesign" and "Order of work" (phase 3), and the code as it stands after Tasks 1-9. The plan builds on these interfaces from this plan: `Manager.hold(name, owner)` and the `Holder` protocol (`InProcessHolder` inside serve; the chat route holds its engine as `chat:{id}`), `Status` and the `engines` feed hints (the thread's status line), and `Resource`.
+- [ ] **Step 3:** Cover `POST /v1/airlie/chat/turn` with the UI message stream and a server-side tool loop, plain chat with web, `skill` and `todo` tools, and the superpowers bootstrap and mapping. Include the PWA dependency note: PWA-b's push for chat replies needs the turn route, so a finished turn calls `Notifier.notify` (`docs/superpowers/plans/2026-11-11-pwa.md` Task 5).
+- [ ] **Step 4:** The plan follows `skills/qa/*.md` (routes get functional tests with 401, 422, 404 and dependency-failure cases; fakes, no real engine; new logic modules enrolled in mutation).
+- [ ] **Step 5:** Commit the plan.
+- [ ] **Step 6:** Noah reviews it before it is executed.
+
+### Task 11: Write plan 4 — repository chats in VMs
+
+**Files:**
+- Create: `docs/superpowers/plans/2026-11-1x-repository-chats-in-vms.md`
+
+- [ ] **Step 1:** Invoke the `superpowers:writing-plans` skill.
+- [ ] **Step 2:** Read the spec sections "Repository chats: a VM per session", "Superpowers in chat" and "Order of work" (phase 4), and the code as it stands after Tasks 1-9 and plan 3. A VM is another `Resource` with `kind == "vm"`: it implements `running`, `start`, `stop`, `footprint_gb` and the `State` reports of this plan's `Manager`, counts in the same memory budget, is held through `Holder` like an engine, and is evicted by the same least-recently-used rule when idle.
+- [ ] **Step 3:** Cover the Tart box backend behind the shell seam (a fake box backend for tests), a VM per session, the recipe and default image, clone in and push out through the host, builtin tools and `task` in the VM, and confirmations.
+- [ ] **Step 4:** The plan follows `skills/qa/*.md` (fake box in unit tests; routes functional; the real Tart boot is a live check, not a gate test).
+- [ ] **Step 5:** Commit the plan.
+- [ ] **Step 6:** Noah reviews it before it is executed.
+
+### Task 12: Write plan 5 — the chat redesign (mockups first)
+
+**Files:**
+- Create: `docs/superpowers/plans/2026-11-1x-chat-redesign.md`
+
+- [ ] **Step 1:** Invoke the `superpowers:writing-plans` skill.
+- [ ] **Step 2:** Read the spec sections "Thread, transport, and the redesign", "Mobile: a full PWA" and "Order of work" (phase 5), and the code as it stands after Tasks 1-9 and plans 3-4. The redesign builds on the `Status` shape and the `engines` store from Task 8, and on the turn route's message stream.
+- [ ] **Step 3:** The first task of that plan is three mockups for Noah to pick from (airlie web work is mockups-first: the design and ux roles mock up, Noah approves before build). The build tasks (left nav with pinned repositories, the Vue thread on `@ai-sdk/vue`, tool blocks, diffs, todos, permission prompts, status and context in the header) are written after the pick.
+- [ ] **Step 4:** The plan follows `skills/qa/*.md` (component tests for each state, and an e2e only for a critical journey).
+- [ ] **Step 5:** Commit the plan.
+- [ ] **Step 6:** Noah reviews it before it is executed.
