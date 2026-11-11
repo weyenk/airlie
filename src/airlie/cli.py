@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Coroutine
 from datetime import UTC, datetime
 from pathlib import Path
@@ -184,7 +185,7 @@ def models_pull(
     names: Annotated[list[str] | None, typer.Argument(help="catalog names (default: all)")] = None,
     config: ConfigOpt = None,
 ) -> None:
-    """Download each catalog model at exactly its pinned revision (`hf download`)."""
+    """Download each catalog model at exactly its pinned revision, with progress."""
     from airlie.models_cmd import plan_pulls, pull
 
     cfg = _load(config)
@@ -194,7 +195,21 @@ def models_pull(
         return
     for p in plans:
         console.print(f"[bold]{p.name}[/bold]: {p.repo} @ {p.revision[:12]}")
-    failed = [p.name for p, rc in pull(cfg, names or ()) if rc != 0]
+
+    def show(p, prog) -> None:  # type: ignore[no-untyped-def]
+        left = "" if prog.eta_s is None else f", {max(1, round(prog.eta_s / 60))} min left"
+        sys.stdout.write(
+            f"\r{p.name}: {prog.done_bytes / 1e9:.1f} of {prog.total_bytes / 1e9:.1f} GB{left}\x1b[K"
+        )
+        sys.stdout.flush()
+
+    def failed_with(p, e) -> None:  # type: ignore[no-untyped-def]
+        sys.stdout.write("\n")
+        err.print(f"[red]{escape(p.name)}: {escape(str(e))}[/red]")
+
+    results = pull(cfg, names or (), on_progress=show, on_error=failed_with)
+    sys.stdout.write("\n")
+    failed = [p.name for p, rc in results if rc != 0]
     if failed:
         err.print(f"[red]failed: {', '.join(failed)}[/red]")
         raise typer.Exit(1)

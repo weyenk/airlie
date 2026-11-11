@@ -36,6 +36,7 @@ dependencies = [
     # mlx-vlm installs on the Mac; headless on Linux (the e2e image): one cv2 either way.
     "opencv-python>=4.10 ; sys_platform == 'darwin'",
     "opencv-python-headless>=4.10 ; sys_platform == 'linux'",
+    "huggingface-hub>=2.2",
 ]
 
 [project.scripts]
@@ -135,6 +136,7 @@ also_copy = [
 # Modules held to "every mutant is caught" (the pipeline and `task mutate:enrolled` fail on a survivor).
 # Enrol a module once its tests are thorough; everything else is reported, never failed.
 enrolled = [
+    "src/airlie/models_download.py",
     "src/airlie/router/policy.py",
     "src/airlie/scheduler/states.py",
     "src/airlie/tools/decide.py",
