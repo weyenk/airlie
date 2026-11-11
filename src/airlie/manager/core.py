@@ -24,6 +24,7 @@ State = Literal["stopped", "downloading", "starting", "ready", "waiting", "stopp
 Report = Callable[[State, str, DownloadProgress | None], None]
 WAIT_STEP_S = 1.0  # a waiter re-checks at least this often, by the clock (a release wakes it sooner)
 MEMORY_IN_USE = ("ready", "starting", "downloading", "stopping")
+START_OWNER = "start"  # the manager's own hold while it starts the pinned resources: no one to wait on
 
 
 @dataclass(frozen=True)
@@ -129,12 +130,21 @@ class Manager:
     def touch(self, name: str) -> None:
         self._slots[name].last_used = self._clock.monotonic()
 
-    def _used_gb(self, excluding: str) -> float:
-        return sum(
-            s.resource.footprint_gb
+    def _using_memory(self, excluding: str) -> list[_Slot]:
+        return [
+            s
             for n, s in self._slots.items()
             if n != excluding and (s.state in MEMORY_IN_USE or s.stop_failed)
-        )
+        ]
+
+    def _used_gb(self, excluding: str) -> float:
+        return sum(s.resource.footprint_gb for s in self._using_memory(excluding))
+
+    def _blockers(self, excluding: str) -> list[str]:
+        """Who holds the memory: the outside holders, else the resources using it and what they are doing."""
+        others = self._using_memory(excluding)
+        holders = [o for s in others for o in s.holders if o != START_OWNER]
+        return holders or [f"{s.resource.name} {s.state}" for s in others]
 
     def _victim(self, excluding: str) -> _Slot | None:
         idle = [
@@ -196,8 +206,7 @@ class Manager:
                 if victim is not None:
                     await self._stop(victim)
                     continue
-                others = [o for n, s in self._slots.items() if n != name for o in s.holders]
-                reason = "waiting for memory: " + ", ".join(others)
+                reason = "waiting for memory: " + ", ".join(self._blockers(name))
                 if slot.state != "waiting" or slot.detail != reason:
                     self._set(slot, "waiting", reason)
                 await self._wait_for_change(deadline, name)
@@ -230,8 +239,11 @@ class Manager:
             if slot.state == "ready" and not await slot.resource.running():
                 self._set(slot, "failed", "exited")
             if slot.state != "ready":
-                await self._make_room(slot)
-                await self._start(slot)
+                if await slot.resource.running():
+                    self._set(slot, "ready")  # started out of band since (`airlie engine up`, a local start)
+                else:
+                    await self._make_room(slot)
+                    await self._start(slot)
             slot.holders.append(owner)
             self._on_change(self._status(slot))
         try:
@@ -252,7 +264,7 @@ class Manager:
         for name, slot in self._slots.items():
             if slot.resource.lifecycle == "pinned" and slot.state != "ready":
                 try:
-                    async with self.hold(name, "start"):
+                    async with self.hold(name, START_OWNER):
                         pass
                 except EngineError:
                     pass  # its status says why; the others still start

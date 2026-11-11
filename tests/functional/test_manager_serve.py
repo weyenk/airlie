@@ -355,3 +355,15 @@ def test_a_story_engine_built_inside_serve_holds_through_the_serve_manager(
 
         assert client.portal.call(held) == ("role:coder",)
         assert engine.up
+
+
+def test_a_chat_to_an_engine_started_out_of_band_adopts_it_and_answers(
+    tmp_path: Path, manager: Manager, engine: FakeEngine
+) -> None:
+    with TestClient(serve(tmp_path, manager)) as c:
+        engine.up = True  # `airlie engine up main` while serve runs: a second start would say so
+        engine.fail = "engine 'main' is already running (pid 4242); use restart"
+        r = c.post("/v1/chat/completions", json=ASK)
+        assert r.status_code == 200
+        assert r.json()["choices"][0]["message"]["content"] == "hi"
+        assert status(manager).state == "ready"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -63,13 +65,27 @@ class EngineResource:
             await self.downloader.ensure(repo, revision, progress)
         report("starting", "", None)
         try:
-            await self.process.start(timeout_s=self.cfg.manager.start_timeout_s)
+            await start_or_join(self.process, self.cfg.manager.start_timeout_s)
         except EngineError as e:
             tail = self.process.tail_log(20)
             raise EngineError(f"{e}\n{tail}" if tail else str(e)) from e
 
     async def stop(self) -> None:
         await self.process.stop()
+
+
+async def start_or_join(process: EngineProcess, timeout_s: float) -> None:
+    """Start the engine; one another process started first is waited on until it answers instead."""
+    try:
+        await process.start(timeout_s=timeout_s)
+    except EngineError as e:
+        if "already running" not in str(e):
+            raise
+        deadline = time.monotonic() + timeout_s
+        while not await process.prober.health_ok():
+            if time.monotonic() >= deadline:
+                raise
+            await asyncio.sleep(process.poll_s)
 
 
 def _on_disk_in_hf_cache() -> Callable[[str, str], bool]:

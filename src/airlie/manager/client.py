@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager, suppress
 from pathlib import Path
@@ -31,6 +30,7 @@ from airlie.engine.types import (
     Message,
 )
 from airlie.manager.core import Manager
+from airlie.manager.engines import start_or_join
 from airlie.serve.bridge.clock import Clock, RealClock
 
 log = logging.getLogger(__name__)
@@ -144,18 +144,8 @@ class LocalHolder:
     async def _up(self, process: EngineProcess) -> None:
         if await process.prober.health_ok():
             return
-        timeout_s = self._cfg.manager.start_timeout_s
-        try:
-            await process.start(timeout_s=timeout_s)
-        except EngineError as e:
-            if "already running" not in str(e):
-                raise
-            # another process started it between the probe and the start: wait for it to answer
-            deadline = time.monotonic() + timeout_s
-            while not await process.prober.health_ok():
-                if time.monotonic() >= deadline:
-                    raise
-                await asyncio.sleep(process.poll_s)
+        # another process may start it between the probe and the start: then it is waited on
+        await start_or_join(process, self._cfg.manager.start_timeout_s)
 
     @asynccontextmanager
     async def hold(self, engine: str, owner: str) -> AsyncIterator[None]:

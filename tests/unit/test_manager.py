@@ -785,3 +785,85 @@ async def test_a_reap_that_raises_is_logged(caplog: pytest.LogCaptureFixture) ->
     with caplog.at_level("ERROR", logger="airlie.manager.core"), pytest.raises(asyncio.CancelledError):
         await m.run(every_s=30)
     assert [r.getMessage() for r in caplog.records] == ["resource manager: reap failed"]
+
+
+async def test_a_hold_on_a_stopped_resource_found_running_adopts_it_without_a_start() -> None:
+    a = FakeResource("a")
+    m, clock = manager(a)
+    a.up = True  # started out of band (`airlie engine up`, another process) after serve's adopt
+    clock.now = 7.0
+    async with m.hold("a", "chat:1"):
+        assert state(m, "a").state == "ready" and state(m, "a").since == 7.0
+    assert a.starts == 0
+
+
+async def test_a_hold_on_a_failed_resource_found_running_adopts_it_without_a_start() -> None:
+    a = FakeResource("a")
+    a.fail = "already running"
+    m, _ = manager(a)
+    with pytest.raises(EngineError):
+        await _hold(m, "a")
+    a.up = True
+    await _hold(m, "a")
+    assert a.starts == 1 and state(m, "a").state == "ready"
+
+
+async def test_a_resource_adopted_on_hold_counts_for_memory() -> None:
+    a, b = FakeResource("a", 10, lifecycle="pinned"), FakeResource("b", 10)
+    a.up, a.fail = True, "already running"  # a start would fail as EngineProcess.start does
+    m, _ = manager(a, b, budget_gb=15, wait_timeout_s=5)
+    await _hold(m, "a")
+    with pytest.raises(EngineError, match="gave up waiting"):
+        await _hold(m, "b")
+    assert b.starts == 0
+
+
+async def test_a_wait_with_no_outside_holder_names_the_blocking_resources() -> None:
+    a, b = FakeResource("a", 10, lifecycle="pinned"), FakeResource("b", 10)
+    a.gate = asyncio.Event()
+    m, _ = manager(a, b, budget_gb=15, wait_timeout_s=5)
+    starting = asyncio.create_task(m.start_pinned())
+    await settle()
+    w = asyncio.create_task(_hold(m, "b"))
+    await settle()
+    assert state(m, "b").detail == "waiting for memory: a starting"
+    a.gate.set()
+    await starting
+    with pytest.raises(EngineError):
+        await w
+
+
+async def test_a_wait_names_each_blocking_resource_joined_by_comma_space() -> None:
+    a, b, c = (
+        FakeResource("a", 10, lifecycle="pinned"),
+        FakeResource("b", 10, lifecycle="pinned"),
+        FakeResource("c", 10),
+    )
+    a.up = b.up = True
+    m, _ = manager(a, b, c, budget_gb=25, wait_timeout_s=5)
+    await m.adopt()
+    w = asyncio.create_task(_hold(m, "c"))
+    await settle()
+    assert state(m, "c").detail == "waiting for memory: a ready, b ready"
+    with pytest.raises(EngineError):
+        await w
+
+
+async def test_the_internal_start_owner_is_not_named_as_a_blocker() -> None:
+    a, b = FakeResource("a", 10, lifecycle="pinned"), FakeResource("b", 10)
+    m, _ = manager(a, b, budget_gb=15, wait_timeout_s=5)
+    release = asyncio.Event()
+
+    async def held_by_start() -> None:
+        async with m.hold("a", "start"):
+            await release.wait()
+
+    h = asyncio.create_task(held_by_start())
+    await settle()
+    w = asyncio.create_task(_hold(m, "b"))
+    await settle()
+    assert state(m, "b").detail == "waiting for memory: a ready"
+    release.set()
+    await h
+    with pytest.raises(EngineError):
+        await w

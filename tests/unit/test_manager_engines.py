@@ -58,9 +58,16 @@ class FakeDownloader:
 
 
 def resource(
-    tmp_path: Path, runner: FakeRunner, prober: FakeProber, events: list[Event], on_disk: set[str]
+    tmp_path: Path,
+    runner: FakeRunner,
+    prober: FakeProber,
+    events: list[Event],
+    on_disk: set[str],
+    start_timeout_s: float | None = None,
 ) -> EngineResource:
     cfg = make_cfg(tmp_path)
+    if start_timeout_s is not None:
+        cfg.manager.start_timeout_s = start_timeout_s
     original = runner.spawn
 
     def spawn(argv: list[str], log_path: Path, cwd: Path, env: dict[str, str] | None = None) -> int:
@@ -157,3 +164,36 @@ def test_every_mlx_vlm_engine_is_a_resource(tmp_path: Path) -> None:
     )
     assert (res.name, res.lifecycle, res.idle_unload_s) == ("main", "on_demand", 600.0)
     assert res.footprint_gb > 17  # the weights and the head, plus the engine's KV
+
+
+def started_elsewhere(tmp_path: Path, runner: FakeRunner) -> None:
+    """Another process's engine: its pid file names a live pid."""
+    runner.alive.add(77)
+    (tmp_path / "state" / "engines" / "main").mkdir(parents=True)
+    (tmp_path / "state" / "engines" / "main" / "pid").write_text("77\n")
+
+
+async def test_a_start_that_finds_the_engine_already_running_waits_for_it_to_answer(tmp_path: Path) -> None:
+    events: list[Event] = []
+    runner = FakeRunner()
+    started_elsewhere(tmp_path, runner)
+    prober = FakeProber(health=[False, False, True])
+    res = resource(tmp_path, runner, prober, events, on_disk={"org/base", "org/head"})
+    await res.start(lambda s, d, p: None)
+    assert runner.spawned == []
+    assert prober._health == []  # it probed until the engine answered
+
+
+async def test_an_engine_already_running_that_never_answers_still_fails_the_start(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    started_elsewhere(tmp_path, runner)
+    res = resource(
+        tmp_path,
+        runner,
+        FakeProber(health=[False] * 5),
+        [],
+        on_disk={"org/base", "org/head"},
+        start_timeout_s=0.0,
+    )
+    with pytest.raises(EngineError, match="already running"):
+        await res.start(lambda s, d, p: None)
