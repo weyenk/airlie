@@ -382,6 +382,49 @@ async def test_a_lazy_holder_chooses_once_at_its_first_hold() -> None:
     assert events == ["enter main a", "exit main", "enter main b", "exit main"]
 
 
+async def test_a_lazy_holder_that_chose_local_takes_a_lease_once_serve_answers(tmp_path: Path) -> None:
+    serve = FakeServe()
+    choices: list[LocalHolder | LeaseHolder] = [
+        local(tmp_path, FakeProber(health=[True]), FakeRunner()),  # serve down: the engine is up, used here
+        lease_holder(serve, FakeClock()),  # serve up at the next hold
+    ]
+    h = LazyHolder(lambda: choices.pop(0))
+    async with h.hold("main", "a"):
+        pass
+    async with h.hold("main", "b"):
+        pass
+    assert [m for m, _ in serve.calls] == ["POST", "DELETE"]
+    assert serve.owners == ['{"owner":"b"}']
+
+
+async def test_a_lazy_holder_keeps_asking_while_serve_is_down(tmp_path: Path) -> None:
+    asked: list[int] = []
+    runner = FakeRunner()
+
+    def choose() -> LocalHolder:
+        asked.append(1)
+        return local(tmp_path, FakeProber(health=[True]), runner)
+
+    h = LazyHolder(choose)
+    async with h.hold("main", "a"):
+        pass
+    async with h.hold("main", "b"):
+        pass
+    assert asked == [1, 1] and runner.spawned == []
+
+
+async def test_a_lazy_holder_that_stays_local_keeps_its_first_local_holder(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    first = local(tmp_path, FakeProber(health=[True]), runner)
+    choices = [first, local(tmp_path, FakeProber(health=[True]), runner)]
+    h = LazyHolder(lambda: choices.pop(0))
+    async with h.hold("main", "a"):
+        pass
+    async with h.hold("main", "b"):
+        pass
+    assert h._chosen is first  # its per-engine start locks stay the ones every hold shares
+
+
 # ---- _http_engine ----
 
 

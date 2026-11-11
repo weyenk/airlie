@@ -189,19 +189,26 @@ class ManagedEngine:
 
 
 class LazyHolder:
-    """A holder chosen at its first hold, off the event loop: choosing probes serve (maybe this loop)."""
+    """A holder chosen at its first hold, off the event loop: choosing probes serve (maybe this loop). A local
+    choice is made again at every hold, so a caller that first found serve down takes leases once it answers
+    (its starts then count in serve's budget, and serve sees its holds)."""
 
     def __init__(self, choose: Callable[[], Holder]) -> None:
         self._choose = choose
         self._chosen: Holder | None = None
         self._lock = asyncio.Lock()
 
+    async def _holder(self) -> Holder:
+        async with self._lock:
+            if self._chosen is None or isinstance(self._chosen, LocalHolder):
+                chosen = await asyncio.to_thread(self._choose)
+                if not (isinstance(chosen, LocalHolder) and isinstance(self._chosen, LocalHolder)):
+                    self._chosen = chosen  # still local: keep the first, whose start locks every hold shares
+            return self._chosen
+
     @asynccontextmanager
     async def hold(self, engine: str, owner: str) -> AsyncIterator[None]:
-        async with self._lock:
-            if self._chosen is None:
-                self._chosen = await asyncio.to_thread(self._choose)
-        async with self._chosen.hold(engine, owner):
+        async with (await self._holder()).hold(engine, owner):
             yield
 
 
