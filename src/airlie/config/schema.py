@@ -106,6 +106,14 @@ class EngineSpec(Strict):
     timeout_s: float = 600.0
     extra_args: list[str] = Field(default_factory=list, description="appended verbatim to the server command")
     autostart: bool = Field(default=True, description="mlx_vlm: `task up` starts this engine")
+    lifecycle: Literal["pinned", "on_demand"] = Field(
+        default="pinned",
+        description="pinned: `task up` starts it and it stays up; on_demand: the manager starts it on first "
+        "use and stops it when idle",
+    )
+    idle_unload_s: float = Field(
+        default=600.0, description="on_demand: seconds unused (and unheld) before the manager stops it"
+    )
     decision: bool = Field(
         default=False,
         description="mlx_vlm: the model is a typed-decision model, started with --decision-model and asked "
@@ -344,6 +352,16 @@ class LlmKindSpec(Strict):
         if self.thinking and self.thinking_budget and self.max_tokens <= self.thinking_budget:
             raise ValueError("max_tokens must exceed thinking_budget (it caps thinking plus the answer)")
         return self
+
+
+class ManagerSpec(Strict):
+    """The resource manager: engines (and VMs) started on demand inside one memory budget."""
+
+    margin_gb: float = Field(default=2.0, description="memory kept free beyond the resources' footprints")
+    start_timeout_s: float = Field(default=900.0, description="seconds a start may take")
+    wait_timeout_s: float = Field(default=1800.0, description="seconds a hold waits for memory")
+    reap_every_s: float = Field(default=30.0, description="seconds between idle sweeps")
+    lease_ttl_s: float = Field(default=120.0, description="seconds a lease lives without a renewal")
 
 
 class BridgeSpec(Strict):
@@ -987,6 +1005,7 @@ class AirlieConfig(Strict):
     chat: ChatSpec = Field(default_factory=ChatSpec)
     lhr: LhrSpec = Field(default_factory=LhrSpec)
     bridge: BridgeSpec = Field(default_factory=BridgeSpec)
+    manager: ManagerSpec = Field(default_factory=ManagerSpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
 
     # ---- cross-reference checks (run by load_config after path resolution) ----

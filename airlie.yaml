@@ -30,6 +30,7 @@ engines:
     kind: mlx_vlm
     port: 8082
     model: reviewer
+    lifecycle: on_demand
     max_num_seqs: 4
     max_kv_size: 65536
     kv_bits: 8
@@ -39,6 +40,7 @@ engines:
     kind: mlx_vlm
     port: 8083
     model: small
+    lifecycle: on_demand
     max_num_seqs: 8
     max_kv_size: 16384
     prefix_cache: true

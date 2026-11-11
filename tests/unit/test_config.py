@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, StorySpec, load_config, profile_configs
 from airlie.config.load import _yaml_problem
-from airlie.config.schema import MUTATING_TOOLS, EngineSpec
+from airlie.config.schema import MUTATING_TOOLS, EngineSpec, ManagerSpec
 from tests.support.config import MINIMAL, write
 
 
@@ -1524,3 +1524,38 @@ def test_gemma_serves_chat_at_262k() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     assert cfg.engines["gemma"].max_kv_size == 262144
     assert cfg.roles["chat"].max_context == 262144
+
+
+# ---- engine lifecycles and the manager ----
+
+
+def test_the_committed_lifecycles() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert {n: e.lifecycle for n, e in cfg.engines.items()} == {
+        "main": "pinned",
+        "reviewer": "on_demand",
+        "small": "on_demand",
+        "decision": "pinned",
+        "gemma": "pinned",
+    }
+
+
+def test_manager_spec_defaults() -> None:
+    m = ManagerSpec()
+    assert (m.margin_gb, m.start_timeout_s, m.wait_timeout_s, m.reap_every_s, m.lease_ttl_s) == (
+        2.0,
+        900.0,
+        1800.0,
+        30.0,
+        120.0,
+    )
+    e = EngineSpec(kind="mlx_vlm", model="m")
+    assert e.lifecycle == "pinned" and e.idle_unload_s == 600.0
+    assert AirlieConfig.model_fields["manager"].default_factory is ManagerSpec
+
+
+def test_manager_spec_rejects_unknown_keys_and_a_bad_lifecycle() -> None:
+    with pytest.raises(ValidationError):
+        ManagerSpec(nope=1)  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        EngineSpec(kind="mlx_vlm", model="m", lifecycle="sometimes")  # type: ignore[arg-type]

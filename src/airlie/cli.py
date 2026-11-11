@@ -248,7 +248,7 @@ def engine_up(
     config: ConfigOpt = None,
     timeout: Annotated[float, typer.Option(help="seconds to wait for models")] = 900,
 ) -> None:
-    """Start the named engine, else every autostart engine, and wait until its models are ready."""
+    """Start the named engine, else every autostart pinned engine, and wait until its models are ready."""
     import asyncio
 
     from airlie.engine.types import EngineError
@@ -259,7 +259,11 @@ def engine_up(
             f"[red]no managed engine named '{name}' (managed: {', '.join(_managed(cfg)) or 'none'})[/red]"
         )
         raise typer.Exit(1)
-    names = [name] if name is not None else [n for n in _managed(cfg) if cfg.engines[n].autostart]
+    names = (
+        [name]
+        if name is not None
+        else [n for n in _managed(cfg) if cfg.engines[n].autostart and cfg.engines[n].lifecycle == "pinned"]
+    )
     rows = []
     for engine in names:
         p = _engine_process(cfg, engine)
