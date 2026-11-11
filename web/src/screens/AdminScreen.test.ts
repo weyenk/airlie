@@ -92,6 +92,16 @@ test("a member is told only admins can see who is here", async () => {
   expect(w.find("form").exists()).toBe(false);
 });
 
+test("a member sees no Engines section", async () => {
+  api.listUsers.mockRejectedValue(new ApiError(403, "admins only"));
+  engineApi.listEngines.mockResolvedValue([{ kind: "engine", detail: "", progress: null, holders: ["chat:1"], lifecycle: "on_demand", roles: [], name: "gemma", state: "ready" }]);
+  useSessionStore().me = { name: "Jess", role: "member", via: "session" };
+  const w = mount(AdminScreen, { attachTo: document.body });
+  await flushPromises();
+  expect(w.find('[data-engine="gemma"]').exists()).toBe(false);
+  expect(w.text()).not.toContain("Engines");
+});
+
 test("an unreachable server says so", async () => {
   api.listUsers.mockRejectedValue(new TypeError("Failed to fetch"));
   const w = mount(AdminScreen, { attachTo: document.body });
@@ -294,7 +304,7 @@ const ENGINE = { kind: "engine", detail: "", progress: null, holders: [], lifecy
 test("the Engines table lists each engine with its state, lifecycle and what holds it", async () => {
   engineApi.listEngines.mockResolvedValue([
     { ...ENGINE, name: "gemma", state: "ready", holders: ["chat:1"], roles: ["chat"] },
-    { ...ENGINE, name: "reviewer", state: "waiting", detail: "waiting for memory: chat:1", lifecycle: "pinned" },
+    { ...ENGINE, name: "reviewer", state: "waiting", holders: ["chat:1", "role:reviewer"], lifecycle: "pinned" },
   ]);
 
   const w = await open();
@@ -305,7 +315,7 @@ test("the Engines table lists each engine with its state, lifecycle and what hol
   expect(gemma.text()).toContain("chat:1");
   const reviewer = w.get('[data-engine="reviewer"]');
   expect(reviewer.text()).toContain("pinned");
-  expect(reviewer.text()).toContain("Waiting for memory: chat:1");
+  expect(reviewer.text()).toContain("Waiting for memory: chat:1, role:reviewer");
 });
 
 test("the Engines table shows a download's progress", async () => {

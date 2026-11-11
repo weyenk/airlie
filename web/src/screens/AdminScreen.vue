@@ -182,7 +182,7 @@ async function copy(): Promise<void> {
       </ul>
     </section>
 
-    <section aria-labelledby="engines-heading" class="rounded-xl border border-border bg-card shadow-card">
+    <section v-if="!forbidden" aria-labelledby="engines-heading" class="rounded-xl border border-border bg-card shadow-card">
       <div class="flex items-center gap-2.5 border-b border-border px-[18px] py-3.5">
         <h2 id="engines-heading" class="text-[15px] font-semibold">Engines</h2>
       </div>

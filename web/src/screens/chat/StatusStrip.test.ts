@@ -105,7 +105,7 @@ test("it says what the chat's engine is doing while it is not ready", async () =
 test("it follows the chat's engine as the feed changes it, and says nothing once it is ready", async () => {
   engines.listEngines.mockResolvedValue([gemma({ state: "starting" })]);
   const w = await open();
-  expect(w.get("[role=status]").text()).toBe("Starting gemma");
+  expect(w.get("[role=status]").text()).toBe("Starting gemma…");
 
   engines.listEngines.mockResolvedValue([gemma({ state: "ready" })]);
   feed.opts!.onChange({ topic: "engines", key: "gemma" });
