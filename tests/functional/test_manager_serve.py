@@ -336,3 +336,22 @@ def test_serve_built_without_a_manager_manages_no_engine_in_tests(tmp_path: Path
     config.engines["main"] = config.engines["main"].model_copy(update={"kind": "mlx_vlm"})
     with TestClient(create_app(config, transport=httpx.MockTransport(FakeUpstream()))) as c:
         assert c.get("/v1/airlie/engines").json() == []
+
+
+def test_a_story_engine_built_inside_serve_holds_through_the_serve_manager(
+    tmp_path: Path, manager: Manager, engine: FakeEngine
+) -> None:
+    from airlie.story.factory import _engine
+
+    base = cfg(tmp_path)
+    c = base.model_copy(
+        update={"engines": {"main": base.engines["main"].model_copy(update={"kind": "mlx_vlm"})}}
+    )
+    with TestClient(serve(tmp_path, manager)) as client:
+
+        async def held() -> tuple[str, ...]:
+            async with _engine(c)._holder.hold("main", "role:coder"):  # type: ignore[attr-defined]
+                return status(manager).holders
+
+        assert client.portal.call(held) == ("role:coder",)
+        assert engine.up

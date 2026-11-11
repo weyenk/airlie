@@ -13,7 +13,7 @@ import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, ExitStack
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -524,6 +524,7 @@ def create_app(
     if orchestrator_factory is None:
         factory = partial(_default_factory, manager=manager)  # its engine calls hold through this manager
     engine_tasks: list[asyncio.Task[Any]] = []
+    serving_cm = ExitStack()
 
     def workflow_check(name: str) -> str | None:
         """What stops workflow `name` resolving over the board's drafts as they are now, or None."""
@@ -1435,6 +1436,9 @@ def create_app(
 
     @app.on_event("startup")
     async def startup() -> None:
+        from airlie.manager.client import serving
+
+        serving_cm.enter_context(serving(manager))  # engines built anywhere in this process hold through it
         ticker.start()  # the line's beat, every line.tick_s while serve is up (line.serve_ticks)
 
         # the HTTP server is up at once; engines already running are adopted, the pinned ones start, idle
@@ -1457,6 +1461,7 @@ def create_app(
         await asyncio.gather(*engine_tasks, return_exceptions=True)
         engine_tasks.clear()
         await leases.close()  # engines stay running
+        serving_cm.close()
         watcher.stop()
         await client.aclose()
         board.close()

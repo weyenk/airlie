@@ -400,3 +400,64 @@ async def test_a_scripted_transport_with_a_manager_holds_through_it(tmp_path: Pa
     manager = Manager([FakeResource("main")], budget_gb=100.0, clock=FakeClock())
     eng = cli._http_engine(make_cfg(tmp_path), "main", transport=serve_transport(200), manager=manager)
     assert isinstance(eng, ManagedEngine) and isinstance(eng._inner, HTTPEngine)
+
+
+# ---- the serving manager ----
+
+
+async def test_holder_for_uses_the_serving_manager_without_asking_serve(tmp_path: Path) -> None:
+    from airlie.manager.client import serving
+
+    seen: list[httpx.Request] = []
+    manager = Manager([FakeResource("main")], budget_gb=100.0, clock=FakeClock())
+    with serving(manager):
+        h = holder_for(make_cfg(tmp_path), manager=None, transport=serve_transport(200, seen))
+    assert isinstance(h, InProcessHolder)
+    assert seen == []
+
+
+async def test_without_a_serving_manager_holder_for_asks_serve(tmp_path: Path) -> None:
+    from airlie.manager.client import serving
+
+    manager = Manager([], budget_gb=100.0, clock=FakeClock())
+    with serving(manager):
+        pass
+    h = holder_for(make_cfg(tmp_path), manager=None, transport=serve_transport(None))
+    assert isinstance(h, LocalHolder)
+
+
+# ---- LocalHolder: concurrent holds ----
+
+
+async def test_concurrent_local_holds_start_the_engine_once(tmp_path: Path) -> None:
+    runner = FakeRunner()
+
+    class Loading(FakeProber):
+        probes_since_spawn = 0
+
+        async def health_ok(self) -> bool:
+            await asyncio.sleep(0)  # a real probe waits on the network: the other hold runs meanwhile
+            if runner.spawned:
+                self.probes_since_spawn += 1
+            return self.probes_since_spawn >= 3  # a spawned engine takes a few probes to answer
+
+    holder = local(tmp_path, Loading(health=[], loaded=[["/models/base"]]), runner)
+
+    async def one() -> None:
+        async with holder.hold("main", "role:coder"):
+            await asyncio.sleep(0)
+
+    await asyncio.gather(one(), one())
+    assert len(runner.spawned) == 1
+
+
+async def test_a_start_that_loses_the_race_is_not_an_error(tmp_path: Path) -> None:
+    """Another process started the engine between the health probe and the start: it is up, so go on."""
+    runner = FakeRunner()
+    runner.alive.add(77)
+    holder = local(tmp_path, FakeProber(health=[False, True]), runner)
+    (tmp_path / "state" / "engines" / "main").mkdir(parents=True)
+    (tmp_path / "state" / "engines" / "main" / "pid").write_text("77\n")
+    async with holder.hold("main", "role:coder"):
+        pass
+    assert runner.spawned == []

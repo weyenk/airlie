@@ -10,8 +10,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import AsyncIterator, Callable, Mapping
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
+import time
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 from typing import Protocol
 
@@ -39,6 +40,21 @@ DEFAULT_SERVE_URL = "http://127.0.0.1:8090"
 
 class Holder(Protocol):
     def hold(self, engine: str, owner: str) -> AbstractAsyncContextManager[None]: ...
+
+
+_serving: Manager | None = None
+
+
+@contextmanager
+def serving(manager: Manager) -> Iterator[None]:
+    """While serve runs, the manager every engine in this process holds through: stories and initiatives built
+    inside serve are many calls deep, and none of them must start an engine behind the manager's back."""
+    global _serving
+    previous, _serving = _serving, manager
+    try:
+        yield
+    finally:
+        _serving = previous
 
 
 class InProcessHolder:
@@ -123,12 +139,29 @@ class LocalHolder:
     ) -> None:
         self._cfg = cfg
         self._process_for = process_for or (lambda name: EngineProcess(cfg, name, state_dir=state_dir))
+        self._starting: dict[str, asyncio.Lock] = {}
+
+    async def _up(self, process: EngineProcess) -> None:
+        if await process.prober.health_ok():
+            return
+        timeout_s = self._cfg.manager.start_timeout_s
+        try:
+            await process.start(timeout_s=timeout_s)
+        except EngineError as e:
+            if "already running" not in str(e):
+                raise
+            # another process started it between the probe and the start: wait for it to answer
+            deadline = time.monotonic() + timeout_s
+            while not await process.prober.health_ok():
+                if time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(process.poll_s)
 
     @asynccontextmanager
     async def hold(self, engine: str, owner: str) -> AsyncIterator[None]:
         process = self._process_for(engine)
-        if not await process.prober.health_ok():
-            await process.start(timeout_s=self._cfg.manager.start_timeout_s)
+        async with self._starting.setdefault(engine, asyncio.Lock()):  # one start at a time per engine
+            await self._up(process)
         yield
 
 
@@ -200,6 +233,7 @@ def holder_for(
 ) -> Holder:
     """The manager when given (inside serve), else serve's lease routes when its /health answers, else here.
     `transport` is for tests: the one stand-in for serve's network."""
+    manager = manager or _serving
     if manager is not None:
         return InProcessHolder(manager)
     url, key = serve_target(cfg, env)
