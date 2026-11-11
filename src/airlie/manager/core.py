@@ -8,6 +8,7 @@ reason when everything that could go is held, and `reap`s on-demand resources le
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -16,6 +17,8 @@ from typing import Literal, Protocol
 from airlie.engine.types import EngineError
 from airlie.models_download import DownloadProgress
 from airlie.serve.bridge.clock import Clock
+
+log = logging.getLogger(__name__)
 
 State = Literal["stopped", "downloading", "starting", "ready", "waiting", "stopping", "failed"]
 Report = Callable[[State, str, DownloadProgress | None], None]
@@ -271,4 +274,7 @@ class Manager:
     async def run(self, every_s: float) -> None:
         while True:
             await self._clock.sleep(every_s)
-            await self.reap()
+            try:
+                await self.reap()
+            except Exception:
+                log.exception("resource manager: reap failed")  # the next sweep still runs

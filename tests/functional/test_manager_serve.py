@@ -5,6 +5,8 @@ a test moves it, FakeUpstream for the engine's HTTP."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -239,3 +241,90 @@ def test_a_failed_lease_start_is_a_503_naming_the_engine(
         r = c.post("/v1/airlie/engines/main/leases", json={"owner": "studio"})
         assert r.status_code == 503
         assert r.json() == {"error": "main failed: no memory", "engine": "main"}
+
+
+async def call_app(app, *, fail_on: str) -> None:
+    """Post a streamed chat straight to the ASGI app, then drop the client at the first `fail_on` message
+    (`http.response.start`: before any body; `http.response.body`: mid-way)."""
+    body = json.dumps({**ASK, "stream": True}).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/chat/completions",
+        "raw_path": b"/v1/chat/completions",
+        "query_string": b"",
+        "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+        "client": ("127.0.0.1", 50000),
+        "server": ("testserver", 80),
+    }
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if not sent:
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await asyncio.Event().wait()  # the client stays quiet; the send below is what fails
+        return {"type": "http.disconnect"}
+
+    async def send(message) -> None:
+        if message["type"] == fail_on:
+            raise OSError("client went away")
+
+    with contextlib.suppress(Exception):  # a dropped client ends the response in an error; the hold matters
+        await app(scope, receive, send)
+
+
+@pytest.mark.parametrize("fail_on", ["http.response.body", "http.response.start"])
+async def test_a_stream_the_client_drops_releases_the_engine(
+    tmp_path: Path, manager: Manager, fail_on: str
+) -> None:
+    sse = {"content-type": "text/event-stream"}
+    transport = httpx.MockTransport(
+        lambda req: httpx.Response(200, stream=SeesHolders(manager, []), headers=sse)
+    )
+    await asyncio.wait_for(call_app(serve(tmp_path, manager, transport=transport), fail_on=fail_on), 5)
+    assert status(manager).state == "ready" and status(manager).holders == ()
+
+
+class FailsToBuild(httpx.AsyncClient):
+    def build_request(self, *a, **kw):
+        raise RuntimeError("cannot build")
+
+
+async def test_a_stream_that_fails_before_its_response_releases_the_engine(
+    tmp_path: Path, manager: Manager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(httpx, "AsyncClient", FailsToBuild)
+    await asyncio.wait_for(call_app(serve(tmp_path, manager), fail_on="never"), 5)
+    assert status(manager).holders == ()
+
+
+class BootFails(Manager):
+    async def adopt(self) -> None:
+        raise RuntimeError("probe blew up")
+
+
+def test_a_failing_adopt_does_not_stop_the_pinned_engines_starting(
+    tmp_path: Path, engine: FakeEngine
+) -> None:
+    engine.lifecycle = "pinned"
+    m = BootFails([engine], budget_gb=100.0, clock=StuckClock())
+    with TestClient(serve(tmp_path, m)) as c:
+
+        async def until_up() -> None:
+            while not engine.up:
+                await asyncio.sleep(0)
+
+        c.portal.call(asyncio.wait_for, until_up(), 5)
+    assert engine.up
+
+
+def test_serve_built_without_a_manager_manages_no_engine_in_tests(tmp_path: Path) -> None:
+    config = cfg(tmp_path)
+    config.engines["main"] = config.engines["main"].model_copy(update={"kind": "mlx_vlm"})
+    with TestClient(create_app(config, transport=httpx.MockTransport(FakeUpstream()))) as c:
+        assert c.get("/v1/airlie/engines").json() == []

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 import uuid
@@ -81,6 +82,8 @@ matches it by name, so a key never walks out of it."""
 NEXT_DIR = Path(__file__).parent / "web_next"
 """The Vue app's build (`task web:build`, a Vite build with base `/`): `GET /` and every path that is not the
 API serves it. Not in git; without it the app's paths answer 503 and say how to build it."""
+
+log = logging.getLogger(__name__)
 
 NEXT_NOT_BUILT = "the web app is not built: run task web:build"
 IMMUTABLE = "public, max-age=31536000, immutable"
@@ -216,6 +219,26 @@ def _no_call_stops(reply: Any) -> Any:
         if choice.get("finish_reason") == "tool_calls" and not named:
             choice["finish_reason"] = "stop"
     return reply
+
+
+async def release(holding: AsyncExitStack) -> None:
+    """Close the hold even when this task is cancelled (a client that went away): the release runs on."""
+    await asyncio.shield(holding.aclose())
+
+
+class HeldStream(StreamingResponse):
+    """A streamed reply that owns the engine hold behind it and releases it however the response ends, also
+    when the body generator never started (a client that dropped as the headers went out)."""
+
+    def __init__(self, content: AsyncIterator[bytes], holding: AsyncExitStack, **kw: Any) -> None:
+        super().__init__(content, **kw)
+        self.holding = holding
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await release(self.holding)
 
 
 class LeaseRequest(BaseModel):
@@ -855,26 +878,24 @@ def create_app(
             return _no_call_stops(_gen_to_chat_completion(res, name))
         holding = AsyncExitStack()  # the role's engine, held (and started if need be) for the upstream call
         engine_name = cfg.engine_for_model(proxy_model)
+        reply: Any = None
         try:
             if engine_name in managed:
                 await holding.enter_async_context(manager.hold(engine_name, f"chat:{uuid.uuid4().hex}"))
-            return await upstream_chat(out, base, headers, holding)
+            reply = await upstream_chat(out, base, headers, holding)
+            return reply
         except EngineError as e:
             return engine_failed(engine_name, e)
         finally:
-            if not out.get("stream"):
-                await holding.aclose()
+            if not isinstance(reply, HeldStream):  # a streamed reply releases the hold when it ends
+                await release(holding)
 
     async def upstream_chat(
         out: dict[str, Any], base: str, headers: dict[str, str], holding: AsyncExitStack
     ) -> Any:
         if out.get("stream"):
             req = client.build_request("POST", f"{base}/chat/completions", json=out, headers=headers)
-            try:
-                resp = await client.send(req, stream=True)
-            except BaseException:
-                await holding.aclose()
-                raise
+            resp = await client.send(req, stream=True)
 
             async def gen() -> AsyncIterator[bytes]:
                 repair = ToolCallStreamRepair()
@@ -888,10 +909,12 @@ def create_app(
                     if buf:
                         yield repair.frame(buf)
                 finally:
-                    await resp.aclose()
-                    await holding.aclose()
+                    try:
+                        await resp.aclose()
+                    finally:
+                        await release(holding)
 
-            return StreamingResponse(gen(), status_code=resp.status_code, media_type="text/event-stream")
+            return HeldStream(gen(), holding, status_code=resp.status_code, media_type="text/event-stream")
         r = await client.post(
             f"{base}/chat/completions",
             json=out,
@@ -1410,8 +1433,11 @@ def create_app(
         # the HTTP server is up at once; engines already running are adopted, the pinned ones start, idle
         # on-demand ones are reaped
         async def boot() -> None:
-            await manager.adopt()
-            await manager.start_pinned()
+            for step in (manager.adopt, manager.start_pinned):  # one failing must not stop the other
+                try:
+                    await step()
+                except Exception:
+                    log.exception("engine manager: %s failed", step.__name__)
 
         engine_tasks.append(asyncio.ensure_future(boot()))
         engine_tasks.append(asyncio.ensure_future(manager.run(cfg.manager.reap_every_s)))

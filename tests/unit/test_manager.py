@@ -443,6 +443,24 @@ async def test_reap_awaits_its_before_hook_first() -> None:
     assert order == ["before, a stops=0"] and r.stops == 1
 
 
+async def test_run_survives_a_reap_that_raises() -> None:
+    r = FakeResource("a", idle_unload_s=60)
+    clock = StopsAfter(2)
+    m, _ = manager(r, clock=clock)
+    await _hold(m, "a")
+    calls: list[int] = []
+
+    async def flaky() -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("sweep blew up")
+
+    m.before_reap = flaky
+    with pytest.raises(asyncio.CancelledError):
+        await m.run(every_s=30)
+    assert len(calls) == 2 and r.stops == 1
+
+
 async def test_watch_hears_every_status_change_beside_the_constructor_callback() -> None:
     r = FakeResource("a")
     first: list[str] = []
