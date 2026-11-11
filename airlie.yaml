@@ -54,7 +54,7 @@ engines:
     port: 8084
     model: gemma4
     max_num_seqs: 8
-    max_kv_size: 131072
+    max_kv_size: 262144
     kv_bits: 8
     prefill_step_size: 2048
     prefix_cache: true              # same as main; mlx-vlm Gemma 4 MTP docs do not disable APC (issue #1471 is DFlash/EAGLE)

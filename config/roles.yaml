@@ -83,7 +83,7 @@ roles:
     model: gemma4
     tools: []
     vision: true
-    max_context: 131072
+    max_context: 262144
     max_tokens: 16384
     thinking: true
     thinking_budget: 8192

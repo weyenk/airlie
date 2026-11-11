@@ -1518,3 +1518,9 @@ def test_hf_snapshot_dir_honours_an_explicit_cache(tmp_path: Path) -> None:
     m = load_config(write(tmp_path, MINIMAL)).models["team"]
     got = hf_snapshot_dir(m, tmp_path / "elsewhere")
     assert got == tmp_path / "elsewhere" / "models--mlx-community--Qwen3.8-27B-4bit" / "snapshots" / "abc123"
+
+
+def test_gemma_serves_chat_at_262k() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert cfg.engines["gemma"].max_kv_size == 262144
+    assert cfg.roles["chat"].max_context == 262144
