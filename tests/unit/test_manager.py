@@ -33,6 +33,8 @@ class FakeResource:
         self.up = False
         self.gate: asyncio.Event | None = None  # holds a start open until set
         self.fail: str | None = None  # a start raises EngineError(this)
+        self.stop_gate: asyncio.Event | None = None  # holds a stop open until set
+        self.stop_error: str | None = None  # a stop raises (the process stays up)
 
     async def running(self) -> bool:
         return self.up
@@ -47,11 +49,42 @@ class FakeResource:
 
     async def stop(self) -> None:
         self.stops += 1
+        if self.stop_gate is not None:
+            await self.stop_gate.wait()
+        if self.stop_error is not None:
+            raise RuntimeError(self.stop_error)
         self.up = False
 
 
-def manager(*resources: FakeResource, budget_gb: float = 100.0, wait_timeout_s: float = 1800.0, **kw):
-    clock = FakeClock()
+class StuckClock(FakeClock):
+    """A clock whose sleeps never finish: a waiter wakes only on a notification."""
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        await asyncio.Event().wait()
+
+
+class StopsAfter(FakeClock):
+    """Ends `Manager.run` after `n` sleeps."""
+
+    def __init__(self, n: int) -> None:
+        super().__init__()
+        self.n = n
+
+    async def sleep(self, seconds: float) -> None:
+        if len(self.sleeps) >= self.n:
+            raise asyncio.CancelledError
+        await super().sleep(seconds)
+
+
+def manager(
+    *resources: FakeResource,
+    budget_gb: float = 100.0,
+    wait_timeout_s: float = 1800.0,
+    clock: FakeClock | None = None,
+    **kw,
+):
+    clock = clock or FakeClock()
     return Manager(resources, budget_gb=budget_gb, clock=clock, wait_timeout_s=wait_timeout_s, **kw), clock
 
 
@@ -60,8 +93,14 @@ def state(m: Manager, name: str) -> Status:
 
 
 async def settle() -> None:
-    for _ in range(10):
-        await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
 
 
 async def test_concurrent_holds_share_one_start() -> None:
@@ -95,11 +134,18 @@ async def test_an_idle_on_demand_resource_is_stopped_after_its_idle_time() -> No
     m, clock = manager(r)
     async with m.hold("a", "o"):
         pass
-    clock.now += 599.0
-    assert await m.reap() == [] and r.stops == 0
-    clock.now += 1.0  # exactly the idle time: stopped
+    clock.now += 600.0  # exactly the idle time: stopped
     assert await m.reap() == ["a"]
     assert r.stops == 1 and state(m, "a").state == "stopped"
+
+
+async def test_a_resource_idle_for_less_than_its_idle_time_is_not_reaped() -> None:
+    r = FakeResource("a", idle_unload_s=600.0)
+    m, clock = manager(r)
+    async with m.hold("a", "o"):
+        pass
+    clock.now += 599.0
+    assert await m.reap() == [] and r.stops == 0
 
 
 async def test_a_pinned_resource_is_never_reaped() -> None:
@@ -261,10 +307,18 @@ async def test_releasing_a_hold_notifies_a_waiter_and_records_last_used() -> Non
     await cm.__aexit__(None, None, None)
     await settle()
     assert waiter.done()
-    clock.now = 50.0 + 599.0
-    assert await m.reap() == []  # idle counted from the release, not the start
     clock.now = 50.0 + 600.0
-    assert await m.reap() == ["a"]
+    assert await m.reap() == ["a"]  # idle counted from the release (50), not the start (5)
+
+
+async def test_idle_time_counts_from_the_release() -> None:
+    r = FakeResource("a")
+    m, clock = manager(r)
+    clock.now = 5.0
+    async with m.hold("a", "o"):
+        clock.now = 50.0
+    clock.now = 50.0 + 599.0
+    assert await m.reap() == []
 
 
 async def test_adopt_marks_running_resources_ready_without_starting() -> None:
@@ -275,8 +329,16 @@ async def test_adopt_marks_running_resources_ready_without_starting() -> None:
     await m.adopt()
     assert state(m, "a").state == "ready" and state(m, "b").state == "stopped"
     assert a.starts == 0 and state(m, "a").since == 7.0
-    clock.now = 7.0 + 600.0
-    assert await m.reap() == ["a"]  # adoption counted as use at that time
+
+
+async def test_adoption_counts_as_use_for_the_idle_clock() -> None:
+    a = FakeResource("a")
+    a.up = True
+    m, clock = manager(a)
+    clock.now = 7.0
+    await m.adopt()
+    clock.now = 7.0 + 599.0
+    assert await m.reap() == []
 
 
 async def test_start_pinned_starts_only_pinned_resources() -> None:
@@ -315,30 +377,203 @@ async def test_a_start_reports_progress_through_the_status() -> None:
     assert state(m, "a").progress is None
 
 
-async def test_a_failed_stop_during_eviction_marks_failed_and_frees_the_slot_for_the_waiter() -> None:
-    class BadStop(FakeResource):
-        async def stop(self) -> None:
-            raise RuntimeError("stuck")
+async def _hold(m: Manager, name: str, owner: str = "o") -> None:
+    async with m.hold(name, owner):
+        pass
 
-    a, b = BadStop("a", 10), FakeResource("b", 10)
-    m, _ = manager(a, b, budget_gb=15)
-    async with m.hold("a", "o"):
-        pass
-    async with m.hold("b", "o"):
-        pass
+
+async def test_a_failed_stop_during_eviction_keeps_counting_for_memory() -> None:
+    a, b = FakeResource("a", 10), FakeResource("b", 10)
+    a.stop_error = "stuck"
+    m, _ = manager(a, b, budget_gb=15, wait_timeout_s=5)
+    await _hold(m, "a")
+    with pytest.raises(EngineError, match="gave up waiting"):
+        await _hold(m, "b")
+    assert b.starts == 0
     assert state(m, "a").state == "failed" and "stuck" in state(m, "a").detail
+
+
+async def test_a_resource_whose_stop_failed_stops_counting_once_it_is_seen_dead() -> None:
+    a, b = FakeResource("a", 10), FakeResource("b", 10)
+    a.stop_error = "stuck"
+    m, _ = manager(a, b, budget_gb=15)
+    await _hold(m, "a")
+    waiting = asyncio.create_task(_hold(m, "b"))
+    await settle()
+    assert not waiting.done()
+    a.up = False
+    await asyncio.wait_for(waiting, 5)
+    assert b.starts == 1 and state(m, "a").state == "stopped"
+
+
+async def test_holding_a_resource_whose_stop_failed_and_is_alive_raises() -> None:
+    a, b = FakeResource("a", 10), FakeResource("b", 10)
+    a.stop_error = "stuck"
+    m, _ = manager(a, b, budget_gb=15, wait_timeout_s=1)
+    await _hold(m, "a")
+    with pytest.raises(EngineError):
+        await _hold(m, "b")
+    with pytest.raises(EngineError, match="stop failed: stuck"):
+        await _hold(m, "a")
+    assert a.starts == 1
 
 
 async def test_run_reaps_every_interval() -> None:
     r = FakeResource("a", idle_unload_s=60)
-    m, clock = manager(r)
-    async with m.hold("a", "o"):
-        pass
-    task = asyncio.create_task(m.run(every_s=30))
-    for _ in range(20):
-        await asyncio.sleep(0)
-        if r.stops:
-            break
-    task.cancel()
-    assert r.stops == 1 and 60 <= clock.now <= 90
-    assert clock.sleeps[:2] == [30, 30]
+    clock = StopsAfter(2)
+    m, _ = manager(r, clock=clock)
+    await _hold(m, "a")
+    with pytest.raises(asyncio.CancelledError):
+        await m.run(every_s=30)
+    assert r.stops == 1 and clock.sleeps == [30, 30]
+
+
+# ---- races ----
+
+
+async def test_a_hold_on_a_resource_being_evicted_waits_for_the_stop_to_finish() -> None:
+    a, b = FakeResource("a", 10), FakeResource("b", 10)
+    m, _ = manager(a, b, budget_gb=15)
+    await _hold(m, "a")
+    a.stop_gate = asyncio.Event()
+    evicting = asyncio.create_task(_hold(m, "b"))
+    await settle()
+    assert state(m, "a").state == "stopping"
+    again = asyncio.create_task(_hold(m, "a", "y"))
+    await settle()
+    assert a.starts == 1 and a.stops == 1  # no start while the stop is open
+    a.stop_gate.set()
+    await asyncio.wait_for(asyncio.gather(evicting, again), 5)
+    assert a.starts == 2 and a.up and state(m, "a").holders == ()
+
+
+async def test_a_hold_arriving_while_reap_stops_does_not_overlap_the_stop() -> None:
+    a = FakeResource("a", idle_unload_s=1)
+    m, clock = manager(a)
+    await _hold(m, "a")
+    clock.now += 5
+    a.stop_gate = asyncio.Event()
+    reaping = asyncio.create_task(m.reap())
+    await settle()
+    again = asyncio.create_task(_hold(m, "a", "y"))
+    await settle()
+    assert a.starts == 1
+    a.stop_gate.set()
+    await asyncio.wait_for(asyncio.gather(reaping, again), 5)
+    assert a.starts == 2 and a.up
+
+
+async def test_a_resource_being_started_counts_for_memory() -> None:
+    a, b = FakeResource("a", 10), FakeResource("b", 10)
+    a.gate = asyncio.Event()
+    m, _ = manager(a, b, budget_gb=15)
+    starting = asyncio.create_task(_hold(m, "a"))
+    await settle()
+    waiting = asyncio.create_task(_hold(m, "b"))
+    await settle()
+    assert b.starts == 0 and state(m, "b").state == "waiting"
+    a.gate.set()
+    await asyncio.wait_for(asyncio.gather(starting, waiting), 5)
+    assert a.stops == 1 and b.starts == 1
+
+
+async def test_a_resource_being_stopped_counts_for_memory() -> None:
+    a, b, c = FakeResource("a", 10), FakeResource("b", 10), FakeResource("c", 10)
+    m, _ = manager(a, b, c, budget_gb=15)
+    await _hold(m, "a")
+    a.stop_gate = asyncio.Event()
+    first = asyncio.create_task(_hold(m, "b"))
+    await settle()
+    second = asyncio.create_task(_hold(m, "c"))
+    await settle()
+    assert c.starts == 0 and b.starts == 0  # a's memory is not free until its stop ends
+    a.stop_gate.set()
+    await asyncio.wait_for(asyncio.gather(first, second), 5)
+    assert b.stops == 1 and c.starts == 1
+
+
+async def test_a_failed_start_wakes_a_waiter_behind_it() -> None:
+    a, b = FakeResource("a", 10), FakeResource("b", 10)
+    a.gate = asyncio.Event()
+    a.fail = "no weights"
+    m, _ = manager(a, b, budget_gb=15, clock=StuckClock())
+    starting = asyncio.create_task(_hold(m, "a"))
+    await settle()
+    waiting = asyncio.create_task(_hold(m, "b"))
+    await settle()
+    assert state(m, "b").state == "waiting"
+    a.gate.set()
+    with pytest.raises(EngineError):
+        await starting
+    await asyncio.wait_for(waiting, 5)
+    assert b.starts == 1
+
+
+async def test_a_release_wakes_a_waiter_without_any_timer() -> None:
+    a, b = FakeResource("a", 10), FakeResource("b", 10)
+    m, _ = manager(a, b, budget_gb=15, clock=StuckClock())
+    cm = m.hold("a", "o")
+    await cm.__aenter__()
+    waiting = asyncio.create_task(_hold(m, "b"))
+    await settle()
+    assert not waiting.done()
+    await cm.__aexit__(None, None, None)
+    await asyncio.wait_for(waiting, 5)
+
+
+async def test_a_resource_with_a_hold_in_flight_is_not_reaped() -> None:
+    a = FakeResource("a", idle_unload_s=1)
+    m, clock = manager(a)
+    await _hold(m, "a")
+    clock.now += 5
+    entered = asyncio.Event()
+    leave = asyncio.Event()
+
+    async def hold_in_flight() -> None:
+        async with m.hold("a", "y"):
+            entered.set()
+            await leave.wait()
+
+    task = asyncio.create_task(hold_in_flight())
+    await entered.wait()
+    assert await m.reap() == []
+    leave.set()
+    await task
+    assert a.stops == 0
+
+
+async def test_a_resource_whose_hold_is_between_its_check_and_its_entry_is_not_reaped() -> None:
+    a = FakeResource("a", idle_unload_s=1)
+    m, clock = manager(a)
+    await _hold(m, "a")
+    clock.now += 5
+    gate = asyncio.Event()
+
+    async def slow_running() -> bool:
+        await gate.wait()
+        return True
+
+    a.running = slow_running  # type: ignore[method-assign]
+    task = asyncio.create_task(_hold(m, "a", "y"))
+    await settle()
+    assert await m.reap() == []
+    gate.set()
+    await task
+    assert a.stops == 0
+
+
+async def test_an_exception_in_the_hold_body_still_releases_the_holder() -> None:
+    m, _ = manager(FakeResource("a"))
+    with pytest.raises(ValueError):
+        async with m.hold("a", "o"):
+            raise ValueError("boom")
+    assert state(m, "a").holders == ()
+
+
+async def test_start_pinned_starts_the_rest_when_one_fails() -> None:
+    p, q = FakeResource("p", lifecycle="pinned"), FakeResource("q", lifecycle="pinned")
+    p.fail = "no weights"
+    m, _ = manager(p, q)
+    await m.start_pinned()
+    assert state(m, "p").state == "failed" and state(m, "p").detail == "no weights"
+    assert state(m, "q").state == "ready"

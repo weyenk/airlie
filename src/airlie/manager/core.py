@@ -57,6 +57,7 @@ class _Slot:
     holders: list[str] = field(default_factory=list)
     since: float = 0.0
     last_used: float = 0.0
+    stop_failed: bool = False  # its stop raised: the process may be alive, so it still counts for memory
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -104,28 +105,43 @@ class Manager:
         return sum(
             s.resource.footprint_gb
             for n, s in self._slots.items()
-            if n != excluding and s.state in MEMORY_IN_USE
+            if n != excluding and (s.state in MEMORY_IN_USE or s.stop_failed)
         )
 
     def _victim(self, excluding: str) -> _Slot | None:
         idle = [
             s
             for n, s in self._slots.items()
-            if n != excluding and s.state == "ready" and not s.holders and s.resource.lifecycle == "on_demand"
+            if n != excluding
+            and s.state == "ready"
+            and not s.holders
+            and not s.lock.locked()
+            and s.resource.lifecycle == "on_demand"
         ]
         return min(idle, key=lambda s: s.last_used, default=None)
 
     # ---- the verbs ----
 
     async def _stop(self, slot: _Slot) -> None:
-        self._set(slot, "stopping")
-        try:
-            await slot.resource.stop()
-        except Exception as e:
-            self._set(slot, "failed", f"stop failed: {e}")
-        else:
-            self._set(slot, "stopped")
+        """Stop under the slot's lock, so no start of the same resource overlaps it."""
+        async with slot.lock:
+            self._set(slot, "stopping")
+            try:
+                await slot.resource.stop()
+            except Exception as e:
+                slot.stop_failed = True
+                self._set(slot, "failed", f"stop failed: {e}")
+            else:
+                slot.stop_failed = False
+                self._set(slot, "stopped")
         self._notify()
+
+    async def _forget_the_dead(self) -> None:
+        """A resource whose stop failed counts for memory until it is seen not running."""
+        for slot in self._slots.values():
+            if slot.stop_failed and not slot.lock.locked() and not await slot.resource.running():
+                slot.stop_failed = False
+                self._set(slot, "stopped")
 
     async def _wait_for_change(self, deadline: float, name: str) -> None:
         remaining = deadline - self._clock.monotonic()
@@ -144,7 +160,10 @@ class Manager:
         deadline = self._clock.monotonic() + self._wait_timeout_s
         before = slot.state
         try:
-            while self._used_gb(name) + need > self._budget_gb:
+            while True:
+                await self._forget_the_dead()
+                if self._used_gb(name) + need <= self._budget_gb:
+                    break
                 victim = self._victim(name)
                 if victim is not None:
                     await self._stop(victim)
@@ -176,6 +195,10 @@ class Manager:
     async def hold(self, name: str, owner: str) -> AsyncIterator[None]:
         slot = self._slots[name]
         async with slot.lock:
+            if slot.stop_failed:
+                if await slot.resource.running():
+                    raise EngineError(f"{name}: {slot.detail}")
+                slot.stop_failed = False
             if slot.state == "ready" and not await slot.resource.running():
                 self._set(slot, "failed", "exited")
             if slot.state != "ready":
@@ -200,8 +223,11 @@ class Manager:
     async def start_pinned(self) -> None:
         for name, slot in self._slots.items():
             if slot.resource.lifecycle == "pinned" and slot.state != "ready":
-                async with self.hold(name, "start"):
-                    pass
+                try:
+                    async with self.hold(name, "start"):
+                        pass
+                except EngineError:
+                    pass  # its status says why; the others still start
 
     async def reap(self) -> list[str]:
         stopped: list[str] = []
@@ -211,11 +237,8 @@ class Manager:
                 continue
             if self._clock.monotonic() - slot.last_used < r.idle_unload_s:
                 continue
-            async with slot.lock:
-                if slot.state != "ready" or slot.holders:
-                    continue
-                await self._stop(slot)
-                stopped.append(name)
+            await self._stop(slot)
+            stopped.append(name)
         return stopped
 
     async def run(self, every_s: float) -> None:
