@@ -4,7 +4,8 @@ Status: agreed with Noah on 2026-11-11; revised the same day after a fact check 
 upstream docs (mlx-vlm 0.7.12, MLX 0.32.4, huggingface_hub 2.2.0, AI SDK 7, assistant-ui, Tart), the design
 review at the end of this file, and Noah's answers. The revision replaces the two-Gemma router with one Gemma
 engine at 262144, makes every engine start and stop on demand, adds download progress, splits chat into plain
-chats and repository chats that run in a VM, and adds superpowers. Parent isolation model:
+chats and repository chats that run in a VM, adds superpowers, and makes the web app a full PWA. Parent
+isolation model:
 [`2026-10-16-remote-studio-design.md`](2026-10-16-remote-studio-design.md). Engine shape:
 [`2026-11-08-mlx-vlm-engine-design.md`](2026-11-08-mlx-vlm-engine-design.md).
 
@@ -51,6 +52,9 @@ repository, an isolated place to run commands, and the superpowers flow.
    web work is mockups-first).
 8. **The doctor stays honest** about what can be resident at once (models and VMs), and the manager enforces the
    same budget at run time.
+9. **A full PWA on the phone.** Noah uses airlie on mobile a lot, saved to the home screen. It becomes an
+   installable PWA: a manifest, a service worker, a sign-in that persists, passkey login inside the installed
+   app, and push notifications.
 
 ## Non-goals
 
@@ -263,6 +267,45 @@ more harness:
 - `POST /v1/chat/completions` and the existing `/v1/airlie/chat/attachments` and `/v1/airlie/chat/skills`
   routes stay.
 
+### Mobile: a full PWA
+
+Today the web app has an `apple-touch-icon` and nothing else: no manifest, no service worker, no
+`theme-color`, so iOS saves it as a plain home-screen bookmark. Sign-in exists (passkeys from an invite through
+py_webauthn, or the Tailscale identity behind `tailscale serve`), and a passkey sign-in sets an HttpOnly
+`airlie_session` cookie that lasts a fixed `auth.session_days` (30) and is never renewed.
+
+- **Manifest.** `manifest.webmanifest` with name, short name, `display: standalone`, `start_url`, `scope`,
+  theme and background colours for both themes, and icons (192, 512, maskable; the apple-touch-icon stays). The
+  page head gains the manifest link, `theme-color`, and `viewport-fit=cover` with safe-area padding for the
+  standalone shell.
+- **Service worker.** Caches the built app shell (the hashed `web_next` assets) so the app opens instantly and
+  shows a "can't reach the Studio" screen offline. It never caches or intercepts `/v1/` API calls or event
+  streams. A new build shows "update ready, reload". It also receives pushes (below).
+- **Sign-in that persists.** The session cookie renews on use: when a signed-in request arrives with less than
+  half its lifetime left, serve issues a fresh cookie and session row (sliding expiry; idle for `session_days`
+  still signs out). Server-set HttpOnly cookies are not subject to WebKit's 7-day cap in a home-screen app with
+  `display: standalone` (only script-set and CNAME-cloaked cookies are), and the installed app keeps its own
+  storage apart from Safari, so the first launch of the new install asks for one sign-in.
+- **Passkey login in the installed app.** The existing WebAuthn ceremonies run inside the standalone app; the
+  sign-in screen offers the passkey (discoverable credential, no username to type) and the Tailscale identity
+  when present. The relying party stays the tailnet host (`auth.rp_id`), so passkeys made in Safari work in the
+  app.
+- **Notifications.** Web Push with VAPID keys kept on the host (`pywebpush` or equivalent):
+  - The app asks for permission from a tap in Settings or on the first notification-worthy moment, never on load
+    (iOS allows the prompt only in an installed app, from a user gesture).
+  - Each device's subscription is stored per person in the user store; signing out removes it.
+  - What notifies, each switchable per person: a chat reply finished while the app was in the background, a
+    model download or VM start finished, a confirmation waiting (push, PR, studio work), and story events
+    (blocked, PR published, review wanted).
+  - Every push shows a visible notification (iOS revokes permission for silent pushes); tapping one opens the
+    chat or card it is about.
+  - Pushes go out through Apple's and Google's push services, so the Studio needs outbound internet for them;
+    payloads carry a title and a link, not chat content.
+- **Chats persist.** Reopening the app returns to the last chat; threads live on the server (the turn route
+  persists every turn), so a phone and a laptop see the same chats.
+- **Reinstall once.** Because the current home-screen icon is a bookmark, Noah removes it and adds the app again
+  after the manifest ships.
+
 ### Hooks
 
 The turn handler runs fixed hooks so policy, superpowers, and logging sit in one place:
@@ -304,6 +347,8 @@ overrides). Expected keys, exact schema left to the builder:
 - `chat.kinds`: the tool lists for plain and repository chats, and which tools ask first (extends today's `chat:`
   section, which has only `attachments`).
 - `chat.superpowers`: on/off and the vendored skills path.
+- `auth.session_days` (exists) now as a sliding window; `notifications`: VAPID key path, the contact address
+  push services require, and which kinds are on by default.
 - `roles.chat.max_context: 262144`, `engines.gemma.max_kv_size: 262144`.
 
 ## Testing
@@ -327,11 +372,15 @@ Unit tests use fakes, never real engines or VMs:
   and siblings; `todo`; `task` runs a fresh context in the session's VM and holds its engine.
 - **Web:** `task web:gate` covers the left nav, the thread's part rendering, the status line, and the
   permission prompt.
+- **PWA:** the manifest's fields; the service worker never handles `/v1/` requests; the session cookie renews
+  past half its life and not before; push subscriptions saved, removed at sign-out, and filtered by the person's
+  notification settings; every push payload carries a title and a link.
 
 Live checks (outside the default gate): MTP acceptance on the QAT pairing at short and long context; a cold start
 of Muse through a review; a download of a small model with progress in the UI; a repository chat that boots a
 Tart Linux VM, clones, runs tests, and pushes a branch through the host; one superpowers flow (brainstorm → plan →
-one subagent task) in that chat.
+one subagent task) in that chat. On Noah's iPhone: install from the home screen, sign in once with a passkey,
+come back days later still signed in, and get a push when a chat reply finishes with the app closed.
 
 ## Order of work
 
@@ -343,10 +392,13 @@ one subagent task) in that chat.
 | **3 — Turn route and plain chat** | `POST /v1/airlie/chat/turn` with the UI message stream and a server-side tool loop; plain chat on it with web, `skill`, `todo`; the superpowers bootstrap and mapping. |
 | **4 — Repository chats in VMs** | The Tart box backend behind the shell seam, a VM per session under the manager, the recipe and default image, clone in and push out through the host, builtin tools and `task` in the VM, confirmations. |
 | **5 — Redesign** | Mockups (three options, Noah picks), then the left nav with pinned repositories and the Vue thread on `@ai-sdk/vue`: tool blocks, diffs, todos, permission prompts, status and context in the header. |
+| **PWA-a — Installable app** | The manifest, icons and page head, the app-shell service worker with the update prompt, sliding session renewal, passkey sign-in checked in the standalone app. |
+| **PWA-b — Notifications** | VAPID keys, push subscriptions per person, per-kind settings, pushes for chat replies, downloads and VM starts, confirmations, and story events. |
 | **Later** | Compaction (summarize and continue), the visual companion, macOS VMs. |
 
 The redesign mockups (phase 5) can start in parallel with phases 1–4; the build waits for Noah's pick and for the
-turn route.
+turn route. PWA-a touches none of the other phases and can go first, since Noah uses the phone most; PWA-b needs
+the status events (phase 2) and the turn route (phase 3).
 
 ## Left to the builder
 
