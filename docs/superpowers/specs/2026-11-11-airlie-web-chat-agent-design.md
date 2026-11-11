@@ -300,3 +300,156 @@ Exact `UIMessage` envelope fields (session id, box id, stream markers); assistan
 inside `web/`; seatbelt fallback mechanics; which story tools require confirm in v1; queue behavior when Tart
 is at capacity; numeric defaults for `chat.context_router` and `chat.admission`; whether promotion copies the
 full transcript or a summary slice on cold prefill.
+
+## Review comments (2026-11-11)
+
+Internal design review (Iroh). Severity: **blocker** stops planning without a decision; **should-fix** will
+bite implementation or ops; **nit** is clarity or test hygiene.
+
+### Scope and phase ordering
+
+1. **should-fix — Single effort, six phases, one doctor story.** Lifecycle, admission, router, turn API, Tart,
+   shell, composer JIT, and HUD share `engine/process.py`, serve routing, and config schema. Phase 0 is the
+   real critical path; phases 1–2 should not land UI (assistant-ui thread) until holder/pin semantics and
+   `GET /v1/airlie/chat/context` exist, or the HUD and OpenCode clients will ship against stubs. Consider
+   spelling a **minimum vertical slice** per phase (config + doctor + one pytest file) before web work.
+
+2. **blocker — Phase 1 vs phase 3 ordering for repo-scoped mode.** Phase 1 promises repo-scoped enforcement and
+   hooks; phase 3 adds Tart and confirms. If phase 1 can select a repo, the spec must say whether repo-scoped
+   tools are **hard-disabled until Tart** or seatbelt-only with the unboxed warning—not silent host execution.
+   Anti-goals forbid the latter without warning; the phase table does not say which gate applies when.
+
+3. **should-fix — Phase 4 (shell/nav) after phase 3 (Tart).** Users can hit repo-scoped chat from the turn API
+   before left-nav **+** exists. Either accept API-only repo chat in phases 1–3 or move a minimal repo picker
+   into phase 1.
+
+4. **should-fix — Phase 5 (composer JIT) without compaction (phase 6).** Per-turn skill injection can blow the
+   128k budget quickly; the router in phase 2 may promote to `gemma_long` while phase 5 still adds tokens every
+   turn. State whether composer JIT is **token-budget-aware** in phase 5 or deferred until phase 6.
+
+### Dual Gemma, catalog, and doctor
+
+5. **blocker — Two engines, one catalog model.** Today `engine_for_model` returns the **first** engine whose
+   `models` list contains the name (`schema.py`). Two entries both serving `gemma4` makes routing
+   **nondeterministic** (dict iteration order) unless you add an explicit rule: alias model names
+   (`gemma4` vs `gemma4_long`), a `primary_engine_for_model` map, or a documented exception that
+   `gemma_long` is **never** resolved via `engine_for_model` and is chat-router-only. Builder TBD must be
+   decided before phase 2, not left open.
+
+6. **should-fix — Doctor projection vs one-hot.** `project_memory_gb` sums **every** resident mlx-vlm engine's
+   weights, KV, and prefix cache. With `gemma` pinned and `gemma_long` on promote, the wired limit can appear
+   exceeded even when policy says one-hot. The spec mentions a **migration window** holding both; doctor needs
+   rules: count at most one Gemma KV slot for chat by default, add the second only when a holder flag says
+   migration, or admission will refuse studio work incorrectly.
+
+7. **should-fix — Duplicate prefix cache.** `gemma` already sets `cache_memory_gb: 4`. A second process at 8085
+   duplicates weights **and** cache reservation. Doctor rows should show **incremental** cost of `gemma_long`
+   (delta KV + optional shared-weight accounting), not pretend the second process is free aside from KV.
+
+8. **nit — Token numbers.** OpenCode `limit.context: 128000` vs `max_kv_size: 131072` is a 3072-token gap. Say
+   whether `effective_limit` exposes 131072 for the 128k backend and 128000 is only OpenAPI rounding, or adjust
+   one side so clients and router thresholds use the same integer.
+
+### Router, cold prefill, and mlx-vlm constraints
+
+9. **blocker — Cold prefill is still builder TBD but phase 2 depends on it.** Promotion without a specified
+   transcript transfer (full replay vs summary slice vs prefix-cache reuse across processes) has no latency or
+   correctness budget. mlx-vlm prefix cache does **not** cross processes; cold promote always pays full prefill on
+   8085. Spec should require: max promote latency target, behavior when prefill fails mid-turn, and whether the
+   user sees a visible “switching to long context” gap.
+
+10. **should-fix — “Cannot fit the next message in gemma's KV”.** Needs an operational definition: tokenizer count,
+    attachment expansion, tool-result bytes, composer JIT from phase 5, and MTP draft head overhead. Without that,
+    hysteresis unit tests are injectable integers only—they won't match production.
+
+11. **should-fix — In-flight turn during demote/promote.** One-hot says new prefill goes to the promoted engine; it
+    does not say what happens to an **active SSE stream** on the demoted process. Serve must either drain, cancel,
+    or finish on the old backend before demote—document the rule.
+
+12. **should-fix — Jev/chief vs context router naming.** Studio router picks specialists; this router picks Gemma
+    backend. Implementation should use distinct types/config keys (`chat.context_router` vs `router.kind`) so logs,
+    metrics, and tests do not conflate them.
+
+### Admission, QoS, and testability
+
+13. **should-fix — Soft admission lacks observable contracts.** “Queue, delay, or refuse with a structured reason”
+    needs a stable reason enum or code (for tests and OpenCode). Who consumes the queue (orchestrator lanes, engine
+    `ensure`, Tart box start)? Without seams, QoS tests stay fake-clock theater.
+
+14. **should-fix — “Interactive chat is active”.** Defined as web turn in flight or OpenCode stream registered on
+    serve—registration mechanism is unspecified (per-connection table? completion id?). Admission tests need a
+    fake registry API on the same seam the scheduler uses.
+
+15. **should-fix — Chat-preferring scheduler vs existing line fanout.** Studio already runs planning/build lanes
+    with consult fanout (`live_kv_gb` for studio topology). Spec should say whether chat preference **pauses** lane
+    starts, **delays** `ensure` on main/reviewer, or only affects **new** gemma_long promotes—otherwise two QoS
+    stories fight in one process.
+
+16. **nit — Config keys are named but not bounded.** `chat.admission.max queue wait` should clarify units (seconds?),
+    default, and whether refuse returns HTTP 429, 503, or a job-card “waiting for memory” state.
+
+### OpenCode, limits, and HUD
+
+17. **should-fix — 128k advertised vs 262k effective.** Roles stay at 128000 until promotion; clients that ignore
+    `GET /v1/airlie/chat/context` will trim or error on long threads. Spec should require serve to inject
+    **usage** into streaming chunks (or a standard header) so OpenCode plugins can promote without a second poll
+    channel—optional but reduces “opaque headroom” complaints.
+
+18. **should-fix — HUD phase 6 vs endpoint phase 2.** Context endpoint ships in phase 2; HUD in phase 6. OpenCode
+    and power users depend on phase-2 behavior alone for months—document minimal JSON stability guarantees
+    (version field?) so clients do not break at phase 6 compaction.
+
+19. **should-fix — Compaction engine.** Phase 6 “summarize-and-continue” needs a model/seat (summarizer role? same
+    Gemma?) and whether compaction counts as a holder on `gemma_long`. Missing that invites unbounded summarize loops
+    under admission.
+
+### Tart, isolation, and security
+
+20. **should-fix — One box per chat session vs one box per job (remote studio).** Remote studio queues macOS VMs at
+    two; chat multiplies sessions per user. Spec mentions queue at capacity as builder TBD—needs a **user-visible**
+    policy (block new repo chat, queue, or general-mode fallback) before phase 3.
+
+21. **should-fix — Seatbelt fallback.** Allowed with warning, but remote-studio anti-goals treat host execution as
+    failure for **remote** work. Clarify whether repo-scoped **web chat on the Studio host** may use seatbelt when
+    Tart is down, or repo-scoped chat must hard-fail—same words, different threat model.
+
+22. **should-fix — Credentials in the box.** Host holds GitHub App and API keys; repo-scoped tools include `git` and
+    `write_file`. Align with remote-studio: which credentials enter the box, how `run_tests` reaches the host gate
+    vs box-only commands, and whether `jobs_start` always stays host-side.
+
+23. **nit — `onFinish` box release vs `idle_unload_s`.** Session end should drop Tart and engine holders in a
+    defined order so a closed tab does not leave a box running while `gemma_long` unloads.
+
+### Transport, hooks, and web stack
+
+24. **should-fix — Two transports, one router.** Web uses `/v1/airlie/chat/turn` + hooks; OpenCode uses
+    `/v1/chat/completions`. Router and admission must attach to **both** entry points with shared session/correlation
+    ids—builder TBD list should include how OpenCode threads map to session id for context GET.
+
+25. **should-fix — Confirmation UX on OpenCode.** Confirmations are specified for repo-scoped web; OpenCode on the
+    same serve path may invoke tools without the Vue modal. Either non-goal for OpenCode confirms or a serve-side
+    tool-approval protocol for MCP—otherwise policy diverges by client.
+
+26. **nit — Testing section and `task web:gate`.** Unit list is solid for Python seams; no mention of Vue tests for
+    mode indicators, confirm modals, or assistant-ui integration. At least one `web:gate` test (or documented manual
+    check) for streaming tool parts should be called out, or phase 1 ships UI without CI cover.
+
+### Contradictions and underspecified edges
+
+27. **should-fix — “Unless migration window explicitly holds both”.** Nothing in configurable behavior names this
+    window (duration, max concurrent holders, user-visible behavior). Tie it to `chat.context_router` or engine
+    `hold` refs.
+
+28. **should-fix — General mode “optional web search/fetch when configured”.** Same admission/QoS as studio search
+    (`web.search` / searxng)? If search hits external network, mode gating and observability should match repo tools.
+
+29. **nit — Status line says Approach C merged same day.** Implementation plans should reference this file as the
+    single source for chat + lifecycle so older chat-only specs are not followed in parallel.
+
+### Suggested decisions before phase 2 coding
+
+- Resolve **catalog/dual-engine routing** (#5) and **doctor one-hot accounting** (#6–7).
+- Lock **cold prefill semantics** (#9) and **in-flight stream on backend switch** (#11).
+- Lock **repo-scoped behavior before Tart** (#2) and **OpenCode tool confirms** (#25).
+- Publish **admission reason codes + interactive-chat registry** (#13–14) for the listed unit tests to assert real
+  behavior, not only injected stubs.
