@@ -1,305 +1,319 @@
-# Web chat agent, Gemma engines, and dynamic context
+# Web chat agent, on-demand models, and long context
 
-Status: agreed with Noah on 2026-11-11 (revised same day to merge Approach C and dynamic
-context / engine lifecycle). Parent isolation model:
-[`2026-10-16-remote-studio-design.md`](2026-10-16-remote-studio-design.md). Engine shape follows
-[`2026-11-08-mlx-vlm-engine-design.md`](2026-11-08-mlx-vlm-engine-design.md) (`max_kv_size` is fixed at
-process start; mlx-vlm does not resize KV at runtime).
+Status: agreed with Noah on 2026-11-11; revised the same day after a fact check against the code and the
+upstream docs (mlx-vlm 0.7.12, MLX 0.32.4, huggingface_hub 2.2.0, AI SDK 7, assistant-ui, Tart) and the design
+review at the end of this file. The revision replaces the two-Gemma router with one Gemma engine at 262144,
+makes every engine start and stop on demand, adds download progress, and adds superpowers to chat. Parent
+isolation model: [`2026-10-16-remote-studio-design.md`](2026-10-16-remote-studio-design.md). Engine shape:
+[`2026-11-08-mlx-vlm-engine-design.md`](2026-11-08-mlx-vlm-engine-design.md).
 
 ## Why
 
-The Vue web app already owns navigation, board, jobs, and repository context in a Pinia shell. Embedding a
-third-party chat shell (LibreChat or a full assistant-ui app) would fight that layout, duplicate auth and
-routing, and make repo-scoped tools hard to gate. OpenCode on laptops must stay a first-class client without
-rebuilding parity on day one.
+Noah wants airlie chat to be the place he develops from, outside the story workflow, with the superpowers skills
+he likes the results of, in a chat that looks and feels like Claude Code desktop. Two things get in the way today:
 
-At the same time, chat and OpenCode depend on Gemma behind **`task serve` on :8090**, while the rest of the
-studio keeps Qwen and Muse on their own mlx-vlm processes. Two KV budgets are needed for the same weights:
-**131072** tokens for everyday turns and **262144** when a thread or role needs a long horizon. Loading both
-Gemma processes at once does not fit the doctor's wired budget; the stack must **pin, hold, idle-unload, and
-route** between two fixed-`max_kv_size` engines without a second HTTP proxy on :8100.
+- **Models are either always up or not there.** `task up` starts every autostart engine and nothing stops them;
+  a role whose engine is down gets an error (serve's chat route does not catch the connection failure, so it most
+  likely surfaces as a 500). Noah's
+  words: models should spin up and down on demand, and the user should not have to care whether one is running.
+  When a model is not downloaded that is too slow to hide, so the user sees that it is downloading and how far
+  along it is.
+- **Sometimes 128k context is enough and sometimes 256k is needed.** The first draft solved this with two Gemma
+  processes and a router that swapped between them. The fact check showed that is unnecessary (below): one Gemma
+  engine at 262144 costs memory only for the context a thread actually uses.
 
-Approach C keeps airlie's UI and product rules in the shell, and borrows assistant-ui and the Vercel AI SDK
-only where they earn their keep: the message thread, streaming, and tool-call rendering. Engine lifecycle,
-admission, and the long-context router ship in the **same effort** so chat, OpenCode, and repo-scoped tools see
-one consistent context story.
+Chat today is prose only (`roles.chat.tools: []`), its skills are slash commands pasted into the prompt, and the
+one tool-using skill (`lhr-publish`) runs a non-streamed loop on another role. Development needs tools, a repo,
+and the superpowers flow.
 
 ## Goals
 
-- One chat experience in the web app with two clear **modes** (general vs repo-scoped), enforced in the
-  server and reflected in the composer and tool surface.
-- Repo-scoped sessions run model-chosen commands in **isolated boxes** (Tart first-class), one box per chat
-  session, aligned with the remote-studio isolation story.
-- A single turn transport for the web (`POST /v1/airlie/chat/turn`) carrying `UIMessage` shapes the AI SDK
-  expects, with lifecycle **hooks** for skills, policy, and logging.
-- **Engine lifecycle** for managed mlx-vlm processes: `pin`, `ensure`, `hold`, and `idle_unload_s` in config;
-  unload means **stop the process** (not an in-process model swap). The default chat Gemma engine stays
-  **pinned** at `max_kv_size: 131072`. The doctor's projection stays honest about weights, KV, prefix cache,
-  and which engines are resident.
-- **Dual Gemma** behind serve (:8090): QAT **8-bit** weights with MTP assistant, two engine entries —
-  `gemma` at **131072** on port **8084** and `gemma_long` at **262144** on port **8085** — with **one hot at a
-  time** on the chat path. A **hysteresis router** promotes to `gemma_long` when context pressure warrants it
-  and demotes when safe; promotion runs **cold prefill** on the long engine after `ensure`. The **same router**
-  drives both web chat and OpenCode UX (no separate long-context product surface).
-- **Admission and QoS** that are soft, not chat-exclusive: headroom is computed on the fly from wired memory;
-  when a peer cannot start, **delay or refuse** that peer — do **not** kill an active chat engine to make room.
-  When interactive chat is active, scheduling **prefers chat** over background studio work; every knob is
-  configurable.
-- OpenCode remains first-class on **:8090** via `POST /v1/chat/completions`; roles advertise
-  `limit.context: 128000` against the **128k** Gemma slot. Clients can read **`GET /v1/airlie/chat/context`**
-  for `usage`, `effective_limit`, and `backend` (`gemma` vs `gemma_long`).
-- Human **confirmation** before destructive or expensive actions: shell, `jobs_start`, and story-driving tools
-  in repo-scoped mode.
-- **HUD and compaction** in a late phase: token budget UI and summarization, backed by the same context endpoint
-  and router signals.
+1. **Every model on demand.** A model manager inside `task serve` starts an engine when a request needs it,
+   waits until it is ready, keeps it while work holds it, and stops it after it has been idle for its
+   `idle_unload_s`. Engines may be pinned to stay up. Callers (serve's chat route, the story line, the studio
+   roles) never see a down engine; they wait for it, and the UI says it is starting.
+2. **Downloads with progress.** A model not on disk is downloaded by airlie at its pinned revision, with byte
+   progress the web app shows (size, done, rate, time left), then started. Nothing silently blocks for minutes.
+3. **One Gemma engine for 128k and 256k.** `gemma` serves chat at `max_kv_size: 262144`; a 128k thread costs
+   what a 128k thread costs.
+4. **Chat as a development tool.** A chat session can be scoped to a repository, gets the builtin tools in a
+   worktree of it, streams tool calls and results, and asks before destructive or expensive actions.
+5. **Superpowers in chat.** The superpowers skills run in airlie chat as they do in Claude Code: bootstrapped at
+   session start, loaded on demand by a skill tool, with todos and subagents.
+6. **Looks and feels like Claude Code desktop.** The chat screen is redesigned toward that look and vibe:
+   mockups first, Noah picks, then build (airlie's web work is mockups-first).
+7. **The doctor stays honest** about what can be resident at once, and the manager enforces the same budget at
+   run time.
 
 ## Non-goals
 
-- Embedding LibreChat or any other chat product in an iframe.
-- OpenCode feature parity in v1 of the web agent (OpenCode remains the laptop front end for studio/story).
-- **bf16** Gemma weights in v1 (stay on **QAT 8-bit** + MTP as in config today).
-- A **:8100** long-context HTTP proxy or any second front door beside serve on **:8090**.
-- **Runtime `max_kv_size` resize** (mlx-vlm fixes KV at process start; see mlx-vlm engine design).
-- A separate **chat-orchestrator** service or process outside serve and the existing engine registry.
-- Hard **chat-exclusive** admission that preempts or kills other engines.
+- OpenCode work. `POST /v1/chat/completions` keeps working as it does; nothing new is built for OpenCode, and
+  this effort may make it unnecessary.
+- Embedding LibreChat or any other chat product.
+- bf16 Gemma (QAT 8-bit; see Decisions).
+- Sharing weights between processes (MLX 0.32.4 cannot; with one engine per model nothing needs to).
+- Long-horizon memory and cross-session recall.
 
 ## Anti-goals
 
-- A model choosing shell, write, git, or `run_tests` when the user has not scoped the session to a repository.
-- Repo-scoped command execution on the host macOS user without a box (except the documented seatbelt
-  fallback, with an explicit unboxed warning).
-- Two competing sources of truth for thread state (Pinia and a nested chat app both owning routes or session).
-- Admitting studio work by **stopping** the pinned chat Gemma or the engine an interactive user is waiting on.
-- Advertising a 262k context window while `gemma_long` is cold and the effective backend is still `gemma`.
+- A user (or a role) getting an error because a model is not running.
+- A download or a cold start that looks like a hang: no progress, no status.
+- The manager stopping an engine a request or a held session is using, to make room for something else.
+- A model running shell, write, git, or tests in a session not scoped to a repository.
+- Model-chosen commands running unconfined on the host.
+- Two sources of truth for a thread (the Vue store and a chat library both owning session or routes).
+- Editing the superpowers skill bodies (the porting guide asks ports not to).
 
 ## Decisions
 
-### Shape: Approach C hybrid (shell + thread library)
+### One Gemma engine at 262144
 
-- **Pinia + Vue own:** layout, left nav, board and StoryCard entry points, repo picker, mode indicators,
-  confirmation modals, attachment and skill pickers, HUD chrome, and everything that is not the scrolling
-  transcript.
-- **assistant-ui + AI SDK own:** the `Thread` (messages, streaming deltas, tool-call parts, markdown/code
-  blocks). No separate chat SPA, no iframe.
-- **No LibreChat.** All chat UI lives in the existing `web/` app.
+Verified in the installed mlx-vlm 0.7.12: Gemma 4 builds its own cache (`models/gemma4/language.py`
+`make_cache`): a growing `KVCache` for its 5 full-attention layers, allocated 256 tokens at a time, and a
+1024-token `RotatingKVCache` for its 25 sliding layers. For Gemma, `--max-kv-size` reserves nothing; it is the
+server's context budget check (`server/generation.py` `_check_configured_context_budget`), and it can even be
+patched live (`server/runtime_config.py` lists it as a live knob). At 8-bit KV a full 262144-token thread holds
+about 3 GB; a 128k thread about 1.5 GB.
 
-### Engine lifecycle (dynamic context)
+So: one `gemma` engine, `max_kv_size: 262144`, the `chat` role's `max_context: 262144`. No `gemma_long`, no
+promote/demote router, no cold prefill, no one-hot rule. Long threads decode slower than short ones because
+attention reads more; that is the only cost.
 
-Managed engines gain explicit lifecycle verbs in config and in the engine registry:
+**Weights: QAT 8-bit** (`mlx-community/gemma-4-26B-A4B-it-qat-8bit`, 28.0 GB) with its QAT assistant in bf16
+(`gemma-4-26B-A4B-it-qat-assistant-bf16`, 0.87 GB) as the MTP draft head, as on the doctor branch. bf16 (52.5 GB)
+was weighed and left out: about 24 GB more for a quality difference QAT is trained to remove, and about half the
+decode speed (decoding reads twice the bytes per active parameter). Noah's call on 2026-11-11 after that
+comparison is pending; this spec assumes 8-bit.
 
-| Verb | Meaning |
-|------|---------|
-| `pin` | Process should stay up across idle (chat Gemma default). |
-| `ensure` | Start if down; wait until health and model loaded. |
-| `hold` | Keep resident while a session or job references this engine. |
-| `idle_unload_s` | After this many seconds with no holders, stop the process if not pinned. |
+**Risk to validate first:** mlx-vlm's README documents Gemma 4 MTP (`--draft-kind mtp --draft-block-size 4`)
+only for the bf16 body with the bf16 assistant. The QAT pairing is unlisted, and the QAT assistant's config says
+`max_position_embeddings: 131072` (the body and the non-QAT assistant say 262144). The first task checks draft
+acceptance at short and long context; if MTP misbehaves past 128k, MTP is turned off for that request range or
+the engine runs without MTP, not bf16.
 
-**Unload** always means **SIGTERM/SIGKILL via `engine/process.py`**, not mlx-vlm's in-process model swap (that
-path is irrelevant when each process holds one model and one fixed `--max-kv-size`).
+### The model manager
 
-The doctor sums preloaded weights, per-engine `max_kv_size` KV, prefix-cache `cache_memory_gb`, and which
-engines are actually running, against the wired limit — including the **one-hot** rule that only one of
-`gemma` / `gemma_long` should be hot for chat at a time unless a migration window explicitly holds both.
+A new component in serve owns every `mlx_vlm` engine's process. It builds on `engine/process.py`, which already
+starts an engine detached, waits for `/health` and `/v1/models` `loaded: true` (mlx-vlm preloads in its lifespan,
+so a 200 means ready), and stops it with SIGTERM then SIGKILL.
 
-Default pinning: the **`gemma`** engine (`max_kv_size: 131072`, port **8084**) is pinned for interactive chat.
-**`gemma_long`** (`max_kv_size: 262144`, port **8085**) starts on demand and unloads on `idle_unload_s` when no
-holder references it.
+| Concept | Meaning |
+|---|---|
+| `lifecycle: pinned` | Started when serve starts, never stopped for idleness. |
+| `lifecycle: on_demand` | Started by the first request that needs it; stopped after `idle_unload_s` with no holders. |
+| `ensure(engine)` | Start if down (downloading first if the snapshot is missing), wait until ready. Concurrent callers share one start. |
+| `hold(engine, owner)` / release | A request, a chat session with an open turn, or a story layer keeps the engine resident. |
+| `idle_unload_s` | Seconds without holders before an on-demand engine stops. |
 
-### Dual Gemma behind serve (:8090)
+- **Where it hooks in.** Every path to an engine goes through it: serve's `upstream()` (the chat route and
+  `/v1/chat/completions`), and the orchestrator's `HTTPEngine` / `RoutedEngine` for the story line and studio
+  roles. A caller asks for a role's engine, the manager ensures and holds it, the caller releases when done.
+- **Budget.** Before starting an engine the manager adds its projected footprint (the doctor's arithmetic:
+  weights, MTP head, one live sequence at its longest role context, prefix cache) to what is running and
+  compares with the wired limit. If it does not fit, it stops idle on-demand engines, least recently used first.
+  If it still does not fit, the request waits with a visible status ("waiting for memory: reviewer is running a
+  review") and starts when a holder releases. It never stops an engine with a holder.
+- **Unload means stopping the process.** mlx-vlm has an in-process swap (a request naming another model unloads
+  the current one; `POST /unload`), but stopping the process is the only way to return all Metal memory, and
+  airlie keeps one model per process. Serve pins the `model` name it sends so a request never triggers the swap.
+- **Defaults** (Noah 2026-11-11: the reviewer does not need to stay warm; the rest are Claude's call):
 
-Both engines share the same **QAT 8-bit** snapshot and **MTP assistant** draft head (per `config/models.yaml`
-and the existing `gemma` engine block in `airlie.yaml`). They differ only in **`max_kv_size`**:
+  | Engine | Lifecycle | Why |
+  |---|---|---|
+  | `main` (generalist) | pinned | the chief and every studio role |
+  | `decision` (decider-2b) | pinned | small, and the router asks it on every route |
+  | `gemma` | pinned | interactive chat should answer at once |
+  | `small` | on_demand | summarizer, judge, hypothesizer |
+  | `reviewer` (Muse) | on_demand | reviews are occasional |
 
-| Engine | Port | `max_kv_size` | Role |
-|--------|------|---------------|------|
-| `gemma` | 8084 | 131072 | Default chat, design, ux, OpenCode roles on Gemma |
-| `gemma_long` | 8085 | 262144 | Long threads after router promotion |
+  `idle_unload_s` defaults to 600. All of it is config.
+- **Prefix cache across restarts.** An on-demand engine loses its in-memory prefix cache when it stops.
+  mlx-vlm's APC has a warm-disk tier that persists prefixes and survives a restart; the builder decides whether
+  to turn it on for on-demand engines.
+- **Owner.** `task serve` owns the manager. `task up` keeps working by starting the pinned engines; `airlie
+  engine up NAME` starts any engine by hand and the manager adopts a running engine it finds on the configured
+  port. A one-off CLI run (`task run`) without serve ensures engines itself and leaves them for serve to stop.
 
-**One-hot on the chat path:** serve's chief/chat roles target **at most one** of these processes for
-generation at a time. Switching backends stops using the demoted engine and routes new prefill/decode to the
-promoted one.
+### Downloads with progress
 
-**No :8100 proxy.** Long context is selected inside serve (router + engine registry), not by forwarding to
-another HTTP port.
+mlx-vlm reports no download or load progress (its `snapshot_download` output goes to its log), so airlie
+downloads before it starts the server:
 
-**Hysteresis router** (configurable thresholds, shared by web and OpenCode):
+- `huggingface_hub.snapshot_download(repo, revision=<pinned sha>, tqdm_class=…)` drives two aggregate byte bars
+  ("Downloading bytes", "Reconstructing") in 2.2.0; a `dry_run=True` call first gives the total size and what is
+  already cached. hf_xet is the transfer path (`hf_transfer` is deprecated).
+- `task models:pull` moves from shelling out to `hf download` onto the same function, so the CLI and serve share
+  one downloader.
+- Serve keeps one download per snapshot; progress is published as an event the web app shows wherever the model
+  is waited on (the chat thread, a story card). Body and MTP head download together.
+- A failed download is a visible error with a retry, not a hang. Disk space is checked against the dry-run size
+  first.
 
-- **Promote** to `gemma_long` when estimated context (prompt + completion + attachments) crosses an **upper**
-  bound below 131072 effective, or when the turn handler cannot fit the next message in `gemma`'s KV.
-- **Demote** to `gemma` only when usage falls below a **lower** bound with margin (hysteresis avoids flapping).
-- **Cold prefill on promote:** `ensure` `gemma_long`, run prefill for the retained transcript (and configured
-  summary slice), then attach the session holder so `idle_unload_s` does not drop the engine mid-turn.
+### Engine status for the UI
 
-Studio router (`jev` / `chief`) for **specialist role picking** stays as today; this router is **only** for
-Gemma **context backend** selection on the chat/completions path.
+Serve exposes each engine's state (`stopped`, `downloading` with progress, `starting`, `ready`, `waiting for
+memory` with the reason, `stopping`, `failed` with the reason) as a GET and as server events. The chat shows it
+inline when a turn waits ("Starting Gemma…", "Downloading Muse Glimmer: 7.2 of 19.4 GB, 3 min left"). The
+Admin or Metrics tab can show the full table. The user never has to start anything.
 
-### Admission and QoS
+### Chat as a development tool
 
-Admission is **not** hard-exclusive for chat:
+- **Modes.** A session is either **general** (no repository: prose, skills, web search/fetch when configured;
+  no shell, write, git, or tests) or **repo-scoped** (a repository and branch picked for the session). The
+  server enforces the mode: the turn handler registers and accepts only that mode's tools.
+- **Repo-scoped sessions get a worktree** of the repository, the builtin tools (`read_file`, `write_file`,
+  `edit_file`, `list_dir`, `grep`, `shell`, `run_tests`, `git`), and `compute`, all confined to that worktree.
+- **Confinement before Tart.** airlie already confines model-chosen commands with seatbelt
+  (`tools/confine.py`, `tools.sandbox: true`, the default): writes are limited to the worktree; reads as the user
+  stay open; `agent_env` gives commands a credential-free environment. Repo-scoped chat uses that from its first
+  phase, with a visible "not in a box" marker in the session header. Tart boxes come later (below).
+- **Confirmations.** The client asks before `shell` commands, `git` pushes, starting studio work, and story
+  tools that change the pipeline; the server enforces the same list. By default read-only tools and edits inside
+  the worktree do not ask (Claude's call); which tools ask is config.
+- **Pushing and PRs** stay host-side tools that use the GitHub App; no token enters the worktree's environment.
+- **Entry points** in today's app: the Chat tab (a repository and branch selector in the chat header, reusing
+  the board's repository typeahead), and "open in chat" from a board card (`ItemCard` / `CardModal`). There is no
+  left nav today; the redesign may add a session list.
 
-- On each start request (engine, team slot, or heavy peer), compute **free headroom** from the doctor's wired
-  projection and currently running processes.
-- If headroom is insufficient, **queue, delay, or refuse** the new peer with a structured reason. Do **not**
-  terminate `gemma`, `gemma_long`, or another engine solely to satisfy a background job.
-- When **interactive chat** is active (web turn in flight or OpenCode stream registered on serve), the
-  scheduler **prefers** chat: background studio lanes back off within existing slot limits rather than
-  competing for the last gigabyte beside Gemma.
-- Knobs live under committed config (and `airlie.local.yaml` overrides): hysteresis bytes/tokens, `idle_unload_s`,
-  pin defaults, chat-preferring weights, max wait before refuse.
+### Superpowers in chat
 
-### OpenCode, limits, and HUD
+The superpowers plugin (MIT, Jesse Vincent) is built to be ported: skills name actions ("invoke a skill",
+"dispatch a subagent", "create a todo"), and each harness ships a small mapping from those actions to its tools
+(`skills/using-superpowers/references/*-tools.md`; Hermes's is the closest shape to airlie). airlie becomes one
+more harness:
 
-- **OpenCode** keeps `POST /v1/chat/completions` on **`http://127.0.0.1:8090/v1`** (unchanged transport).
-- Role metadata exposes **`limit.context: 128000`** aligned with the 128k Gemma slot (not 262144 unless the
-  client has promoted and `GET /v1/airlie/chat/context` reports `backend: gemma_long` with a higher
-  `effective_limit`).
-- **`GET /v1/airlie/chat/context`** (session id or OpenCode correlation id): returns current **`usage`**
-  (prompt/completion/total as serve tracks them), **`effective_limit`** (131072 or 262144 per active backend),
-  and **`backend`** (`gemma` | `gemma_long`). Web HUD and OpenCode-compatible clients poll or subscribe alongside
-  the stream.
-- Phase 6 adds **compaction** (summarize-and-continue) using the same endpoint so the UI does not guess.
+- **Vendored, pinned, unedited.** A pinned copy of the superpowers skills lives in the repo with its LICENSE,
+  updated deliberately. airlie adds an `airlie-tools.md` mapping beside them, not edits.
+- **Bootstrap.** Every chat session's system prompt starts with `using-superpowers` and the airlie mapping
+  (about 1–2k tokens), injected automatically (the porting guide's one hard requirement). Subagents skip it.
+- **Tools to add:**
+  - `skill(name)`: returns a skill's `SKILL.md`, and its sibling files on request; the session prompt lists each
+    skill's `description:`.
+  - `todo`: a per-session task list the thread renders as a checklist.
+  - `task` (subagent): runs a fresh-context tool loop on a chosen role with a prompt and returns its final text;
+    used by subagent-driven-development and parallel dispatch. It holds that role's engine through the manager,
+    so a subagent on the reviewer starts Muse on demand.
+- **airlie's own chat skills** (`skills/chat/*.md`, the slash commands with `summary:` frontmatter) stay as slash
+  commands. Picking one from the slash menu still injects it.
+- **Context.** A brainstorm → plan → subagent-driven run loads about 15–20k tokens of skill text; subagents keep
+  the controller's context small, and 262k leaves room for diffs and test output.
+- **Visual companion** (the brainstorming skill's local browser server) is optional and later.
 
-### Modes
+### Thread, transport, and the redesign
 
-| Mode | How the user gets there | Tools | Isolation |
-|------|-------------------------|-------|-----------|
-| **General** | Chat without a selected repository (home / global chat) | Skills and prose; optional web search/fetch when configured. No `shell`, `write`, `git`, or `run_tests`. | N/A (no repo commands) |
-| **Repo-scoped** | Left-nav **+** on a repo, or opening chat from a board card / StoryCard with repo context | Full `tools.builtin` for that checkout, plus story and job tools where policy allows | Tart box per session (see below) |
+- **Vue owns the screen.** The chat stays in `web/` (Vue 3.5, Pinia, reka-ui). The current thread
+  (`web/src/screens/chat/Thread.vue`, `Bubble.vue`, `Composer.vue`, `SlashMenu.vue`, the story and job cards)
+  is redesigned, not replaced by another app.
+- **Transport: the AI SDK 7 UI message stream.** A new `POST /v1/airlie/chat/turn` emits the AI SDK UI message
+  stream protocol (SSE, header `x-vercel-ai-ui-message-stream: v1`, `data:` JSON chunks: `start`, `text-*`,
+  `reasoning-*`, `tool-input-*`, `tool-output-available`, `data-*` for engine status and todos, `finish`,
+  `[DONE]`). The client uses `@ai-sdk/vue` 4's `Chat` with `DefaultChatTransport`. Session id, mode, repository
+  and branch travel in the request body. The tool loop runs on the server and streams.
+- **assistant-ui is not adopted in v1.** The first draft chose assistant-ui for the thread. It is a React
+  library; `@assistant-ui/vue` exists but is 0.0.7 (2026-10-28) with several features React-only, and its AI SDK
+  runtime pulls in `@ai-sdk/react`. The redesign builds the thread in Vue on `@ai-sdk/vue`'s message parts;
+  `@assistant-ui/vue` can be revisited once it matures. (Claude's call; Noah to confirm.)
+- **Look and feel.** Toward Claude Code desktop: a calm single column, collapsible tool-call blocks with their
+  output, a thinking/reasoning disclosure, inline diffs for edits, the todo checklist, permission prompts in
+  the thread, and the session header showing repository, branch, model, context used, and engine status.
+  Mockups first (three options, Noah picks), then build.
+- **Context readout.** Each turn's `finish` carries usage; the header shows tokens used against the engine's
+  limit (262144 for Gemma).
+- `POST /v1/chat/completions` and the existing `/v1/airlie/chat/attachments` and `/v1/airlie/chat/skills`
+  routes stay.
 
-Mode is not honor-system: the turn handler rejects disallowed tools for general chat. Repo context is carried
-on the session (repository identity and ref), not inferred from prompt text alone.
+### Hooks
 
-### Confirmations (repo-scoped)
-
-Before execution, the client shows a confirm step (and the server enforces the same policy) for:
-
-- **shell** (any command the model proposes),
-- **jobs_start** (starting studio work from chat),
-- story tools that mutate pipeline state (move card, comment, start story workflow), as defined in the tool
-  catalog.
-
-General mode never offers these confirms because those tools are not registered.
-
-### Isolation: Tart first-class for repo-scoped chat
-
-Repo-scoped chat sessions follow the same trust boundary as remote studio jobs, adapted to **one box per chat
-session** instead of one box per job:
-
-- **Host (trusted):** `task serve`, models, credentials, orchestration, GitHub App publish, and the chat turn
-  API.
-- **Box (untrusted):** the session's checkout and every command the model runs through `subproc` / `agent_env`
-  for that session.
-
-Implementation sits on the existing seam where airlie already starts model-chosen processes; the box backend
-is Tart as in [`2026-10-16-remote-studio-design.md`](2026-10-16-remote-studio-design.md).
-
-- **Day one:** Linux boxes by default; macOS boxes later (queue when the host hits the two-VM cap).
-- **Fallback:** if Tart is unavailable, seatbelt-style sandboxing may run commands with an **unboxed**
-  warning in the thread. Repo-scoped chat must not silently run on the host without that warning.
-
-### Hooks and skills bootstrap
-
-The chat agent runtime exposes hooks the shell and server can rely on:
+The turn handler runs fixed hooks so policy, superpowers, and logging sit in one place:
 
 | Hook | Purpose |
-|------|---------|
-| `sessionStart` | Bind mode, repo, box id; load skills; emit system context |
-| `beforeTurn` | Policy, attachment limits, mode guardrails |
-| `afterTool` | Audit log, UI side-effects (job cards, story updates) |
-| `onFinish` | Persist transcript slice, release box resources when the session ends |
+|---|---|
+| `session_start` | Bind mode, repository, worktree; inject the superpowers bootstrap and the slash-command list |
+| `before_turn` | Mode guardrails, attachment limits, ensure and hold the role's engine |
+| `after_tool` | Audit log, UI side effects (todos, job and story cards) |
+| `on_finish` | Persist the turn, release holders; at session end remove an unused worktree |
 
-On `sessionStart`, bootstrap from `skills/chat/SKILL.md` (and repo-local skills when repo-scoped) so every
-thread starts from the same conversational contract.
+### Isolation later: Tart boxes
 
-### Transport
+Repo-scoped sessions move into Tart Linux boxes later, on the remote-studio trust boundary (host keeps serve,
+models, and credentials; the box holds the checkout and runs every model-chosen command). Linux guests have no
+framework cap; the two-VM limit applies only to macOS guests (macOS EULA), so it matters only for the later
+macOS boxes. The box backend replaces seatbelt behind the same seam (`subproc` / `agent_env` and
+`tools/shell.py`), and the "not in a box" marker goes away for boxed sessions. Tart is free under its Fair
+Source licence on a personal workstation.
 
-- **Web agent:** `POST /v1/airlie/chat/turn` accepts and returns `UIMessage`-compatible payloads (AI SDK),
-  including streaming tool parts. Session id and mode travel in the request envelope the builder defines.
-- **General chat + OpenCode:** `POST /v1/chat/completions` remains unchanged for the chief role and Gemma roles,
-  streaming SSE, and MCP clients. No requirement that OpenCode speak `UIMessage` in v1.
+### Memory and the doctor
 
-OpenCode's documented entry point stays **port 8090** on the Studio (serve URL + API key), alongside the web
-app. Engine ports for Gemma remain **8084** and **8085**; other studio engines keep **8080**, **8081**,
-**8082**, **8083** per base config.
-
-### Repo and shell integration (later phases)
-
-Phase 4 wires repo-scoped chat into navigation the shell already has: left-nav repo **+**, board and
-StoryCard deep links, shared Pinia stores for the active checkout, and library paths for attachments. Details
-of each screen stay in the web-app specs; this design only requires that repo-scoped chat reuses the same repo
-identity serve already uses for jobs and stories.
+- The doctor (fixed on 2026-11-11: MTP heads, one live sequence per other engine, KV scaled by `kv_bits`)
+  projects two numbers per profile: the **pinned floor** (pinned engines only) and **everything resident**. The
+  floor must fit the wired limit; everything resident may exceed it, and the doctor says the manager will queue
+  or evict.
+- With the defaults above (QAT 8-bit Gemma at 262144, reviewer and small on demand) everything resident is about
+  111 GB.
+- **The wired limit on this Mac.** `iogpu.wired_limit_mb` currently reads 0 (the system default; MLX recommends
+  about 115 GB of 137 GB), while `airlie.yaml` assumes 126976 MB. Setting the sysctl needs sudo and resets on
+  reboot. The doctor already compares; the plan should make it state which limit is in force and how to set it.
+- Two processes never share weights (MLX 0.32.4 reads safetensors into each process's own Metal buffers), so the
+  manager's arithmetic counts each engine's weights in full.
 
 ## Configurable behavior
 
-All new behavior is **config-driven**, merged in the usual order (`includes` → root → `airlie.local.yaml` →
-topology profile). Expected keys (exact schema is for the builder):
+Merged in the usual order (`includes` → root → `airlie.local.yaml` → topology profile; profiles carry no
+engine overrides). Expected keys, exact schema left to the builder:
 
-- `engines.gemma` / `engines.gemma_long` — ports, `max_kv_size`, pin, `idle_unload_s`, MTP and cache fields.
-- `chat.context_router` — promote/demote thresholds, hysteresis, cold-prefill policy.
-- `chat.admission` — headroom margins, chat-preferring scheduler weights, max queue wait.
-- `chat.modes` — tool allowlists for general vs repo-scoped (or reuse `tools` policy hooks).
-
-No hard-coded memory floors in Python without a config override.
+- `engines.<name>.lifecycle` (`pinned` | `on_demand`) and `engines.<name>.idle_unload_s`.
+- `models.<name>.mtp.estimated_memory_gb` (added on the doctor branch).
+- `manager`: budget margin, start and download timeouts, the wait message timeout.
+- `chat.modes`: the tool lists for general and repo-scoped sessions, and which tools ask first (extends today's
+  `chat:` section, which has only `attachments`).
+- `chat.superpowers`: on/off and the vendored skills path.
+- `roles.chat.max_context: 262144`, `engines.gemma.max_kv_size: 262144`.
 
 ## Testing
 
-Every change must pass the Airlie gate from the repository root, in order:
+Every change passes the gate in [`AGENTS.md`](../../../AGENTS.md) (`uv sync --frozen`, ruff, ruff format, mypy,
+`pytest -n auto`, `task web:gate`). Unit tests over 500 ms or on the real clock go in
+`tests/unit/quarantine.toml`.
 
-```sh
-uv sync --frozen
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy
-uv run pytest -q -n auto --maxprocesses 8
-task web:gate
-```
+Unit tests use fakes, never real engines:
 
-Tests that exceed **500 ms** setup+call+teardown or depend on the **real clock** belong in
-[`tests/unit/quarantine.toml`](../../../tests/unit/quarantine.toml) with a `slow:` or `clock:` reason; CI sets
-`AIRLIE_TEST_BUDGET_MS=500` and fails on new slow tests in the default run. Run quarantined tests with
-`task test:quarantine`; they must still pass.
+- **Manager:** ensure (one start for concurrent callers), hold/release, idle unload on a fake clock, pinned
+  engines never stop, LRU eviction of idle engines only, waiting with a reason when nothing can be evicted,
+  adopting an engine already on its port.
+- **Downloads:** progress events from a fake tqdm, dry-run sizing, one download per snapshot, failure and retry,
+  disk-space refusal.
+- **Turn route:** the UI message stream chunks for text, reasoning, tool input and output, data parts, and
+  errors; mode gating; confirmations enforced server-side.
+- **Superpowers harness:** bootstrap injected once per session and not into subagents; `skill` returns the file
+  and siblings; `todo`; `task` runs a fresh context and holds its engine.
+- **Web:** `task web:gate` covers the thread's part rendering, the status line, and the permission prompt.
 
-**Unit tests** for this effort (no real mlx-vlm, Tart, or GPU in the default gate):
+Live checks (outside the default gate): MTP acceptance on the QAT pairing at short and long context; a cold
+start of Muse through a review; a download of a small model with progress in the UI; one superpowers flow
+(brainstorm → plan → one subagent task) in a repo-scoped chat.
 
-- **Context router** — promote/demote hysteresis with injected token counts and fake engine handles.
-- **Admission** — headroom calculations from stubbed doctor projections; refuse/delay paths; assert chat engines
-  are never chosen as victims.
-- **QoS** — chat-preferring scheduling with a fake clock and controllable slot releases.
-- **Mode gating** — general vs repo-scoped tool registration and turn rejection.
-- **Hooks** — `sessionStart` / `beforeTurn` / `afterTool` / `onFinish` invoked in order with test doubles.
-
-Use **injected memory and fake clocks**; do not start real engine processes in unit tests. Integration and
-live tests may hit real engines under `tests/live/` or quarantine, not in the default parallel unit job.
-
-Config for tests should use **isolated fixtures** (temporary config trees), not the developer's
-`airlie.local.yaml`. Public seams (`Engine` protocol, turn handler, router interface) must accept fakes without
-network I/O.
-
-## Order of work (phases)
+## Order of work
 
 | Phase | Scope |
-|-------|--------|
-| **0 — Lifecycle MVP** | `pin` / `ensure` / `hold` / `idle_unload_s`, honest doctor projection, `gemma` pinned at 131072, process stop = unload. |
-| **1 — Modes, hooks, turn API** | General vs repo-scoped enforcement, hooks, `POST /v1/airlie/chat/turn`, assistant-ui `Thread` on AI SDK transport. |
-| **2 — Dynamic router** | `gemma_long` at 262144 on 8085, one-hot chat path, hysteresis, cold prefill on promote, `GET /v1/airlie/chat/context`. |
-| **3 — Tart, tools, confirms** | Box per repo-scoped session, builtin tools in the box, confirmation flow for shell, `jobs_start`, story tools. |
-| **4 — Shell, libs, repo nav** | Pinia session store, repo **+**, board / StoryCard entry, attachments and skills aligned with `web/` routes. |
-| **5 — Composer JIT** | Skills and policy injected per turn without duplicating thread ownership (composer integration as config allows). |
-| **6 — HUD and compaction** | Token budget UI, summarization, long-thread ergonomics using `usage` / `effective_limit` / `backend`. |
+|---|---|
+| **0 — Gemma at 262k** | `max_kv_size` and `chat.max_context` to 262144; MTP acceptance check on the QAT pairing; the doctor's pinned-floor and everything-resident rows; the wired-limit row says which limit is in force. |
+| **1 — Model manager** | `lifecycle`, `ensure`, `hold`, `idle_unload_s`, budget with LRU eviction and waiting, adoption of running engines; every engine path goes through it; reviewer and small on demand. |
+| **2 — Downloads and status** | `snapshot_download` with progress for serve and `task models:pull`; the engine status GET and events. |
+| **3 — Turn route and tools** | `POST /v1/airlie/chat/turn` with the UI message stream, server-side tool loop, modes, repo-scoped worktrees under seatbelt, confirmations. |
+| **4 — Superpowers** | Vendored skills, the airlie mapping, bootstrap, `skill`, `todo`, `task`. |
+| **5 — Redesign** | Mockups (three options, Noah picks), then the Vue thread on `@ai-sdk/vue`: tool blocks, diffs, todos, permission prompts, status and context in the header. |
+| **6 — Tart boxes** | Linux boxes for repo-scoped sessions behind the shell seam. |
+| **Later** | Compaction (summarize and continue), the visual companion, macOS boxes. |
 
-## Later, not in this effort
-
-- Full OpenCode parity in the browser (plan approval UX, teleport, every MCP tool).
-- macOS Tart boxes as the default for Apple-app repos (queued behind Linux default).
-- Replacing `/v1/chat/completions` for OpenCode with the turn API.
-- bf16 Gemma snapshots or a third Gemma process beyond the 128k/262144 pair.
+The redesign mockups (phase 5) can start in parallel with phases 1–4; the build waits for Noah's pick and for
+the turn route.
 
 ## Left to the builder
 
-Exact `UIMessage` envelope fields (session id, box id, stream markers); assistant-ui component boundaries
-inside `web/`; seatbelt fallback mechanics; which story tools require confirm in v1; queue behavior when Tart
-is at capacity; numeric defaults for `chat.context_router` and `chat.admission`; whether promotion copies the
-full transcript or a summary slice on cold prefill.
+The exact UI-message envelope fields; the manager's module layout and how the orchestrator's engines get it
+injected; whether on-demand engines use APC's warm-disk tier; which story tools need a confirmation in v1;
+numeric defaults for the manager's margin and timeouts; the worktree location and cleanup rule for chat
+sessions; how the `task` tool picks a role when a skill does not say.
 
 ## Review comments (2026-11-11)
 
@@ -453,3 +467,53 @@ bite implementation or ops; **nit** is clarity or test hygiene.
 - Lock **repo-scoped behavior before Tart** (#2) and **OpenCode tool confirms** (#25).
 - Publish **admission reason codes + interactive-chat registry** (#13–14) for the listed unit tests to assert real
   behavior, not only injected stubs.
+
+## Review resolutions (2026-11-11 revision)
+
+How the revision above answers each comment. "Moot" means the comment was about the two-Gemma router, which the
+revision removes.
+
+1. **Phases and slices.** Reordered: the engine work (phases 0–2) lands before any UI; each phase is its own
+   vertical slice with config, doctor rows, and tests.
+2. **Repo-scoped before Tart.** Decided: repo-scoped chat runs under today's seatbelt confinement from phase 3,
+   with a visible "not in a box" marker; Tart replaces it in phase 6. Never silent host execution.
+3. **Navigation after Tart.** Repo selection lives in the chat header from phase 3, not in a later nav phase.
+4. **Composer JIT vs compaction.** "Composer JIT" is dropped as a term (it collided with the workflow composer
+   and with the chat input). Per-turn skill loading is the `skill` tool; with 262k the budget pressure is lower,
+   and compaction stays later.
+5. **Two engines, one catalog model.** Moot: one Gemma engine.
+6. **Doctor vs one-hot.** Moot for Gemma. The doctor gains pinned-floor and everything-resident rows instead.
+7. **Duplicate prefix cache.** Moot: one Gemma process.
+8. **128000 vs 131072.** Moot for this effort (OpenCode is out of scope); the chat limit is the engine's 262144.
+9. **Cold prefill.** Moot: no backend switch.
+10. **"Cannot fit in gemma's KV".** Moot; the only limit is the server's context check at 262144, and the turn
+    route reports usage on every `finish`.
+11. **In-flight stream on switch.** Moot: no switch. The manager never stops an engine that has a holder, which
+    covers a streaming turn.
+12. **Router naming.** Moot: there is no context router; the studio router (`router.kind`) is unchanged.
+13. **Admission contracts.** The manager's waits carry a reason (shown in the UI and in the status events); the
+    reason codes are part of the status API.
+14. **"Interactive chat is active".** Replaced by holders: an open turn holds its engine through the manager,
+    the same seam the story line uses.
+15. **Chat preference vs lane fanout.** No separate QoS scheduler: the manager admits or waits by memory, and
+    never evicts a held engine. The story line's own slot limits are unchanged.
+16. **Units and refusal codes.** Left to the builder with the manager's numeric defaults; waiting is shown, not
+    refused, unless a timeout passes.
+17. **128k advertised vs 262k.** Moot for OpenCode; the web chat reads usage from each `finish`.
+18. **Context endpoint stability.** Replaced by usage on each turn's `finish` and the engine status API.
+19. **Compaction engine.** Later; not in this effort.
+20. **Box per session vs capacity.** Linux Tart guests have no framework cap (the two-VM limit is macOS guests
+    only); any cap on Linux boxes is a memory policy for phase 6.
+21. **Seatbelt fallback threat model.** Seatbelt is today's default confinement for every model-chosen command,
+    not a fallback; chat uses it until phase 6 with the marker.
+22. **Credentials in the box.** No credential enters the worktree's environment (`agent_env`); push and PR are
+    host-side tools on the GitHub App, as in remote studio.
+23. **`on_finish` vs idle unload.** Session end releases engine holders, then removes an unused worktree; idle
+    unload follows on its own timer.
+24. **Two transports, one router.** Moot: `/v1/chat/completions` stays as it is; only the turn route is new.
+25. **Confirmations on OpenCode.** Out of scope (OpenCode).
+26. **Web tests.** Phase 5's build must add `web:gate` coverage for message parts, the status line, and
+    permission prompts.
+27. **Migration window.** Moot: no second Gemma.
+28. **Web search in general mode.** Same tools and logging as today's `web_search` / `web_fetch` roles.
+29. **Single source.** This file is the source for chat, the model manager, and long context.
