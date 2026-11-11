@@ -214,12 +214,15 @@ def _resident_engines(cfg: AirlieConfig) -> list[Any]:
 def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[str]]:
     """Spec 01 §1 budget: preloaded weights + the live KV + the prefix cache + OS reserve.
 
-    The live KV of the single, teams and fork topologies is K × max_kv_size. The studio's is its two lanes'
+    The weights are each resident model's and its MTP head's (the --draft-model loads beside the body). The
+    live KV of the single, teams and fork topologies is K × max_kv_size. The studio's is its two lanes'
     (planning-line P5b, D10): the build lane's one sequence at the coder's `max_context`, plus `line.fanout`
-    short asks at `line.consult_context`, each at its model's KV rate. The prefix cache is what the engine's
-    `cache_memory_gb` sets aside.
+    short asks at `line.consult_context`, each at its model's KV rate. Every other resident engine holds one
+    sequence at the longest context its roles ask (`other_engines_kv`). KV is the catalog's bf16 rate scaled
+    to each engine's `kv_bits` (`kv_scale`). The prefix cache is what the engine's `cache_memory_gb` sets
+    aside.
 
-    Returns (projected GB, names of preloaded models with no estimated_memory_gb)."""
+    Returns (projected GB, names of preloaded models or MTP heads with no estimated_memory_gb)."""
     e = cfg.engines[engine_name]
     weights = 0.0
     cache = 0.0
@@ -231,34 +234,90 @@ def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[
         cache += cache_memory_gb(other)
         for mname in other.models:
             m = cfg.models[mname]
-            if m.estimated_memory_gb is None:
-                unknown.append(mname)
-            else:
-                weights += m.estimated_memory_gb
-    return weights + live_kv_gb(cfg, e) + cache + cfg.memory.os_reserve_gb, unknown
+            parts = [(mname, m.estimated_memory_gb)]
+            if m.mtp and not other.decision:  # served beside the body (engine/mlx_vlm.py)
+                parts.append((f"{mname} MTP head", m.mtp.estimated_memory_gb))
+            for label, gb in parts:
+                if gb is None:
+                    unknown.append(label)
+                else:
+                    weights += gb
+    others = sum(gb for _, gb in other_engines_kv(cfg).values())
+    return weights + live_kv_gb(cfg, e) + others + cache + cfg.memory.os_reserve_gb, unknown
+
+
+def _lane_engines(cfg: AirlieConfig) -> set[str]:
+    """The engines whose KV `live_kv_gb` counts: the studio's lanes', or the team role's."""
+    if cfg.topology.kind == "studio":
+        return {cfg.engine_for_role(cfg.story.build_role), cfg.engine_for_role(cfg.story.architect_role)}
+    return {cfg.engine_for_role(cfg.teams.role)}
+
+
+def other_engines_kv(cfg: AirlieConfig) -> dict[str, tuple[int, float]]:
+    """The KV of every resident engine `live_kv_gb` leaves out, as {engine: (tokens, GB)}: one sequence at
+    the longest `max_context` a role on it asks, up to its `max_kv_size`, at that role's model's KV rate and
+    the engine's `kv_bits`. An
+    engine no role sits on (the decision engine, a bench engine) is left out: its prompts are short."""
+    lanes = _lane_engines(cfg)
+    resident = _resident_engines(cfg)
+    out: dict[str, tuple[int, float]] = {}
+    for name, e in cfg.engines.items():
+        if e.kind != "mlx_vlm" or name in lanes or e not in resident:
+            continue
+        seqs = [
+            (tokens, tokens / 1000.0 * cfg.models[r.model].kv_mb_per_1k_tokens / 1024.0 * kv_scale(e))
+            for r in cfg.roles.values()
+            if r.model in e.models
+            for tokens in [min(r.max_context, e.max_kv_size)]
+        ]
+        if seqs:
+            out[name] = max(seqs, key=lambda s: s[1])
+    return out
+
+
+_KV_GROUP = 64  # mlx-vlm's KV quantization group (mlx_vlm/generate/common.py DEFAULT_KV_GROUP_SIZE)
+
+
+def kv_scale(e: Any) -> float:
+    """What an engine's KV costs against the catalog's bf16 `kv_mb_per_1k_tokens`: `kv_bits` a value plus a
+    16-bit scale and bias for each group of 64 when the engine quantizes its KV, else 1."""
+    if e.kind != "mlx_vlm" or e.kv_bits is None:
+        return 1.0
+    return float((e.kv_bits + 2 * 16 / _KV_GROUP) / 16)
 
 
 def live_kv_gb(cfg: AirlieConfig, e: Any) -> float:
-    """The KV the running sequences hold (see `project_memory_gb`)."""
+    """The KV the running sequences hold (see `project_memory_gb`), at each engine's `kv_bits`."""
     if cfg.topology.kind == "studio":
         build = cfg.roles[cfg.story.build_role]
         ask = cfg.roles[cfg.story.architect_role]
-        lane = (build.max_context / 1000.0) * cfg.models[build.model].kv_mb_per_1k_tokens / 1024.0
+        lane = (
+            (build.max_context / 1000.0)
+            * cfg.models[build.model].kv_mb_per_1k_tokens
+            / 1024.0
+            * kv_scale(cfg.engines[cfg.engine_for_role(cfg.story.build_role)])
+        )
         asks = (
             cfg.line.fanout
             * (cfg.line.consult_context / 1000.0)
             * cfg.models[ask.model].kv_mb_per_1k_tokens
             / 1024.0
+            * kv_scale(cfg.engines[cfg.engine_for_role(cfg.story.architect_role)])
         )
         return lane + asks
     team_model = cfg.models[cfg.roles[cfg.teams.role].model]
-    return float(cfg.teams.k * (e.max_kv_size / 1000.0) * team_model.kv_mb_per_1k_tokens / 1024.0)
+    return float(
+        cfg.teams.k * (e.max_kv_size / 1000.0) * team_model.kv_mb_per_1k_tokens / 1024.0 * kv_scale(e)
+    )
 
 
 def projection_detail(cfg: AirlieConfig, e: Any) -> str:
     """What `project_memory_gb` counted, in words for the doctor's row."""
     cache = sum(cache_memory_gb(o) for o in _resident_engines(cfg))
-    tail = f" + {cache:.0f} GB prefix cache" if cache else ""
+    others = other_engines_kv(cfg)
+    seqs = ", ".join(f"{n} at {tokens}" for n, (tokens, _) in others.items())
+    tail = f" + 1 sequence on {seqs}" if others else ""
+    tail += f" + {cache:.0f} GB prefix cache" if cache else ""
     if cfg.topology.kind == "studio":
         build = cfg.roles[cfg.story.build_role]
         return (

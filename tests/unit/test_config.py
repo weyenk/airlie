@@ -380,14 +380,14 @@ def test_committed_config_declares_five_autostart_engines_and_the_bench_engines(
     assert cfg.models["reviewer"].tool_call_parser == "atem"
     gemma = cfg.models["gemma4"]
     assert (gemma.repo, gemma.revision, gemma.mtp_block_size, gemma.tool_call_parser) == (
-        "mlx-community/gemma-4-26B-A4B-it-bf16",
-        "e13fae2a81ec07e3092a3ebb70c80970b640dc3c",
+        "mlx-community/gemma-4-26B-A4B-it-qat-8bit",
+        "bedc5c51905d796b192de24567f358b0b1653d2e",
         4,
         "gemma4",
     )
     assert (gemma.mtp.repo, gemma.mtp.revision) == (
-        "mlx-community/gemma-4-26B-A4B-it-assistant-bf16",
-        "cda74908f1dbe7d3dbd3030e66576a7d4094144f",
+        "mlx-community/gemma-4-26B-A4B-it-qat-assistant-bf16",
+        "b24eea3c9bffc4b84ac7219875abd20529ee43b6",
     )
     assert cfg.roles["chat"].model == cfg.roles["design"].model == cfg.roles["ux"].model == "gemma4"
     assert cfg.engine_for_role("chat") == cfg.engine_for_role("design") == "gemma"
@@ -413,6 +413,8 @@ def test_catalog_kv_constants_follow_each_models_attention_geometry() -> None:
     assert models["small"].kv_mb_per_1k_tokens == 144  # 36 layers × 8 heads × 128 dim
     assert models["qwen25_32b"].kv_mb_per_1k_tokens == 256  # 64 layers × 8 heads × 128 dim
     assert models["llama70b"].kv_mb_per_1k_tokens == 320  # 80 layers × 8 heads × 128 dim
+    # 5 full-attention layers × 2 heads × 512 dim = 20, + the 25 sliding layers' fixed 1024-token window
+    assert models["gemma4"].kv_mb_per_1k_tokens == 22
 
 
 # ---- M0 Task 2: catalog fields ----

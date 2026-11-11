@@ -48,6 +48,9 @@ class ModelRef(Strict):
 
     repo: str
     revision: str = Field(min_length=1, description="HF commit sha; `task models:pull` fetches exactly this")
+    estimated_memory_gb: float | None = Field(
+        default=None, description="an MTP head's weights; feeds the engine memory budget beside the body's"
+    )
 
 
 class ModelSpec(Strict):

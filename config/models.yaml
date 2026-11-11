@@ -32,20 +32,24 @@ models:
     mtp:                           # its MTP head (BF16, 0.85 GB; the 4-bit build drops it): speculative decoding,
       repo: mlx-community/Qwen3.8-27B-MTP-bf16                # the same output distribution, faster decode
       revision: 9b1e8ab2bcfd157956a4d85927310de551fcdab1   # 2026-08-14
+      estimated_memory_gb: 0.85
     bench: true
     estimated_memory_gb: 16.1
     kv_mb_per_1k_tokens: 64
     tool_call_parser: qwen3_coder  # Qwen3.8 writes Qwen3-Coder's XML
     tags: [modern, coder, vision, hybrid-attention]
-  gemma4:                          # Gemma 4 26B-A4B-it: chat, design, ux; MTP assistant (mlx-vlm Gemma 4 docs: bf16 pair, B=4)
-    repo: mlx-community/gemma-4-26B-A4B-it-bf16
-    revision: e13fae2a81ec07e3092a3ebb70c80970b640dc3c   # 2026-03
+  gemma4:                          # Gemma 4 26B-A4B-it QAT 8-bit: chat, design, ux; MTP assistant at B=4 (mlx-vlm Gemma 4 docs)
+    repo: mlx-community/gemma-4-26B-A4B-it-qat-8bit   # bf16 (51.6 GB) does not fit beside the studio
+    revision: bedc5c51905d796b192de24567f358b0b1653d2e   # 2026-06-05
     mtp:
-      repo: mlx-community/gemma-4-26B-A4B-it-assistant-bf16
-      revision: cda74908f1dbe7d3dbd3030e66576a7d4094144f   # 2026-03
+      repo: mlx-community/gemma-4-26B-A4B-it-qat-assistant-bf16   # the QAT body's own assistant, kept bf16
+      revision: b24eea3c9bffc4b84ac7219875abd20529ee43b6   # 2026-06-05
+      estimated_memory_gb: 0.87     # the snapshot's safetensors on the Hub
     mtp_block_size: 4
-    estimated_memory_gb: 12.5       # doctor budget on 128 GB UMA (~89 GB studio projection); bf16+MTP load is ~52.5 GB weights at runtime
-    kv_mb_per_1k_tokens: 96         # 30 layers, 8 KV heads; most layers sliding-window; 8-bit KV on the engine
+    estimated_memory_gb: 28.0       # the snapshot's safetensors on the Hub
+    # 5 full-attention layers × 2 KV heads × 512 dim = 20 MB/1k in bf16; the 25 sliding layers hold 1024 tokens
+    # (0.2 GB a sequence) whatever the length: 22 covers both past ~100k
+    kv_mb_per_1k_tokens: 22
     tool_call_parser: gemma4
     tags: [modern, vision, chat]
   reviewer:                        # Muse Glimmer 30B (Meta, Apache 2.0): the cross-family adversarial reviewer

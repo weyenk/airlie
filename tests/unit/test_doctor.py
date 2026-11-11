@@ -397,11 +397,13 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, unknown = project_memory_gb(studio, "main")
-    # 54.5 GB of weights (small, generalist, reviewer, decider-2b, gemma4) + the build lane's one sequence
-    # at the coder's 65.536k × 64 MB/1k = 4.1 GB + 4 asks at 8.192k = 2.0 GB + 12 GB reserve = 73.6 GB;
-    # caches the autostart mlx-vlm engines set aside (main 8, reviewer 3.5, small 1, gemma 4)
+    # 71.7 GB of weights (small, generalist and its MTP head, reviewer, decider-2b, gemma4 and its assistant)
+    # + the build lane's one sequence at the coder's 65.536k × 64 MB/1k + 4 asks at 8.192k, at main's 8-bit KV
+    # (8.5/16 of bf16) = 3.3 GB + one sequence on each other engine (reviewer 65.536k × 64 at 8-bit = 2.2,
+    # small 16.384k × 144 in bf16 = 2.3, gemma 131.072k × 22 at 8-bit = 1.5) + the caches the autostart
+    # mlx-vlm engines set aside (main 8, reviewer 3.5, small 1, gemma 4) + 12 GB reserve
     assert cache_memory_gb(studio.engines["main"]) == 8.0
-    assert (round(projected, 1), unknown) == (89.1, [])
+    assert (round(projected, 1), unknown) == (109.5, [])
     assert projected < studio.memory.wired_limit_mb / 1024  # 124 GB
     monkeypatch.setattr(
         "airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name
@@ -409,10 +411,11 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
     base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     qwen = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen25")
     projected, unknown = project_memory_gb(qwen, "main")
-    assert (round(projected, 1), unknown) == (120.4, [])
-    assert projected < qwen.memory.wired_limit_mb / 1024
+    # the Qwen2.5 coder engine (19 GB, its lane at 256 MB/1k) does not fit beside Gemma 4, which `task up`
+    # starts whatever the profile: the doctor says so rather than the experiment finding out
+    assert (round(projected, 1), unknown) == (135.0, [])
     row = by_name(run_checks(base, FakeProbe()))["engine:main:memory_projection[studio-qwen25]"]
-    assert row.status == "ok", row
+    assert row.status == "fail" and "projected 135 GB" in row.detail, row
 
 
 def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
@@ -425,18 +428,19 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
     build = studio.roles["coder"]
     rate = studio.models[build.model].kv_mb_per_1k_tokens
     assert round(live_kv_gb(studio, e), 3) == round(
-        build.max_context / 1000 * rate / 1024 + 4 * 8192 / 1000 * rate / 1024, 3
-    )
+        (build.max_context / 1000 * rate / 1024 + 4 * 8192 / 1000 * rate / 1024) * 8.5 / 16, 3
+    )  # main keeps its KV at 8 bits
     wider = studio.model_copy(deep=True)
     wider.line.fanout = 8
     assert live_kv_gb(wider, e) > live_kv_gb(studio, e)  # more asks, more KV
-    assert "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 16 GB prefix cache" in projection_detail(
-        studio, e
+    assert (
+        "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 1 sequence on reviewer at 65536, "
+        "small at 16384, gemma at 131072 + 16 GB prefix cache" in projection_detail(studio, e)
     )
     teams = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="teams")
     assert (
-        live_kv_gb(teams, teams.engines["main"]) == 3 * 131.072 * 64 / 1024
-    )  # the other topologies are as they were
+        live_kv_gb(teams, teams.engines["main"]) == 3 * 131.072 * 64 / 1024 * 8.5 / 16
+    )  # the other topologies count K × max_kv_size
 
 
 def profile_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AirlieConfig:
@@ -661,6 +665,74 @@ def test_memory_projection_counts_every_autostart_mlx_vlm_engine_and_its_cache(t
         16 + 19 + 8 + 4 + live_kv_gb(cfg, cfg.engines["main"]) + cfg.memory.os_reserve_gb
     )
     assert unknown == []
+
+
+TEAM_ROLES = ("coder", "summarizer", "judge", "aggregator")
+
+
+def two_engine_cfg(tmp_path: Path, *, head_gb: float | None) -> AirlieConfig:
+    """main serves the team (with an MTP head); side serves a chat role; idle serves no role."""
+    data = {
+        "version": 1,
+        "engines": {
+            "main": {"kind": "mlx_vlm", "port": 8080, "model": "team", "max_kv_size": 65536},
+            "side": {"kind": "mlx_vlm", "port": 8084, "model": "talk", "max_kv_size": 16384},
+            "idle": {"kind": "mlx_vlm", "port": 8085, "model": "spare"},
+        },
+        "models": {
+            "team": {
+                "repo": "org/t",
+                "revision": "r1",
+                "estimated_memory_gb": 16,
+                "kv_mb_per_1k_tokens": 64,
+                "mtp": {"repo": "org/t-mtp", "revision": "m1", "estimated_memory_gb": head_gb},
+            },
+            "talk": {"repo": "org/c", "revision": "r1", "estimated_memory_gb": 28, "kv_mb_per_1k_tokens": 12},
+            "spare": {"repo": "org/s", "revision": "r1", "estimated_memory_gb": 3},
+        },
+        "roles": {
+            **{r: {"prompt": "p.md", "model": "team"} for r in TEAM_ROLES},
+            "chat": {"prompt": "p.md", "model": "talk", "max_context": 131072},
+        },
+        "teams": {"k": 1},
+    }
+    (tmp_path / "p.md").write_text("x")
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    return load_config(tmp_path / "airlie.yaml")
+
+
+def test_kv_is_charged_at_the_engines_kv_bits() -> None:
+    """The catalog's kv_mb_per_1k_tokens is bf16; an engine started with --kv-bits keeps that many bits a
+    value plus a 16-bit scale and bias per group of 64 (mlx-vlm's default group)."""
+    from airlie.config.schema import EngineSpec
+    from airlie.doctor import kv_scale
+
+    assert kv_scale(EngineSpec(kind="mlx_vlm", model="m")) == 1.0
+    assert kv_scale(EngineSpec(kind="mlx_vlm", model="m", kv_bits=8)) == 8.5 / 16
+    assert kv_scale(EngineSpec(kind="mlx_vlm", model="m", kv_bits=4)) == 4.5 / 16
+
+
+def test_memory_projection_counts_the_mtp_head_beside_its_body(tmp_path: Path) -> None:
+    from airlie.doctor import project_memory_gb
+
+    with_head, unknown = project_memory_gb(two_engine_cfg(tmp_path, head_gb=0.85), "main")
+    assert unknown == []
+    without, unknown = project_memory_gb(two_engine_cfg(tmp_path, head_gb=None), "main")
+    assert unknown == ["team MTP head"]  # a head with no estimate is named, as a body is
+    assert with_head - without == pytest.approx(0.85)
+
+
+def test_memory_projection_counts_one_sequence_on_every_other_engine_a_role_uses(tmp_path: Path) -> None:
+    from airlie.doctor import live_kv_gb, other_engines_kv, project_memory_gb, projection_detail
+
+    cfg = two_engine_cfg(tmp_path, head_gb=0.85)
+    side = 16384 / 1000 * 12 / 1024  # the chat role asks 131072, the engine stops at its max_kv_size
+    assert other_engines_kv(cfg) == {"side": (16384, pytest.approx(side))}  # idle serves no role: no KV
+    gb, _ = project_memory_gb(cfg, "main")
+    assert gb == pytest.approx(16 + 0.85 + 28 + 3 + live_kv_gb(cfg, cfg.engines["main"]) + side + 12)
+    assert "1 teams × 65536 KV + 1 sequence on side at 16384 + 12 GB reserve" in projection_detail(
+        cfg, cfg.engines["main"]
+    )
 
 
 class PackageProbe(FakeProbe):
