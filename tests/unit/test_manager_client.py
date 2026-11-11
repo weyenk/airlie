@@ -269,25 +269,64 @@ async def test_a_failed_delete_does_not_hide_the_result() -> None:
         pass
 
 
-async def test_a_lease_serve_has_forgotten_is_not_renewed_again() -> None:
-    puts: list[str] = []
+class RestartedServe:
+    """serve restarted after granting l1: renewing l1 is a 404 and the next POST grants l2. `refuse_posts`
+    re-POSTs fail first (serve not back yet: a ConnectError, or a status while it boots)."""
 
-    def answer(req: httpx.Request) -> httpx.Response:
+    def __init__(self, refuse_posts: list[int | None] | None = None) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.owners: list[str] = []
+        self.refuse_posts = list(refuse_posts or [])
+        self.granted = 0
+
+    def __call__(self, req: httpx.Request) -> httpx.Response:
+        self.calls.append((req.method, req.url.path.rsplit("/", 1)[-1]))
         if req.method == "POST":
-            return httpx.Response(200, json={"lease": "l", "ttl_s": 3.0})
-        if req.method == "PUT":
-            puts.append("put")
+            self.owners.append(req.content.decode())
+            if self.granted and self.refuse_posts:
+                status = self.refuse_posts.pop(0)
+                if status is None:
+                    raise httpx.ConnectError("refused")
+                return httpx.Response(status, json={"error": "starting"})
+            self.granted += 1
+            return httpx.Response(200, json={"lease": f"l{self.granted}", "ttl_s": 3.0})
+        if req.method == "PUT" and req.url.path.endswith("/l1"):
             return httpx.Response(404, json={"detail": "unknown lease"})
-        return httpx.Response(404)
+        return httpx.Response(204)
 
-    clock = FakeClock()
-    holder = LeaseHolder(
-        "http://serve.test", None, httpx.AsyncClient(transport=httpx.MockTransport(answer)), clock
+    def puts(self, lease: str) -> int:
+        return self.calls.count(("PUT", lease))
+
+
+def restarted_holder(serve: RestartedServe) -> LeaseHolder:
+    return LeaseHolder(
+        "http://serve.test", None, httpx.AsyncClient(transport=httpx.MockTransport(serve)), FakeClock()
     )
-    async with holder.hold("main", "role:coder"):
-        for _ in range(50):
+
+
+async def test_a_lease_serve_has_forgotten_is_taken_again_and_renewed() -> None:
+    serve = RestartedServe()
+    async with restarted_holder(serve).hold("main", "role:coder"):
+        while serve.puts("l2") < 2:
             await asyncio.sleep(0)
-    assert puts == ["put"]
+    assert serve.calls[:5] == [
+        ("POST", "leases"),
+        ("PUT", "l1"),
+        ("POST", "leases"),
+        ("PUT", "l2"),
+        ("PUT", "l2"),
+    ]
+    assert serve.calls[-1] == ("DELETE", "l2")
+    assert serve.owners == ['{"owner":"role:coder"}'] * 2
+
+
+async def test_a_new_lease_serve_does_not_answer_is_asked_for_again_each_interval() -> None:
+    serve = RestartedServe(refuse_posts=[None, 503])
+    async with restarted_holder(serve).hold("main", "role:coder"):
+        while serve.puts("l2") < 1:
+            await asyncio.sleep(0)
+    assert [m for m, _ in serve.calls[:6]] == ["POST", "PUT", "POST", "POST", "POST", "PUT"]
+    assert serve.calls[-1] == ("DELETE", "l2")
 
 
 async def test_a_renewal_that_fails_is_tried_again() -> None:

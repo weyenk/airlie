@@ -72,8 +72,18 @@ class InProcessHolder:
             yield
 
 
+class _Lease:
+    """The lease a hold has now: None while serve, restarted, has not granted the next one."""
+
+    def __init__(self, lease: str, every_s: float) -> None:
+        self.id: str | None = lease
+        self.every_s = every_s
+
+
 class LeaseHolder:
-    """From another process: a lease on serve, renewed every ttl/3 while held and deleted on exit."""
+    """From another process: a lease on serve, renewed every ttl/3 while held and deleted on exit. A lease
+    serve no longer knows (it restarted) is taken again for the same owner, asked for each tick till serve
+    grants it."""
 
     def __init__(self, serve_url: str, api_key: str | None, client: httpx.AsyncClient, clock: Clock) -> None:
         self._root = serve_url.rstrip("/")
@@ -85,20 +95,7 @@ class LeaseHolder:
         base = f"{self._root}/v1/airlie/engines/{engine}/leases"
         return base if lease is None else f"{base}/{lease}"
 
-    async def _renew(self, engine: str, lease: str, every_s: float) -> None:
-        while True:
-            await self._clock.sleep(every_s)
-            try:
-                r = await self._client.put(self._url(engine, lease), headers=self._headers)
-            except httpx.HTTPError as e:
-                log.warning("lease %s on %s: renewal failed: %s", lease, engine, e)
-                continue  # the next tick tries again; the ttl is three ticks
-            if r.status_code == 404:
-                log.warning("lease %s on %s is gone", lease, engine)
-                return
-
-    @asynccontextmanager
-    async def hold(self, engine: str, owner: str) -> AsyncIterator[None]:
+    async def _take(self, engine: str, owner: str) -> _Lease:
         try:
             r = await self._client.post(self._url(engine), json={"owner": owner}, headers=self._headers)
         except httpx.HTTPError as e:
@@ -106,18 +103,45 @@ class LeaseHolder:
         if r.status_code != 200:
             raise EngineError(f"{engine}: {_why(r)}")
         body = r.json()
-        lease: str = body["lease"]
-        renewing = asyncio.ensure_future(self._renew(engine, lease, float(body["ttl_s"]) / 3))
+        return _Lease(body["lease"], float(body["ttl_s"]) / 3)
+
+    async def _renew(self, engine: str, owner: str, held: _Lease) -> None:
+        while True:
+            await self._clock.sleep(held.every_s)
+            if held.id is not None:
+                try:
+                    r = await self._client.put(self._url(engine, held.id), headers=self._headers)
+                except httpx.HTTPError as e:
+                    log.warning("lease %s on %s: renewal failed: %s", held.id, engine, e)
+                    continue  # the next tick tries again; the ttl is three ticks
+                if r.status_code != 404:
+                    continue
+                log.warning("lease %s on %s is gone (serve restarted?): taking a new one", held.id, engine)
+                held.id = None
+            try:
+                fresh = await self._take(engine, owner)
+            except EngineError as e:
+                log.warning("a new lease on %s failed (the next tick asks again): %s", engine, e)
+                continue
+            held.id, held.every_s = fresh.id, fresh.every_s
+
+    @asynccontextmanager
+    async def hold(self, engine: str, owner: str) -> AsyncIterator[None]:
+        held = await self._take(engine, owner)
+        renewing = asyncio.ensure_future(self._renew(engine, owner, held))
         try:
             yield
         finally:
             renewing.cancel()
             with suppress(asyncio.CancelledError):
                 await renewing
-            try:
-                await self._client.delete(self._url(engine, lease), headers=self._headers)
-            except httpx.HTTPError as e:
-                log.warning("lease %s on %s: release failed (it expires on its own): %s", lease, engine, e)
+            if held.id is not None:
+                try:
+                    await self._client.delete(self._url(engine, held.id), headers=self._headers)
+                except httpx.HTTPError as e:
+                    log.warning(
+                        "lease %s on %s: release failed (it expires on its own): %s", held.id, engine, e
+                    )
 
 
 def _why(r: httpx.Response) -> str:
