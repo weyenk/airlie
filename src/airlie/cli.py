@@ -43,6 +43,8 @@ controller_app = typer.Typer(no_args_is_help=True, help="Learned LTS admission c
 app.add_typer(controller_app, name="controller")
 route_app = typer.Typer(no_args_is_help=True, help="Routing (Kev / chief) decisions and their eval.")
 app.add_typer(route_app, name="route")
+host_app = typer.Typer(no_args_is_help=True, help="Host settings airlie keeps.")
+app.add_typer(host_app, name="host")
 story_app = typer.Typer(
     no_args_is_help=True, help="Stories: a Jira issue or a request → stacked draft PRs (only a human merges)."
 )
@@ -120,6 +122,12 @@ def _root() -> None:
 def version() -> None:
     """Print the airlie version."""
     console.print(__version__)
+
+
+@host_app.command("wired-limit")
+def host_wired_limit(config: ConfigOpt = None) -> None:
+    """Print memory.wired_limit_mb (task gpu:limit sets the sysctl from it)."""
+    typer.echo(_load(config).memory.wired_limit_mb)
 
 
 @app.command()

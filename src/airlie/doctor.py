@@ -483,7 +483,7 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
 
     want = cfg.memory.wired_limit_mb
     have = probe.sysctl_int("iogpu.wired_limit_mb")
-    fix = f"run: sudo sysctl iogpu.wired_limit_mb={want}  (docs/wiki/build-spec/01 §1)"
+    fix = "run: task gpu:limit (sets it now and at every boot)"
     if have is None:
         results.append(CheckResult("iogpu.wired_limit_mb", "warn", f"not set; {fix}"))
     elif have < want:

@@ -181,6 +181,19 @@ tasks:
     cmds:
       - '{{.RUN}} airlie story check {{.CLI_ARGS}}'
 
+  gpu:limit:
+    desc: "Set iogpu.wired_limit_mb to memory.wired_limit_mb now and at every boot (a LaunchDaemon in /Library/LaunchDaemons; asks for your password)"
+    cmds:
+      - |
+        MB=$({{.RUN}} airlie host wired-limit)
+        sudo sysctl iogpu.wired_limit_mb=$MB
+        sed "s|__MB__|$MB|" docs/integrations/gpu-limit.plist | sudo tee /Library/LaunchDaemons/dev.airlie.gpu-limit.plist >/dev/null
+        sudo chown root:wheel /Library/LaunchDaemons/dev.airlie.gpu-limit.plist
+        plutil -lint /Library/LaunchDaemons/dev.airlie.gpu-limit.plist
+        sudo launchctl bootout system/dev.airlie.gpu-limit 2>/dev/null || true
+        sudo launchctl bootstrap system /Library/LaunchDaemons/dev.airlie.gpu-limit.plist
+        echo "iogpu.wired_limit_mb=$MB now and at every boot"
+
   line:launchd:install:
     desc: "Load the launchd agent that runs a beat of the line (airlie line tick) every 15 minutes from this checkout, the belt beside task serve's own minute-by-minute beat; it also removes the older dev.airlie.story-tick agent (docs/integrations/story.md)"
     cmds:

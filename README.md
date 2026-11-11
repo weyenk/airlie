@@ -377,10 +377,10 @@ Design: `docs/superpowers/specs/2026-10-22-prompt-hub-design.md`.
 
 ## Hardware
 
-Built for a Mac Studio M5 Max with 128 GB unified memory. Set the wired limit once (spec 01 §1):
+Built for a Mac Studio M5 Max with 128 GB unified memory. Set the wired limit (`memory.wired_limit_mb`) now and at every boot:
 
 ```bash
-sudo sysctl iogpu.wired_limit_mb=106496
+task gpu:limit
 ```
 
 `task doctor` tells you if it is missing.
