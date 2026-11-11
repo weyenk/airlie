@@ -8,7 +8,7 @@ reason when everything that could go is held, and `reap`s on-demand resources le
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
@@ -32,6 +32,7 @@ class Status:
     progress: DownloadProgress | None = None
     holders: tuple[str, ...] = ()
     since: float = 0.0
+    lifecycle: Literal["pinned", "on_demand"] = "pinned"
 
 
 class Resource(Protocol):
@@ -77,12 +78,36 @@ class Manager:
         self._on_change = on_change
         self._wait_timeout_s = wait_timeout_s
         self._changed = asyncio.Event()
+        self.before_reap: Callable[[], Awaitable[None]] | None = None  # e.g. the lease expiry sweep
+
+    @property
+    def clock(self) -> Clock:
+        return self._clock
 
     # ---- state ----
 
     def _status(self, slot: _Slot) -> Status:
         r = slot.resource
-        return Status(r.name, r.kind, slot.state, slot.detail, slot.progress, tuple(slot.holders), slot.since)
+        return Status(
+            r.name,
+            r.kind,
+            slot.state,
+            slot.detail,
+            slot.progress,
+            tuple(slot.holders),
+            slot.since,
+            r.lifecycle,
+        )
+
+    def watch(self, callback: Callable[[Status], None]) -> None:
+        """Also call `callback` on every status change."""
+        previous = self._on_change
+
+        def both(status: Status) -> None:
+            previous(status)
+            callback(status)
+
+        self._on_change = both
 
     def status(self) -> list[Status]:
         return [self._status(s) for s in self._slots.values()]
@@ -230,6 +255,8 @@ class Manager:
                     pass  # its status says why; the others still start
 
     async def reap(self) -> list[str]:
+        if self.before_reap is not None:
+            await self.before_reap()
         stopped: list[str] = []
         for name, slot in self._slots.items():
             r = slot.resource

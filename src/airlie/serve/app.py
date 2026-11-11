@@ -12,8 +12,9 @@ import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -35,10 +36,12 @@ from airlie.engine.dialect import (
     remap_mlx_vlm_reasoning_effort,
     thinking_fields,
 )
+from airlie.engine.types import EngineError
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
+from airlie.serve.bridge.clock import RealClock
 from airlie.serve.feed import Feed, event_stream
 from airlie.serve.flow import epic_flow, initiative_flow, job_detail, story_flow
 from airlie.serve.flow_parts import StoryNotFound
@@ -82,6 +85,9 @@ API serves it. Not in git; without it the app's paths answer 503 and say how to 
 NEXT_NOT_BUILT = "the web app is not built: run task web:build"
 IMMUTABLE = "public, max-age=31536000, immutable"
 """The cache header of a built file under assets/: Vite hashes their names, so a changed file is a new URL."""
+
+if TYPE_CHECKING:
+    from airlie.manager.core import Manager
 
 
 class ToolCallStreamRepair:
@@ -210,6 +216,10 @@ def _no_call_stops(reply: Any) -> Any:
         if choice.get("finish_reason") == "tool_calls" and not named:
             choice["finish_reason"] = "stop"
     return reply
+
+
+class LeaseRequest(BaseModel):
+    owner: str = Field(min_length=1)
 
 
 class RunRequest(BaseModel):
@@ -435,6 +445,7 @@ def create_app(
     next_dir: Path | None = None,
     tick_s: float | None = None,
     line_beat: LineFor | None = None,
+    manager: Manager | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
@@ -445,7 +456,9 @@ def create_app(
     (default: airlie.story.factory.adopt_one).
     `auth_store` (default: observability.state_dir/auth.sqlite), `now` and `next_dir` (the Vue app's build,
     default NEXT_DIR), `tick_s` (the line's beat interval, default line.tick_s) and `line_beat` (replaces the
-    line's beat, given the function that starts a lane's job) are for tests."""
+    line's beat, given the function that starts a lane's job) are for tests.
+    `manager` starts, holds and stops the engines (default: one over the config's mlx-vlm engines, inside
+    the memory budget `memory.wired_limit_mb` less the OS reserve and `manager.margin_gb`)."""
     app = FastAPI(title="airlie", version="0.1.0")
     started_commit = (
         build_commit()
@@ -463,6 +476,26 @@ def create_app(
     restart_story = story_restart or _story_restart_factory()
     adopt_story = story_adopt or _story_adopt_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
+    # imported here: the manager's clock lives under airlie.serve, whose package imports this module
+    from airlie.manager.api import Leases, UnknownLease
+    from airlie.manager.core import Manager as ManagerImpl
+    from airlie.manager.engines import engine_resources
+    from airlie.models_download import Downloader
+
+    if manager is None:
+        manager = ManagerImpl(
+            engine_resources(
+                cfg, state_dir=cfg.observability.state_dir.expanduser(), downloader=Downloader()
+            ),
+            budget_gb=cfg.memory.wired_limit_mb / 1024 - cfg.memory.os_reserve_gb - cfg.manager.margin_gb,
+            clock=RealClock(),
+            wait_timeout_s=cfg.manager.wait_timeout_s,
+        )
+    manager.watch(lambda s: feed.publish("engines", s.name))
+    leases = Leases(manager, ttl_s=cfg.manager.lease_ttl_s)
+    managed = {s.name for s in manager.status()}
+    app.state.manager = manager
+    engine_tasks: list[asyncio.Task[Any]] = []
 
     def workflow_check(name: str) -> str | None:
         """What stops workflow `name` resolving over the board's drafts as they are now, or None."""
@@ -587,6 +620,64 @@ def create_app(
     @app.get("/health")
     async def health() -> dict[str, Any]:
         return {"status": "ok", "roles": list(cfg.roles), "commit": started_commit, "line": ticker.row()}
+
+    def engine_row(s: Any) -> dict[str, Any]:
+        p = s.progress
+        return {
+            "name": s.name,
+            "kind": s.kind,
+            "state": s.state,
+            "detail": s.detail,
+            "progress": None
+            if p is None
+            else {
+                "done_bytes": p.done_bytes,
+                "total_bytes": p.total_bytes,
+                "rate_bps": p.rate_bps,
+                "eta_s": p.eta_s,
+            },
+            "holders": list(s.holders),
+            "lifecycle": s.lifecycle,
+        }
+
+    def engine_failed(name: str, e: EngineError) -> JSONResponse:
+        return JSONResponse({"error": f"{name} failed: {e}", "engine": name}, status_code=503)
+
+    def known_engine(name: str) -> None:
+        if name not in managed:
+            raise HTTPException(404, f"unknown engine '{name}'; engines: {', '.join(sorted(managed))}")
+
+    @app.get("/v1/airlie/engines")
+    async def engines_status() -> list[dict[str, Any]]:
+        return [engine_row(s) for s in manager.status()]
+
+    @app.post("/v1/airlie/engines/{name}/leases")
+    async def lease_engine(name: str, body: LeaseRequest) -> Any:
+        """Hold the engine (starting it if need be) until the lease is deleted or goes `ttl_s` unrenewed."""
+        known_engine(name)
+        try:
+            lease = await leases.acquire(name)
+        except EngineError as e:
+            return engine_failed(name, e)
+        return {"lease": lease, "ttl_s": leases.ttl_s}
+
+    @app.put("/v1/airlie/engines/{name}/leases/{lease}", status_code=204)
+    async def renew_lease(name: str, lease: str) -> Response:
+        known_engine(name)
+        try:
+            leases.renew(name, lease)
+        except UnknownLease:
+            raise HTTPException(404, f"unknown lease '{lease}' on engine '{name}'") from None
+        return Response(status_code=204)
+
+    @app.delete("/v1/airlie/engines/{name}/leases/{lease}", status_code=204)
+    async def release_lease(name: str, lease: str) -> Response:
+        known_engine(name)
+        try:
+            await leases.release(name, lease)
+        except UnknownLease:
+            raise HTTPException(404, f"unknown lease '{lease}' on engine '{name}'") from None
+        return Response(status_code=204)
 
     @app.get("/v1/events")
     async def events() -> StreamingResponse:
@@ -762,9 +853,28 @@ def create_app(
             finally:
                 await engine.stop()
             return _no_call_stops(_gen_to_chat_completion(res, name))
+        holding = AsyncExitStack()  # the role's engine, held (and started if need be) for the upstream call
+        engine_name = cfg.engine_for_model(proxy_model)
+        try:
+            if engine_name in managed:
+                await holding.enter_async_context(manager.hold(engine_name, f"chat:{uuid.uuid4().hex}"))
+            return await upstream_chat(out, base, headers, holding)
+        except EngineError as e:
+            return engine_failed(engine_name, e)
+        finally:
+            if not out.get("stream"):
+                await holding.aclose()
+
+    async def upstream_chat(
+        out: dict[str, Any], base: str, headers: dict[str, str], holding: AsyncExitStack
+    ) -> Any:
         if out.get("stream"):
             req = client.build_request("POST", f"{base}/chat/completions", json=out, headers=headers)
-            resp = await client.send(req, stream=True)
+            try:
+                resp = await client.send(req, stream=True)
+            except BaseException:
+                await holding.aclose()
+                raise
 
             async def gen() -> AsyncIterator[bytes]:
                 repair = ToolCallStreamRepair()
@@ -779,6 +889,7 @@ def create_app(
                         yield repair.frame(buf)
                 finally:
                     await resp.aclose()
+                    await holding.aclose()
 
             return StreamingResponse(gen(), status_code=resp.status_code, media_type="text/event-stream")
         r = await client.post(
@@ -1296,9 +1407,23 @@ def create_app(
     async def startup() -> None:
         ticker.start()  # the line's beat, every line.tick_s while serve is up (line.serve_ticks)
 
+        # the HTTP server is up at once; engines already running are adopted, the pinned ones start, idle
+        # on-demand ones are reaped
+        async def boot() -> None:
+            await manager.adopt()
+            await manager.start_pinned()
+
+        engine_tasks.append(asyncio.ensure_future(boot()))
+        engine_tasks.append(asyncio.ensure_future(manager.run(cfg.manager.reap_every_s)))
+
     @app.on_event("shutdown")
     async def shutdown() -> None:
         await ticker.stop()
+        for t in engine_tasks:
+            t.cancel()
+        await asyncio.gather(*engine_tasks, return_exceptions=True)
+        engine_tasks.clear()
+        await leases.close()  # engines stay running
         watcher.stop()
         await client.aclose()
         board.close()

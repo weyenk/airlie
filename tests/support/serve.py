@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
+from typing import Literal
 
 import httpx
 import yaml
 
 from airlie.config import load_config
+from airlie.engine.types import EngineError
+from airlie.manager.core import Manager, Report
+from airlie.models_download import DownloadProgress
+from airlie.serve.bridge.clock import FakeClock
 
 
 def cfg(tmp_path: Path):
@@ -58,3 +64,48 @@ class FakeUpstream:
                 "model": body["model"],
             },
         )
+
+
+class FakeEngine:
+    """A manager resource that starts at once (or fails); `up` is what a health probe would say."""
+
+    kind: Literal["engine", "vm"] = "engine"
+    lifecycle: Literal["pinned", "on_demand"] = "on_demand"
+    idle_unload_s = 600.0
+    footprint_gb = 10.0
+
+    def __init__(self, name: str = "main") -> None:
+        self.name = name
+        self.up = False
+        self.fail: str | None = None
+        self.progress: DownloadProgress | None = None
+        self.gate: asyncio.Event | None = None  # when set, start waits on it after reporting its progress
+        self.reported = asyncio.Event()
+
+    async def running(self) -> bool:
+        return self.up
+
+    async def start(self, report: Report) -> None:
+        if self.progress is not None:
+            report("downloading", "org/m", self.progress)
+        self.reported.set()
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.fail is not None:
+            raise EngineError(self.fail)
+        self.up = True
+
+    async def stop(self) -> None:
+        self.up = False
+
+
+class StuckClock(FakeClock):
+    """A clock whose sleeps never finish: the reap loop and waiters move only when a test says so."""
+
+    async def sleep(self, seconds: float) -> None:
+        await asyncio.Event().wait()
+
+
+def unmanaged() -> Manager:
+    """A manager over no engines: serve proxies to whatever is already listening, as before the manager."""
+    return Manager([], budget_gb=0.0, clock=FakeClock())

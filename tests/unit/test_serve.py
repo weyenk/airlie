@@ -18,7 +18,7 @@ from airlie.orchestrator import RunReport
 from airlie.prompts import text
 from airlie.serve.app import create_app
 from airlie.teams import TeamResult
-from tests.support.serve import FakeUpstream, cfg
+from tests.support.serve import FakeUpstream, cfg, unmanaged
 from tests.unit.serve_helpers import TestClient
 
 
@@ -129,7 +129,7 @@ def test_a_role_on_an_mlx_vlm_engine_is_sent_mlx_vlms_thinking_fields_and_its_mo
     (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
     c = load_config(tmp_path / "airlie.yaml")
     up = FakeUpstream()
-    client = TestClient(create_app(c, transport=httpx.MockTransport(up)))
+    client = TestClient(create_app(c, transport=httpx.MockTransport(up), manager=unmanaged()))
     ask = {"messages": [{"role": "user", "content": "yo"}]}
     client.post("/v1/chat/completions", json={"model": "judge", **ask})
     client.post("/v1/chat/completions", json={"model": "judge", "thinking_budget": 100, **ask})
@@ -165,7 +165,7 @@ def mlx_vlm_upstream(tmp_path: Path) -> tuple[FakeUpstream, TestClient, Any]:
     (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
     c = load_config(tmp_path / "airlie.yaml")
     up = FakeUpstream()
-    return up, TestClient(create_app(c, transport=httpx.MockTransport(up))), c
+    return up, TestClient(create_app(c, transport=httpx.MockTransport(up), manager=unmanaged())), c
 
 
 ASK = {"messages": [{"role": "user", "content": "yo"}]}

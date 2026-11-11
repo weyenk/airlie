@@ -428,6 +428,36 @@ async def test_run_reaps_every_interval() -> None:
     assert r.stops == 1 and clock.sleeps == [30, 30]
 
 
+async def test_reap_awaits_its_before_hook_first() -> None:
+    r = FakeResource("a", idle_unload_s=60)
+    m, clock = manager(r)
+    await _hold(m, "a")
+    clock.now = 100
+    order: list[str] = []
+
+    async def before() -> None:
+        order.append(f"before, a stops={r.stops}")
+
+    m.before_reap = before
+    await m.reap()
+    assert order == ["before, a stops=0"] and r.stops == 1
+
+
+async def test_watch_hears_every_status_change_beside_the_constructor_callback() -> None:
+    r = FakeResource("a")
+    first: list[str] = []
+    second: list[str] = []
+    m, _ = manager(r, on_change=lambda s: first.append(s.state))
+    m.watch(lambda s: second.append(s.state))
+    await _hold(m, "a")
+    assert first == second and "ready" in second
+
+
+async def test_status_carries_the_resources_lifecycle() -> None:
+    m, _ = manager(FakeResource("a", lifecycle="pinned"), FakeResource("b"))
+    assert [(s.name, s.lifecycle) for s in m.status()] == [("a", "pinned"), ("b", "on_demand")]
+
+
 # ---- races ----
 
 
