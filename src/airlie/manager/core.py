@@ -88,6 +88,25 @@ class Manager:
     def clock(self) -> Clock:
         return self._clock
 
+    # ---- the registry ----
+
+    def add(self, resource: Resource) -> None:
+        """Register a resource after construction (a VM per chat session)."""
+        if resource.name in self._slots:
+            raise ValueError(f"{resource.name}: already registered")
+        self._slots[resource.name] = _Slot(resource)
+        self._notify()
+
+    def remove(self, name: str) -> None:
+        """Forget a resource nobody holds or is starting or stopping; the caller deletes what it owns."""
+        slot = self._slots[name]
+        if slot.holders or slot.lock.locked():
+            raise EngineError(f"{name}: in use")
+        if slot.stop_failed:
+            raise EngineError(f"{name}: {slot.detail}")
+        del self._slots[name]
+        self._notify()
+
     # ---- state ----
 
     def _status(self, slot: _Slot) -> Status:

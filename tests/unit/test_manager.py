@@ -867,3 +867,66 @@ async def test_the_internal_start_owner_is_not_named_as_a_blocker() -> None:
     await h
     with pytest.raises(EngineError):
         await w
+
+
+async def test_a_resource_added_after_construction_is_held_and_reaped() -> None:
+    m, clock = manager()
+    m.add(FakeResource("late", idle_unload_s=60.0))
+    async with m.hold("late", "o"):
+        assert state(m, "late").state == "ready"
+    clock.now += 60.0
+    assert await m.reap() == ["late"]
+
+
+async def test_adding_a_name_twice_is_refused() -> None:
+    m, _ = manager(FakeResource("a"))
+    with pytest.raises(ValueError, match="a: already registered"):
+        m.add(FakeResource("a"))
+
+
+async def test_removing_a_stopped_resource_forgets_it() -> None:
+    m, _ = manager(FakeResource("a"), FakeResource("b"))
+    m.remove("a")
+    assert [s.name for s in m.status()] == ["b"]
+
+
+async def test_removing_a_held_resource_is_refused() -> None:
+    m, _ = manager(FakeResource("a"))
+    async with m.hold("a", "o"):
+        with pytest.raises(EngineError, match="a: in use"):
+            m.remove("a")
+    assert [s.name for s in m.status()] == ["a"]
+
+
+async def test_removing_a_resource_while_it_starts_is_refused() -> None:
+    r = FakeResource("a")
+    r.gate = asyncio.Event()
+    m, _ = manager(r)
+    task = asyncio.create_task(m.hold("a", "o").__aenter__())
+    await settle()
+    with pytest.raises(EngineError, match="a: in use"):
+        m.remove("a")
+    r.gate.set()
+    await task
+
+
+async def test_removing_a_resource_whose_stop_failed_is_refused() -> None:
+    r = FakeResource("a", idle_unload_s=1.0)
+    m, clock = manager(r)
+    async with m.hold("a", "o"):
+        pass
+    r.stop_error = "stuck"
+    clock.now += 1.0
+    await m.reap()
+    with pytest.raises(EngineError, match="stop failed: stuck"):
+        m.remove("a")
+
+
+async def test_adding_and_removing_wake_a_waiter() -> None:
+    m, _ = manager()
+    first = m._changed
+    m.add(FakeResource("a"))
+    assert first.is_set() and not m._changed.is_set()
+    second = m._changed
+    m.remove("a")
+    assert second.is_set()
