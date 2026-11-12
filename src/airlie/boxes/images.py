@@ -65,6 +65,10 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
     return text
 
 
+LIVE_BUILDS: set[str] = set()
+"""The temporary names of the builds running in this process: the leftover sweep never touches them."""
+
+
 class Images:
     def __init__(
         self,
@@ -118,6 +122,8 @@ class Images:
         both, and the manager's budget holds."""
         spec = self._spec
         box = self._box_for(f"{name}-building-{self._token()}")
+        building = box.name
+        LIVE_BUILDS.add(building)
         try:
             await box.create(base, cpus=spec.cpus, memory_gb=spec.memory_gb, disk_gb=spec.disk_gb)
             await box.boot(network=Network("open"), timeout_s=spec.boot_timeout_s)
@@ -142,3 +148,5 @@ class Images:
             except Exception as cleanup:  # the failure that matters is the first one
                 failure.add_note(f"deleting the partial image {box.name} failed too: {cleanup}")
             raise
+        finally:
+            LIVE_BUILDS.discard(building)

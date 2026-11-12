@@ -48,6 +48,9 @@ class FakeProbe(SystemProbe):
     def tart_images(self) -> list[str] | None:
         return self._tart_images
 
+    def tart_vms(self):
+        return getattr(self, "vms", None)
+
     def tool_version(self, name: str) -> str | None:
         return self._tools.get(name)
 

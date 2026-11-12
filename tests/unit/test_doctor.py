@@ -892,3 +892,24 @@ def test_the_tart_row_is_ok_with_the_image_pulled_and_notes_secrets_are_per_repo
     r = by_name(run_checks(managed(tmp_path), FakeProbe(snapshots={"org/model@r1"})))["tart"]
     assert r.status == "ok"
     assert "per repository, not yet per person" in r.detail
+
+
+def test_box_leftovers_reports_old_building_disks_with_their_size_and_never_deletes() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from airlie.boxes.sweep import Vm
+    from airlie.doctor import box_leftovers_check
+
+    now = datetime(2026, 11, 12, 12, tzinfo=UTC)
+    probe = FakeProbe()
+    assert box_leftovers_check(probe, now).status == "ok"  # tart cannot be asked
+    probe.vms = [  # type: ignore[attr-defined]
+        Vm("airlie-env-k-building-aa", 20, False, now - timedelta(hours=5)),
+        Vm("airlie-env-k-building-bb", 12, False, now - timedelta(hours=2)),
+        Vm("airlie-env-k-building-cc", 20, True, now - timedelta(minutes=5)),
+        Vm("airlie-env-k", 20, False, now - timedelta(days=5)),
+    ]
+    row = box_leftovers_check(probe, now)
+    assert row.status == "warn" and row.detail.startswith("2 leftover image-build disk(s), 32 GB")
+    probe.vms = probe.vms[2:]  # type: ignore[attr-defined]
+    assert box_leftovers_check(probe, now).status == "ok"

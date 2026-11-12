@@ -352,3 +352,23 @@ def test_the_store_reads_only_its_own_directory(tmp_path: Path) -> None:
     (tmp_path / "acme__other.env").write_text("X=1\n")
     os.chmod(tmp_path / "acme__other.env", 0o600)
     assert SecretStore(tmp_path).for_repo(REPO) == {}
+
+
+def test_a_build_is_live_while_it_runs_and_not_after_success_or_failure(tmp_path: Path) -> None:
+    from airlie.boxes.images import LIVE_BUILDS
+
+    rig = Rig(tmp_path)
+    seen: list[set[str]] = []
+
+    def sh(box: FakeBox, argv: Sequence[str], stdin: bytes | None) -> ExecResult:
+        seen.append(set(LIVE_BUILDS))
+        return ExecResult(0, "")
+
+    rig.sh = sh
+    run(rig.images.ensure(Recipe(base="img:1", setup=("a",)), REPO))
+    assert seen[0] and all("-building-" in n for n in seen[0]) and not LIVE_BUILDS
+
+    rig.sh = lambda b, argv, stdin: ExecResult(1, "boom")
+    with pytest.raises(RecipeError):
+        run(rig.images.ensure(Recipe(base="img:1", setup=("b",)), REPO))
+    assert not LIVE_BUILDS

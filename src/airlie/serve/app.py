@@ -383,6 +383,24 @@ def _story_restart_factory() -> Callable[..., Any]:
     return restart_one
 
 
+async def _no_sweep() -> None:
+    """Tests that give their own repo_sessions (over FakeBox) have no Tart VMs to sweep."""
+
+
+def _leftover_sweep(cfg: AirlieConfig, threads: Any) -> Callable[[], Any]:
+    """At serve's start: delete the image-build disks a crash left and the chat VMs whose chat is gone."""
+    from airlie.boxes.sweep import serve_sweep
+    from airlie.boxes.tart import TartBox
+
+    log_dir = cfg.observability.state_dir.expanduser() / "boxes" / "logs"
+
+    def box_for(name: str) -> Any:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return TartBox(name, log_dir=log_dir)
+
+    return serve_sweep(threads, box_for)
+
+
 def _story_adopt_factory() -> Callable[..., Any]:
     from airlie.story.factory import adopt_one
 
@@ -858,6 +876,7 @@ def create_app(
     confirmations = Confirmations(cfg)
     repo_chats = (repo_sessions or default_repo_sessions)(cfg, manager, chat_threads, confirmations)
     app.state.repo_sessions = repo_chats
+    sweep_leftovers = _leftover_sweep(cfg, chat_threads) if repo_sessions is None else _no_sweep
     chat_threads.on_delete(repo_chats.delete)  # a chat's VM goes with it
     chat_busy = Busy()
     app.state.chat_busy = chat_busy  # `Server.shutdown` stops its turns before uvicorn waits for them
@@ -1541,6 +1560,7 @@ def create_app(
         async def boot() -> None:
             for step in (
                 repo_chats.adopt,
+                sweep_leftovers,
                 manager.adopt,
                 manager.start_pinned,
             ):  # one failing must not stop the other

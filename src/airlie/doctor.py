@@ -9,11 +9,13 @@ import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import httpx
 
+from airlie.boxes.sweep import Vm, leftovers, tart_vms
 from airlie.config import AirlieConfig, ConfigError, load_config
 from airlie.engine.mlx_vlm import MLX_VLM_ENTRY
 
@@ -37,6 +39,10 @@ class SystemProbe(Protocol):
     def tool_version(self, name: str) -> str | None: ...
     def tart_images(self) -> list[str] | None:
         """The VMs and images `tart list` shows; None when it cannot be asked."""
+        ...
+
+    def tart_vms(self) -> list[Vm] | None:
+        """The local VMs `tart list` shows, with size and last use; None when it cannot be asked."""
         ...
 
     def model_config(self, repo: str, revision: str) -> dict[str, Any] | None: ...
@@ -163,6 +169,9 @@ class RealProbe:
             return None
         return out.stdout.split() if out.returncode == 0 else None
 
+    def tart_vms(self) -> list[Vm] | None:
+        return tart_vms()
+
     def tool_version(self, name: str) -> str | None:
         exe = shutil.which(name)
         if not exe:
@@ -201,6 +210,24 @@ def tart_check(cfg: AirlieConfig, probe: SystemProbe) -> CheckResult:
         "ok",
         f"{image} pulled (setup secrets are kept per repository, not yet per person: "
         "state_dir/boxes/secrets/<owner>__<name>.env, mode 600)",
+    )
+
+
+def box_leftovers_check(probe: SystemProbe, now: datetime | None = None) -> CheckResult:
+    """Image-build disks (`airlie-env-*-building-*`) left by a crash and unused for an hour. This only
+    reports: serve's start deletes them (a build running in serve is younger than that: never listed)."""
+    vms = probe.tart_vms()
+    if vms is None:
+        return CheckResult("box leftovers", "ok", "tart not available: nothing to look for")
+    found = [v for v in leftovers(vms, now=now or datetime.now(UTC)) if v.name.startswith("airlie-env-")]
+    if not found:
+        return CheckResult("box leftovers", "ok", "no leftover image-build disks")
+    size = sum(v.size_gb for v in found)
+    return CheckResult(
+        "box leftovers",
+        "warn",
+        f"{len(found)} leftover image-build disk(s), {size:.0f} GB ({', '.join(v.name for v in found)}); "
+        "serve deletes them at its next start",
     )
 
 
@@ -592,6 +619,7 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
             )
         )
     results.append(tart_check(cfg, probe))
+    results.append(box_leftovers_check(probe))
     results.append(softnet_check(cfg, probe))
     try:
         pin = web_node_pin(root)

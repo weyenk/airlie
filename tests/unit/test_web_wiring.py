@@ -88,6 +88,9 @@ class _FakeProbe:
     def tart_images(self):
         return None
 
+    def tart_vms(self):
+        return None
+
     def model_config(self, repo: str, revision: str):
         return None
 
