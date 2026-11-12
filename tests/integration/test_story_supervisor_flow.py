@@ -16,68 +16,19 @@ from airlie.engine import FakeEngine, FakeReply
 from airlie.story.board import NOTE_PREFIX, text_card
 from airlie.story.state import StoryState
 from airlie.supervisor.advice import SUPERVISOR
-from airlie.supervisor.ledger import Ledger, Row
-from tests.support.story import STORY, kinds, pipeline
+from tests.support.story import kinds, pipeline
 from tests.support.story_layer_checks_flow import (
     BROKEN,
     FEATURE,
     FIXED,
-    LAYERS,
     PYTEST,
     RED,
     STILL_BROKEN,
     VACUOUS,
     calc_repo,
 )
-from tests.support.studio import APPROVE, DONE, ROLES
-
-SUPERVISOR_ROLES = {
-    **ROLES,
-    "product": ("---\nsummary: Stories and acceptance criteria\n---\n# product", ["read_file", "list_dir"]),
-    "architect": ("---\nsummary: Layered plans for a change\n---\n# architect", ["read_file", "list_dir"]),
-    "supervisor": ("---\nsummary: no\nroutable: false\n---\n# supervisor\nJSON only.", []),
-}
-
-
-def answer(
-    message: str | None,
-    *,
-    category: str = "missing_code",
-    owner: str = "coder",
-    fix: str | None = None,
-    class_agrees: bool | None = None,
-    class_reason: str | None = None,
-) -> FakeReply:
-    """Muse's answer: a diagnosis, the role's next step and, for a block, the fix another try would make."""
-    data = {
-        "category": category,
-        "owner": owner,
-        "diagnosis": "the code breaks add, which the whole suite checks",
-        "evidence": ["calc.py"],
-        "message": message,
-        "fix_if_attempt": fix,
-        "class_agrees": class_agrees,
-        "class_reason": class_reason,
-    }
-    return FakeReply(text="```json\n" + json.dumps(data) + "\n```")
-
-
-def scripted(
-    *,
-    coder: list[FakeReply],
-    supervisor: list[FakeReply] | None = None,
-    packages: list[FakeReply] | None = None,
-) -> FakeEngine:
-    """The one-layer calc story's replies, by role; no `supervisor` key when `supervisor` is None."""
-    scripts = {
-        "product": [STORY],
-        "architect": [LAYERS, *(packages or [RED])],
-        "coder": coder,
-        "reviewer": [APPROVE, APPROVE],
-    }
-    if supervisor is not None:
-        scripts["supervisor"] = supervisor
-    return FakeEngine(scripts)
+from tests.support.studio import DONE
+from tests.support.supervisor_flow import SUPERVISOR_ROLES, answer, rows, scripted
 
 
 async def run_layer(tmp_path: Path, engine: FakeEngine, *, supervisor: bool = True) -> StoryState:
@@ -90,14 +41,6 @@ async def run_layer(tmp_path: Path, engine: FakeEngine, *, supervisor: bool = Tr
 
 def user_messages(engine: FakeEngine, role: str) -> list[str]:
     return [r.messages[-1].content for r in engine.requests if r.role == role]
-
-
-def ledger(tmp_path: Path) -> Ledger:
-    return Ledger(tmp_path / "state" / "supervisor.sqlite")
-
-
-def rows(tmp_path: Path) -> list[Row]:
-    return ledger(tmp_path).recent()
 
 
 def board_notes(st: StoryState) -> list[str]:

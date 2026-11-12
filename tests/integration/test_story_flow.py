@@ -69,6 +69,7 @@ from tests.support.story import (
     happy_engine,
     kinds_all,
     layer,
+    neutral,
     package_reply,
     pipeline,
     planned,
@@ -631,13 +632,6 @@ async def test_a_handover_after_planning_is_not_a_resume_despite_node_events(tmp
 
 
 VOLATILE = frozenset({"ts", "build", "run_id", "studio_run", "ms", "elapsed_s", "wall_s", "wall_ms"})
-
-
-def neutral(text: str, root: Path, sha: str) -> Any:
-    """`text` (JSON) with this run's directory and base commit spelled the same for every run."""
-    return json.loads(
-        text.replace(str(root.resolve()), "<root>").replace(str(root), "<root>").replace(sha, "<sha>")
-    )
 
 
 def plan_events(path: Path, root: Path, sha: str) -> list[dict[str, Any]]:
