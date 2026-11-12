@@ -14,7 +14,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from airlie.subproc import agent_env, kill_group, started
+from airlie.boxes.protocol import Box
+from airlie.subproc import agent_env, box_env, kill_group, started
 from airlie.tools import confine
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.sandbox import cap
@@ -44,6 +45,8 @@ async def _run(
 ) -> tuple[int | None, str]:
     """`run_cmd`'s work: (the exit code, the whole output), or (None, why) when the command could not start or
     timed out. It runs in `cwd` (default: the worktree); what it may write is set by the worktree."""
+    if ctx.box is not None:
+        return await _run_in_box(ctx.box, cmd, ctx, shell=shell, cwd=cwd)
     env = agent_env(ctx.worktree)
     confined = ctx.sandbox and confine.available()
     spawn: dict[str, Any] = dict(
@@ -77,6 +80,21 @@ async def _run(
     return rc, _explained(text, rc, confined=confined)  # pragma: no mutate  (rc is read only when confined)
 
 
+async def _run_in_box(
+    box: Box, cmd: list[str] | str, ctx: ToolContext, *, shell: bool, cwd: Path | None
+) -> tuple[int | None, str]:
+    """`_run` in the session's VM: the box's own environment (never airlie's), the box's own timeout and
+    process handling, stdout and stderr together. Nothing here reads the host: no os.environ, no sandbox."""
+    argv = [SH, "-c", str(cmd)] if shell else [str(c) for c in cmd]
+    result = await box.exec(
+        argv,
+        env=box_env(ctx.box_env),
+        cwd=str(cwd or ctx.worktree),
+        timeout_s=ctx.shell_timeout_s,
+    )
+    return result.rc, result.output
+
+
 # The confined path runs only where macOS's sandbox does (confine.available()): its mutants are run on the
 # mac job ([tool.airlie.mutation] mac_functions). On Linux every one of them passed each test of _run, about
 # 5.5 minutes a mutant, and a whole-module shard ran past its 90 minutes (PRs 207 and 208, 2026-11-02).
@@ -99,11 +117,7 @@ def _explained(text: str, rc: int, *, confined: bool) -> str:
     return confine.explain(text, rc) if confined else text
 
 
-async def run_steps(steps: Sequence[str], ctx: ToolContext) -> ToolResult:
-    """Run each of a gate's commands in turn, going on after one fails, and report each: PASS with its last
-    line, or FAIL with its output, the failing ones sharing ctx.output_cap_chars. Each runs in sh as the
-    gate runs it (in a group of its own, so an inline # comment ends at its line) with ctx.shell_timeout_s,
-    from the directory the one before left: a `cd` carries over, as it does in the gate."""
+async def _steps_on_host(steps: Sequence[str], ctx: ToolContext) -> list[tuple[str, int | None, str]]:
     # None is the worktree until a step leaves somewhere else; _run reads "" the same way
     cwd: Path | None = None  # pragma: no mutate
     ran: list[tuple[str, int | None, str]] = []
@@ -121,6 +135,37 @@ async def run_steps(steps: Sequence[str], ctx: ToolContext) -> ToolResult:
                 cwd = Path(moved)
     finally:
         where.unlink()
+    return ran
+
+
+WHERE = "@@airlie-pwd@@"
+"""Marks the line a boxed step ends with, naming the directory it ended in."""
+
+
+async def _steps_in_box(steps: Sequence[str], ctx: ToolContext) -> list[tuple[str, int | None, str]]:
+    """`_steps_on_host` in the VM: each step says where it ended on its own last line of output (there is no
+    host file to write), which is taken off its output and becomes the next step's directory."""
+    cwd: Path | None = None  # pragma: no mutate
+    ran: list[tuple[str, int | None, str]] = []
+    assert ctx.box is not None
+    for step in steps:
+        script = f"{{ {step}\n}}\nrc=$?\nprintf '\\n{WHERE} %s\\n' \"$(pwd)\"\nexit $rc"
+        rc, text = await _run_in_box(ctx.box, script, ctx, shell=True, cwd=cwd)
+        head, found, moved = text.rpartition(f"\n{WHERE} ")
+        if found:
+            text = head
+            if moved.strip().startswith("/"):
+                cwd = Path(moved.strip())
+        ran.append((step, rc, text))
+    return ran
+
+
+async def run_steps(steps: Sequence[str], ctx: ToolContext) -> ToolResult:
+    """Run each of a gate's commands in turn, going on after one fails, and report each: PASS with its last
+    line, or FAIL with its output, the failing ones sharing ctx.output_cap_chars. Each runs in sh as the
+    gate runs it (in a group of its own, so an inline # comment ends at its line) with ctx.shell_timeout_s,
+    from the directory the one before left: a `cd` carries over, as it does in the gate."""
+    ran = await (_steps_in_box(steps, ctx) if ctx.box is not None else _steps_on_host(steps, ctx))
     failed = [i for i, (_, rc, _) in enumerate(ran, 1) if rc != 0]
     share = ctx.output_cap_chars // max(len(failed), 1)
     n = len(ran)
@@ -158,6 +203,10 @@ class RunTests:
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        if ctx.box is not None:
+            if not ctx.test_steps:
+                return ToolResult(False, 'error: no test command: add "test" to .airlie/environment.json')
+            return await run_steps(ctx.test_steps, ctx)
         if ctx.test_steps and ctx.scope_base:
             return await _run_scoped(ctx)
         if ctx.test_steps:

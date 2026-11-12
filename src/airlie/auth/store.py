@@ -38,6 +38,17 @@ class Credential:
     created_at: float
 
 
+@dataclass(frozen=True)
+class PushSubscription:
+    """One browser's Web Push subscription: where to POST and the keys the payload is encrypted to."""
+
+    endpoint: str
+    user_id: str
+    p256dh: str
+    auth: str
+    created_at: float
+
+
 SCHEMA = """
 create table if not exists users (
     id text primary key, name text not null, login text unique, role text not null, created_at real not null);
@@ -51,6 +62,16 @@ create table if not exists credentials (
 create table if not exists sessions (
     digest text primary key, user_id text not null references users(id) on delete cascade,
     expires_at real not null);
+create table if not exists push_subscriptions (
+    endpoint text primary key, user_id text not null references users(id) on delete cascade,
+    p256dh text not null, auth text not null, created_at real not null);
+create table if not exists notification_settings (
+    user_id text not null references users(id) on delete cascade, kind text not null,
+    enabled integer not null, primary key (user_id, kind));
+-- no foreign key: the bootstrap admin and the API key pin too, and are no row of users
+create table if not exists chat_pins (
+    user_id text not null, repo text not null collate nocase, created_at real not null,
+    primary key (user_id, repo));
 """
 
 
@@ -98,6 +119,7 @@ class AuthStore:
 
     def delete_user(self, id: str) -> None:
         self.conn.execute("delete from users where id = ?", (id,))
+        self.conn.execute("delete from chat_pins where user_id = ?", (id,))
 
     # ---- invites ----
     def make_invite(self, user_id: str, hours: int) -> str:
@@ -177,9 +199,78 @@ class AuthStore:
             return None
         return self.user(row[0])
 
+    def session_expires_at(self, token: str) -> float | None:
+        row = self.conn.execute(
+            "select expires_at from sessions where digest = ?", (_digest(token),)
+        ).fetchone()
+        return None if row is None else float(row[0])
+
+    def extend_session(self, token: str, days: int) -> None:
+        """Push this session's expiry to `days` from now; the token stays the same."""
+        self.conn.execute(
+            "update sessions set expires_at = ? where digest = ?",
+            (self._now() + days * 86400, _digest(token)),
+        )
+
     def end_session(self, token: str) -> None:
         """Sign this one device out; the user's other sessions stay."""
         self.conn.execute("delete from sessions where digest = ?", (_digest(token),))
 
     def end_sessions(self, user_id: str) -> None:
         self.conn.execute("delete from sessions where user_id = ?", (user_id,))
+
+    # ---- push subscriptions and notification settings ----
+    def save_push(self, user_id: str, endpoint: str, p256dh: str, auth: str) -> None:
+        self.conn.execute(
+            "insert into push_subscriptions (endpoint, user_id, p256dh, auth, created_at)"
+            " values (?, ?, ?, ?, ?) on conflict (endpoint) do update"
+            " set user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth",
+            (endpoint, user_id, p256dh, auth, self._now()),
+        )
+
+    def push_subscriptions(self, user_id: str | None = None) -> list[PushSubscription]:
+        """One person's subscriptions, or everyone's when `user_id` is None."""
+        where, args = ("", ()) if user_id is None else (" where user_id = ?", (user_id,))
+        rows = self.conn.execute(
+            "select endpoint, user_id, p256dh, auth, created_at from push_subscriptions"
+            f"{where} order by created_at, endpoint",
+            args,
+        ).fetchall()
+        return [PushSubscription(*row) for row in rows]
+
+    def drop_push(self, endpoint: str) -> None:
+        self.conn.execute("delete from push_subscriptions where endpoint = ?", (endpoint,))
+
+    def notification_kinds(self, user_id: str) -> dict[str, bool]:
+        """The kinds this person has set; a kind with no row is left to the configured default."""
+        rows = self.conn.execute(
+            "select kind, enabled from notification_settings where user_id = ?", (user_id,)
+        ).fetchall()
+        return {kind: bool(enabled) for kind, enabled in rows}
+
+    def set_notification_kind(self, user_id: str, kind: str, on: bool) -> None:
+        self.conn.execute(
+            "insert into notification_settings (user_id, kind, enabled) values (?, ?, ?)"
+            " on conflict (user_id, kind) do update set enabled = excluded.enabled",
+            (user_id, kind, int(on)),
+        )
+
+    # ---- the chat panel's pinned repositories ----
+    def pins(self, user_id: str) -> list[str]:
+        """This person's pinned repositories ("owner/name"), in the order they were pinned."""
+        rows = self.conn.execute(
+            "select repo from chat_pins where user_id = ? order by created_at, rowid", (user_id,)
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def pin(self, user_id: str, repo: str) -> None:
+        """Pin `repo`; one already pinned, in any case, keeps its place and its spelling."""
+        self.conn.execute(
+            "insert into chat_pins (user_id, repo, created_at) values (?, ?, ?) on conflict do nothing",
+            (user_id, repo, self._now()),
+        )
+
+    def unpin(self, user_id: str, repo: str) -> bool:
+        """False when `repo` was not pinned."""
+        cur = self.conn.execute("delete from chat_pins where user_id = ? and repo = ?", (user_id, repo))
+        return cur.rowcount > 0

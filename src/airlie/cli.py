@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Coroutine
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ from airlie.story.state import StoryState
 
 if TYPE_CHECKING:
     from airlie.engine.protocol import Engine
+    from airlie.manager.core import Manager
     from airlie.supervisor.ledger import Ledger
 
 app = typer.Typer(
@@ -43,6 +45,8 @@ controller_app = typer.Typer(no_args_is_help=True, help="Learned LTS admission c
 app.add_typer(controller_app, name="controller")
 route_app = typer.Typer(no_args_is_help=True, help="Routing (Kev / chief) decisions and their eval.")
 app.add_typer(route_app, name="route")
+host_app = typer.Typer(no_args_is_help=True, help="Host settings airlie keeps.")
+app.add_typer(host_app, name="host")
 story_app = typer.Typer(
     no_args_is_help=True, help="Stories: a Jira issue or a request → stacked draft PRs (only a human merges)."
 )
@@ -122,6 +126,12 @@ def version() -> None:
     console.print(__version__)
 
 
+@host_app.command("wired-limit")
+def host_wired_limit(config: ConfigOpt = None) -> None:
+    """Print memory.wired_limit_mb (task gpu:limit sets the sysctl from it)."""
+    typer.echo(_load(config).memory.wired_limit_mb)
+
+
 @app.command()
 def doctor(
     config: ConfigOpt = None,
@@ -176,7 +186,7 @@ def models_pull(
     names: Annotated[list[str] | None, typer.Argument(help="catalog names (default: all)")] = None,
     config: ConfigOpt = None,
 ) -> None:
-    """Download each catalog model at exactly its pinned revision (`hf download`)."""
+    """Download each catalog model at exactly its pinned revision, with progress."""
     from airlie.models_cmd import plan_pulls, pull
 
     cfg = _load(config)
@@ -186,7 +196,21 @@ def models_pull(
         return
     for p in plans:
         console.print(f"[bold]{p.name}[/bold]: {p.repo} @ {p.revision[:12]}")
-    failed = [p.name for p, rc in pull(cfg, names or ()) if rc != 0]
+
+    def show(p, prog) -> None:  # type: ignore[no-untyped-def]
+        left = "" if prog.eta_s is None else f", {max(1, round(prog.eta_s / 60))} min left"
+        sys.stdout.write(
+            f"\r{p.name}: {prog.done_bytes / 1e9:.1f} of {prog.total_bytes / 1e9:.1f} GB{left}\x1b[K"
+        )
+        sys.stdout.flush()
+
+    def failed_with(p, e) -> None:  # type: ignore[no-untyped-def]
+        sys.stdout.write("\n")
+        err.print(f"[red]{escape(p.name)}: {escape(str(e))}[/red]")
+
+    results = pull(cfg, names or (), on_progress=show, on_error=failed_with)
+    sys.stdout.write("\n")
+    failed = [p.name for p, rc in results if rc != 0]
     if failed:
         err.print(f"[red]failed: {', '.join(failed)}[/red]")
         raise typer.Exit(1)
@@ -225,7 +249,7 @@ def engine_up(
     config: ConfigOpt = None,
     timeout: Annotated[float, typer.Option(help="seconds to wait for models")] = 900,
 ) -> None:
-    """Start the named engine, else every autostart engine, and wait until its models are ready."""
+    """Start the named engine, else every autostart pinned engine, and wait until its models are ready."""
     import asyncio
 
     from airlie.engine.types import EngineError
@@ -236,7 +260,11 @@ def engine_up(
             f"[red]no managed engine named '{name}' (managed: {', '.join(_managed(cfg)) or 'none'})[/red]"
         )
         raise typer.Exit(1)
-    names = [name] if name is not None else [n for n in _managed(cfg) if cfg.engines[n].autostart]
+    names = (
+        [name]
+        if name is not None
+        else [n for n in _managed(cfg) if cfg.engines[n].autostart and cfg.engines[n].lifecycle == "pinned"]
+    )
     rows = []
     for engine in names:
         p = _engine_process(cfg, engine)
@@ -329,20 +357,24 @@ def _http_engine(
     model_override: str | None = None,
     *,
     transport: httpx.AsyncBaseTransport | None = None,
+    manager: Manager | None = None,
 ) -> Engine:
     """One HTTPEngine on `engine_name`; when `model_override` is not set and some role's model is served by
-    another engine, a RoutedEngine over one HTTPEngine per engine that serves a role."""
+    another engine, a RoutedEngine over one HTTPEngine per engine that serves a role. Each managed (mlx_vlm)
+    engine's calls hold it: through `manager` inside serve, else serve's lease routes, else a start here. A
+    scripted `transport` (tests) goes without."""
     from airlie.engine.dialect import dialect_for
     from airlie.engine.http_engine import HTTPEngine
     from airlie.engine.routed import RoutedEngine
+    from airlie.manager.client import LazyHolder, ManagedEngine, holder_for
 
     # only a transport given: passing None would override one HTTPEngine already carries (the story harness
     # wraps HTTPEngine with a scripted transport; None sent its runs to the network)
     given: dict[str, Any] = {"transport": transport} if transport is not None else {}
 
-    def one(name: str) -> HTTPEngine:
+    def one(name: str) -> Engine:
         e = cfg.engines[name]
-        return HTTPEngine(
+        http = HTTPEngine(
             e.base_url or "",
             lambda role: e.served_name(model_override or cfg.roles[role].model),
             lambda role: cfg.roles[role],
@@ -351,6 +383,9 @@ def _http_engine(
             model_spec_for=lambda role: cfg.models[model_override or cfg.roles[role].model],
             dialect=dialect_for(e.kind),
         )
+        if e.kind != "mlx_vlm" or (transport is not None and manager is None):
+            return http
+        return ManagedEngine(http, name, LazyHolder(lambda: holder_for(cfg, manager=manager)))
 
     owners = {role: cfg.engine_for_role(role) for role in cfg.roles}  # a role no engine serves raises
     if model_override or set(owners.values()) <= {engine_name}:
@@ -1101,12 +1136,12 @@ def apply_k(cfg: AirlieConfig, k: int | None) -> AirlieConfig:
     return cfg
 
 
-def _orchestrator(cfg: AirlieConfig, run_id: str | None = None):  # type: ignore[no-untyped-def]
+def _orchestrator(cfg: AirlieConfig, run_id: str | None = None, manager: Manager | None = None):  # type: ignore[no-untyped-def]
     """Factory, patched in tests: the topology named by cfg.topology.kind over the HTTP engine."""
     from airlie.topology.protocol import build_topology
 
     role = cfg.roles[cfg.teams.role]
-    engine = _http_engine(cfg, cfg.engine_for_model(role.model))
+    engine = _http_engine(cfg, cfg.engine_for_model(role.model), manager=manager)
     return build_topology(cfg, engine, run_id=run_id)
 
 

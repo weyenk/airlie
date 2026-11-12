@@ -13,10 +13,12 @@ from __future__ import annotations
 import asyncio
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
-from airlie.subproc import agent_env, kill_group, started
+from airlie.boxes.protocol import Box
+from airlie.subproc import agent_env, box_env, kill_group, started
 from airlie.tools import confine
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.sandbox import cap
@@ -50,6 +52,8 @@ class Compute:
     def __init__(self) -> None:
         self.calls = 0
         self._workspace: tempfile.TemporaryDirectory[str] | None = None
+        self.box_workspace = f"{BOX_WORKSPACE}/{uuid.uuid4().hex}"
+        """This conversation's directory in the VM: another conversation's files are not on its path."""
         self.ran: dict[str, int] = {}
         """Each program this conversation ran (its text, stripped) and the call that ran it."""
 
@@ -80,11 +84,38 @@ class Compute:
             )
         self.calls += 1
         self.ran[code.strip()] = self.calls
-        rc, text = await run_python(code, self.workspace(), sandbox=ctx.sandbox)
+        if ctx.box is not None:
+            rc, text = await run_python_in_box(code, ctx.box, box_env(ctx.box_env), self.box_workspace)
+        else:
+            rc, text = await run_python(code, self.workspace(), sandbox=ctx.sandbox)
         if rc is None:
             return ToolResult(False, text)
         body = cap(text, OUTPUT_CHARS) or "(it printed nothing: print what you need)"
         return ToolResult(rc == 0, body if rc == 0 else f"{body}\n[exit {rc}]")
+
+
+BOX_WORKSPACE = "/tmp/airlie-compute"
+"""Under it each conversation's programs run in a directory of their own in the VM, and keep their files
+there (a later call imports them)."""
+
+
+def timed_out() -> str:
+    return f"error: the program ran past {TIMEOUT_S:g}s; compute a smaller case or bound the loop"
+
+
+async def run_python_in_box(
+    code: str, box: Box, env: dict[str, str], workspace: str = BOX_WORKSPACE
+) -> tuple[int | None, str]:
+    """`run_python` in the VM: the VM is the confinement (its network is off by then), so no sandbox. The
+    program travels as one argument of `python3 -I -c`, never inside a shell string."""
+    made = await box.exec(["mkdir", "-p", workspace], env=env, timeout_s=TIMEOUT_S)
+    if made.rc != 0:
+        return None, made.output
+    command = ["python3", "-I", "-c", f"import sys; sys.path.insert(0, '.')\n{code}"]
+    result = await box.exec(command, env=env, cwd=workspace, stdin=None, timeout_s=TIMEOUT_S)
+    if result.rc is None and "timed out" in result.output:
+        return None, timed_out()
+    return result.rc, result.output
 
 
 async def run_python(code: str, where: Path, *, sandbox: bool = True) -> tuple[int | None, str]:
@@ -110,7 +141,7 @@ async def run_python(code: str, where: Path, *, sandbox: bool = True) -> tuple[i
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=TIMEOUT_S)
     except TimeoutError:
         await kill_group(proc)
-        return None, f"error: the program ran past {TIMEOUT_S:g}s; compute a smaller case or bound the loop"
+        return None, timed_out()
     except BaseException:  # cancelled: nothing it started may outlive its caller
         await kill_group(proc)
         raise

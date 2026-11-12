@@ -94,6 +94,18 @@ def _admin(request: Request) -> Principal:
     return p
 
 
+def set_session_cookie(response: Response, request: Request, token: str, days: int) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=days * 86400,
+        httponly=True,
+        samesite="strict",
+        secure=request_is_https(request),
+        path="/",
+    )
+
+
 def request_is_https(request: Request) -> bool:
     """https itself, or `tailscale serve` (loopback) saying the request it proxied was https."""
     if request.url.scheme == "https":
@@ -155,16 +167,7 @@ def auth_router(
         log.warning("auth_refused %s %s", reason, " ".join(f"{k}={v}" for k, v in fields.items()))
 
     def sign_in(response: Response, request: Request, user: User) -> None:
-        token = store.make_session(user.id, cfg.session_days)
-        response.set_cookie(
-            SESSION_COOKIE,
-            token,
-            max_age=cfg.session_days * 86400,
-            httponly=True,
-            samesite="strict",
-            secure=request_is_https(request),
-            path="/",
-        )
+        set_session_cookie(response, request, store.make_session(user.id, cfg.session_days), cfg.session_days)
 
     @router.get("/me")
     async def me(request: Request) -> dict[str, Any]:

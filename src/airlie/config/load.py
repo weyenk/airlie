@@ -263,6 +263,7 @@ def load_config(
     if cfg.story.repo is not None:
         cfg.story.repo = (base / cfg.story.repo.expanduser()).resolve()
     cfg.story.repos_root = (base / cfg.story.repos_root.expanduser()).resolve()
+    cfg.chat.superpowers.path = (base / cfg.chat.superpowers.path.expanduser()).resolve()
     if cfg.lts.controller.adapter_path is not None:
         cfg.lts.controller.adapter_path = (base / cfg.lts.controller.adapter_path.expanduser()).resolve()
     for repo in cfg.bridge.allowed_repos:

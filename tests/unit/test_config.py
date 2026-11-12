@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, StorySpec, load_config, profile_configs
 from airlie.config.load import _yaml_problem
-from airlie.config.schema import MUTATING_TOOLS, EngineSpec
+from airlie.config.schema import MUTATING_TOOLS, EngineSpec, ManagerSpec
 from tests.support.config import MINIMAL, write
 
 
@@ -181,11 +181,11 @@ def test_committed_default_config_is_valid() -> None:
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")  # never the person's own
     assert {"coder", "summarizer", "judge", "aggregator"} <= set(cfg.roles)
-    assert {"generalist", "llama70b", "qwen25_32b"} <= {n for n, m in cfg.models.items() if m.bench}
+    assert {"generalist"} <= {n for n, m in cfg.models.items() if m.bench}
     assert cfg.engines["main"].kind == "mlx_vlm"
     for name, m in cfg.models.items():
         assert m.revision, f"models.{name} must pin a revision"
-    assert cfg.engine_for_role("coder") == "main" and cfg.engine_for_role("reviewer") == "reviewer"
+    assert cfg.engine_for_role("coder") == "main" and cfg.engine_for_role("reviewer") == "gemma"
 
 
 # ---- a thinking role has room to answer (HDS-3, 2026-10-15) ----
@@ -335,33 +335,17 @@ def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_w
     assert (coder.model, coder.thinking, coder.max_tokens) == ("generalist", False, 10240)  # no thinking
 
 
-def test_the_qwen25_experiment_is_a_profile_beside_the_default() -> None:
-    """Noah 2026-10-18: Qwen2.5-32B in the coder seat as an experiment; the default stays. The profile changes
-    no engine or model entry: its engine is a bench engine started by hand (`airlie engine up qwen25_32b`)."""
-    base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    assert base.roles["coder"].model == "generalist"
-    assert load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"].model == "generalist"
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen25")
-    coder = cfg.roles["coder"]
-    assert (coder.model, coder.thinking, coder.max_tokens) == ("qwen25_32b", False, 10240)
-    assert cfg.engines == base.engines and cfg.models == base.models
-    assert cfg.engines["qwen25_32b"].autostart is False
-    assert cfg.roles["chief"].model == "generalist"
-
-
 def test_committed_config_declares_four_autostart_engines_and_the_bench_engines() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     kinds = {n: e.kind for n, e in cfg.engines.items()}
     assert kinds == {
         "main": "mlx_vlm",
-        "reviewer": "mlx_vlm",
         "small": "mlx_vlm",
         "decision": "mlx_vlm",
-        "llama70b": "mlx_vlm",
-        "qwen25_32b": "mlx_vlm",
+        "gemma": "mlx_vlm",
     }
     autostart = [n for n, e in cfg.engines.items() if e.autostart]
-    assert autostart == ["main", "reviewer", "small", "decision"]
+    assert autostart == ["main", "small", "decision", "gemma"]
     assert cfg.engines["main"].models == ["generalist"] and cfg.engines["main"].port == 8080
     assert [n for n, e in cfg.engines.items() if e.decision] == ["decision"]
     assert cfg.engines["decision"].port == 8081 and cfg.router.model == "decider_2b"  # the 4b gate's pick
@@ -377,8 +361,18 @@ def test_committed_config_declares_four_autostart_engines_and_the_bench_engines(
     )  # the HF-cache snapshot: the exact --model string
     assert cfg.models["generalist"].tool_call_parser == "qwen3_coder"
     assert cfg.models["reviewer"].tool_call_parser == "atem"
-    assert cfg.models["qwen25_32b"].tool_call_parser is None  # mlx-vlm has no `qwen` parser: inferred
-    assert cfg.models["llama70b"].tool_call_parser is None  # nor `llama`; an unknown name is a 422
+    gemma = cfg.models["gemma4"]
+    assert (gemma.repo, gemma.revision, gemma.mtp, gemma.mtp_block_size, gemma.tool_call_parser) == (
+        "mlx-community/gemma-4-26B-A4B-it-qat-8bit",
+        "bedc5c51905d796b192de24567f358b0b1653d2e",
+        None,  # MTP off: its QAT assistant decoded slower (docs/bench/2026-11-12-gemma-qat-mtp.md)
+        None,
+        "gemma4",
+    )
+    assert cfg.roles["chat"].model == cfg.roles["design"].model == cfg.roles["ux"].model == "gemma4"
+    assert cfg.engine_for_role("chat") == cfg.engine_for_role("design") == "gemma"
+    ge = cfg.engines["gemma"]
+    assert (ge.port, ge.max_image_px, ge.model) == (8084, 1536, "gemma4")
 
 
 def test_profiles_carry_no_engine_or_model_overrides() -> None:
@@ -395,8 +389,8 @@ def test_catalog_kv_constants_follow_each_models_attention_geometry() -> None:
     models = load_config(ROOT / "airlie.yaml", NO_LOCAL).models
     assert models["generalist"].kv_mb_per_1k_tokens == 64  # 16 full-attention layers × 4 heads × 256 dim
     assert models["small"].kv_mb_per_1k_tokens == 144  # 36 layers × 8 heads × 128 dim
-    assert models["qwen25_32b"].kv_mb_per_1k_tokens == 256  # 64 layers × 8 heads × 128 dim
-    assert models["llama70b"].kv_mb_per_1k_tokens == 320  # 80 layers × 8 heads × 128 dim
+    # 5 full-attention layers × 2 heads × 512 dim = 20, + the 25 sliding layers' fixed 1024-token window
+    assert models["gemma4"].kv_mb_per_1k_tokens == 22
 
 
 # ---- M0 Task 2: catalog fields ----
@@ -1034,6 +1028,60 @@ def test_auth_refuses_zero_session_days(tmp_path: Path) -> None:
         load_config(write(tmp_path, data))
 
 
+def test_notifications_defaults_name_every_kind_and_no_contact_or_key(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, MINIMAL))
+    assert cfg.notifications.contact is None
+    assert cfg.notifications.vapid_key is None
+    assert cfg.notifications.push_hosts == [
+        "push.apple.com",
+        "fcm.googleapis.com",
+        "push.services.mozilla.com",
+        "notify.windows.com",
+    ]
+    assert cfg.notifications.default_kinds == [
+        "chat_reply",
+        "model_ready",
+        "confirmation",
+        "story_blocked",
+        "story_published",
+        "story_mockups",
+    ]
+
+
+@pytest.mark.parametrize(
+    "contact", ["mailto:noah@example.com", "https://example.com/contact", "https://push.example.com:8443"]
+)
+def test_notifications_accepts_a_mailto_or_https_contact_a_push_service_will_sign(
+    tmp_path: Path, contact: str
+) -> None:
+    cfg = load_config(write(tmp_path, {**MINIMAL, "notifications": {"contact": contact}}))
+    assert cfg.notifications.contact == contact
+
+
+@pytest.mark.parametrize(
+    "contact",
+    [
+        "noah@example.com",
+        "http://example.com",
+        "mailto:noah",
+        "mailto:@example.com",
+        "https://localhost x",
+        "https://nodot",
+    ],
+)
+def test_notifications_refuses_a_contact_py_vapid_would_refuse_at_send_time(
+    tmp_path: Path, contact: str
+) -> None:
+    with pytest.raises(ConfigError, match="notifications.contact"):
+        load_config(write(tmp_path, {**MINIMAL, "notifications": {"contact": contact}}))
+
+
+def test_notifications_refuses_an_unknown_default_kind(tmp_path: Path) -> None:
+    data = {**MINIMAL, "notifications": {"default_kinds": ["weather"]}}
+    with pytest.raises(ConfigError, match="notifications.default_kinds"):
+        load_config(write(tmp_path, data))
+
+
 def test_a_role_without_on_context_full_defaults_to_stop(tmp_path: Path) -> None:
     role = load_config(write(tmp_path, MINIMAL)).roles["coder"]
     assert role.on_context_full == "stop"
@@ -1075,7 +1123,7 @@ def test_the_committed_coder_has_a_write_schedule_and_a_schedule_must_put_tests_
 def test_the_tester_is_a_read_only_critic_on_the_generalist() -> None:
     """P2 (2026-10-24): the tester no longer writes tests; it is the third amigo and the package critic, with
     the QA guidelines and read tools. On the generalist since 2026-10-26 (Noah): on the reviewer's model
-    (Muse) it lost the meeting's thread on airlie-sandbox; the layer's reviewer stays on Muse."""
+    (Muse) it lost the meeting's thread on airlie-sandbox; the layer's reviewer moved to Gemma 2026-11-12."""
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     tester = cfg.roles["tester"]
     assert tester.model == "generalist" != cfg.roles["reviewer"].model and not tester.thinking
@@ -1520,3 +1568,197 @@ def test_hf_snapshot_dir_honours_an_explicit_cache(tmp_path: Path) -> None:
     m = load_config(write(tmp_path, MINIMAL)).models["team"]
     got = hf_snapshot_dir(m, tmp_path / "elsewhere")
     assert got == tmp_path / "elsewhere" / "models--mlx-community--Qwen3.8-27B-4bit" / "snapshots" / "abc123"
+
+
+def test_gemma_serves_chat_at_262k() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert cfg.engines["gemma"].max_kv_size == 262144
+    assert cfg.roles["chat"].max_context == 262144
+
+
+# ---- engine lifecycles and the manager ----
+
+
+def test_the_committed_lifecycles() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert {n: e.lifecycle for n, e in cfg.engines.items()} == {
+        "main": "pinned",
+        "small": "on_demand",
+        "decision": "pinned",
+        "gemma": "pinned",
+    }
+
+
+def test_manager_spec_defaults() -> None:
+    m = ManagerSpec()
+    assert (m.margin_gb, m.start_timeout_s, m.wait_timeout_s, m.reap_every_s, m.lease_ttl_s) == (
+        2.0,
+        900.0,
+        1800.0,
+        30.0,
+        120.0,
+    )
+    e = EngineSpec(kind="mlx_vlm", model="m")
+    assert e.lifecycle == "pinned" and e.idle_unload_s == 600.0
+    assert AirlieConfig.model_fields["manager"].default_factory is ManagerSpec
+
+
+def test_manager_spec_rejects_unknown_keys_and_a_bad_lifecycle() -> None:
+    with pytest.raises(ValidationError):
+        ManagerSpec(nope=1)  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        EngineSpec(kind="mlx_vlm", model="m", lifecycle="sometimes")  # type: ignore[arg-type]
+
+
+def test_notifications_push_hosts_can_be_replaced_and_rejects_non_hosts(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, {**MINIMAL, "notifications": {"push_hosts": ["push.example.com"]}}))
+    assert cfg.notifications.push_hosts == ["push.example.com"]
+    with pytest.raises(ConfigError, match="notifications.push_hosts"):
+        load_config(write(tmp_path, {**MINIMAL, "notifications": {"push_hosts": ["https://x.com/y"]}}))
+
+
+# ---- chat kinds and superpowers ----
+
+_REPO_TOOLS = [
+    "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git",
+    "compute", "skill", "todo", "task", "web_search", "web_fetch", "push_branch", "open_pr",
+]  # fmt: skip
+
+
+def _chat(tmp_path: Path, chat: dict) -> Path:
+    return write(tmp_path, {**MINIMAL, "chat": chat})
+
+
+def test_chat_kind_defaults(tmp_path: Path) -> None:
+    kinds = load_config(write(tmp_path, MINIMAL)).chat.kinds
+    assert kinds.plain.tools == ["web_search", "web_fetch", "skill", "todo"]
+    assert kinds.repository.tools == _REPO_TOOLS
+    assert kinds.plain.ask_first == []
+    assert kinds.repository.ask_first == ["push_branch", "open_pr", "build_image"]
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "grep",
+        "shell",
+        "run_tests",
+        "git",
+        "compute",
+        "task",
+        "push_branch",
+        "open_pr",
+    ],
+)
+def test_plain_chat_refuses_a_file_or_shell_tool_in_config(tmp_path: Path, tool: str) -> None:
+    with pytest.raises(ConfigError, match=f"chat.kinds.plain cannot hold {tool}"):
+        load_config(_chat(tmp_path, {"kinds": {"plain": {"tools": ["skill", tool]}}}))
+    with pytest.raises(ConfigError, match=f"chat.kinds.plain cannot hold {tool}"):
+        load_config(_chat(tmp_path, {"kinds": {"plain": {"tools": ["skill"], "ask_first": [tool]}}}))
+
+
+def test_a_chat_tool_outside_the_known_names_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="chat.kinds.repository.tools names nope"):
+        load_config(_chat(tmp_path, {"kinds": {"repository": {"tools": ["nope", "skill"]}}}))
+    with pytest.raises(ConfigError, match="chat.kinds.plain.ask_first names bogus"):
+        load_config(_chat(tmp_path, {"kinds": {"plain": {"tools": ["skill"], "ask_first": ["bogus"]}}}))
+
+
+def test_build_image_is_a_gate_to_ask_first_not_a_tool(tmp_path: Path) -> None:
+    gate = {
+        "kinds": {"repository": {"tools": ["skill"], "ask_first": ["push_branch", "open_pr", "build_image"]}}
+    }
+    assert load_config(_chat(tmp_path, gate)).chat.kinds.repository.tools == ["skill"]
+    with pytest.raises(ConfigError, match="chat.kinds.repository.tools names build_image"):
+        load_config(_chat(tmp_path, {"kinds": {"repository": {"tools": ["build_image"]}}}))
+    with pytest.raises(ConfigError, match="chat.kinds.plain cannot hold build_image"):
+        load_config(_chat(tmp_path, {"kinds": {"plain": {"tools": ["skill"], "ask_first": ["build_image"]}}}))
+
+
+ALWAYS = ["push_branch", "open_pr", "build_image"]
+
+
+def test_a_repository_chat_may_ask_first_before_a_tool(tmp_path: Path) -> None:
+    cfg = load_config(
+        _chat(
+            tmp_path,
+            {"kinds": {"repository": {"tools": ["shell", "skill"], "ask_first": ["shell", *ALWAYS]}}},
+        )
+    )
+    assert cfg.chat.kinds.repository.tools == ["shell", "skill"]
+    assert cfg.chat.kinds.repository.ask_first == ["shell", *ALWAYS]
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_chat_max_steps_must_be_positive(tmp_path: Path, bad: int) -> None:
+    with pytest.raises(ConfigError, match="max_steps"):
+        load_config(_chat(tmp_path, {"max_steps": bad}))
+    assert load_config(_chat(tmp_path, {"max_steps": 1})).chat.max_steps == 1
+    assert load_config(write(tmp_path, MINIMAL)).chat.max_steps == 12
+
+
+def test_superpowers_defaults(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, MINIMAL))
+    assert cfg.chat.superpowers.enabled is True
+    assert (
+        cfg.chat.superpowers.path == (tmp_path / "vendor" / "superpowers").resolve()
+    )  # of the config's directory
+    off = load_config(_chat(tmp_path, {"superpowers": {"enabled": False, "path": "sp"}}))
+    assert off.chat.superpowers.enabled is False and off.chat.superpowers.path == (tmp_path / "sp").resolve()
+
+
+def test_chat_task_defaults(tmp_path: Path) -> None:
+    task = load_config(write(tmp_path, MINIMAL)).chat.task
+    assert (task.default_role, task.roles, task.max_steps, task.max_depth) == (
+        "coder",
+        ["coder", "reviewer", "tester", "architect"],
+        30,
+        1,
+    )
+
+
+def test_chat_task_rejects_a_role_that_does_not_exist(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"chat.task names role 'ghost', which is not in roles"):
+        load_config(_chat(tmp_path, {"task": {"roles": ["coder", "ghost"]}}))
+
+
+def test_chat_task_rejects_a_default_role_that_does_not_exist(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"chat.task names role 'ghost'"):
+        load_config(_chat(tmp_path, {"task": {"default_role": "ghost", "roles": ["coder"]}}))
+
+
+def test_chat_task_default_role_must_be_one_a_model_may_choose(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"default_role 'judge' is not in chat.task.roles"):
+        load_config(_chat(tmp_path, {"task": {"default_role": "judge", "roles": ["coder"]}}))
+
+
+def test_chat_task_accepts_a_narrower_role_list(tmp_path: Path) -> None:
+    assert load_config(_chat(tmp_path, {"task": {"roles": ["coder"]}})).chat.task.roles == ["coder"]
+
+
+@pytest.mark.parametrize("bad", [{"max_steps": 0}, {"max_depth": 2}, {"roles": []}])
+def test_chat_task_bounds(tmp_path: Path, bad: dict) -> None:
+    with pytest.raises(ConfigError):
+        load_config(_chat(tmp_path, {"task": bad}))
+
+
+@pytest.mark.parametrize("missing", ["push_branch", "open_pr", "build_image"])
+def test_a_repository_chat_cannot_drop_a_confirmation_of_push_pr_or_build(
+    tmp_path: Path, missing: str
+) -> None:
+    listed = [n for n in ("push_branch", "open_pr", "build_image") if n != missing]
+    with pytest.raises(ConfigError, match=f"chat.kinds.repository.ask_first must keep {missing}"):
+        load_config(_chat(tmp_path, {"kinds": {"repository": {"tools": ["skill"], "ask_first": listed}}}))
+
+
+def test_the_reviewer_is_a_different_lab_than_the_coder_and_runs_on_a_served_engine() -> None:
+    """Noah 2026-11-12: the reviewer (and the supervisor) run on gemma4 (Google), the coder on the generalist
+    (Qwen): a different lab on purpose, with no second model in memory; the Muse catalog entry stays."""
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert cfg.roles["reviewer"].model == cfg.roles["supervisor"].model == "gemma4"
+    assert "Qwen" in cfg.models["generalist"].repo and "gemma" in cfg.models["gemma4"].repo.lower()
+    assert "reviewer" not in cfg.engines and "reviewer" in cfg.models

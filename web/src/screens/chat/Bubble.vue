@@ -3,13 +3,8 @@ import SafeMarkdown from "@/components/SafeMarkdown.vue";
 import type { ChatItem } from "@/stores/chat";
 import JobCard from "./JobCard.vue";
 import SentFile from "./SentFile.vue";
-import StoryCard from "./StoryCard.vue";
 
 defineProps<{ item: ChatItem }>();
-
-/** A /story reply that finished well is the story card: the request to edit, and Start story. */
-const isStoryCard = (item: ChatItem): boolean =>
-  item.action === "story" && !item.streaming && !!item.text && !item.error && !item.cut && !item.started;
 </script>
 
 <template>
@@ -28,7 +23,6 @@ const isStoryCard = (item: ChatItem): boolean =>
   <div v-else-if="item.role === 'chat'" data-msg="chat" :data-state="item.streaming ? 'streaming' : item.cut ? 'cut' : 'done'" class="flex items-start gap-2.5">
     <span aria-hidden="true" class="inline-flex size-7 flex-none items-center justify-center rounded-lg bg-primary text-sm font-extrabold text-primary-foreground">a</span>
     <JobCard v-if="item.started" :job="item.started" />
-    <StoryCard v-else-if="isStoryCard(item)" :item="item" />
     <div v-else data-bubble class="min-w-0 max-w-[620px] rounded-[14px] rounded-tl-[4px] border border-border bg-card px-3.5 py-2.5 leading-normal [overflow-wrap:anywhere] max-[640px]:max-w-[290px]">
       <SafeMarkdown v-if="item.text" :text="item.text" link-keys />
       <span v-else-if="item.streaming" data-thinking class="inline-flex items-center gap-2 text-[13px] text-muted-foreground">

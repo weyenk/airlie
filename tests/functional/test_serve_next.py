@@ -13,12 +13,14 @@ from tests.support.serve import FakeUpstream, cfg
 from tests.unit.serve_helpers import TestClient
 
 
-def client_with(tmp_path: Path, *, built: bool) -> TestClient:
+def client_with(tmp_path: Path, *, built: bool, extra: dict[str, str] | None = None) -> TestClient:
     next_dir = tmp_path / "web_next"
     if built:
         (next_dir / "assets").mkdir(parents=True)
         (next_dir / "index.html").write_text('<!doctype html><div id="app"></div>')
         (next_dir / "assets" / "app-1a2b.js").write_text("console.log('app')")
+        for name, text in (extra or {}).items():
+            (next_dir / name).write_text(text)
     return TestClient(
         create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()), next_dir=next_dir)
     )
@@ -82,6 +84,14 @@ def test_the_api_keeps_its_guard_and_unknown_api_paths_stay_json_404s(tmp_path: 
     assert c.get("/v1/models", headers={"Authorization": "Bearer k"}).status_code == 200
     r = c.get("/v1/nothing/here", headers={"Authorization": "Bearer k"})
     assert r.status_code == 404 and '<div id="app">' not in r.text
+
+
+def test_the_manifest_is_served_at_the_root_with_its_type_and_no_cache(tmp_path: Path) -> None:
+    client = client_with(tmp_path, built=True, extra={"manifest.webmanifest": '{"name": "airlie"}'})
+    r = client.get("/manifest.webmanifest")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/manifest+json")
+    assert r.headers["cache-control"] == "no-cache"
 
 
 def test_the_page_serves_built_files_with_a_long_cache(tmp_path: Path) -> None:

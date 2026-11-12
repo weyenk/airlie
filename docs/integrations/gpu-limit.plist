@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The GPU wired-memory limit, kept across reboots: sysctl iogpu.wired_limit_mb resets at every boot, so this
+     LaunchDaemon sets it again at load. A template: `task gpu:limit` fills in __MB__ (memory.wired_limit_mb), writes
+     it root-owned to /Library/LaunchDaemons and loads it into the system domain. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.airlie.gpu-limit</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/sbin/sysctl</string>
+    <string>iogpu.wired_limit_mb=__MB__</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>

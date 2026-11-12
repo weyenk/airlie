@@ -1,0 +1,173 @@
+"""/v1/notifications over serve: subscribe, the key, kinds, the test push. No browser, no push service."""
+
+from __future__ import annotations
+
+import base64
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+
+from airlie.auth.store import AuthStore
+from airlie.serve.app import create_app
+from tests.support.auth_store import Clock
+from tests.support.serve import FakeUpstream, cfg
+from tests.unit.serve_helpers import TestClient
+
+ORIGIN = "http://localhost:8090"
+SUB = {"endpoint": "https://web.push.apple.com/abc", "keys": {"p256dh": "k", "auth": "a"}}
+
+
+class Studio:
+    def __init__(self, tmp_path: Path, contact: str | None) -> None:
+        self.cfg = cfg(tmp_path)
+        self.cfg.notifications.contact = contact
+        self.store = AuthStore(tmp_path / "state" / "auth.sqlite", now=Clock())
+        noah = self.store.add_user("Noah", "admin", login="noah@github")
+        self.app = create_app(
+            self.cfg, transport=httpx.MockTransport(FakeUpstream()), auth_store=self.store, now=Clock()
+        )
+        session = self.store.make_session(noah.id, 30)
+        self.admin = TestClient(
+            self.app, base_url=ORIGIN, headers={"Origin": ORIGIN, "Cookie": f"airlie_session={session}"}
+        )
+        self.phone = TestClient(self.app, base_url=ORIGIN, headers={"Origin": ORIGIN}, client=("10.0.0.5", 1))
+
+
+@pytest.fixture
+def studio(tmp_path: Path):
+    s = Studio(tmp_path, "mailto:noah@example.com")
+    yield s
+    s.store.close()
+
+
+@pytest.fixture
+def no_contact(tmp_path: Path):
+    s = Studio(tmp_path, None)
+    yield s
+    s.store.close()
+
+
+def test_subscribe_shows_a_device_and_the_key(studio: Studio) -> None:
+    assert studio.admin.post("/v1/notifications/subscriptions", json=SUB).status_code == 204
+    got = studio.admin.get("/v1/notifications").json()
+    assert got["devices"] == 1
+    assert len(got["key"]) == 87
+    base64.urlsafe_b64decode(got["key"] + "=")
+    assert got["kinds"]["chat_reply"] is True
+
+
+def test_unsubscribe_removes_the_device(studio: Studio) -> None:
+    studio.admin.post("/v1/notifications/subscriptions", json=SUB)
+    r = studio.admin.request("DELETE", "/v1/notifications/subscriptions", json={"endpoint": SUB["endpoint"]})
+    assert r.status_code == 204
+    assert studio.admin.get("/v1/notifications").json()["devices"] == 0
+
+
+def test_a_kind_switched_off_is_reflected(studio: Studio) -> None:
+    assert studio.admin.put("/v1/notifications/kinds", json={"chat_reply": False}).status_code == 204
+    kinds = studio.admin.get("/v1/notifications").json()["kinds"]
+    assert kinds["chat_reply"] is False
+    assert kinds["model_ready"] is True
+
+
+def test_an_unknown_kind_is_refused(studio: Studio) -> None:
+    assert studio.admin.put("/v1/notifications/kinds", json={"nope": True}).status_code == 422
+
+
+class OkSender:
+    async def send(self, sub: Any, payload: dict[str, str]) -> int:
+        return 201
+
+
+def test_the_test_push_reaches_a_device_even_with_chat_replies_off(studio: Studio) -> None:
+    studio.app.state.notifier.sender = OkSender()
+    studio.admin.post("/v1/notifications/subscriptions", json=SUB)
+    studio.admin.put("/v1/notifications/kinds", json={"chat_reply": False})
+    assert studio.admin.post("/v1/notifications/test").json() == {"sent": 1}
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://fcm.googleapis.com/fcm/send/x",
+        "https://updates.push.services.mozilla.com/wpush/v2/x",
+        "https://wns2.notify.windows.com/x",
+        "https://push.apple.com/x",
+    ],
+)
+def test_the_known_push_services_are_accepted(studio: Studio, endpoint: str) -> None:
+    body = {**SUB, "endpoint": endpoint}
+    assert studio.admin.post("/v1/notifications/subscriptions", json=body).status_code == 204
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://web.push.apple.com/x",
+        "https://evil.com/x",
+        "https://push.apple.com.evil.com/x",
+        "https://evilpush.apple.com.evil.com/x",
+        "https://127.0.0.1/x",
+        "https://169.254.169.254/latest",
+        "https://push.apple.com@evil.com/x",
+        "not a url",
+    ],
+)
+def test_an_endpoint_that_is_not_a_push_service_is_refused(studio: Studio, endpoint: str) -> None:
+    r = studio.admin.post("/v1/notifications/subscriptions", json={**SUB, "endpoint": endpoint})
+    assert r.status_code == 422
+    assert "push service" in r.text
+    assert studio.admin.get("/v1/notifications").json()["devices"] == 0
+
+
+def test_a_subscription_without_keys_is_refused(studio: Studio) -> None:
+    r = studio.admin.post("/v1/notifications/subscriptions", json={"endpoint": SUB["endpoint"]})
+    assert r.status_code == 422
+    assert "keys" in r.text
+
+
+def test_deleting_another_persons_endpoint_leaves_it_in_place(studio: Studio) -> None:
+    pat = studio.store.add_user("Pat", "member").id
+    studio.store.save_push(pat, SUB["endpoint"], "k", "a")
+    r = studio.admin.request("DELETE", "/v1/notifications/subscriptions", json={"endpoint": SUB["endpoint"]})
+    assert r.status_code == 204
+    assert [s.user_id for s in studio.store.push_subscriptions()] == [pat]
+
+
+def test_the_key_file_lands_in_the_state_dir_when_vapid_key_is_unset(studio: Studio, tmp_path: Path) -> None:
+    assert (tmp_path / "state" / "vapid.pem").is_file()
+
+
+def test_the_test_push_with_no_device_sends_nothing(studio: Studio) -> None:
+    assert studio.admin.post("/v1/notifications/test").json() == {"sent": 0}
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("GET", "/v1/notifications", None),
+        ("POST", "/v1/notifications/subscriptions", SUB),
+        ("DELETE", "/v1/notifications/subscriptions", {"endpoint": "x"}),
+        ("PUT", "/v1/notifications/kinds", {"chat_reply": True}),
+        ("POST", "/v1/notifications/test", None),
+    ],
+)
+def test_every_route_needs_a_sign_in(studio: Studio, method: str, path: str, body: Any) -> None:
+    assert studio.phone.request(method, path, json=body).status_code == 401
+
+
+def test_without_a_contact_the_key_is_null(no_contact: Studio) -> None:
+    assert no_contact.admin.get("/v1/notifications").json()["key"] is None
+
+
+def test_an_api_key_or_bootstrap_caller_is_no_person_and_gets_403(tmp_path: Path) -> None:
+    cfg_ = cfg(tmp_path)
+    cfg_.notifications.contact = "mailto:noah@example.com"
+    app = create_app(cfg_, transport=httpx.MockTransport(FakeUpstream()), api_key="k", now=Clock())
+    keyed = TestClient(app, base_url=ORIGIN, headers={"Origin": ORIGIN, "Authorization": "Bearer k"})
+    assert keyed.get("/v1/notifications").status_code == 403
+    assert keyed.post("/v1/notifications/subscriptions", json=SUB).status_code == 403
+    assert keyed.put("/v1/notifications/kinds", json={"chat_reply": False}).status_code == 403
+    assert keyed.post("/v1/notifications/test").status_code == 403

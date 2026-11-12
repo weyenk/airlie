@@ -9,6 +9,7 @@ hint carries no data):
   every writer, this server's own board and auth stores included, and two commits between polls are one
   hint. The connection is read-only: the watcher never writes to a database, and never creates one.
 - `stories` / `<key>`: the size of `stories/<key>/events.jsonl` and the size and mtime of `.../state.json`.
+- `epics` / `initiatives`: the size of `<key>/events.jsonl`. No page topic: they only wake `on_log`.
 - `runs` / `<run id>`: the size of `runs/<id>/events.jsonl`, for the newest `recent_runs` run directories
   (run ids sort by time, as `airlie.serve.listing.recent_runs` sorts them).
 
@@ -23,6 +24,7 @@ import logging
 import os
 import sqlite3
 import threading
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -38,12 +40,17 @@ Hint = tuple[str, str | None]
 
 # topic to file, in the order hints are returned
 _DATABASES = {"board": "board.sqlite", "users": "auth.sqlite"}
+_LOG_AREAS = ("epics", "initiatives")  # beside stories/, whose logs the stories hints already cover
+
+LogChange = tuple[str, str]
+"""An area (`stories`, `epics` or `initiatives`) and a key: what `Watcher.on_log` takes."""
 
 
 class _Seen(NamedTuple):
     versions: dict[str, int | None]  # topic: data_version; None when there is no database to read
     stories: dict[str, tuple[int | None, tuple[int, int] | None]]  # key: (log size, (state mtime, size))
     runs: dict[str, int | None]  # run id: event log size
+    logs: dict[tuple[str, str], int | None]  # (area, key) of an epic or initiative: event log size
 
 
 class _Database:
@@ -94,7 +101,19 @@ def _stat(path: Path) -> os.stat_result | None:
 class Watcher:
     """`poll()` once, or let `ensure_running()` poll while pages are connected."""
 
-    def __init__(self, state_dir: Path, feed: Feed, *, recent_runs: int = 100) -> None:
+    def __init__(
+        self,
+        state_dir: Path,
+        feed: Feed,
+        *,
+        recent_runs: int = 100,
+        on_log: Callable[[str, str], Awaitable[object]] | None = None,
+    ) -> None:
+        self.on_log = on_log
+        """Called with (area, key) for each story, epic or initiative whose event log changed, after its hint
+        is published, as a background task: a slow callback (a push service) never holds up the next poll.
+        One runs per key at a time and a change that comes meanwhile runs after it; an error is logged. While
+        it is set the loop keeps polling with no page connected."""
         self._state = state_dir
         self._feed = feed
         self._recent = recent_runs
@@ -102,6 +121,8 @@ class Watcher:
         self._seen: _Seen | None = None  # None: no poll yet, so the next one only records
         self._lock = threading.Lock()  # a poll may come from any thread
         self._task: asyncio.Task[None] | None = None
+        self._calls: dict[LogChange, asyncio.Task[None]] = {}  # the callbacks in flight
+        self._again: set[LogChange] = set()  # changed while its callback ran
 
     @property
     def running(self) -> bool:
@@ -110,15 +131,58 @@ class Watcher:
     def poll(self) -> list[Hint]:
         """Publish to the feed, and return, what changed since the last poll (nothing for the first). Hints
         come in a fixed order: board, users, stories by key, runs by id, each once."""
+        return self._poll()[0]
+
+    def _poll(self) -> tuple[list[Hint], list[LogChange]]:
         with self._lock:
             seen = self._look()
             before, self._seen = self._seen, seen
             if before is None:
-                return []
+                return [], []
             hints = _changes(before, seen)
             for topic, key in hints:
                 self._feed.publish(topic, key)
-            return hints
+            logs = [("stories", key) for topic, key in hints if topic == "stories" and key is not None]
+            logs += [k for k, size in seen.logs.items() if k not in before.logs or size != before.logs[k]]
+            return hints, logs
+
+    async def tick(self) -> list[Hint]:
+        """`poll()`, then `on_log` scheduled for each log that changed; it does not wait for them."""
+        hints, logs = self._poll()
+        for change in logs:
+            self._schedule(change)
+        return hints
+
+    def _schedule(self, change: LogChange) -> None:
+        if self.on_log is None:
+            return
+        if change in self._calls:
+            self._again.add(change)
+            return
+        task = asyncio.get_running_loop().create_task(self._call(change))
+        self._calls[change] = task
+
+    async def _call(self, change: LogChange) -> None:
+        try:
+            while True:
+                callback = self.on_log
+                if callback is None:
+                    return
+                try:
+                    await callback(*change)
+                except Exception:
+                    log.exception("%s %s changed: the callback failed", *change)
+                if change not in self._again:
+                    return
+                self._again.discard(change)
+        finally:
+            self._calls.pop(change, None)
+
+    async def idle(self) -> None:
+        """Wait for the callbacks in flight, and those their changes call for (the tests' way to look after
+        a tick)."""
+        while self._calls:
+            await asyncio.gather(*self._calls.values(), return_exceptions=True)
 
     def ensure_running(self, interval_s: float = INTERVAL_S) -> None:
         """When no loop is running: poll at once, which records the starting point (so a write after this
@@ -143,16 +207,19 @@ class Watcher:
         task, self._task = self._task, None
         if task is not None:
             task.cancel()
+        for call in list(self._calls.values()):
+            call.cancel()
+        self._again.clear()
         self._forget()
 
     async def _run(self, interval_s: float) -> None:
         try:
             while True:
                 await asyncio.sleep(interval_s)
-                if self._feed.subscribers == 0:
+                if self._feed.subscribers == 0 and self.on_log is None:
                     return  # no await between this and `finally`: ensure_running cannot see a dying loop
                 try:
-                    self.poll()
+                    await self.tick()
                 except Exception:
                     log.exception("watching %s failed; trying again in %ss", self._state, interval_s)
         finally:
@@ -182,7 +249,12 @@ class Watcher:
         for run_id in sorted(_dirs(runs_dir), reverse=True)[: self._recent]:
             events = _stat(runs_dir / run_id / "events.jsonl")
             runs[run_id] = None if events is None else events.st_size
-        return _Seen(versions, stories, runs)
+        logs: dict[tuple[str, str], int | None] = {}
+        for area in _LOG_AREAS:
+            for key in sorted(_dirs(self._state / area)):
+                events = _stat(self._state / area / key / "events.jsonl")
+                logs[(area, key)] = None if events is None else events.st_size
+        return _Seen(versions, stories, runs, logs)
 
 
 def _changes(before: _Seen, now: _Seen) -> list[Hint]:

@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from airlie.engine.types import ToolCall, ToolSchema
+from airlie.tools.boxed import BoxEditFile, BoxGrep, BoxListDir, BoxReadFile, BoxWriteFile
 from airlie.tools.compute import Compute
 from airlie.tools.fs import EditFile, Grep, ListDir, ReadFile, WriteFile
 from airlie.tools.jsonargs import parse_tool_args
@@ -24,6 +25,17 @@ BUILTIN: dict[str, type] = {
     "git": Git,
     "compute": Compute,
 }
+
+BOXED: dict[str, type] = {
+    **BUILTIN,
+    "read_file": BoxReadFile,
+    "write_file": BoxWriteFile,
+    "edit_file": BoxEditFile,
+    "list_dir": BoxListDir,
+    "grep": BoxGrep,
+}
+"""BUILTIN with the file tools that run in the session's VM; shell, run_tests, git and compute are the same
+classes (they branch on `ctx.box`)."""
 
 
 _EXAMPLE_VALUES: dict[str, Any] = {"path": "src/app.py", "cmd": "ls"}
@@ -56,6 +68,8 @@ class ToolRegistry:
 
     @classmethod
     def builtin(cls, names: Iterable[str], ctx: ToolContext) -> ToolRegistry:
+        if ctx.box is not None:  # host file tools would read host paths for VM paths: use `boxed`
+            raise ValueError("this context has a box: build its registry with ToolRegistry.boxed")
         tools: list[Tool] = []
         for n in names:
             if n not in BUILTIN:
@@ -63,8 +77,23 @@ class ToolRegistry:
             tools.append(BUILTIN[n]())
         return cls(tools, ctx)
 
+    @classmethod
+    def boxed(cls, names: Iterable[str], ctx: ToolContext) -> ToolRegistry:
+        """`builtin` for a repository chat: every tool runs in `ctx.box`, never on the host."""
+        if ctx.box is None:
+            raise ValueError("boxed tools need a box: ToolContext.box is None")
+        tools: list[Tool] = []
+        for n in names:
+            if n not in BOXED:
+                raise KeyError(f"unknown builtin tool '{n}' (known: {sorted(BOXED)})")
+            tools.append(BOXED[n]())
+        return cls(tools, ctx)
+
     def add(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
+
+    def get(self, name: str) -> Tool | None:
+        return self._tools.get(name)
 
     def distinct_by_arguments(self, name: str) -> bool:
         """Whether two calls of tool `name` with the same result but other arguments are different actions (a

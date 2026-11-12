@@ -88,13 +88,10 @@ test("a plan's or a run's card goes to its run, a story's to its key", () => {
   expect(show({ role: "card", job_id: "plan-3", kind: "plan" }).get("[data-card-link]").attributes("href")).toBe("/workflows/runs/plan-3");
 });
 
-test("a /story reply is the story card; a started one is the job card; a cut or failed one stays a bubble", () => {
+test("an old /story reply is a plain bubble (the story card is gone); a started one is the job card", () => {
   const story = { role: "chat", text: "Add a thing", action: "story", streaming: false };
-  expect(show(story).find("[data-story-card]").exists()).toBe(true);
-  expect(show({ ...story, streaming: true }).find("[data-story-card]").exists()).toBe(false);
-  expect(show({ ...story, cut: true }).find("[data-story-card]").exists()).toBe(false);
-  expect(show({ ...story, error: "x" }).find("[data-story-card]").exists()).toBe(false);
+  expect(show(story).find("[data-story-card]").exists()).toBe(false);
+  expect(show(story).get("[data-bubble]").text()).toBe("Add a thing");
   const started = show({ ...story, started: { job_id: "story-AIR-38", kind: "story", label: "airlie · story" } });
-  expect(started.find("[data-story-card]").exists()).toBe(false);
   expect(started.get("[data-card-link]").attributes("href")).toBe("/workflows/AIR-38");
 });

@@ -15,6 +15,7 @@ from airlie.engine import EngineCapabilities, EngineHealth, GenRequest, GenResul
 from airlie.engine.http_engine import HTTPEngine
 from airlie.engine.routed import RoutedEngine
 from airlie.engine.types import EngineStats
+from airlie.manager.client import ManagedEngine
 from tests.unit.engine_contract import plain_request
 
 ROLES = ("coder", "summarizer", "judge", "aggregator", "reviewer")
@@ -79,14 +80,14 @@ async def test_each_role_goes_to_the_engine_that_serves_its_model(tmp_path: Path
     await eng.stop()
 
 
-def test_one_engine_serving_every_role_stays_a_plain_http_engine(tmp_path: Path) -> None:
+def test_one_engine_serving_every_role_stays_one_http_engine(tmp_path: Path) -> None:
     eng = cli._http_engine(config(tmp_path, reviewer_engine=False), "main")
-    assert isinstance(eng, HTTPEngine)
+    assert isinstance(eng, ManagedEngine) and isinstance(eng._inner, HTTPEngine)
 
 
 def test_a_model_override_is_one_http_engine_even_with_roles_elsewhere(tmp_path: Path) -> None:
     eng = cli._http_engine(config(tmp_path), "main", "generalist")
-    assert isinstance(eng, HTTPEngine)
+    assert isinstance(eng, ManagedEngine) and isinstance(eng._inner, HTTPEngine)
 
 
 class Fake:

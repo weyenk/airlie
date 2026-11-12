@@ -24,14 +24,3 @@ topology:
         enabled: false
       studio:
         parallel: 3
-    studio-qwen25:                 # the experiment: Qwen2.5-32B (4-bit, already in the catalog) in the coder seat,
-      # everything else as studio (Noah 2026-10-18: a less clever but steadier coder may build a layer in less
-      # wall-clock once fix cycles count). Select it with `--topology studio-qwen25`, or for ticks with
-      # `story: { topology: studio-qwen25 }` in airlie.local.yaml; start its engine by hand first:
-      # `airlie engine up qwen25_32b`.
-      extends: studio
-      roles:
-        coder:
-          model: qwen25_32b
-          thinking: false
-          max_tokens: 10240

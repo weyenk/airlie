@@ -133,6 +133,18 @@ def agent_env(worktree: Path | None = None) -> dict[str, str]:
     return with_git_config(env, [(key, "") for key in resets])
 
 
+def box_env(extra: Mapping[str, str] = {}) -> dict[str, str]:  # noqa: B006 - never mutated
+    """The environment of a command in a repository chat's VM, built from scratch (it never reads
+    os.environ): a fixed PATH, HOME and LANG, git and ssh unable to prompt (NO_PROMPTS) or to use SSH
+    (NO_SSH), every git credential helper reset, then `extra` (the recipe's variables)."""
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/home/admin", "LANG": "C.UTF-8"}
+    env.update(NO_PROMPTS)
+    env.update(NO_SSH)
+    env = with_git_config(env, [("credential.helper", "")])
+    env.update(extra)
+    return env
+
+
 def _agent_path(path: str, virtual_env: str | None, worktree: Path | None) -> str:
     """`path` with `worktree/.venv/bin` first when that directory exists, and the bin of airlie's own
     interpreter (sys.prefix) or active virtual environment moved to the end: still found when the worktree

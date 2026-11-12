@@ -109,6 +109,16 @@ def test_sessions_resolve_to_their_user_until_ended_or_expired(store: AuthStore,
     assert store.session_user(token) is None
 
 
+def test_extending_a_session_moves_its_expiry_and_keeps_its_token(store: AuthStore, clock: Clock) -> None:
+    u = store.add_user("Pat", "member")
+    token = store.make_session(u.id, days=30)
+    clock.t += 20 * 86400
+    store.extend_session(token, 30)
+    assert store.session_expires_at(token) == clock.t + 30 * 86400
+    assert store.session_user(token) == u
+    assert store.session_expires_at("bogus") is None
+
+
 def test_deleting_a_user_cascades_to_credentials_sessions_and_invites(store: AuthStore, clock: Clock) -> None:
     u = store.add_user("Pat", "member")
     store.add_credential(Credential(b"c", u.id, b"pk", 0, (), clock.t))
@@ -155,3 +165,48 @@ def test_ending_one_session_leaves_the_users_other_devices_signed_in(store: Auth
     assert store.session_user(phone) is None
     assert store.session_user(laptop) == u
     store.end_session("never-issued")  # nothing to end is fine
+
+
+def test_saving_a_push_subscription_twice_keeps_one_row_with_the_newer_keys(store: AuthStore) -> None:
+    u = store.add_user("Noah", "admin")
+    store.save_push(u.id, "https://push.example/a", "old-key", "old-auth")
+    store.save_push(u.id, "https://push.example/a", "new-key", "new-auth")
+    (sub,) = store.push_subscriptions(u.id)
+    assert (sub.endpoint, sub.user_id, sub.p256dh, sub.auth) == (
+        "https://push.example/a",
+        u.id,
+        "new-key",
+        "new-auth",
+    )
+
+
+def test_push_subscriptions_none_lists_every_persons_and_drop_removes_one(store: AuthStore) -> None:
+    a, b = store.add_user("A", "admin"), store.add_user("B", "member")
+    store.save_push(a.id, "https://push.example/a", "k", "s")
+    store.save_push(b.id, "https://push.example/b", "k", "s")
+    assert {s.endpoint for s in store.push_subscriptions(None)} == {
+        "https://push.example/a",
+        "https://push.example/b",
+    }
+    assert [s.endpoint for s in store.push_subscriptions(b.id)] == ["https://push.example/b"]
+    store.drop_push("https://push.example/a")
+    assert [s.endpoint for s in store.push_subscriptions(None)] == ["https://push.example/b"]
+
+
+def test_deleting_a_user_takes_their_push_subscriptions_and_settings(store: AuthStore) -> None:
+    u = store.add_user("Noah", "admin")
+    store.save_push(u.id, "https://push.example/a", "k", "s")
+    store.set_notification_kind(u.id, "chat_reply", False)
+    store.delete_user(u.id)
+    assert store.push_subscriptions(None) == []
+    assert store.conn.execute("select count(*) from notification_settings").fetchone() == (0,)
+
+
+def test_a_set_notification_kind_is_read_back_and_unset_kinds_are_absent(store: AuthStore) -> None:
+    u = store.add_user("Noah", "admin")
+    assert store.notification_kinds(u.id) == {}
+    store.set_notification_kind(u.id, "chat_reply", False)
+    store.set_notification_kind(u.id, "model_ready", True)
+    store.set_notification_kind(u.id, "chat_reply", True)
+    store.set_notification_kind(u.id, "story_blocked", False)
+    assert store.notification_kinds(u.id) == {"chat_reply": True, "model_ready": True, "story_blocked": False}

@@ -302,3 +302,44 @@ def test_studio_roles_are_checked_only_for_the_studio_topology(tmp_path: Path) -
     assert problems(data) == [f"studio.chief_role names 'nope', which is not in roles ({ROLES})"]
     data["studio"] = {"chief_role": "coder", "review": {"role": "judge", "roles": ["coder", "qa"]}}
     assert problems(data) == [f"studio.review.roles names 'qa', which is not in roles ({ROLES})"]
+
+
+# ---- survivors of the plan 4 mutation run ----
+
+
+@pytest.mark.parametrize("host", ["a.1.com", "x.y.co"])
+def test_a_host_name_needs_its_top_level_label_to_hold_a_letter_not_a_middle_one(host: str) -> None:
+    from airlie.config.schema import BoxNetworkSpec
+
+    assert BoxNetworkSpec(allow_hosts=[host]).allow_hosts == [host]
+
+
+@pytest.mark.parametrize("host", ["x.com.123", "pypi.org.9"])
+def test_a_host_name_whose_top_level_label_has_no_letter_is_refused(host: str) -> None:
+    from pydantic import ValidationError
+
+    from airlie.config.schema import BoxNetworkSpec
+
+    with pytest.raises(ValidationError, match="not a lower-case host name"):
+        BoxNetworkSpec(allow_hosts=[host])
+
+
+def test_a_chat_task_problem_is_added_to_the_workflow_problems_not_in_place_of_them(tmp_path: Path) -> None:
+    data = valid(tmp_path)
+    data["story"] = {"composer": True}
+    data["chat"] = {"task": {"default_role": "ghost", "roles": ["ghost"]}}
+    found = problems(data)
+    assert "story.composer is on but workflows.story is missing" in found
+    assert any(p.startswith("chat.task names role 'ghost'") for p in found)
+
+
+def test_an_engine_that_is_not_mlx_vlm_does_not_end_the_one_model_check_of_later_engines(
+    tmp_path: Path,
+) -> None:
+    data = valid(tmp_path)
+    data["models"]["spare"] = {"repo": "o/spare", "revision": "r"}
+    data["models"]["kev"] = {"repo": "o/kev", "revision": "r"}
+    data["models"]["kev2"] = {"repo": "o/kev2", "revision": "r"}
+    data["engines"]["ext"] = {"kind": "openai_http", "base_url": "http://x/v1", "models": ["spare"]}
+    data["engines"]["dec"] = {"kind": "mlx_vlm", "port": 8081, "models": ["kev", "kev2"]}
+    assert problems(data) == ["engines.dec: an mlx_vlm engine serves exactly one model"]

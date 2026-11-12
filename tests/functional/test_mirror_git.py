@@ -1,0 +1,203 @@
+"""The host mirror and the bundle round trip against real git on temp repositories (no network, no VM): a
+second directory stands for the VM. The mirror reads a local checkout (no GitHub App), seed's bundle clones
+into the "VM", a commit made there comes back as a bundle, and only the session branch reaches the mirror."""
+
+from __future__ import annotations
+
+import subprocess
+from collections.abc import Mapping
+from pathlib import Path
+
+import pytest
+
+from airlie.boxes.mirror import Mirror, MirrorError
+from airlie.boxes.protocol import ExecResult
+from airlie.boxes.transit import TransitError, harvest, push_branch
+from airlie.chat.repo_session import repo_mirrors
+from airlie.story.publish import Publisher, run_cmd
+from tests.support.box import FakeBox
+from tests.support.git import git
+from tests.unit.github_helpers import WRITE, FakeGitHub, fake_app
+
+BRANCH = "airlie/chat-ab12cd34"
+IDENT = ["-c", "user.name=t", "-c", "user.email=t@t"]
+
+
+def local_checkout(tmp_path: Path) -> Path:
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    (repo / "README.md").write_text("hi\n")
+    (repo / ".airlie").mkdir()
+    (repo / ".airlie" / "environment.json").write_text('{"test": ["true"]}')
+    git(repo, *IDENT, "add", "-A")
+    git(repo, *IDENT, "commit", "-q", "-m", "init")
+    return repo
+
+
+def vm_box(vm: Path) -> FakeBox:
+    """A FakeBox whose git commands run for real in `vm` (the VM workdir)."""
+    box = FakeBox("vm")
+    box.state = "running"
+
+    def real_git(_box: FakeBox, argv: object, _stdin: bytes | None) -> ExecResult:
+        done = subprocess.run(list(argv), cwd=vm, capture_output=True, text=True)  # type: ignore[call-overload]
+        return ExecResult(done.returncode, done.stdout + done.stderr)
+
+    box.handlers["git"] = real_git
+    return box
+
+
+class RealGitBox(FakeBox):
+    """exec_bytes runs the command for real in `vm`, so a bundle comes out as bytes."""
+
+    vm: Path
+
+    async def exec_bytes(self, argv, *, cwd=None, stdin=None, timeout_s=120.0, max_bytes=10**9):  # type: ignore[no-untyped-def]
+        done = subprocess.run(list(argv), cwd=self.vm, capture_output=True)
+        return (done.returncode, done.stdout if done.returncode == 0 else done.stderr)
+
+
+async def test_a_real_bundle_round_trips_a_commit_from_a_cloned_workdir_to_the_mirror(tmp_path: Path) -> None:
+    source = local_checkout(tmp_path)
+    mirror = Mirror(tmp_path / "mirrors", "o/r", Publisher(), run=run_cmd, local_checkout=source)
+    await mirror.refresh()
+    base = await mirror.resolve("refs/remotes/origin/main")
+    assert await mirror.recipe_text("refs/remotes/origin/main") == '{"test": ["true"]}'
+    assert await mirror.recipe_text(base) is not None
+
+    # the host cuts the checkout as a bundle; the "VM" clones it, drops the remote, branches and commits
+    seed_ref = "refs/heads/seed"
+    await mirror.git("update-ref", seed_ref, base)
+    bundle = tmp_path / "in.bundle"
+    await mirror.git("bundle", "create", str(bundle), seed_ref)
+    vm = tmp_path / "vm"
+    subprocess.run(["git", "clone", "-q", "--no-checkout", str(bundle), str(vm)], check=True)
+    git(vm, "remote", "remove", "origin")
+    git(vm, "checkout", "-q", "-b", BRANCH, base)
+    (vm / "new.txt").write_text("from the vm\n")
+    git(vm, *IDENT, "add", "-A")
+    git(vm, *IDENT, "commit", "-q", "-m", "work in the vm")
+    await mirror.git("update-ref", "-d", seed_ref)
+
+    box = RealGitBox("vm")
+    box.vm = vm
+    box.state = "running"
+    box.handlers["git"] = vm_box(vm).handlers["git"]
+    result = await harvest(box, mirror, base_sha=base, branch=BRANCH, workdir=str(vm), max_bytes=10_000_000)
+
+    assert result.commits == 1
+    assert result.changes_workflows is False
+    assert result.sha == git(vm, "rev-parse", BRANCH)
+    assert git(mirror.path, "show", f"{BRANCH}:new.txt") == "from the vm"
+    refs = git(mirror.path, "for-each-ref", "--format=%(refname)").splitlines()
+    assert sorted(refs) == sorted([f"refs/heads/{BRANCH}", "refs/remotes/origin/main"])
+    assert mirror.can_push is False
+
+
+async def test_a_hostile_bundle_naming_another_branch_never_reaches_the_mirror(tmp_path: Path) -> None:
+    source = local_checkout(tmp_path)
+    mirror = Mirror(tmp_path / "mirrors", "o/r", Publisher(), run=run_cmd, local_checkout=source)
+    await mirror.refresh()
+    base = await mirror.resolve("refs/remotes/origin/main")
+    vm = tmp_path / "vm"
+    subprocess.run(["git", "clone", "-q", str(source), str(vm)], check=True)
+    git(vm, "checkout", "-q", "-b", BRANCH)
+    (vm / "evil.txt").write_text("x\n")
+    git(vm, *IDENT, "add", "-A")
+    git(vm, *IDENT, "commit", "-q", "-m", "evil")
+    git(vm, "branch", "main-takeover", BRANCH)
+
+    class Hostile(RealGitBox):
+        async def exec_bytes(self, argv, *, cwd=None, stdin=None, timeout_s=120.0, max_bytes=10**9):  # type: ignore[no-untyped-def]
+            # the VM answers with a bundle that also carries a branch the host did not ask for
+            argv = ["git", "bundle", "create", "-", f"{base}..{BRANCH}", f"{base}..main-takeover"]
+            return await super().exec_bytes(
+                argv, cwd=cwd, stdin=stdin, timeout_s=timeout_s, max_bytes=max_bytes
+            )
+
+    box = Hostile("vm")
+    box.vm = vm
+    box.state = "running"
+    box.handlers["git"] = vm_box(vm).handlers["git"]
+    with pytest.raises(TransitError, match="not only"):
+        await harvest(box, mirror, base_sha=base, branch=BRANCH, workdir=str(vm), max_bytes=10_000_000)
+    assert git(mirror.path, "for-each-ref", "--format=%(refname)", "refs/heads") == ""
+
+
+class ScriptedPublishRunner:
+    """The publisher's git and gh: every command recorded, none run (no network)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], Path]] = []
+
+    async def __call__(self, args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+        self.calls.append((list(args), cwd))
+        return ""
+
+
+async def test_each_repository_pushes_through_its_own_publisher_after_another_was_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two repository chats, o/a then o/b, over real Publishers (a FakeGitHub behind the App) and real
+    mirrors: the first one's push still goes to o/a, with a token for o/a alone."""
+    no_rules = tmp_path / "gitconfig"  # this machine's own url rewrites are no part of the test
+    no_rules.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(no_rules))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    github = FakeGitHub(installed=("o/a", "o/b"), permissions={**WRITE, "workflows": "write"})
+    app = fake_app(tmp_path, github)
+    gh = ScriptedPublishRunner()
+    mirrors = repo_mirrors(
+        tmp_path / "mirrors", lambda: Publisher(run=gh, app=app, publish="single"), run=run_cmd
+    )
+    a, b = mirrors("o/a"), mirrors("o/b")
+    await a.refresh()
+    await b.refresh()  # the second repository's first open: prepare reads o/b for its own publisher
+    head = git(local_checkout(tmp_path), "rev-parse", "HEAD")
+    git(a.path, "fetch", "-q", str(tmp_path / "checkout"), f"main:refs/heads/{BRANCH}")
+
+    await push_branch(a, a.publisher, branch=BRANCH, head=head)
+
+    assert gh.calls[-1] == (["git", "push", "-q", "origin", BRANCH], a.path)
+    assert github.minted_for()[-1] == ["a"]
+    assert mirrors("o/a") is a and a.publisher is not b.publisher
+    assert (a.publisher.repository, b.publisher.repository) == ("o/a", "o/b")
+
+
+async def test_a_mirror_without_a_checkout_or_app_says_what_is_missing(tmp_path: Path) -> None:
+    mirror = Mirror(tmp_path, "o/r", Publisher(), run=run_cmd)
+    with pytest.raises(MirrorError, match="story.github_app"):
+        await mirror.refresh()
+
+
+async def test_a_bundle_with_a_corrupt_object_fails_the_fetch_and_no_ref_lands(tmp_path: Path) -> None:
+    """The reviewer's badDate commit: git's own tools make it, bundle verify accepts it, and fsck on fetch
+    refuses it."""
+    source = local_checkout(tmp_path)
+    mirror = Mirror(tmp_path / "mirrors", "o/r", Publisher(), run=run_cmd, local_checkout=source)
+    await mirror.refresh()
+    base = await mirror.resolve("refs/remotes/origin/main")
+    vm = tmp_path / "vm"
+    subprocess.run(["git", "clone", "-q", str(source), str(vm)], check=True)
+    git(vm, "checkout", "-q", "-b", BRANCH)
+    tree = git(vm, "rev-parse", "HEAD^{tree}")
+    when = "not-a-date +0000"
+    raw = f"tree {tree}\nparent {base}\nauthor t <t@t> {when}\ncommitter t <t@t> {when}\n\nbad\n"
+    bad = subprocess.run(
+        ["git", "hash-object", "-t", "commit", "-w", "--literally", "--stdin"],
+        cwd=vm,
+        input=raw,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    git(vm, "update-ref", f"refs/heads/{BRANCH}", bad)
+
+    box = RealGitBox("vm")
+    box.vm = vm
+    box.state = "running"
+    box.handlers["git"] = vm_box(vm).handlers["git"]
+    with pytest.raises(TransitError, match="refused"):
+        await harvest(box, mirror, base_sha=base, branch=BRANCH, workdir=str(vm), max_bytes=10_000_000)
+    assert git(mirror.path, "for-each-ref", "--format=%(refname)", "refs/heads") == ""

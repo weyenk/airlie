@@ -17,6 +17,42 @@ Ask what's running, how airlie works, or type `/` for commands such as `/story`.
   <img src="docs/readme/chat.png" alt="Chat: ask airlie or type / for commands" width="720" />
 </p>
 
+The Chat screen still talks to `/v1/chat/completions`; it moves to the turn route below with the chat redesign.
+
+#### The chat turn route
+
+`POST /v1/airlie/chat/turn` runs one chat turn on the `chat` role and streams it as an AI SDK UI message stream
+(SSE, header `x-vercel-ai-ui-message-stream: v1`, ending `data: [DONE]`). Body: `{"id": "<thread id>", "kind":
+"plain", "messages": [{"role": "user", "parts": [{"type": "text", "text": "…"}]}], "skill": "<optional>"}`. The
+server keeps the conversation, so only the newest user message is read (its `text` parts and `file` parts naming
+`/v1/airlie/uploads/<id>`); the rest of `messages` and any `tools` list are ignored. The stream carries the
+standard chunks (`start`, `start-step`, `text-*`, `reasoning-*`, `tool-input-*`, `tool-output-*`, `finish-step`,
+`finish`, `error`) plus `data-engine` status parts ("Starting gemma…" while the manager brings the engine up).
+`finish` carries `messageMetadata.usage` with `prompt_tokens` and `max_context`, the context readout.
+
+| Route | Does |
+| --- | --- |
+| `POST /v1/airlie/chat/turn` | one turn; 401 not signed in, 400 a refused body (an unknown kind, no user message) or too many attachments, 404 a thread that is not yours, 409 the thread already has a turn running, 503 no `chat` role or engine; a `before_turn` guardrail may refuse with its own status |
+| `GET /v1/airlie/chat/threads[?kind=]` | your threads, newest first |
+| `GET /v1/airlie/chat/threads/{id}` | one thread with its messages and todos; 404 |
+| `DELETE /v1/airlie/chat/threads/{id}` | 204; 409 while a turn is running; 404 |
+| `POST /v1/airlie/chat/threads/{id}/stop` | cancels the running turn and saves the partial reply as `interrupted`; 204 (also when nothing is running); 404 |
+
+A client that disconnects does not stop the turn: it finishes, is saved to the thread and notifies `on_finish`.
+Stop is the explicit call above. Threads live on the server (sqlite, per signed-in person), so a reload or another
+device reads the same conversation.
+
+Only the `plain` kind exists (`repository` answers 400 until plan 4). A plain chat has no repository: its tools are
+`web_search` and `web_fetch` (when the web tools are configured), `skill` and `todo`; there is no file or shell
+tool. `chat.kinds.<kind>.tools` names them (`ask_first` marks tools to confirm), and `chat.max_steps` caps the
+tool rounds in a turn.
+
+The session prompt carries the [superpowers](https://github.com/obra/superpowers) bootstrap, and `skill` loads any
+of its skills (`brainstorming`, `writing-plans`, …) on demand. They are vendored at 7.0.0 in `vendor/superpowers/`
+(`chat.superpowers.enabled`, `chat.superpowers.path`), copied byte for byte and never edited; `airlie-tools.md`
+there is airlie's own tool mapping. `vendor/superpowers/PIN.md` records the pin. `task superpowers:verify` checks
+the tree against `MANIFEST.sha256`; to update, re-copy a newer release, edit `PIN.md` and regenerate the manifest.
+
 ### Board
 
 The local board (initiative → epic → story → subtask) with columns from To do through Done. Create a card when you want something on the line; open one for its acceptance criteria, the layer that ran, and the comments the agents leave.
@@ -55,7 +91,8 @@ Where to look when something feels off: generation and prefill speed, stories in
 
 ### Admin
 
-Who can sign in, their role, passkeys and Tailscale login. First admin and invites:
+Who can sign in, their role, passkeys and Tailscale login, and an Engines table (each engine's state: `stopped`,
+`downloading`, `starting`, `ready`, `waiting`, `stopping`, `failed`, who holds it and why a caller is waiting). First admin and invites:
 `task auth:admin` / `task auth:invite` ([`docs/integrations/sign-in.md`](docs/integrations/sign-in.md)).
 
 <p align="center">
@@ -87,6 +124,32 @@ task doctor
 task models:pull
 ```
 
+## Phone
+
+airlie is an installable web app. On an iPhone, open the Studio's tailnet URL in Safari, tap Share, then Add to Home
+Screen; it opens full-screen with the dark status bar. Sign in with your passkey once: a sign-in lasts
+`auth.session_days` (30 by default) idle, and each visit past half of that renews it, so a phone you use stays signed
+in. With the Studio unreachable the app opens its cached shell, or says it can't reach the Studio (the API and live
+feed are never cached). When a new version is ready the app offers a Reload.
+
+Notifications (Web Push) need a contact for the push services, in `airlie.local.yaml`:
+
+```yaml
+notifications:
+  contact: "mailto:you@example.com"   # or https://your.host; a mailto needs a dotted domain
+```
+
+Restart `task serve`; `task doctor` reports `notifications` as `push on` once it is set. Then, in the installed app,
+open the account menu, choose Notifications, tap Turn on notifications and allow the prompt (iOS asks only in the
+installed app). Tick the kinds you want (`notifications.default_kinds` sets what is on until you choose). Today the
+Studio sends a push when a story, epic or initiative is blocked, when a story is published for review, when mockups
+are ready to pick, and for Send a test; a chat reply, a model or VM ready and something needing your OK are marked
+"coming soon" (chat replies come with the chat redesign, model/VM ready and confirmations later). Notifications
+belong to a signed-in person, so an API key cannot set them up. The Studio POSTs each push to the phone's push service, so it needs outbound internet;
+`notifications.push_hosts` lists the services a browser may subscribe through (Apple, Google, Mozilla, Windows by
+default). The VAPID key is made when serve starts with `notifications.contact` set, in
+`observability.state_dir/vapid.pem` (`notifications.vapid_key` moves it).
+
 ## Tasks
 
 Run `task` to list them. The ones that exist today:
@@ -98,8 +161,9 @@ Run `task` to list them. The ones that exist today:
 | `task config` | prints the fully resolved configuration (`airlie.yaml` + `airlie.local.yaml`) |
 | `task searxng:up` / `:status` / `:down` / `:destroy` | SearXNG for the web roles' `web_search`, in a Tart Linux VM reached at `127.0.0.1:8888` (the first `up` downloads a few GB and installs it); `docs/integrations/web-tools.md` |
 | `task web:e2e [-- --roles chief,ux]` | asks every web-enabled role (chief, research, ux, design, reviewer) about something after its training data and checks it searched and cited what it found |
-| `task models:list` / `task models:pull [-- name…]` | show the catalog with pinned revisions / download exactly those revisions |
-| `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop every managed engine in `airlie.yaml`: one mlx-vlm server per model (`main`, `reviewer`, `small`, and `decision`: decider-2b on `/v1/decisions`); `airlie engine up <name>` starts any other engine by hand (the bench engines `llama70b`, `qwen25_32b`); status shows pid and per-model readiness |
+| `task models:list` / `task models:pull [-- name…]` | show the catalog with pinned revisions / download exactly those revisions (the same downloader an engine's first start uses: progress line, disk check, one download per snapshot) |
+| `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop the pinned engines in `airlie.yaml` (`main`, `gemma`, `decision`: decider-2b on `/v1/decisions`, and any other without `lifecycle: on_demand`); the on-demand one (`small`) start when a call needs them, see *Engines on demand*; `airlie engine up <name>` starts any engine by hand; status shows pid and per-model readiness |
+| `task gpu:limit` | set `iogpu.wired_limit_mb` to `memory.wired_limit_mb` now and at every boot (a LaunchDaemon; asks for your password) |
 | `task run -- "goal" --repo PATH [--topology fork] [--k 3] [--test-cmd "pytest -q"]` | run a topology on a goal (default `topology.kind: single`; `single` / `teams` / `fork` are experimental — use `task studio` or `--topology studio` for the supported path); every team/branch works in its own git worktree under the run directory and the report lists each one's outcome, branch and trace |
 | `task eval -- lang_detect [--topology fork] [--k 1]` | materialize a graded task from `evals/tasks/`, run it, grade every worktree with the hidden tests (same topology note as `task run`) |
 | `task serve [-- --port 8090]` | OpenAI-compatible endpoint: roles are models (`/v1/models`, `/v1/chat/completions` with the role prompt prepended), plus `POST /v1/airlie/run {goal, repo, k}`; jobs: `POST /v1/airlie/plans`, `/runs` or `/stories`, then `GET /v1/airlie/jobs/{id}?since=&wait=` (long poll), `DELETE` to cancel |
@@ -204,12 +268,12 @@ open draft PRs:** run `task serve -- --api-key SECRET` (or set `AIRLIE_SERVE_API
 vision model) scopes the request into a JSON plan of subtasks; the router (the decision model on mlx-vlm, or the chief's
 own hint with `router.kind: chief`) assigns each subtask a specialist role from the roles whose prompts carry a
 `summary:` line, and for roles with a skill library (`skills/qa/*.md`, folded into the coder's test brief) picks
-the guideline to inject; specialists are prompts over the catalog (generalist for most seats, Muse Glimmer for
+the guideline to inject; specialists are prompts over the catalog (generalist for most seats, Gemma for
 the `reviewer`) and run as single agents on one worktree, writers one at a time, readers in parallel; after a
-code subtask the reviewer (a different model family, on purpose: judges favour their own family's text) returns
+code subtask the reviewer (Gemma, a different lab than the coder's Qwen, on purpose: judges favour their own family's text) returns
 a JSON verdict and blocking findings give the coder one fix round; the chief synthesises. Run it with
 `task studio -- "goal" --repo . [--image shot.png]` after `task restart` (the committed engines are the studio's:
-one mlx-vlm server each for the generalist, the reviewer and the small model; mlx-vlm parses the tool calls,
+one mlx-vlm server each for the generalist, Gemma (the reviewer's) and the small model; mlx-vlm parses the tool calls,
 the parser named per model in the catalog). Every routing decision is logged
 (`runs/<id>/routing.jsonl`) and scorable with `task route:eval`.
 
@@ -252,10 +316,81 @@ the profile for one run; a profile name that is not a kind (a named variant, or 
 `extends`) can be selected the same way and takes its kind from its own `topology.kind` or the file's.
 `--k N` with `N > 1` under the `single` kind selects the `teams` profile. `task doctor` projects memory per
 profile across every managed engine. Profiles carry no engine flags: the engines come from the base config, and
-`task restart` takes no `--topology`. `studio-qwen25` is `studio` with Qwen2.5-32B
-(`qwen25_32b`, already in the catalog) in the coder seat, an experiment kept beside the default:
-start its engine by hand with `airlie engine up qwen25_32b`, and `story: { topology: studio-qwen25 }` in `airlie.local.yaml`
-makes `task line:tick` build with it.
+`task restart` takes no `--topology`.
+
+## Engines on demand
+
+Each engine in `airlie.yaml` has a `lifecycle`. `pinned` (the default): `task up` starts it and it stays up (`main`, `decision` and
+`gemma`, which sets no `lifecycle`). `on_demand` (`small`; the reviewer runs on the pinned `gemma`, so a review never waits for a cold start): nothing starts it until a call needs it, and it is stopped once it has
+been unused and unheld for `idle_unload_s` (default 600). Every role call holds its engine for its duration, so a
+busy engine is never stopped; when memory is short the manager stops idle on-demand engines to make room, and a
+caller that must wait gets the reason (shown in the chat strip and the Admin Engines table).
+
+- `task serve` owns the manager: chat, stories and the tick's jobs start engines through it, and it adopts engines
+  that are already running (by their pid files) rather than starting a second copy.
+- A process outside serve (`task story`, `airlie run`, the tick) takes a lease from serve
+  (`POST /v1/airlie/engines/{name}/leases`, renewed with `PUT`, released with `DELETE`; it expires after
+  `manager.lease_ttl_s`, default 120 s). With no serve answering, it starts the engine itself and leaves it running for
+  serve's reaper to stop later. Starts are serialized within one process, and a start that loses the race to another
+  process is tolerated.
+- Weights download on first use: the engine's start fetches the pinned snapshot with a progress line and fails early
+  when the disk is too small. `task models:pull` fetches ahead of time.
+- The `manager:` block tunes it: `margin_gb`, `start_timeout_s`, `wait_timeout_s`, `reap_every_s`, `lease_ttl_s`.
+- `task doctor` projects the pinned set as the floor and every resident engine on top of it against the wired limit.
+
+## Repository chats
+
+A repository chat works on a checkout inside its own Tart VM, one VM per chat. The model's tools (`shell`,
+`run_tests`, file edits, `compute`) run in the VM, never on the host. There is no host fallback: when Tart is
+missing or the VM cannot start, the chat says so and stops. Install Tart with
+`brew install cirruslabs/cli/tart`, and softnet, which filters the VM's network after setup (`allow_list` and
+`off` both need it; without it a repository chat is refused with this line, and `task doctor` has a `softnet`
+row): `brew install openai/tools/softnet`, then `sudo chown root:wheel "$(brew --prefix)/bin/softnet"` and `sudo chmod u+s
+"$(brew --prefix)/bin/softnet"` (softnet's README asks for a SUID bit on the binary or passwordless sudo, and gives no
+command; it needs macOS 26 or later; there is no `softnet install`).
+
+- **Image.** `boxes.image` (default `ghcr.io/cirruslabs/ubuntu:latest`; `tart pull` it once, or a chat's first
+  start downloads it, several GB, with no progress shown). A repository with a recipe that has `setup` is built
+  once into a cached image, `airlie-env-<key>`, and every chat clones from it. The key covers the base, the setup
+  lines and the variables (names and values). A `:latest` base is keyed by its name: a moved tag reuses the
+  cached image until the recipe changes.
+- **Recipe.** `.airlie/environment.json` in the repository (see
+  [`docs/integrations/environment.example.json`](docs/integrations/environment.example.json)). Keys: `base` (a
+  registry image, `host/name[:tag]`, or `boxes.image`; never a local VM, so a recipe cannot start from another
+  repository's cached image or another chat's disk), `setup` (shell lines run once with the network open), `env`
+  (variables of every command; the values are in git, so no secrets), `test` (what `run_tests` runs; without it
+  `run_tests` says how to add it) and `workdir` (default `/home/admin/work`). An unknown key is an error that
+  names it.
+- **Secrets.** Setup secrets stay on the host in `<state_dir>/boxes/secrets/<owner>__<name>.env`, `KEY=VALUE`
+  lines, mode 600 (a file others can read is refused). They reach the VM only while setup runs, on stdin, and are
+  not in the cached key. Building an image while secrets exist asks first (`build_image`). What setup writes to
+  disk with them (a `~/.npmrc` token, a logged-in registry) stays in the cached image and in every chat cloned
+  from it: such an image is named per repository and never shared, but a chat's model can read it.
+- **Network.** Open during setup. After it, `boxes.network.after_setup` is `allow_list` (default: only
+  `boxes.network.allow_hosts`, resolved to IPv4 addresses at each start) or `off`. In `allow_list` the VM reaches only those addresses:
+  no DNS server and no gateway (so the host's sshd or a container's published port is not reachable). The host
+  writes the resolved name and address pairs into the guest's `/etc/hosts` after boot, between airlie's marker
+  lines (replaced each boot), so the names resolve there. A name that does not resolve fails the start and is
+  named. A CDN whose addresses rotate mid-session needs a VM restart (a new resolution); it can fail an install
+  until then. IPv6 is not used (the guest has no global IPv6 address).
+- **Code in, branch out.** The host puts the checkout in and takes commits out as a git bundle over `tart exec`
+  (no shared folder). A bundle over `boxes.bundle_max_mb` (default 512) is refused. The VM holds no token and no
+  remote; the host pushes with the GitHub App.
+- **Always asks.** `push_branch`, `open_pr` and `build_image` need a person's yes whatever the config says: the
+  server holds the call until the chat's approval arrives, a no is spent once, and a yes that goes unused expires
+  with its turn. `chat.kinds.repository.ask_first` may add tools, but a config that drops these three fails to load.
+  A push is asked about after its commits are out of the VM: the request names the branch, the head commit, the
+  commits and the changed paths, and says when they touch `.github/workflows/` (then the push's token may change
+  workflows). The yes is for that head; a commit made after it is asked about again. `open_pr` is asked about
+  with its title, branch and the head that was pushed.
+- **`task` tool.** A fresh-context subagent on one of `chat.task.roles` (default `coder`, `reviewer`, `tester`,
+  `architect`), in the same VM, holding its engine through the manager. It has no `task`, push or PR tool.
+- **`boxes:` keys.** `backend`, `image`, `memory_gb` (8), `cpus` (4), `disk_gb` (40), `idle_stop_s` (900; the VM
+  stops, its disk stays), `setup_timeout_s`, `boot_timeout_s`, `bundle_max_mb`, `network`. Deleting the chat
+  deletes the VM; when `tart delete` fails the chat stays and the delete says which VM, so no disk is left
+  without a chat. A running VM counts its `memory_gb` in `task doctor`. While a VM starts, the chat shows why it
+  waits ("building image", "starting VM", "waiting for memory: ..."). Serve's shutdown stops the chat VMs (the
+  disks stay), and a VM is synced before every stop, so the clone survives it.
 
 ## Learning to Share
 
@@ -380,13 +515,13 @@ Design: `docs/superpowers/specs/2026-10-22-prompt-hub-design.md`.
 
 ## Hardware
 
-Built for a Mac Studio M5 Max with 128 GB unified memory. Set the wired limit once (spec 01 §1):
+Built for a Mac Studio M5 Max with 128 GB unified memory. Set the wired limit (`memory.wired_limit_mb`) now and at every boot:
 
 ```bash
-sudo sysctl iogpu.wired_limit_mb=106496
+task gpu:limit
 ```
 
-`task doctor` tells you if it is missing.
+`task doctor` tells you if it is missing (its memory projection counts the pinned engines as the floor, the on-demand ones on top).
 
 ## License
 

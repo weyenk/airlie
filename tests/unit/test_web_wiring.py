@@ -85,6 +85,12 @@ class _FakeProbe:
     def tool_version(self, name: str):
         return "present"
 
+    def tart_images(self):
+        return None
+
+    def tart_vms(self):
+        return None
+
     def model_config(self, repo: str, revision: str):
         return None
 

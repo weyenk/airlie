@@ -9,11 +9,13 @@ import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import httpx
 
+from airlie.boxes.sweep import Vm, leftovers, tart_vms
 from airlie.config import AirlieConfig, ConfigError, load_config
 from airlie.engine.mlx_vlm import MLX_VLM_ENTRY
 
@@ -35,6 +37,14 @@ class SystemProbe(Protocol):
     def total_ram_bytes(self) -> int: ...
     def model_snapshot_dir(self, repo: str, revision: str) -> Path | None: ...
     def tool_version(self, name: str) -> str | None: ...
+    def tart_images(self) -> list[str] | None:
+        """The VMs and images `tart list` shows; None when it cannot be asked."""
+        ...
+
+    def tart_vms(self) -> list[Vm] | None:
+        """The local VMs `tart list` shows, with size and last use; None when it cannot be asked."""
+        ...
+
     def model_config(self, repo: str, revision: str) -> dict[str, Any] | None: ...
     def http_ok(self, url: str) -> bool: ...
     def http_status(self, url: str, headers: dict[str, str] | None = None) -> int | None:
@@ -149,6 +159,19 @@ class RealProbe:
         except importlib.metadata.PackageNotFoundError:
             return None
 
+    def tart_images(self) -> list[str] | None:
+        exe = shutil.which("tart")
+        if not exe:
+            return None
+        try:
+            out = subprocess.run([exe, "list", "--quiet"], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return out.stdout.split() if out.returncode == 0 else None
+
+    def tart_vms(self) -> list[Vm] | None:
+        return tart_vms()
+
     def tool_version(self, name: str) -> str | None:
         exe = shutil.which(name)
         if not exe:
@@ -161,6 +184,63 @@ class RealProbe:
             return line[0]
         except (OSError, subprocess.TimeoutExpired):
             return "present"
+
+
+def tart_check(cfg: AirlieConfig, probe: SystemProbe) -> CheckResult:
+    """Repository chats run in Tart VMs: warn (the rest of airlie works without them) when Tart or the default
+    image is missing."""
+    image = cfg.boxes.image
+    if not probe.tool_version("tart"):
+        return CheckResult(
+            "tart",
+            "warn",
+            "Tart not installed (repository chats need it); run: brew install cirruslabs/cli/tart "
+            f"&& tart pull {image}",
+        )
+    images = probe.tart_images()
+    if images is None or image not in images:
+        return CheckResult(
+            "tart",
+            "warn",
+            f"default image not pulled; run: tart pull {image} (else a chat's first start downloads it, "
+            "several GB, with no progress shown)",
+        )
+    return CheckResult(
+        "tart",
+        "ok",
+        f"{image} pulled (setup secrets are kept per repository, not yet per person: "
+        "state_dir/boxes/secrets/<owner>__<name>.env, mode 600)",
+    )
+
+
+def box_leftovers_check(probe: SystemProbe, now: datetime | None = None) -> CheckResult:
+    """Image-build disks (`airlie-env-*-building-*`) left by a crash and unused for an hour. This only
+    reports: serve's start deletes them (a build running in serve is younger than that: never listed)."""
+    vms = probe.tart_vms()
+    if vms is None:
+        return CheckResult("box leftovers", "ok", "tart not available: nothing to look for")
+    found = [v for v in leftovers(vms, now=now or datetime.now(UTC)) if v.name.startswith("airlie-env-")]
+    if not found:
+        return CheckResult("box leftovers", "ok", "no leftover image-build disks")
+    size = sum(v.size_gb for v in found)
+    return CheckResult(
+        "box leftovers",
+        "warn",
+        f"{len(found)} leftover image-build disk(s), {size:.0f} GB ({', '.join(v.name for v in found)}); "
+        "serve deletes them at its next start",
+    )
+
+
+def softnet_check(cfg: AirlieConfig, probe: SystemProbe) -> CheckResult:
+    """A chat VM's network after setup (boxes.network.after_setup: allow_list or off) is filtered by softnet,
+    which Tart runs: without it the VM cannot boot, and a repository chat is refused (409) with this line."""
+    from airlie.boxes.tart import SOFTNET_HINT
+
+    if not probe.tool_version("softnet"):
+        return CheckResult("softnet", "warn", SOFTNET_HINT)
+    return CheckResult(
+        "softnet", "ok", f"installed: chat VMs boot with network {cfg.boxes.network.after_setup} after setup"
+    )
 
 
 def web_node_pin(root: Path) -> str:
@@ -211,54 +291,182 @@ def _resident_engines(cfg: AirlieConfig) -> list[Any]:
     return [e for n, e in cfg.engines.items() if e.kind != "openai_http" and (e.autostart or n in used)]
 
 
-def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[str]]:
-    """Spec 01 §1 budget: preloaded weights + the live KV + the prefix cache + OS reserve.
-
-    The live KV of the single, teams and fork topologies is K × max_kv_size. The studio's is its two lanes'
-    (planning-line P5b, D10): the build lane's one sequence at the coder's `max_context`, plus `line.fanout`
-    short asks at `line.consult_context`, each at its model's KV rate. The prefix cache is what the engine's
-    `cache_memory_gb` sets aside.
-
-    Returns (projected GB, names of preloaded models with no estimated_memory_gb)."""
-    e = cfg.engines[engine_name]
-    weights = 0.0
-    cache = 0.0
+def _weights(cfg: AirlieConfig, e: Any) -> tuple[float, list[str]]:
+    """An engine's resident weights (each model and its MTP head) and the names with no estimate."""
+    total = 0.0
     unknown: list[str] = []
-    resident = _resident_engines(cfg)
-    for other in cfg.engines.values():  # every managed process shares the one wired limit
-        if other.kind != "mlx_vlm" or other not in resident:
-            continue
-        cache += cache_memory_gb(other)
-        for mname in other.models:
-            m = cfg.models[mname]
-            if m.estimated_memory_gb is None:
-                unknown.append(mname)
+    for mname in e.models:
+        m = cfg.models[mname]
+        parts = [(mname, m.estimated_memory_gb)]
+        if m.mtp and not e.decision:  # served beside the body (engine/mlx_vlm.py)
+            parts.append((f"{mname} MTP head", m.mtp.estimated_memory_gb))
+        for label, gb in parts:
+            if gb is None:
+                unknown.append(label)
             else:
-                weights += m.estimated_memory_gb
-    return weights + live_kv_gb(cfg, e) + cache + cfg.memory.os_reserve_gb, unknown
+                total += gb
+    return total, unknown
+
+
+def _kv_gb(cfg: AirlieConfig, e: Any, engine_name: str) -> float:
+    """The KV one engine holds: the lane KV when it is a lane engine, else its `other_engines_kv` sequence."""
+    if cfg.topology.kind == "studio":
+        lane = 0.0
+        if cfg.engine_for_role(cfg.story.build_role) == engine_name:
+            build = cfg.roles[cfg.story.build_role]
+            lane += (
+                build.max_context
+                / 1000.0
+                * cfg.models[build.model].kv_mb_per_1k_tokens
+                / 1024.0
+                * kv_scale(e)
+            )
+        if cfg.engine_for_role(cfg.story.architect_role) == engine_name:
+            ask = cfg.roles[cfg.story.architect_role]
+            lane += (
+                cfg.line.fanout
+                * (cfg.line.consult_context / 1000.0)
+                * cfg.models[ask.model].kv_mb_per_1k_tokens
+                / 1024.0
+                * kv_scale(e)
+            )
+        if lane:
+            return lane
+    elif engine_name in _lane_engines(cfg):
+        return live_kv_gb(cfg, e)
+    seq = _sequence_kv(cfg, engine_name)
+    return seq[1] if seq else 0.0
+
+
+def _footprint(cfg: AirlieConfig, name: str) -> tuple[float, list[str]]:
+    e = cfg.engines[name]
+    weights, unknown = _weights(cfg, e)
+    return weights + _kv_gb(cfg, e, name) + cache_memory_gb(e), unknown
+
+
+def engine_footprint_gb(cfg: AirlieConfig, name: str) -> float:
+    """What one engine holds while it runs: its weights and MTP head, its KV (the lane KV for a lane engine,
+    else its `other_engines_kv` sequence) and its prefix cache. A model with no estimate counts 0."""
+    return _footprint(cfg, name)[0]
+
+
+def _sum_footprints(cfg: AirlieConfig, names: list[str]) -> tuple[float, list[str]]:
+    total = 0.0
+    unknown: list[str] = []
+    for name in names:
+        gb, miss = _footprint(cfg, name)
+        total += gb
+        unknown += miss
+    return total + cfg.memory.os_reserve_gb, unknown
+
+
+def _mlx_vlm_names(cfg: AirlieConfig, engines: list[Any]) -> list[str]:
+    return [n for n, e in cfg.engines.items() if e.kind == "mlx_vlm" and e in engines]
+
+
+def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[str]]:
+    """Spec 01 §1 budget: preloaded weights + the live KV + the prefix cache + OS reserve, over every engine
+    that can be resident at once (`_resident_engines`).
+
+    The weights are each resident model's and its MTP head's (the --draft-model loads beside the body). The
+    live KV of the single, teams and fork topologies is K × max_kv_size. The studio's is its two lanes'
+    (planning-line P5b, D10): the build lane's one sequence at the coder's `max_context`, plus `line.fanout`
+    short asks at `line.consult_context`, each at its model's KV rate. Every other resident engine holds one
+    sequence at the longest context its roles ask (`other_engines_kv`). KV is the catalog's bf16 rate scaled
+    to each engine's `kv_bits` (`kv_scale`). The prefix cache is what the engine's `cache_memory_gb` sets
+    aside.
+
+    Returns (projected GB, names of preloaded models or MTP heads with no estimated_memory_gb)."""
+    return _sum_footprints(cfg, _mlx_vlm_names(cfg, _resident_engines(cfg)))
+
+
+def _pinned_engines(cfg: AirlieConfig) -> list[Any]:
+    return [e for e in _resident_engines(cfg) if e.lifecycle == "pinned"]
+
+
+def pinned_floor_gb(cfg: AirlieConfig) -> float:
+    """The same sum over the pinned engines only: what stays resident whatever the on-demand ones do."""
+    return _sum_footprints(cfg, _mlx_vlm_names(cfg, _pinned_engines(cfg)))[0]
+
+
+def _lane_engines(cfg: AirlieConfig) -> set[str]:
+    """The engines whose KV `live_kv_gb` counts: the studio's lanes', or the team role's."""
+    if cfg.topology.kind == "studio":
+        return {cfg.engine_for_role(cfg.story.build_role), cfg.engine_for_role(cfg.story.architect_role)}
+    return {cfg.engine_for_role(cfg.teams.role)}
+
+
+def other_engines_kv(cfg: AirlieConfig) -> dict[str, tuple[int, float]]:
+    """The KV of every resident engine `live_kv_gb` leaves out, as {engine: (tokens, GB)}: one sequence at
+    the longest `max_context` a role on it asks, up to its `max_kv_size`, at that role's model's KV rate and
+    the engine's `kv_bits`. An
+    engine no role sits on (the decision engine, a bench engine) is left out: its prompts are short."""
+    lanes = _lane_engines(cfg)
+    resident = _resident_engines(cfg)
+    out: dict[str, tuple[int, float]] = {}
+    for name, e in cfg.engines.items():
+        if e.kind != "mlx_vlm" or name in lanes or e not in resident:
+            continue
+        if seq := _sequence_kv(cfg, name):
+            out[name] = seq
+    return out
+
+
+def _sequence_kv(cfg: AirlieConfig, name: str) -> tuple[int, float] | None:
+    """One sequence at the longest context a role on the engine asks, as (tokens, GB), else None."""
+    e = cfg.engines[name]
+    seqs = [
+        (tokens, tokens / 1000.0 * cfg.models[r.model].kv_mb_per_1k_tokens / 1024.0 * kv_scale(e))
+        for r in cfg.roles.values()
+        if r.model in e.models
+        for tokens in [min(r.max_context, e.max_kv_size)]
+    ]
+    return max(seqs, key=lambda s: s[1]) if seqs else None
+
+
+_KV_GROUP = 64  # mlx-vlm's KV quantization group (mlx_vlm/generate/common.py DEFAULT_KV_GROUP_SIZE)
+
+
+def kv_scale(e: Any) -> float:
+    """What an engine's KV costs against the catalog's bf16 `kv_mb_per_1k_tokens`: `kv_bits` a value plus a
+    16-bit scale and bias for each group of 64 when the engine quantizes its KV, else 1."""
+    if e.kind != "mlx_vlm" or e.kv_bits is None:
+        return 1.0
+    return float((e.kv_bits + 2 * 16 / _KV_GROUP) / 16)
 
 
 def live_kv_gb(cfg: AirlieConfig, e: Any) -> float:
-    """The KV the running sequences hold (see `project_memory_gb`)."""
+    """The KV the running sequences hold (see `project_memory_gb`), at each engine's `kv_bits`."""
     if cfg.topology.kind == "studio":
         build = cfg.roles[cfg.story.build_role]
         ask = cfg.roles[cfg.story.architect_role]
-        lane = (build.max_context / 1000.0) * cfg.models[build.model].kv_mb_per_1k_tokens / 1024.0
+        lane = (
+            (build.max_context / 1000.0)
+            * cfg.models[build.model].kv_mb_per_1k_tokens
+            / 1024.0
+            * kv_scale(cfg.engines[cfg.engine_for_role(cfg.story.build_role)])
+        )
         asks = (
             cfg.line.fanout
             * (cfg.line.consult_context / 1000.0)
             * cfg.models[ask.model].kv_mb_per_1k_tokens
             / 1024.0
+            * kv_scale(cfg.engines[cfg.engine_for_role(cfg.story.architect_role)])
         )
         return lane + asks
     team_model = cfg.models[cfg.roles[cfg.teams.role].model]
-    return float(cfg.teams.k * (e.max_kv_size / 1000.0) * team_model.kv_mb_per_1k_tokens / 1024.0)
+    return float(
+        cfg.teams.k * (e.max_kv_size / 1000.0) * team_model.kv_mb_per_1k_tokens / 1024.0 * kv_scale(e)
+    )
 
 
 def projection_detail(cfg: AirlieConfig, e: Any) -> str:
     """What `project_memory_gb` counted, in words for the doctor's row."""
     cache = sum(cache_memory_gb(o) for o in _resident_engines(cfg))
-    tail = f" + {cache:.0f} GB prefix cache" if cache else ""
+    others = other_engines_kv(cfg)
+    seqs = ", ".join(f"{n} at {tokens}" for n, (tokens, _) in others.items())
+    tail = f" + 1 sequence on {seqs}" if others else ""
+    tail += f" + {cache:.0f} GB prefix cache" if cache else ""
     if cfg.topology.kind == "studio":
         build = cfg.roles[cfg.story.build_role]
         return (
@@ -380,8 +588,23 @@ def _projection_rows(
         )
         if unknown:
             detail += f"; no estimated_memory_gb for {', '.join(unknown)}"
-        status: Status = "fail" if projected > limit_gb else ("warn" if unknown else "ok")
+        floor = pinned_floor_gb(pcfg)
+        status: Status = "ok"
+        if projected > limit_gb:
+            # over only with everything resident: the manager queues or stops idle on-demand engines
+            status = "fail" if floor > limit_gb else "warn"
+            if status == "warn":
+                detail += "; the manager will queue or stop idle engines"
+        elif unknown:
+            status = "warn"
         rows.append(CheckResult(name, status, detail))
+        rows.append(
+            CheckResult(
+                f"engine:memory_floor[{pname}]",
+                "fail" if floor > limit_gb else "ok",
+                f"pinned engines {floor:.0f} GB vs wired limit {limit_gb:.0f} GB",
+            )
+        )
     return rows
 
 
@@ -395,6 +618,9 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
                 f"tool:{tool}", "ok" if v else "fail", v or f"'{tool}' not on PATH (see README install)"
             )
         )
+    results.append(tart_check(cfg, probe))
+    results.append(box_leftovers_check(probe))
+    results.append(softnet_check(cfg, probe))
     try:
         pin = web_node_pin(root)
     except (OSError, ValueError, KeyError, TypeError) as err:  # no file, not JSON, no engines.node
@@ -422,9 +648,18 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
                 )
             )
 
+    if cfg.notifications.contact:
+        results.append(CheckResult("notifications", "ok", "push on (contact set)"))
+    else:
+        results.append(
+            CheckResult(
+                "notifications", "warn", "push off: set notifications.contact (mailto:…) in airlie.local.yaml"
+            )
+        )
+
     want = cfg.memory.wired_limit_mb
     have = probe.sysctl_int("iogpu.wired_limit_mb")
-    fix = f"run: sudo sysctl iogpu.wired_limit_mb={want}  (docs/wiki/build-spec/01 §1)"
+    fix = "run: task gpu:limit (sets it now and at every boot)"
     if have is None:
         results.append(CheckResult("iogpu.wired_limit_mb", "warn", f"not set; {fix}"))
     elif have < want:

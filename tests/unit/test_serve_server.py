@@ -52,3 +52,55 @@ def test_run_exits_with_uvicorns_startup_failure_code_when_the_server_never_star
     with pytest.raises(SystemExit) as stop:
         run(app, host="127.0.0.1", port=0)
     assert stop.value.code == 3
+
+
+async def test_shutdown_stops_every_chat_turn_in_flight_before_waiting_for_connections(
+    tmp_path: Path,
+) -> None:
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    server = Server(app, host="127.0.0.1", port=0, log_level="warning")
+    serving = asyncio.ensure_future(server.serve())
+    hung = asyncio.ensure_future(asyncio.Event().wait())  # a turn whose engine never answers
+    try:
+        async with asyncio.timeout(10):
+            while not server.started:
+                await asyncio.sleep(0.01)
+            turn = app.state.chat_busy.take("t1")
+            assert turn is not None
+            turn.handle._driver = hung  # type: ignore[assignment]
+            server.should_exit = True
+            await serving
+        assert turn.handle.stopped
+        assert hung.cancelled()
+    finally:
+        hung.cancel()
+        server.force_exit = True
+        server.should_exit = True
+        await asyncio.wait_for(serving, 10)
+
+
+async def test_shutdown_stops_chat_turns_only_after_the_listeners_have_closed(tmp_path: Path) -> None:
+    """A turn accepted between the stop and the listeners closing would be missed by the stop."""
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    server = Server(app, host="127.0.0.1", port=0, log_level="warning")
+    serving_when_stopped: list[bool] = []
+    busy = app.state.chat_busy
+    real_stop_all = busy.stop_all
+
+    def stop_all() -> None:
+        serving_when_stopped.append(any(s.is_serving() for s in server.servers))
+        real_stop_all()
+
+    busy.stop_all = stop_all
+    serving = asyncio.ensure_future(server.serve())
+    try:
+        async with asyncio.timeout(10):
+            while not server.started:
+                await asyncio.sleep(0.01)
+            server.should_exit = True
+            await serving
+    finally:
+        server.force_exit = True
+        server.should_exit = True
+        await asyncio.wait_for(serving, 10)
+    assert serving_when_stopped == [False]

@@ -10,6 +10,9 @@ import AdminScreen from "./AdminScreen.vue";
 const api = vi.hoisted(() => ({ listUsers: vi.fn(), createInvite: vi.fn(), inviteAgain: vi.fn(), deleteUser: vi.fn() }));
 vi.mock("@/api/auth", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/auth")>()), ...api }));
 
+const engineApi = vi.hoisted(() => ({ listEngines: vi.fn() }));
+vi.mock("@/api/engines", () => engineApi);
+
 const NOW = 1_800_000_000;
 const NOAH: User = { id: "u1", name: "Noah", login: "noah@github", role: "admin", created_at: NOW - 30 * 86400, credentials: 2 };
 const JESS: User = { id: "u2", name: "Jess", login: null, role: "member", created_at: NOW - 20 * 86400, credentials: 1 };
@@ -36,6 +39,7 @@ beforeEach(() => {
   vi.setSystemTime(NOW * 1000);
   setActivePinia(createPinia());
   for (const f of Object.values(api)) f.mockReset();
+  engineApi.listEngines.mockReset().mockResolvedValue([]);
   api.createInvite.mockResolvedValue({ url: "/join/tok123", expires_at: NOW + 86400, user: { ...MARCUS, credentials: undefined } });
   api.inviteAgain.mockResolvedValue({ url: "/join/again", expires_at: NOW + 86400, user: JESS });
   api.deleteUser.mockResolvedValue(undefined);
@@ -86,6 +90,16 @@ test("a member is told only admins can see who is here", async () => {
   await flushPromises();
   expect(w.text()).toContain("Only admins can see who's here.");
   expect(w.find("form").exists()).toBe(false);
+});
+
+test("a member sees no Engines section", async () => {
+  api.listUsers.mockRejectedValue(new ApiError(403, "admins only"));
+  engineApi.listEngines.mockResolvedValue([{ kind: "engine", detail: "", progress: null, holders: ["chat:1"], lifecycle: "on_demand", roles: [], name: "gemma", state: "ready" }]);
+  useSessionStore().me = { name: "Jess", role: "member", via: "session" };
+  const w = mount(AdminScreen, { attachTo: document.body });
+  await flushPromises();
+  expect(w.find('[data-engine="gemma"]').exists()).toBe(false);
+  expect(w.text()).not.toContain("Engines");
 });
 
 test("an unreachable server says so", async () => {
@@ -283,4 +297,61 @@ test("the window ends with the Admin page and an empty list elsewhere cannot reo
   expect(useBootstrapStore().open).toBe(true);
   w.unmount();
   expect(useBootstrapStore().open).toBe(false);
+});
+
+const ENGINE = { kind: "engine", detail: "", progress: null, holders: [], lifecycle: "on_demand", roles: [] };
+
+test("the Engines table lists each engine with its state, lifecycle and what holds it", async () => {
+  engineApi.listEngines.mockResolvedValue([
+    { ...ENGINE, name: "gemma", state: "ready", holders: ["chat:1"], roles: ["chat"] },
+    { ...ENGINE, name: "reviewer", state: "waiting", detail: "waiting for memory: chat:1, role:reviewer", lifecycle: "pinned" },
+  ]);
+
+  const w = await open();
+
+  const gemma = w.get('[data-engine="gemma"]');
+  expect(gemma.text()).toContain("ready");
+  expect(gemma.text()).toContain("on_demand");
+  expect(gemma.text()).toContain("chat:1");
+  const reviewer = w.get('[data-engine="reviewer"]');
+  expect(reviewer.text()).toContain("pinned");
+  expect(reviewer.text()).toContain("Waiting for memory: chat:1, role:reviewer");
+});
+
+test("the Engines table shows a download's progress", async () => {
+  engineApi.listEngines.mockResolvedValue([
+    { ...ENGINE, name: "reviewer", state: "downloading", progress: { done_bytes: 7.2e9, total_bytes: 19.4e9, rate_bps: 1e7, eta_s: 180 } },
+  ]);
+
+  const w = await open();
+
+  expect(w.get('[data-engine="reviewer"]').text()).toContain("Downloading reviewer: 7.2 of 19.4 GB, 3 min left");
+  expect(w.find('[data-engine="reviewer"] [role=progressbar]').exists()).toBe(true);
+});
+
+test("the Engines table says it is loading before the first answer", async () => {
+  engineApi.listEngines.mockReturnValue(new Promise(() => {}));
+
+  const w = await open();
+
+  expect(w.text()).toContain("Loading engines");
+});
+
+test("the Engines table says when there are no engines", async () => {
+  const w = await open();
+
+  expect(w.text()).toContain("No engines are set up.");
+  expect(w.find("table").exists()).toBe(false);
+});
+
+test("a failed engines fetch is said, and Retry asks again", async () => {
+  engineApi.listEngines.mockRejectedValueOnce(new Error("HTTP 503"));
+  const w = await open();
+  expect(w.text()).toContain("Can't reach the engines: HTTP 503");
+  engineApi.listEngines.mockResolvedValue([{ ...ENGINE, name: "gemma", state: "ready" }]);
+
+  await clickButton(w, "Retry");
+
+  expect(w.text()).not.toContain("Can't reach the engines");
+  expect(w.find('[data-engine="gemma"]').exists()).toBe(true);
 });

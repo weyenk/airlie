@@ -45,3 +45,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if item.get_closest_marker("mac"):
             item.add_marker(skip, append=False)
+
+
+@pytest.fixture(autouse=True)
+def _serve_manages_no_real_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`create_app` without a `manager=` builds one over the config's mlx-vlm engines, which would download
+    models and start processes; a test that wants a manager passes its own (tests/support/serve.py)."""
+    monkeypatch.setattr("airlie.manager.engines.engine_resources", lambda *a, **k: [])

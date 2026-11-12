@@ -80,10 +80,10 @@ roles:
   chat:                            # the web app's Chat (AIR-36): prose, no tools (the passthrough runs none); skills/chat are its slash commands
     prompt: prompts/roles/chat.md
     skills: skills/chat
-    model: generalist
+    model: gemma4
     tools: []
     vision: true
-    max_context: 131072
+    max_context: 262144
     max_tokens: 16384
     thinking: true
     thinking_budget: 8192
@@ -172,7 +172,7 @@ roles:
       presence_penalty: 0.0
   ux:
     prompt: prompts/roles/ux.md
-    model: generalist
+    model: gemma4
     tools: [web_search, web_fetch]
     max_steps: 6
     vision: true
@@ -186,7 +186,7 @@ roles:
       presence_penalty: 0.0
   design:
     prompt: prompts/roles/design.md
-    model: generalist
+    model: gemma4
     tools: [web_search, web_fetch]
     max_steps: 6
     vision: true
@@ -240,32 +240,28 @@ roles:
       min_p: 0.0
       presence_penalty: 0.0
       repetition_penalty: 1.05
-  reviewer:                        # low: at medium a review ran its whole 16384 tokens still thinking (AIR-7 layer 02 round 1, 2026-10-18)
+  reviewer:                        # on Gemma since 2026-11-12 (Noah): a different lab than the coder's Qwen, already resident, so no second model in memory; Muse stays defined as the `reviewer` model
     prompt: prompts/roles/reviewer.md
-    model: reviewer
+    model: gemma4
     tools: [web_search, web_fetch]
     max_steps: 4
     max_context: 131072
     max_tokens: 16384
     thinking: false
-    chat_template_kwargs:
-      reasoning_strength: low
     sampling:
       temperature: 0.2
       top_p: 0.9
       top_k: 20
       min_p: 0.0
       presence_penalty: 0.0
-  supervisor:                      # layer 1 of the supervisor (spec 2026-10-22): advisory triage on the reviewer model; run_test is added by the triage, not listed
+  supervisor:                      # layer 1 of the supervisor (spec 2026-10-22): advisory triage on the reviewer's model (Gemma since 2026-11-12); run_test is added by the triage, not listed
     prompt: prompts/roles/supervisor.md
-    model: reviewer
+    model: gemma4
     tools: [read_file, list_dir, grep]
     max_steps: 6
     max_context: 131072
     max_tokens: 8192
     thinking: false
-    chat_template_kwargs:
-      reasoning_strength: low
     sampling:
       temperature: 0.2
       top_p: 0.9

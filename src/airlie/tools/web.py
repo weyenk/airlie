@@ -8,6 +8,9 @@ link-local or private space is refused before it is fetched."""
 
 from __future__ import annotations
 
+import asyncio
+import functools
+import http.client
 import ipaddress
 import json
 import socket
@@ -15,13 +18,30 @@ import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 from typing import Any, Protocol
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 
 from airlie.tools.protocol import ToolContext, ToolResult
 
 UNTRUSTED_MARKER = "[untrusted web text]"
 MAX_REDIRECT_HOPS = 5
 TAILNET = ipaddress.ip_network("100.64.0.0/10")
+NAT64 = ipaddress.ip_network("64:ff9b::/96")
+V4_COMPATIBLE = ipaddress.ip_network("::/96")
+SITE_LOCAL = ipaddress.ip_network("fec0::/10")
+
+
+def _embedded_v4(a: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """The IPv4 address an IPv6 one carries: `::ffff:a.b.c.d`, NAT64 `64:ff9b::/96` or 6to4 `2002::/16`.
+    A gateway turns these back into IPv4, so they are held to the same rules."""
+    if a.ipv4_mapped is not None:
+        return a.ipv4_mapped
+    if a in NAT64:
+        return ipaddress.IPv4Address(int(a) & 0xFFFFFFFF)
+    if a.sixtofour is not None:
+        return a.sixtofour
+    if a in V4_COMPATIBLE:  # the deprecated IPv4-compatible form `::a.b.c.d`
+        return ipaddress.IPv4Address(int(a))
+    return None
 
 
 def check_address(ip: str) -> str | None:
@@ -29,14 +49,20 @@ def check_address(ip: str) -> str | None:
 
     Order matters: 100.64.0.0/10 (tailnet) is also private, so it must be checked first."""
     a = ipaddress.ip_address(ip)
+    if isinstance(a, ipaddress.IPv6Address) and not a.is_loopback and (inner := _embedded_v4(a)) is not None:
+        a = inner
     if a.is_loopback:
         return "refused: loopback address"
     if a in TAILNET:
         return "refused: tailnet address"
+    if isinstance(a, ipaddress.IPv6Address) and a in SITE_LOCAL:
+        return "refused: private address"
     if a.is_link_local:
         return "refused: link-local address"
     if a.is_private:
         return "refused: private address"
+    if a.is_multicast or not a.is_global:  # multicast, and the rest of what is not the public internet
+        return "refused: non-public address"
     return None
 
 
@@ -109,7 +135,10 @@ class WebResponse(Protocol):
 
 
 class WebClient(Protocol):
-    def request(self, url: str, timeout_s: float) -> WebResponse: ...
+    def request(self, url: str, timeout_s: float, pinned_ip: str | None = None) -> WebResponse:
+        """One request. With `pinned_ip` the connection goes to exactly that address (the Host header and the
+        TLS name stay the URL's), so the name is never resolved a second time."""
+        ...
 
 
 class Resolver(Protocol):
@@ -121,11 +150,57 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-class UrllibClient:
-    """The real WebClient: stdlib urllib with redirects disabled, so every hop is checked."""
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """Connects to a fixed address; the Host header is still the URL's."""
 
-    def request(self, url: str, timeout_s: float) -> WebResponse:
-        opener = urllib.request.build_opener(_NoRedirectHandler())
+    def __init__(self, *args: Any, pinned_ip: str, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._pinned_ip = pinned_ip
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Connects to a fixed address and runs TLS under the URL's name (SNI and certificate check)."""
+
+    def __init__(self, *args: Any, pinned_ip: str, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._pinned_ip = pinned_ip
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)  # type: ignore[attr-defined]
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, pinned_ip: str) -> None:
+        super().__init__()
+        self._pinned_ip = pinned_ip
+
+    def http_open(self, req: urllib.request.Request) -> Any:
+        return self.do_open(functools.partial(_PinnedHTTPConnection, pinned_ip=self._pinned_ip), req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, pinned_ip: str) -> None:
+        super().__init__()
+        self._pinned_ip = pinned_ip
+
+    def https_open(self, req: urllib.request.Request) -> Any:
+        connection = functools.partial(_PinnedHTTPSConnection, pinned_ip=self._pinned_ip)
+        return self.do_open(connection, req, context=self._context)  # type: ignore[attr-defined]
+
+
+class UrllibClient:
+    """The real WebClient: stdlib urllib with redirects disabled, so every hop is checked, and the connection
+    pinned to the address the caller vetted."""
+
+    def request(self, url: str, timeout_s: float, pinned_ip: str | None = None) -> WebResponse:
+        handlers: list[Any] = [_NoRedirectHandler(), urllib.request.ProxyHandler({})]  # never an env proxy
+        if pinned_ip is not None:
+            handlers += [_PinnedHTTPHandler(pinned_ip), _PinnedHTTPSHandler(pinned_ip)]
+        opener = urllib.request.build_opener(*handlers)
         req = urllib.request.Request(url, headers={"User-Agent": "airlie-web-fetch"})
         try:
             with opener.open(req, timeout=timeout_s) as resp:
@@ -273,22 +348,25 @@ class WebFetch:
             return ToolResult(False, "refused: only http and https")
         if not parts.hostname:
             return ToolResult(False, "error: no host in url")
-        if refused := self._check_host(parts.hostname):
+        pinned, refused = self._vet_host(parts.hostname)
+        if pinned is None:
             return ToolResult(False, refused)
 
         current = url
         for _ in range(MAX_REDIRECT_HOPS + 1):
-            resp = self._client.request(current, self._timeout_s)
+            resp = await asyncio.to_thread(self._client.request, current, self._timeout_s, pinned)
             if 300 <= resp.status < 400:
                 location = resp.headers.get("location")
                 if not location:
                     return ToolResult(False, "error: redirect without a location")
+                location = urljoin(current, location)  # a Location may be relative to the page
                 target = urlsplit(location)
                 if target.scheme not in ("http", "https"):
                     return ToolResult(False, "refused: only http and https")
                 if not target.hostname:
                     return ToolResult(False, "error: no host in redirect target")
-                if refused := self._check_host(target.hostname):
+                pinned, refused = self._vet_host(target.hostname)
+                if pinned is None:
                     return ToolResult(False, refused)
                 current = location
                 continue
@@ -308,14 +386,16 @@ class WebFetch:
             out = out[: ctx.output_cap_chars] + f"\n… [truncated {len(out) - ctx.output_cap_chars} chars]"
         return ToolResult(True, out)
 
-    def _check_host(self, host: str) -> str | None:
+    def _vet_host(self, host: str) -> tuple[str | None, str]:
+        """Resolve `host` once and vet every address: (the address to connect to, "") or (None, why not).
+        The caller connects to that address, so the name is never resolved again."""
         try:
             addresses = self._resolver.resolve(host)
         except Exception:
-            return "error: could not resolve host"
+            return None, "error: could not resolve host"
         if not addresses:
-            return "error: could not resolve host"
+            return None, "error: could not resolve host"
         for ip in addresses:
             if refused := check_address(ip):
-                return refused
-        return None
+                return None, refused
+        return addresses[0], ""

@@ -22,6 +22,7 @@ from airlie.serve.app import create_app
 from airlie.serve.feed import Feed
 from airlie.serve.watch import Watcher
 from tests.support.serve import FakeUpstream, cfg
+from tests.unit.serve_helpers import TestClient
 
 
 @pytest.fixture
@@ -379,11 +380,12 @@ async def test_the_loop_survives_a_poll_that_fails_and_says_so(
     class Flaky(Watcher):
         broken = False
 
-        def poll(self) -> list[tuple[str, str | None]]:
+        def _poll(self) -> tuple[list[tuple[str, str | None]], list[tuple[str, str]]]:
+            # the loop polls through tick(), which calls _poll: poll() is only the public wrapper
             if self.broken:
                 self.broken = False
                 raise RuntimeError("disk on fire")
-            return super().poll()
+            return super()._poll()
 
     feed = Feed()
     append_run_log(state, "r1")
@@ -408,11 +410,11 @@ async def test_a_first_poll_that_fails_is_logged_and_the_loop_starts_and_takes_t
     class FirstFails(Watcher):
         polls = 0
 
-        def poll(self) -> list[tuple[str, str | None]]:
+        def _poll(self) -> tuple[list[tuple[str, str | None]], list[tuple[str, str]]]:
             self.polls += 1
             if self.polls == 1:
                 raise PermissionError("state dir unreadable")
-            return super().poll()
+            return super()._poll()
 
     feed = Feed()
     append_run_log(state, "r1")
@@ -517,3 +519,145 @@ async def test_the_events_route_has_the_watcher_running_and_its_baseline_taken_b
         await asyncio.wait_for(call, 5)
         watcher.stop()
     assert feed.subscribers == 0
+
+
+def write_log(state: Path, area: str, key: str, line: str = '{"kind": "stage"}\n') -> None:
+    f = state / area / key / "events.jsonl"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    with f.open("a") as fh:
+        fh.write(line)
+
+
+async def test_on_log_runs_once_per_changed_story_after_a_poll(state: Path) -> None:
+    seen: list[tuple[str, str]] = []
+
+    async def on_log(area: str, key: str) -> None:
+        seen.append((area, key))
+
+    write_story(state, "AIR-1", "new")
+    write_story(state, "AIR-2", "new")
+    w = Watcher(state, Feed(), on_log=on_log)
+    assert await w.tick() == []  # the baseline
+    write_story(state, "AIR-2", "coding")
+    write_story(state, "AIR-1", "coding")
+    await w.tick()
+    await w.idle()
+    assert seen == [("stories", "AIR-1"), ("stories", "AIR-2")]
+    await w.tick()
+    await w.idle()
+    assert len(seen) == 2
+    w.stop()
+
+
+async def test_initiative_and_epic_logs_reach_on_log_without_a_hint(state: Path) -> None:
+    seen: list[tuple[str, str]] = []
+
+    async def on_log(area: str, key: str) -> None:
+        seen.append((area, key))
+
+    write_log(state, "initiatives", "AIR-7")
+    write_log(state, "epics", "AIR-8")
+    w = Watcher(state, Feed(), on_log=on_log)
+    await w.tick()
+    write_log(state, "initiatives", "AIR-7", '{"kind": "mockups"}\n')
+    write_log(state, "epics", "AIR-8", '{"kind": "blocked"}\n')
+    write_log(state, "epics", "AIR-9")  # a new one
+    assert await w.tick() == []  # the page has no topic for them
+    await w.idle()
+    assert sorted(seen) == [("epics", "AIR-8"), ("epics", "AIR-9"), ("initiatives", "AIR-7")]
+    await w.tick()
+    await w.idle()
+    assert len(seen) == 3
+    w.stop()
+
+
+async def test_a_failing_on_log_does_not_stop_the_others(state: Path) -> None:
+    seen: list[str] = []
+
+    async def on_log(area: str, key: str) -> None:
+        seen.append(key)
+        raise RuntimeError("boom")
+
+    write_story(state, "AIR-1", "new")
+    w = Watcher(state, Feed(), on_log=on_log)
+    await w.tick()
+    write_story(state, "AIR-1", "coding")
+    write_story(state, "AIR-2", "coding")
+    await w.tick()
+    await w.idle()
+    assert seen == ["AIR-1", "AIR-2"]
+    w.stop()
+
+
+async def test_a_hanging_on_log_does_not_delay_the_next_ticks_hints(state: Path) -> None:
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def on_log(area: str, key: str) -> None:
+        calls.append(key)
+        await release.wait()  # a push service that never answers
+
+    write_story(state, "AIR-1", "new")
+    w = Watcher(state, Feed(), on_log=on_log)
+    await w.tick()
+    write_story(state, "AIR-1", "coding")
+    assert await asyncio.wait_for(w.tick(), 1) == [("stories", "AIR-1")]
+    write_story(state, "AIR-1", "review")
+    assert await asyncio.wait_for(w.tick(), 1) == [("stories", "AIR-1")]  # still published, still not waiting
+    release.set()
+    await w.idle()
+    assert calls == ["AIR-1", "AIR-1"]  # one in flight at a time; the change that came meanwhile ran after it
+    w.stop()
+
+
+async def test_the_loop_keeps_polling_with_no_page_while_on_log_is_set(state: Path) -> None:
+    seen: asyncio.Queue[str] = asyncio.Queue()
+
+    async def on_log(area: str, key: str) -> None:
+        seen.put_nowait(key)
+
+    write_story(state, "AIR-1", "new")
+    w = Watcher(state, Feed(), on_log=on_log)
+    w.ensure_running(interval_s=0.01)
+    write_story(state, "AIR-1", "coding")
+    assert await asyncio.wait_for(seen.get(), 5) == "AIR-1"
+    assert w.running  # no subscriber, still going
+    w.stop()
+
+
+async def _tick(w: Watcher) -> None:
+    await w.tick()
+    await w.idle()
+
+
+def push_cfg(tmp_path: Path):
+    base = cfg(tmp_path)
+    return base.model_copy(
+        update={"notifications": base.notifications.model_copy(update={"contact": "mailto:a@b.co"})}
+    )
+
+
+def test_story_pushes_are_wired_only_when_push_can_send(tmp_path: Path) -> None:
+    transport = httpx.MockTransport(FakeUpstream())
+    assert create_app(cfg(tmp_path), transport=transport, api_key="k").state.watcher.on_log is None
+    assert create_app(push_cfg(tmp_path), transport=transport, api_key="k").state.watcher.on_log is not None
+
+
+def test_startup_primes_the_stories_and_starts_the_watcher_with_no_page(tmp_path: Path) -> None:
+    log = tmp_path / "state" / "stories" / "AIR-1" / "events.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_text('{"kind": "blocked", "reason": "old"}\n')
+    app = create_app(push_cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    sent: list[tuple[Any, ...]] = []
+
+    async def notify(*args: Any, **kwargs: Any) -> int:
+        sent.append(args)
+        return 1
+
+    app.state.notifier.notify = notify
+    with TestClient(app):
+        assert app.state.watcher.running  # no page is connected
+        with log.open("a") as f:
+            f.write('{"kind": "blocked", "reason": "new"}\n')
+        asyncio.run(_tick(app.state.watcher))  # the loop's own poll, driven here
+    assert [(a[1], a[4]) for a in sent] == [("story_blocked", "new")]  # the old event was history

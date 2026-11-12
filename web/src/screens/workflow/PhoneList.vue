@@ -71,7 +71,7 @@ const rowCls = "flex w-full min-w-0 items-center gap-2.5 border-b border-border 
 
 <template>
   <div data-phone-list class="flex flex-col pb-3">
-    <NowBar v-if="now" :now="now" class="sticky top-[calc(var(--header-h)+env(safe-area-inset-top,0px))] z-10 bg-card" />
+    <NowBar v-if="now" :now="now" class="sticky top-(--header-h) z-10 bg-card" />
 
     <div class="flex flex-col px-3">
       <template v-for="lane in lanes" :key="lane.id">

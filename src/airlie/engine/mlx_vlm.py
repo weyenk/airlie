@@ -30,6 +30,8 @@ def build_mlx_vlm_command(
     if m.mtp and not e.decision:
         head = snapshot_dir(ModelSpec(repo=m.mtp.repo, revision=m.mtp.revision))
         argv += ["--draft-model", str(head), "--draft-kind", "mtp"]
+        if m.mtp_block_size is not None:
+            argv += ["--draft-block-size", str(m.mtp_block_size)]
     argv += ["--host", e.host, "--port", str(e.port)]
     argv += ["--max-num-seqs", str(e.max_num_seqs), "--max-kv-size", str(e.max_kv_size)]
     if e.kv_bits is not None:

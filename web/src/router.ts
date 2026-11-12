@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from "vue-router";
 import type { Router, RouterHistory } from "vue-router";
 import { useFeedStore } from "./stores/feed";
 import { useSessionStore } from "./stores/session";
+import { lastChat } from "./stores/sessions";
 
 export type Tab = "chat" | "workflows" | "board" | "metrics" | "admin";
 
@@ -23,7 +24,18 @@ export function createAppRouter(history: RouterHistory = createWebHistory("/")):
   const router = createRouter({
     history,
     routes: [
-      { path: "/", name: "chat", component: () => import("./screens/ChatScreen.vue"), meta: { tab: "chat" } },
+      {
+        path: "/",
+        name: "chat",
+        component: () => import("./screens/ChatScreen.vue"),
+        meta: { tab: "chat" },
+        // this browser's last chat opens again; with none remembered the chat screen starts fresh
+        beforeEnter: () => {
+          const last = lastChat();
+          return last ? { path: `/chat/${encodeURIComponent(last)}`, replace: true } : true;
+        },
+      },
+      { path: "/chat/:session?", name: "chat-session", component: () => import("./screens/ChatScreen.vue"), meta: { tab: "chat" } },
       { path: "/workflows", name: "workflows", component: () => import("./screens/WorkflowsScreen.vue"), meta: { tab: "workflows" } },
       // the run route comes first, so /workflows/runs/<id> is never read as a story called "runs"
       { path: "/workflows/runs/:id/:node?/:job?", name: "run", component: () => import("./screens/RunWorkflowScreen.vue"), meta: { tab: "workflows" } },

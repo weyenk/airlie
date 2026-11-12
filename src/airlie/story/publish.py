@@ -439,6 +439,14 @@ class Publisher:
         async with self._step(repo) as env:
             await self.run(["git", "fetch", "-q", "--refmap=", self.remote, refspec], repo, env)
 
+    async def fetch_all(self, repo: Path) -> None:
+        """Fetch every branch of the remote into `repo`'s remote-tracking branches (refs/remotes/<remote>/*),
+        pruning the ones gone, and update nothing else: the same discipline as `fetch`, for a host mirror
+        that chats read any branch of."""
+        refspec = f"+refs/heads/*:refs/remotes/{self.remote}/*"
+        async with self._step(repo) as env:
+            await self.run(["git", "fetch", "-q", "--prune", "--refmap=", self.remote, refspec], repo, env)
+
     async def _stacked(self, wt: Path, env: Mapping[str, str]) -> tuple[str, list[str]] | None:
         """The trunk and the branches (bottom first) of the stack `wt` is on; None when it is on none."""
         try:

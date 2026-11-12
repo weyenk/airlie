@@ -145,6 +145,30 @@ def test_engine_down_and_restart_name_one_engine_even_with_autostart_off(tmp_pat
     assert runner.invoke(cli.app, ["engine", "down", "nope", "--config", str(cfg_path)]).exit_code == 1
 
 
+def test_engine_up_skips_on_demand_engines_unless_named(tmp_path: Path, monkeypatch) -> None:
+    cfg_path = write_cfg(tmp_path)
+    data = yaml.safe_load(cfg_path.read_text())
+    data["engines"]["lazy"] = {"kind": "mlx_vlm", "port": 8091, "model": "lazym", "lifecycle": "on_demand"}
+    data["models"]["lazym"] = {
+        "repo": "org/lazy",
+        "revision": "r4",
+        "path": "/models/lazy",
+        "estimated_memory_gb": 3,
+    }
+    cfg_path.write_text(yaml.safe_dump(data))
+    monkeypatch.setattr(cli, "_engine_process", lambda cfg, name: StubProcess(cfg, name))
+
+    StubProcess.calls = []
+    r = runner.invoke(cli.app, ["engine", "up", "--config", str(cfg_path)])
+    assert r.exit_code == 0, r.output
+    assert StubProcess.calls == ["start:main"]
+
+    StubProcess.calls = []
+    r = runner.invoke(cli.app, ["engine", "up", "lazy", "--config", str(cfg_path)])
+    assert r.exit_code == 0, r.output
+    assert StubProcess.calls == ["start:lazy"]
+
+
 def test_engine_up_skips_engines_with_autostart_false_unless_named(tmp_path: Path, monkeypatch) -> None:
     cfg_path = write_cfg(tmp_path)
     data = yaml.safe_load(cfg_path.read_text())

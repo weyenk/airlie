@@ -6,6 +6,9 @@ import { ref } from "vue";
 export const THEME = "airlie.theme";
 export type Theme = "dark" | "light";
 
+/** The `--background` tokens (styles/tokens.css), so the phone's status bar matches the page. */
+export const THEME_COLORS: Record<Theme, string> = { dark: "#09090b", light: "#f8fafc" };
+
 /** The one theme every toggle reads, so flipping it in one place shows in all. */
 export const theme = ref<Theme>("dark");
 
@@ -15,6 +18,7 @@ export function setTheme(next: Theme, persist = true): void {
   theme.value = next;
   root.classList.toggle("light", next === "light");
   root.classList.toggle("dark", next === "dark");
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", THEME_COLORS[next]);
   if (!persist) return;
   try {
     localStorage.setItem(THEME, next);

@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AsyncExitStack, ExitStack
+from functools import partial
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -22,12 +25,16 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from airlie.auth.api import PUBLIC_PATHS, auth_router
-from airlie.auth.principal import NotInvited, Principal, Resolver
+from airlie.auth.api import PUBLIC_PATHS, auth_router, set_session_cookie
+from airlie.auth.principal import SESSION_COOKIE, NotInvited, Principal, Resolver
 from airlie.auth.store import AuthStore
 from airlie.board import BoardStore
 from airlie.board.api import board_router
 from airlie.board.model import WorkflowDraft
+from airlie.chat.confirm import Confirmations
+from airlie.chat.hooks import UnknownSkill, default_hooks, slash_section
+from airlie.chat.superpowers import SuperpowersLibrary, check_library
+from airlie.chat.threads import ThreadStore
 from airlie.config import AirlieConfig
 from airlie.engine.dialect import (
     dialect_for,
@@ -35,10 +42,17 @@ from airlie.engine.dialect import (
     remap_mlx_vlm_reasoning_effort,
     thinking_fields,
 )
+from airlie.engine.types import EngineError
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
+from airlie.notify.api import notifications_router
+from airlie.notify.notifier import Notifier
+from airlie.notify.push import PushSender
+from airlie.notify.stories import StoryNotes
+from airlie.notify.vapid import application_server_key, load_or_create_vapid
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
+from airlie.serve.bridge.clock import RealClock
 from airlie.serve.feed import Feed, event_stream
 from airlie.serve.flow import epic_flow, initiative_flow, job_detail, story_flow
 from airlie.serve.flow_parts import StoryNotFound
@@ -49,7 +63,15 @@ from airlie.serve.run_flow import run_flow, run_job_detail
 from airlie.serve.running import running as in_progress
 from airlie.serve.ticker import LineFor, LineTicker
 from airlie.serve.tree import RunNotFound, run_tree
-from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
+from airlie.serve.uploads import (
+    MEDIA,
+    TooManyAttachments,
+    Upload,
+    UploadStore,
+    UploadTooLarge,
+    attach_uploads,
+    has_uploads,
+)
 from airlie.serve.watch import Watcher
 from airlie.serve.workflows_api import workflows_router
 from airlie.skills import Skill, load_chat_skills, prompt_text
@@ -68,6 +90,7 @@ from airlie.story.stats import line_stats, parse_since
 from airlie.story.workflow_publish import publish_workflow
 from airlie.story.workflows import WorkflowError, board_problems
 from airlie.teams.worktree import rev_parse
+from airlie.tools.web import SearXNGProvider, UrllibClient, WebFetch, WebSearch
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
 
@@ -79,9 +102,15 @@ NEXT_DIR = Path(__file__).parent / "web_next"
 """The Vue app's build (`task web:build`, a Vite build with base `/`): `GET /` and every path that is not the
 API serves it. Not in git; without it the app's paths answer 503 and say how to build it."""
 
+log = logging.getLogger(__name__)
+
 NEXT_NOT_BUILT = "the web app is not built: run task web:build"
 IMMUTABLE = "public, max-age=31536000, immutable"
 """The cache header of a built file under assets/: Vite hashes their names, so a changed file is a new URL."""
+
+if TYPE_CHECKING:
+    from airlie.chat.repo_session import RepoSessions
+    from airlie.manager.core import Manager
 
 
 class ToolCallStreamRepair:
@@ -212,6 +241,30 @@ def _no_call_stops(reply: Any) -> Any:
     return reply
 
 
+async def release(holding: AsyncExitStack) -> None:
+    """Close the hold even when this task is cancelled (a client that went away): the release runs on."""
+    await asyncio.shield(holding.aclose())
+
+
+class HeldStream(StreamingResponse):
+    """A streamed reply that owns the engine hold behind it and releases it however the response ends, also
+    when the body generator never started (a client that dropped as the headers went out)."""
+
+    def __init__(self, content: AsyncIterator[bytes], holding: AsyncExitStack, **kw: Any) -> None:
+        super().__init__(content, **kw)
+        self.holding = holding
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await release(self.holding)
+
+
+class LeaseRequest(BaseModel):
+    owner: str = Field(min_length=1)
+
+
 class RunRequest(BaseModel):
     goal: str
     repo: str
@@ -330,6 +383,24 @@ def _story_restart_factory() -> Callable[..., Any]:
     return restart_one
 
 
+async def _no_sweep() -> None:
+    """Tests that give their own repo_sessions (over FakeBox) have no Tart VMs to sweep."""
+
+
+def _leftover_sweep(cfg: AirlieConfig, threads: Any) -> Callable[[], Any]:
+    """At serve's start: delete the image-build disks a crash left and the chat VMs whose chat is gone."""
+    from airlie.boxes.sweep import serve_sweep
+    from airlie.boxes.tart import TartBox
+
+    log_dir = cfg.observability.state_dir.expanduser() / "boxes" / "logs"
+
+    def box_for(name: str) -> Any:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return TartBox(name, log_dir=log_dir)
+
+    return serve_sweep(threads, box_for)
+
+
 def _story_adopt_factory() -> Callable[..., Any]:
     from airlie.story.factory import adopt_one
 
@@ -382,7 +453,9 @@ def _ended(job: Job | None) -> bool:
     return job is not None and job.state in ("failed", "cancelled")
 
 
-def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = None) -> Any:
+def _default_factory(
+    cfg: AirlieConfig, k: int | None, topology: str | None = None, *, manager: Manager | None = None
+) -> Any:
     from airlie.cli import _orchestrator, apply_k, select_topology
     from airlie.config import TOPOLOGY_KINDS
 
@@ -390,7 +463,7 @@ def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = No
         raise HTTPException(400, f"unknown topology '{topology}'; use one of {', '.join(TOPOLOGY_KINDS)}")
     cfg = select_topology(cfg, topology)
     cfg = apply_k(cfg if cfg.source_path is not None else cfg.model_copy(deep=True), k)
-    return _orchestrator(cfg)
+    return _orchestrator(cfg, manager=manager)
 
 
 def _workflow_publisher(cfg: AirlieConfig) -> Callable[[WorkflowDraft], Awaitable[tuple[int, str]]]:
@@ -435,6 +508,9 @@ def create_app(
     next_dir: Path | None = None,
     tick_s: float | None = None,
     line_beat: LineFor | None = None,
+    manager: Manager | None = None,
+    repo_sessions: Callable[..., RepoSessions] | None = None,
+    pinnable: Callable[[], Awaitable[list[str]]] | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
@@ -445,7 +521,13 @@ def create_app(
     (default: airlie.story.factory.adopt_one).
     `auth_store` (default: observability.state_dir/auth.sqlite), `now` and `next_dir` (the Vue app's build,
     default NEXT_DIR), `tick_s` (the line's beat interval, default line.tick_s) and `line_beat` (replaces the
-    line's beat, given the function that starts a lane's job) are for tests."""
+    line's beat, given the function that starts a lane's job) are for tests.
+    `manager` starts, holds and stops the engines (default: one over the config's mlx-vlm engines, inside
+    the memory budget `memory.wired_limit_mb` less the OS reserve and `manager.margin_gb`).
+    `repo_sessions` builds what runs repository chats in VMs, given `(cfg, manager, threads, confirmations)`
+    (default: Tart boxes, chat.repo_session.default_repo_sessions; tests give one over FakeBox).
+    `pinnable` lists the repositories a person may pin and pre-warm (default: what `GET
+    /v1/airlie/repos/names` answers, read from the checkouts and the board's labels)."""
     app = FastAPI(title="airlie", version="0.1.0")
     started_commit = (
         build_commit()
@@ -463,6 +545,33 @@ def create_app(
     restart_story = story_restart or _story_restart_factory()
     adopt_story = story_adopt or _story_adopt_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
+    # imported here: the manager's clock lives under airlie.serve, whose package imports this module (and the
+    # chat routes import the manager)
+    from airlie.chat.api import Busy, chat_router
+    from airlie.chat.pins import pins_router
+    from airlie.chat.repo_session import default_repo_sessions
+    from airlie.manager.api import Leases, UnknownLease
+    from airlie.manager.core import Manager as ManagerImpl
+    from airlie.manager.engines import engine_resources
+    from airlie.models_download import Downloader
+
+    if manager is None:
+        manager = ManagerImpl(
+            engine_resources(
+                cfg, state_dir=cfg.observability.state_dir.expanduser(), downloader=Downloader()
+            ),
+            budget_gb=cfg.memory.wired_limit_mb / 1024 - cfg.memory.os_reserve_gb - cfg.manager.margin_gb,
+            clock=RealClock(),
+            wait_timeout_s=cfg.manager.wait_timeout_s,
+        )
+    manager.watch(lambda s: feed.publish("engines", s.name))
+    leases = Leases(manager, ttl_s=cfg.manager.lease_ttl_s)
+    managed = {s.name for s in manager.status()}
+    app.state.manager = manager
+    if orchestrator_factory is None:
+        factory = partial(_default_factory, manager=manager)  # its engine calls hold through this manager
+    engine_tasks: list[asyncio.Task[Any]] = []
+    serving_cm = ExitStack()
 
     def workflow_check(name: str) -> str | None:
         """What stops workflow `name` resolving over the board's drafts as they are now, or None."""
@@ -506,6 +615,7 @@ def create_app(
 
     @app.middleware("http")
     async def _require_principal(request: Request, call_next: Callable[..., Any]) -> Any:
+        principal: Principal | None = None
         if request.url.path.startswith("/v1") and request.url.path not in PUBLIC_PATHS:
             try:
                 principal = await resolver.resolve(request)
@@ -520,9 +630,38 @@ def create_app(
                 )
                 return JSONResponse({"error": error}, status_code=401)
             request.state.principal = principal
-        return await call_next(request)
+        response = await call_next(request)
+        if principal is not None and principal.via == "session":
+            _renew_session(request, response)
+        return response
+
+    def _renew_session(request: Request, response: Response) -> None:
+        """A sign-in with under half its days left is extended on use (same token, so a request in flight
+        with the old cookie keeps working); an idle one runs out."""
+        token = request.cookies.get(SESSION_COOKIE)
+        if token is None:
+            return
+        left = store.session_expires_at(token)
+        if left is not None and left - now() < cfg.auth.session_days * 86400 / 2:
+            store.extend_session(token, cfg.auth.session_days)
+            set_session_cookie(response, request, token, cfg.auth.session_days)
 
     app.include_router(auth_router(store, resolver, cfg.auth, now=now))
+
+    sender: PushSender | None = None
+    public_key: str | None = None
+    if cfg.notifications.contact:
+        key_path = cfg.notifications.vapid_key or cfg.observability.state_dir / "vapid.pem"
+        vapid = load_or_create_vapid(key_path.expanduser())
+        sender = PushSender(vapid, cfg.notifications.contact, client)
+        public_key = application_server_key(vapid)
+    notifier = Notifier(store, sender, cfg.notifications.default_kinds)
+    app.state.notifier = notifier
+    story_notes: StoryNotes | None = None
+    if sender is not None:  # the watcher polls with no page open only when push can send
+        story_notes = StoryNotes(cfg.observability.state_dir.expanduser(), notifier)
+        watcher.on_log = story_notes.on_log_change
+    app.include_router(notifications_router(store, notifier, public_key, cfg.notifications.push_hosts))
 
     uploads = UploadStore(cfg.observability.state_dir.expanduser() / "uploads", cfg.chat.attachments, now=now)
 
@@ -588,6 +727,66 @@ def create_app(
     async def health() -> dict[str, Any]:
         return {"status": "ok", "roles": list(cfg.roles), "commit": started_commit, "line": ticker.row()}
 
+    def engine_row(s: Any) -> dict[str, Any]:
+        p = s.progress
+        return {
+            "name": s.name,
+            "kind": s.kind,
+            "state": s.state,
+            "detail": s.detail,
+            "progress": None
+            if p is None
+            else {
+                "done_bytes": p.done_bytes,
+                "total_bytes": p.total_bytes,
+                "rate_bps": p.rate_bps,
+                "eta_s": p.eta_s,
+            },
+            "holders": list(s.holders),
+            "lifecycle": s.lifecycle,
+            # the roles this engine serves, so a page can find its chat role's engine without naming it
+            "roles": [r for r in cfg.roles if cfg.engine_for_role(r) == s.name],
+        }
+
+    def engine_failed(name: str, e: EngineError) -> JSONResponse:
+        return JSONResponse({"error": f"{name} failed: {e}", "engine": name}, status_code=503)
+
+    def known_engine(name: str) -> None:
+        if name not in managed:
+            raise HTTPException(404, f"unknown engine '{name}'; engines: {', '.join(sorted(managed))}")
+
+    @app.get("/v1/airlie/engines")
+    async def engines_status() -> list[dict[str, Any]]:
+        return [engine_row(s) for s in manager.status()]
+
+    @app.post("/v1/airlie/engines/{name}/leases")
+    async def lease_engine(name: str, body: LeaseRequest) -> Any:
+        """Hold the engine (starting it if need be) until the lease is deleted or goes `ttl_s` unrenewed."""
+        known_engine(name)
+        try:
+            lease = await leases.acquire(name)
+        except EngineError as e:
+            return engine_failed(name, e)
+        return {"lease": lease, "ttl_s": leases.ttl_s}
+
+    @app.put("/v1/airlie/engines/{name}/leases/{lease}", status_code=204)
+    async def renew_lease(name: str, lease: str) -> Response:
+        known_engine(name)
+        try:
+            leases.renew(name, lease)
+        except UnknownLease:
+            raise HTTPException(404, f"unknown lease '{lease}' on engine '{name}'") from None
+        return Response(status_code=204)
+
+    @app.delete("/v1/airlie/engines/{name}/leases/{lease}", status_code=204)
+    async def release_lease(name: str, lease: str) -> Response:
+        known_engine(name)
+        try:
+            await leases.release(name, lease)
+        except UnknownLease:
+            raise HTTPException(404, f"unknown lease '{lease}' on engine '{name}'") from None
+        return Response(status_code=204)
+
     @app.get("/v1/events")
     async def events() -> StreamingResponse:
         """What changed, live: server-sent hints (`board` / `AIR-17`, `runs`, `jobs`) that a page answers by
@@ -609,16 +808,11 @@ def create_app(
 
     def chat_prompt(prompt: str, skill: Any) -> str:
         """The chat role's prompt with the list of skills it can suggest, and the one run for this request."""
-        if chat_skills:
-            listing = "\n".join(f"- /{s.name}: {s.summary}" for s in chat_skills.values())
-            prompt = f"{prompt.rstrip()}\n\n## Slash commands\n\n{listing}\n"
-        if skill is None:
-            return prompt
-        found = chat_skills.get(str(skill))
-        if found is None:
-            known = ", ".join(chat_skills) or "none"
-            raise HTTPException(404, f"unknown skill '{skill}'; skills: {known}")
-        return f"{prompt.rstrip()}\n\n## Skill: /{found.name}\n\n{found.text.strip()}\n"
+        try:
+            section = slash_section(chat_skills, None if skill is None else str(skill))
+        except UnknownSkill as e:
+            raise HTTPException(404, str(e)) from None
+        return f"{prompt.rstrip()}\n\n{section}" if section else prompt
 
     @app.get("/v1/airlie/chat/attachments")
     async def attachment_limits() -> dict[str, Any]:
@@ -652,21 +846,77 @@ def create_app(
 
     async def attach(body: dict[str, Any], request: Request) -> dict[str, Any]:
         """The chat body with every `airlie_upload` part turned into what the chat model can take."""
-        msgs = list(body.get("messages") or [])
-        limit = cfg.chat.attachments.max_per_message
-        for m in msgs:
-            parts = m.get("content") if isinstance(m, dict) else None
-            if isinstance(parts, list) and sum(p.get("type") == "airlie_upload" for p in parts) > limit:
-                raise HTTPException(400, f"a message may carry up to {limit} attachments")
         principal = owner_of(request)
-        msgs = await asyncio.to_thread(  # decoding a picture or a video, or reading a PDF, blocks
-            resolve,
-            msgs,
-            uploads,
-            can_see=lambda u: may_see(principal, u),
-            vision=cfg.roles["chat"].vision,
-        )
+        try:
+            msgs = await attach_uploads(
+                list(body.get("messages") or []),
+                uploads,
+                can_see=lambda u: may_see(principal, u),
+                vision=cfg.roles["chat"].vision,
+            )
+        except TooManyAttachments as e:
+            raise HTTPException(400, str(e)) from e
         return {**body, "messages": msgs}
+
+    async def attach_for(principal: Principal, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return await attach_uploads(
+            msgs, uploads, can_see=lambda u: may_see(principal, u), vision=cfg.roles["chat"].vision
+        )
+
+    chat_threads = ThreadStore(cfg.observability.state_dir.expanduser() / "chat" / "threads.sqlite")
+    superpowers = SuperpowersLibrary(cfg.chat.superpowers.path) if cfg.chat.superpowers.enabled else None
+    library_error = check_library(cfg.chat.superpowers.path) if superpowers is not None else None
+    if library_error is not None:
+        log.error("chat is misconfigured, its turns answer 503: %s", library_error)
+    chat_hooks = default_hooks(
+        cfg,
+        superpowers,
+        chat_skills=chat_skills,
+        uploads_limit=cfg.chat.attachments.max_per_message,
+        notifier=notifier,
+    )
+    app.state.chat_threads = chat_threads
+    app.state.chat_hooks = chat_hooks
+    confirmations = Confirmations(cfg)
+    repo_chats = (repo_sessions or default_repo_sessions)(cfg, manager, chat_threads, confirmations)
+    app.state.repo_sessions = repo_chats
+    sweep_leftovers = _leftover_sweep(cfg, chat_threads) if repo_sessions is None else _no_sweep
+    chat_threads.on_delete(repo_chats.delete)  # a chat's VM goes with it
+    chat_busy = Busy()
+
+    async def repo_names_known() -> list[str]:
+        labels = [label for item in board.list() for label in item.labels]
+        return await asyncio.to_thread(repo_names, cfg, labels)
+
+    known_repos = pinnable or repo_names_known
+    chat_prewarms: set[asyncio.Task[None]] = set()
+    app.state.chat_prewarms = chat_prewarms  # the VMs new repository chats start in the background
+    app.state.chat_busy = chat_busy  # `Server.shutdown` stops its turns before uvicorn waits for them
+    app.include_router(
+        chat_router(
+            cfg,
+            threads=chat_threads,
+            library=superpowers,
+            hooks=chat_hooks,
+            web={
+                "web_search": WebSearch(SearXNGProvider(cfg.web.search.url, UrllibClient())),
+                "web_fetch": WebFetch(timeout_s=cfg.web.fetch_timeout_s),
+            },
+            chat_skills=chat_skills,
+            library_error=library_error,
+            manager=manager,
+            attach=attach_for,
+            transport=transport,
+            busy=chat_busy,
+            repo_sessions=repo_chats,
+            confirmations=confirmations,
+            publish=lambda topic, key: feed.publish(topic, key),
+            pinnable=known_repos,
+            background=chat_prewarms,
+            start_story=lambda text, repo: begin_story(None, text, repo),
+        )
+    )
+    app.include_router(pins_router(store, lambda topic, key: feed.publish(topic, key), known_repos))
 
     @app.post("/v1/chat/completions")
     async def chat(body: dict[str, Any], request: Request) -> Any:
@@ -736,7 +986,7 @@ def create_app(
             from airlie.tools.protocol import ToolContext
 
             role = cfg.roles[tool_role]
-            engine = _http_engine(cfg, cfg.engine_for_role(tool_role), transport=transport)
+            engine = _http_engine(cfg, cfg.engine_for_role(tool_role), transport=transport, manager=manager)
             await engine.start()
             try:
                 ctx = ToolContext(
@@ -762,6 +1012,23 @@ def create_app(
             finally:
                 await engine.stop()
             return _no_call_stops(_gen_to_chat_completion(res, name))
+        holding = AsyncExitStack()  # the role's engine, held (and started if need be) for the upstream call
+        engine_name = cfg.engine_for_model(proxy_model)
+        reply: Any = None
+        try:
+            if engine_name in managed:
+                await holding.enter_async_context(manager.hold(engine_name, f"chat:{uuid.uuid4().hex}"))
+            reply = await upstream_chat(out, base, headers, holding)
+            return reply
+        except EngineError as e:
+            return engine_failed(engine_name, e)
+        finally:
+            if not isinstance(reply, HeldStream):  # a streamed reply releases the hold when it ends
+                await release(holding)
+
+    async def upstream_chat(
+        out: dict[str, Any], base: str, headers: dict[str, str], holding: AsyncExitStack
+    ) -> Any:
         if out.get("stream"):
             req = client.build_request("POST", f"{base}/chat/completions", json=out, headers=headers)
             resp = await client.send(req, stream=True)
@@ -778,9 +1045,12 @@ def create_app(
                     if buf:
                         yield repair.frame(buf)
                 finally:
-                    await resp.aclose()
+                    try:
+                        await resp.aclose()
+                    finally:
+                        await release(holding)
 
-            return StreamingResponse(gen(), status_code=resp.status_code, media_type="text/event-stream")
+            return HeldStream(gen(), holding, status_code=resp.status_code, media_type="text/event-stream")
         r = await client.post(
             f"{base}/chat/completions",
             json=out,
@@ -855,10 +1125,15 @@ def create_app(
 
     @app.post("/v1/airlie/stories", status_code=202)
     async def start_story(req: StoryRequest) -> dict[str, Any]:
-        if (req.card is None) == (req.text is None):
+        return await begin_story(req.card, req.text, req.repo)
+
+    async def begin_story(card: str | None, text: str | None, repo_in: str | None) -> dict[str, Any]:
+        """Start a story job from a board card or a written request (also the chat's Start story): its
+        `job_id` and `kind`, or an HTTPException saying why not."""
+        if (card is None) == (text is None):
             raise HTTPException(400, "pass exactly one of card or text")
-        repo = (req.repo or "").strip() or None  # a blank repo is none, all the way to the story
-        if req.card is not None and repo is not None:
+        repo = (repo_in or "").strip() or None  # a blank repo is none, all the way to the story
+        if card is not None and repo is not None:
             raise HTTPException(422, ISSUE_REPO)
 
         def running(job_id: str) -> bool:
@@ -866,9 +1141,7 @@ def create_app(
             return job is not None and job.state == "running"
 
         try:
-            job_id, events, work = await make_story(
-                cfg, card=req.card, text=req.text, repo=repo, running=running
-            )
+            job_id, events, work = await make_story(cfg, card=card, text=text, repo=repo, running=running)
         except StoryRunning as e:  # decided before the story is placed: its issue is read, not told or moved
             raise HTTPException(409, str(e)) from e
         except (StorySetupError, BoardError) as e:
@@ -1204,8 +1477,7 @@ def create_app(
 
     @app.get("/v1/airlie/repos/names")
     async def repo_name_list() -> dict[str, Any]:
-        labels = [label for item in board.list() for label in item.labels]
-        return {"repos": await asyncio.to_thread(repo_names, cfg, labels)}
+        return {"repos": await known_repos()}
 
     @app.get("/v1/airlie/jobs/{job_id}")
     async def job_status(job_id: str, since: int = Query(0, ge=0), wait: float = 0.0) -> dict[str, Any]:
@@ -1294,11 +1566,44 @@ def create_app(
 
     @app.on_event("startup")
     async def startup() -> None:
+        from airlie.manager.client import serving
+
+        serving_cm.enter_context(serving(manager))  # engines built anywhere in this process hold through it
+        if story_notes is not None:
+            story_notes.prime()  # stories as they stand now are history; later events push
+            watcher.ensure_running()  # story pushes need the poll with no page connected
         ticker.start()  # the line's beat, every line.tick_s while serve is up (line.serve_ticks)
+
+        # the HTTP server is up at once; engines already running are adopted, the pinned ones start, idle
+        # on-demand ones are reaped
+        async def boot() -> None:
+            for step in (
+                repo_chats.adopt,
+                sweep_leftovers,
+                manager.adopt,
+                manager.start_pinned,
+            ):  # one failing must not stop the other
+                try:
+                    await step()
+                except Exception:
+                    log.exception("engine manager: %s failed", step.__name__)
+
+        engine_tasks.append(asyncio.ensure_future(boot()))
+        engine_tasks.append(asyncio.ensure_future(manager.run(cfg.manager.reap_every_s)))
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
         await ticker.stop()
+        for t in engine_tasks:
+            t.cancel()
+        await asyncio.gather(*engine_tasks, return_exceptions=True)
+        engine_tasks.clear()
+        try:  # a chat VM's `tart run` is a session of its own and would outlive serve: stopped, disk kept
+            await repo_chats.stop_all()
+        except Exception:
+            log.exception("stopping the chat VMs at shutdown failed")
+        await leases.close()  # engines stay running
+        serving_cm.close()
         watcher.stop()
         await client.aclose()
         board.close()

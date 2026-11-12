@@ -7,11 +7,20 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from airlie.flow.spec import WorkflowSpec, check_workflows
+from airlie.notify.kinds import KINDS, NotificationKind
 
 
 class Strict(BaseModel):
@@ -48,18 +57,30 @@ class ModelRef(Strict):
 
     repo: str
     revision: str = Field(min_length=1, description="HF commit sha; `task models:pull` fetches exactly this")
+    estimated_memory_gb: float | None = Field(
+        default=None, description="an MTP head's weights; feeds the engine memory budget beside the body's"
+    )
 
 
 class ModelSpec(Strict):
     """A model in the catalog. `repo` + `revision` pin exactly which weights are used."""
 
     repo: str
+    label: str | None = Field(
+        default=None,
+        description='the name people see for this model ("Gemma 4"); unset, the last part of `repo`',
+    )
     revision: str = Field(min_length=1, description="HF commit sha; `task models:pull` fetches exactly this")
     path: Path | None = Field(default=None, description="local directory instead of the HF cache")
     mtp: ModelRef | None = Field(
         default=None,
         description="an MTP head published apart from the body (mlx_vlm engines): served beside it as the "
         "--draft-model, with speculative decoding on",
+    )
+    mtp_block_size: int | None = Field(
+        default=None,
+        ge=1,
+        description="mlx_vlm --draft-block-size when `mtp` is set (Gemma 4 MTP requires 4)",
     )
     estimated_memory_gb: float | None = Field(
         default=None, description="weights only; feeds the engine memory budget"
@@ -98,6 +119,14 @@ class EngineSpec(Strict):
     timeout_s: float = 600.0
     extra_args: list[str] = Field(default_factory=list, description="appended verbatim to the server command")
     autostart: bool = Field(default=True, description="mlx_vlm: `task up` starts this engine")
+    lifecycle: Literal["pinned", "on_demand"] = Field(
+        default="pinned",
+        description="pinned: `task up` starts it and it stays up; on_demand: the manager starts it on first "
+        "use and stops it when idle",
+    )
+    idle_unload_s: float = Field(
+        default=600.0, description="on_demand: seconds unused (and unheld) before the manager stops it"
+    )
     decision: bool = Field(
         default=False,
         description="mlx_vlm: the model is a typed-decision model, started with --decision-model and asked "
@@ -285,8 +314,103 @@ class AttachmentsSpec(Strict):
     history_videos: int = Field(default=1, ge=0, description="videos sent as video per request, newest first")
 
 
+CHAT_TOOLS = frozenset(
+    {
+        "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git", "compute",
+        "skill", "todo", "task", "web_search", "web_fetch", "push_branch", "open_pr",
+    }
+)  # fmt: skip
+ALWAYS_ASK = frozenset({"push_branch", "open_pr", "build_image"})
+"""What a repository chat never does without a person's yes, whatever the config lists: pushing, opening a PR
+and building an image with setup secrets."""
+ASK_FIRST_ONLY = frozenset({"build_image"})
+"""Names `ask_first` takes that are not tools: a gate on the image build (boxes.images), which needs a yes
+before setup secrets reach a recipe nobody has built."""
+# What a plain chat (no repository) may never hold, whatever the config says.
+PLAIN_CHAT_FORBIDDEN = frozenset(
+    {
+        "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git", "compute",
+        "task", "push_branch", "open_pr",
+    }
+)  # fmt: skip
+
+
+class SuperpowersSpec(Strict):
+    enabled: bool = True
+    path: Path = Field(
+        default=Path("vendor/superpowers"), description="vendored superpowers (skills/ and airlie-tools.md)"
+    )
+
+
+class ChatKindSpec(Strict):
+    tools: list[str]
+    ask_first: list[str] = Field(
+        default_factory=list, description="tools the chat asks the human before using"
+    )
+
+
+class ChatKindsSpec(Strict):
+    plain: ChatKindSpec = Field(
+        default_factory=lambda: ChatKindSpec(tools=["web_search", "web_fetch", "skill", "todo"])
+    )
+    repository: ChatKindSpec = Field(
+        default_factory=lambda: ChatKindSpec(
+            tools=[
+                "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git",
+                "compute", "skill", "todo", "task", "web_search", "web_fetch", "push_branch", "open_pr",
+            ],
+            ask_first=["push_branch", "open_pr", "build_image"],
+        )
+    )  # fmt: skip
+
+    @model_validator(mode="after")
+    def _check_tools(self) -> ChatKindsSpec:
+        for kind, spec in (("plain", self.plain), ("repository", self.repository)):
+            for field, names in (("tools", spec.tools), ("ask_first", spec.ask_first)):
+                allowed = CHAT_TOOLS | ASK_FIRST_ONLY if field == "ask_first" else CHAT_TOOLS
+                unknown = sorted(set(names) - allowed)
+                if unknown:
+                    known = ", ".join(sorted(CHAT_TOOLS))
+                    raise ValueError(
+                        f"chat.kinds.{kind}.{field} names {', '.join(unknown)}; the chat tools are {known}"
+                    )
+        dropped = sorted(ALWAYS_ASK - set(self.repository.ask_first))
+        if dropped:
+            raise ValueError(
+                f"chat.kinds.repository.ask_first must keep {', '.join(dropped)}: "
+                "they never run without a person's yes"
+            )
+        held = sorted(
+            (set(self.plain.tools) | set(self.plain.ask_first)) & (PLAIN_CHAT_FORBIDDEN | ASK_FIRST_ONLY)
+        )
+        if held:
+            raise ValueError(
+                f"chat.kinds.plain cannot hold {', '.join(held)}: a plain chat has no repository"
+            )
+        return self
+
+
+class ChatTaskSpec(Strict):
+    """The repository chat's `task` tool: a fresh-context subagent on a chosen role, in the session's VM."""
+
+    default_role: str = Field(default="coder", description="the role a task runs on when it names none")
+    roles: list[str] = Field(
+        default_factory=lambda: ["coder", "reviewer", "tester", "architect"],
+        min_length=1,
+        description="the roles a model may choose for a task",
+    )
+    max_steps: int = Field(default=30, ge=1, description="tool rounds a subagent may take")
+    max_depth: int = Field(
+        default=1, ge=1, le=1, description="a subagent has no `task` tool, so the depth is 1"
+    )
+
+
 class ChatSpec(Strict):
     attachments: AttachmentsSpec = Field(default_factory=AttachmentsSpec)
+    superpowers: SuperpowersSpec = Field(default_factory=SuperpowersSpec)
+    kinds: ChatKindsSpec = Field(default_factory=ChatKindsSpec)
+    task: ChatTaskSpec = Field(default_factory=ChatTaskSpec)
+    max_steps: int = Field(default=12, ge=1, description="model turns a chat message may take (tool rounds)")
 
 
 class LhrSpec(Strict):
@@ -336,6 +460,87 @@ class LlmKindSpec(Strict):
         if self.thinking and self.thinking_budget and self.max_tokens <= self.thinking_budget:
             raise ValueError("max_tokens must exceed thinking_budget (it caps thinking plus the answer)")
         return self
+
+
+class ManagerSpec(Strict):
+    """The resource manager: engines (and VMs) started on demand inside one memory budget."""
+
+    margin_gb: float = Field(default=2.0, description="memory kept free beyond the resources' footprints")
+    start_timeout_s: float = Field(default=900.0, description="seconds a start may take")
+    wait_timeout_s: float = Field(default=1800.0, description="seconds a hold waits for memory")
+    reap_every_s: float = Field(default=30.0, description="seconds between idle sweeps")
+    lease_ttl_s: float = Field(default=120.0, description="seconds a lease lives without a renewal")
+
+
+_HOST_LABEL = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def _is_hostname(value: str) -> bool:
+    """A DNS name (RFC 1123 labels, lower case, at least two labels, a TLD with a letter): not an IP, a URL,
+    a CIDR or a wildcard."""
+    labels = value.split(".")
+    return (
+        len(value) <= 253
+        and len(labels) >= 2
+        and all(_HOST_LABEL.fullmatch(label) for label in labels)
+        and any(c.isalpha() for c in labels[-1])
+    )
+
+
+class BoxNetworkSpec(Strict):
+    """What a repository chat's VM may reach once its setup is done."""
+
+    after_setup: Literal["off", "allow_list"] = Field(
+        default="allow_list",
+        description="off: no network at all (every address blocked); allow_list: everything blocked except "
+        "the CIDRs allow_hosts resolve to and the resolver",
+    )
+    allow_hosts: list[str] = Field(
+        default_factory=lambda: ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org"],
+        description="hosts reachable after setup when after_setup is allow_list (DNS names: no URL, IP, "
+        "CIDR or wildcard)",
+    )
+
+    @field_validator("allow_hosts")
+    @classmethod
+    def _hostnames(cls, hosts: list[str]) -> list[str]:
+        for host in hosts:
+            if not _is_hostname(host):
+                raise ValueError(f"allow_hosts entry {host!r} is not a lower-case host name such as pypi.org")
+        return hosts
+
+
+class BoxesSpec(Strict):
+    """The VMs repository chats run in (one Tart VM per session)."""
+
+    backend: Literal["tart"] = Field(default="tart", description="the VM backend")
+    image: str = Field(
+        default="ghcr.io/cirruslabs/ubuntu:latest", description="the image a box is cloned from"
+    )
+    memory_gb: float = Field(default=8.0, gt=0, description="memory of a box")
+    cpus: int = Field(default=4, gt=0, description="cpus of a box")
+    disk_gb: int = Field(default=40, gt=0, description="disk of a box")
+    idle_stop_s: float = Field(
+        default=900.0, gt=0, description="seconds idle before a running box is stopped"
+    )
+    setup_timeout_s: float = Field(
+        default=1800.0, gt=0, description="seconds the repository's setup may take"
+    )
+    boot_timeout_s: float = Field(
+        default=120.0, gt=0, description="seconds a box may take to answer after a start"
+    )
+    bundle_max_mb: int = Field(
+        default=512,
+        gt=0,
+        description="the most MB of git bundle taken out of a box (a larger one is refused)",
+    )
+    network: BoxNetworkSpec = Field(default_factory=BoxNetworkSpec)
+    prewarm_max_per_person: int = Field(
+        default=2,
+        ge=0,
+        description="how many VMs a person's new repository chats start before their first message (and not "
+        "yet used); over it a new chat's VM starts with its first turn",
+    )
 
 
 class BridgeSpec(Strict):
@@ -491,6 +696,35 @@ class ObservabilitySpec(Strict):
     retain_days: int = 14
 
 
+PushHost = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9-]+)+$")]
+
+
+class NotificationsSpec(Strict):
+    """Web Push to installed phones and desktops."""
+
+    contact: str | None = Field(
+        default=None,
+        pattern=r"^(mailto:[^@\s]+@[\w%-]+(\.[\w%-]+)+|https://[\w-]+(\.[\w-]+)+(:\d+)?(/\S*)?)$",
+        description="who a push service may reach about this server: mailto:... or https://... (VAPID sub)",
+    )
+    vapid_key: Path | None = Field(
+        default=None, description="the VAPID private key (default: observability.state_dir/vapid.pem)"
+    )
+    default_kinds: list[NotificationKind] = Field(
+        default_factory=lambda: list(KINDS), description="kinds a person hears until they set their own"
+    )
+    push_hosts: list[PushHost] = Field(
+        default_factory=lambda: [
+            "push.apple.com",
+            "fcm.googleapis.com",
+            "push.services.mozilla.com",
+            "notify.windows.com",
+        ],
+        description="push services a browser may subscribe through: an endpoint must be https on one of "
+        "these hosts or a subdomain of one (serve POSTs to it)",
+    )
+
+
 class AuthSpec(Strict):
     """Who may use `task serve` as a person (docs/superpowers/plans/2026-10-17-sign-in.md)."""
 
@@ -502,7 +736,9 @@ class AuthSpec(Strict):
     origins: list[str] = Field(
         default_factory=list, description="WebAuthn origins (default: https://<rp_id> and http localhost)"
     )
-    session_days: int = Field(default=30, ge=1, description="how long a sign-in cookie lasts")
+    session_days: int = Field(
+        default=30, ge=1, description="how long a sign-in lasts idle; one used past half this is renewed"
+    )
     invite_hours: int = Field(default=24, ge=1, description="how long an invite link may be used")
 
 
@@ -965,6 +1201,7 @@ class AirlieConfig(Strict):
     aggregator: AggregatorSpec = Field(default_factory=AggregatorSpec)
     observability: ObservabilitySpec = Field(default_factory=ObservabilitySpec)
     auth: AuthSpec = Field(default_factory=AuthSpec)
+    notifications: NotificationsSpec = Field(default_factory=NotificationsSpec)
     memory: MemorySpec = Field(default_factory=MemorySpec)
     repo_map: RepoMapSpec = Field(default_factory=RepoMapSpec)
     topology: TopologySpec = Field(default_factory=TopologySpec)
@@ -979,6 +1216,8 @@ class AirlieConfig(Strict):
     chat: ChatSpec = Field(default_factory=ChatSpec)
     lhr: LhrSpec = Field(default_factory=LhrSpec)
     bridge: BridgeSpec = Field(default_factory=BridgeSpec)
+    manager: ManagerSpec = Field(default_factory=ManagerSpec)
+    boxes: BoxesSpec = Field(default_factory=BoxesSpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
 
     # ---- cross-reference checks (run by load_config after path resolution) ----
@@ -995,6 +1234,15 @@ class AirlieConfig(Strict):
                 for name in ("story", "layer")
                 if name not in self.workflows
             ]
+        if "task" in self.chat.model_fields_set:  # the defaults name roles a small config may not have
+            task = self.chat.task
+            problems += [
+                f"chat.task names role '{r}', which is not in roles ({sorted(self.roles)})"
+                for r in dict.fromkeys([task.default_role, *task.roles])
+                if r not in self.roles
+            ]
+            if task.default_role not in task.roles:
+                problems.append(f"chat.task.default_role '{task.default_role}' is not in chat.task.roles")
         served_by: dict[str, list[str]] = {m: [] for m in self.models}
         for ename, e in self.engines.items():
             for m in e.models:

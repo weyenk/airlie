@@ -1,7 +1,7 @@
-"""The Vue app's Chat composer in Chromium (/): the + and its chooser, chips with a thumbnail and the
-limit, your picture in your bubble and again after a reload (the thread holds ids and names, never bytes),
-the / menu, /story as an editable story card with the repository type-ahead, and the job card a started
-story becomes. Each check leaves its screenshot in test-results/e2e/evidence/ (conftest.Evidence)."""
+"""The Vue app's Chat composer in Chromium (/): the + and its chooser, chips with a thumbnail and the limit,
+your picture in your bubble and again after a reload (the saved thread holds ids and names, never bytes), the
+/ menu and /clear. Each check leaves its screenshot in test-results/e2e/evidence/ (conftest.Evidence). (The
+story card and Start story left with the redesign: a /story reply is text in the thread.)"""
 
 from __future__ import annotations
 
@@ -14,13 +14,13 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import httpx
 import numpy as np
 import pytest
-from playwright.sync_api import FilePayload, Page, Route
+from playwright.sync_api import FilePayload, Page
 
-from tests.e2e.conftest import Evidence, Server
-from tests.e2e.test_chat import _write_story, say
-from tests.e2e.test_chat import open_chat as open_plain
+from tests.e2e.conftest import KEY, Evidence, Server
+from tests.e2e.test_chat import open_chat, say
 
 pytestmark = pytest.mark.e2e
 
@@ -53,28 +53,7 @@ def clip(folder: Path) -> bytes:
     return path.read_bytes()
 
 
-REPO = "weyenk/airlie"
 STORY = "Add a New chat button\n\nChat gets a button that clears the thread. Done when a click empties it."
-STARTED = "AIR-9"
-
-
-def open_chat(
-    page: Page, server: Server, repos: list[str], *, job: str = f"story-{STARTED}"
-) -> list[dict[str, object]]:
-    """The Vue chat with the repository names stubbed; returns the story requests the page makes."""
-    posted: list[dict[str, object]] = []
-    page.route("**/v1/airlie/repos/names", lambda route: route.fulfill(json={"repos": repos}))
-
-    def stories(route: Route) -> None:
-        if route.request.method == "POST":
-            posted.append(route.request.post_data_json)
-            route.fulfill(status=202, json={"job_id": job, "kind": "story"})
-        else:
-            route.fallback()
-
-    page.route("**/v1/airlie/stories", stories)
-    open_plain(page, server)
-    return posted
 
 
 def attach(page: Page, *files: FilePayload) -> None:
@@ -88,23 +67,26 @@ def chip(page: Page, name: str) -> Any:
 
 
 def last_user_parts(server: Server) -> list[dict[str, Any]]:
-    return server.upstream.requests[-1]["messages"][-1]["content"]
+    """What the model was sent for the person's last message."""
+    content = server.upstream.requests[-1]["messages"][-1]["content"]
+    assert isinstance(content, list), content
+    return content
 
 
 def reply(page: Page) -> Any:
-    return page.locator("[data-msg=chat] [data-bubble]").last
+    return page.locator("[data-message=assistant]").last
 
 
 def test_the_plus_opens_the_file_chooser_and_the_story_quick_reply_fills_the_box(
     app_page: Page, server: Server, evidence: Evidence
 ) -> None:
-    open_chat(app_page, server, [])
+    open_chat(app_page, server)
     plus = app_page.get_by_role("button", name="Attach a file")
     evidence.expect(plus, "the + is Attach").to_be_visible()
     with app_page.expect_file_chooser() as chooser:
         plus.click()
     assert chooser.value.is_multiple()
-    evidence.expect(app_page, "the + does not leave Chat").to_have_url(re.compile(r"/$"))
+    evidence.expect(app_page, "the + does not leave Chat").to_have_url(re.compile(r"/(chat/[^/]+)?$"))
     app_page.locator("[data-quick]", has_text="/story").click()
     evidence.expect(
         app_page.get_by_label("Message", exact=True), "the quick reply puts /story in the box"
@@ -115,7 +97,7 @@ def test_a_picture_shows_as_a_chip_then_in_my_bubble_and_reaches_the_model_as_it
     app_page: Page, server: Server, evidence: Evidence
 ) -> None:
     server.upstream.reply = "A pink rectangle."
-    open_chat(app_page, server, [])
+    open_chat(app_page, server)
     data = png()
     attach(app_page, {"name": "shot.png", "mimeType": "image/png", "buffer": data})
     evidence.expect(chip(app_page, "shot.png").locator("img"), "the chip shows the picture").to_be_visible()
@@ -130,18 +112,18 @@ def test_a_picture_shows_as_a_chip_then_in_my_bubble_and_reaches_the_model_as_it
     evidence.expect(chip(app_page, "shot.png"), "the tray is empty").to_have_count(0)
     evidence.expect(reply(app_page), "the reply").to_contain_text("A pink rectangle.")
     parts = last_user_parts(server)
-    assert parts[0] == {"type": "text", "text": "what is this?"}
-    assert parts[1] == {
+    assert {"type": "text", "text": "what is this?"} in parts
+    assert {
         "type": "image_url",
         "image_url": {"url": "data:image/png;base64," + base64.b64encode(data).decode()},
-    }
+    } in parts
 
 
 def test_after_a_reload_the_picture_is_still_there_and_the_thread_holds_no_bytes(
     app_page: Page, server: Server, evidence: Evidence
 ) -> None:
     server.upstream.reply = "Seen."
-    open_chat(app_page, server, [])
+    open_chat(app_page, server)
     attach(app_page, {"name": "kept.png", "mimeType": "image/png", "buffer": png()})
     evidence.expect(app_page.get_by_role("button", name="Send"), "uploaded").to_be_enabled()
     say(app_page, "keep this")
@@ -150,35 +132,41 @@ def test_after_a_reload_the_picture_is_still_there_and_the_thread_holds_no_bytes
     img = app_page.locator("[data-msg=user] img")
     evidence.expect(img, "the picture is fetched again after the reload").to_be_visible()
     app_page.wait_for_function("() => document.querySelector('[data-msg=user] img')?.naturalWidth > 0")
-    stored = app_page.evaluate("() => sessionStorage.getItem('airlie.chat')")
-    evidence.shot("sessionStorage keeps the id and name, never base64", img, held="base64" not in stored)
-    assert "base64" not in stored and "blob:" not in stored and "kept.png" in stored
-    kept = json.loads(stored)[0]["attachments"][0]
-    assert set(kept) == {"id", "name", "mime", "size", "kind"}
+    kept = app_page.evaluate(
+        "() => JSON.stringify([...Object.entries(sessionStorage), ...Object.entries(localStorage)])"
+    )
+    evidence.shot("the tab keeps no picture bytes", img, held="base64" not in kept and "blob:" not in kept)
+    assert "base64" not in kept and "blob:" not in kept
+    with httpx.Client(base_url=server.url, headers={"Authorization": f"Bearer {KEY}"}) as c:
+        saved = c.get("/v1/airlie/chat/threads").json()
+        thread = c.get(f"/v1/airlie/chat/threads/{saved[0]['id']}").json()
+    parts = thread["messages"][0]["parts"]
+    assert "kept.png" in json.dumps(parts) and "base64" not in json.dumps(parts)
 
 
 def test_a_video_reaches_the_model_as_frames_airlie_sampled(
     app_page: Page, server: Server, evidence: Evidence, tmp_path: Path
 ) -> None:
-    open_chat(app_page, server, [])
+    open_chat(app_page, server)
     attach(app_page, {"name": "clip.mp4", "mimeType": "video/mp4", "buffer": clip(tmp_path)})
     evidence.expect(chip(app_page, "clip.mp4"), "the chip names the video").to_be_visible()
     evidence.expect(app_page.get_by_role("button", name="Send"), "uploaded").to_be_enabled()
     say(app_page, "what happens here?")
     evidence.expect(app_page.locator("[data-msg=user] video"), "my bubble has the player").to_have_count(1)
-    parts = last_user_parts(server)[1:]
-    assert parts[0] == {
-        "type": "text",
-        "text": "Video `clip.mp4` (2.0 s): 2 frames, one every 1.0 s, in order.",
-    }
-    assert [p["text"] for p in parts[1::2]] == ["t=0.5 s", "t=1.5 s"]
-    assert all(p["image_url"]["url"].startswith("data:image/jpeg;base64,") for p in parts[2::2])
+    parts = last_user_parts(server)
+    texts = [p["text"] for p in parts if p["type"] == "text"]
+    assert "Video `clip.mp4` (2.0 s): 2 frames, one every 1.0 s, in order." in texts
+    assert [t for t in texts if t.startswith("t=")] == ["t=0.5 s", "t=1.5 s"]
+    frames = [p for p in parts if p["type"] == "image_url"]
+    assert len(frames) == 2 and all(
+        p["image_url"]["url"].startswith("data:image/jpeg;base64,") for p in frames
+    )
 
 
 def test_a_text_file_reaches_the_model_as_its_text_and_a_zip_as_a_line(
     app_page: Page, server: Server, evidence: Evidence
 ) -> None:
-    open_chat(app_page, server, [])
+    open_chat(app_page, server)
     attach(
         app_page,
         {"name": "server.log", "mimeType": "text/plain", "buffer": b"ERROR disk full\n"},
@@ -191,18 +179,15 @@ def test_a_text_file_reaches_the_model_as_its_text_and_a_zip_as_a_line(
     evidence.expect(
         app_page.locator("[data-msg=user] [data-file]"), "my bubble names both files"
     ).to_have_count(2)
-    parts = last_user_parts(server)
-    assert parts[0]["text"].startswith("Attached file `server.log`") and "ERROR disk full" in parts[0]["text"]
-    assert (
-        parts[1]["text"]
-        == "Attached file `site.zip` (application/zip, 84 B): its contents can't be read from chat."
-    )
+    texts = [p["text"] for p in last_user_parts(server) if p["type"] == "text"]
+    assert any(t.startswith("Attached file `server.log`") and "ERROR disk full" in t for t in texts)
+    assert "Attached file `site.zip` (application/zip, 84 B): its contents can't be read from chat." in texts
 
 
 def test_a_file_over_the_limit_says_so_keeps_send_off_and_x_clears_it(
     app_page: Page, server: Server, evidence: Evidence
 ) -> None:
-    open_chat(app_page, server, [])
+    open_chat(app_page, server)
     asked = len(server.upstream.requests)
     attach(
         app_page,
@@ -223,11 +208,11 @@ def test_a_file_over_the_limit_says_so_keeps_send_off_and_x_clears_it(
     assert len(server.upstream.requests) == asked
 
 
-def test_typing_a_slash_shows_the_menu_and_choosing_story_gives_a_story_card(
+def test_typing_a_slash_shows_the_menu_and_a_story_command_sends_its_skill(
     app_page: Page, server: Server, evidence: Evidence
 ) -> None:
     server.upstream.reply = STORY
-    open_chat(app_page, server, [REPO])
+    open_chat(app_page, server)
     box = app_page.get_by_label("Message", exact=True)
     box.press_sequentially("/")
     menu = app_page.get_by_role("listbox", name="Commands")
@@ -244,19 +229,18 @@ def test_typing_a_slash_shows_the_menu_and_choosing_story_gives_a_story_card(
     evidence.expect(box, "choosing it fills the box").to_have_value("/story ")
     evidence.expect(menu, "and closes the menu").to_have_count(0)
     say(app_page, "/story the chat gets a New chat button")
-    card = app_page.locator("[data-story-card]")
-    evidence.expect(card.get_by_label("Story request"), "the reply is an editable story card").to_have_value(
-        STORY
+    evidence.expect(app_page.locator("[data-msg=user]"), "my bubble holds the request alone").to_have_text(
+        "the chat gets a New chat button"
     )
-    evidence.expect(card.get_by_role("button", name="Start story"), "with Start story").to_be_visible()
-    sent = server.upstream.requests[-1]
-    assert "skill" not in sent  # the route strips it
-    assert sent["messages"][-1]["content"] == "the chat gets a New chat button"
-    assert "Turn the request" not in sent["messages"][-1]["content"]
+    evidence.expect(reply(app_page), "the reply is the story request, as text").to_contain_text(
+        "Add a New chat button"
+    )
+    sent = json.dumps(server.upstream.requests[-1])
+    assert "story pipeline will build" in sent  # the story skill's prompt went with the turn
 
 
 def test_the_menu_is_driven_from_the_keyboard(app_page: Page, server: Server, evidence: Evidence) -> None:
-    open_chat(app_page, server, [])
+    open_chat(app_page, server)
     box = app_page.get_by_label("Message", exact=True)
     box.press_sequentially("/")
     options = app_page.get_by_role("listbox", name="Commands").get_by_role("option")
@@ -270,22 +254,25 @@ def test_the_menu_is_driven_from_the_keyboard(app_page: Page, server: Server, ev
     evidence.expect(box, "Enter chooses the active command").to_have_value(re.compile(r"^/\w+ $"))
 
 
-def test_clear_from_the_menu_starts_a_fresh_session_and_drops_unsent_files(
+def test_clear_from_the_menu_opens_a_fresh_chat_and_drops_unsent_files(
     app_page: Page, server: Server, evidence: Evidence
 ) -> None:
     server.upstream.reply = "An answer."
-    open_chat(app_page, server, [])
+    open_chat(app_page, server)
     say(app_page, "is there a way to clear this chat")
     evidence.expect(app_page.locator("[data-msg=user]"), "the question is in the thread").to_have_count(1)
+    evidence.expect(reply(app_page), "and answered").to_contain_text("An answer.")
     attach(app_page, {"name": "later.log", "mimeType": "text/plain", "buffer": b"x"})
     evidence.expect(chip(app_page, "later.log"), "a file waits in the tray").to_be_visible()
     asked = len(server.upstream.requests)
+    before = app_page.url
     box = app_page.get_by_label("Message", exact=True)
     box.press_sequentially("/cl")
     menu = app_page.get_by_role("listbox", name="Commands")
     menu.get_by_role("option", name="/clear").click()
     box.press("Enter")
-    evidence.expect(app_page.locator("[data-msg=user]"), "the thread is empty").to_have_count(0)
+    app_page.wait_for_function("(was) => location.href !== was", arg=before)
+    evidence.expect(app_page.locator("[data-msg=user]"), "the new chat is empty").to_have_count(0)
     evidence.expect(chip(app_page, "later.log"), "the unsent file is dropped").to_have_count(0)
     evidence.expect(
         app_page.get_by_text("Hi, I'm airlie's assistant"), "the greeting is back"
@@ -293,114 +280,11 @@ def test_clear_from_the_menu_starts_a_fresh_session_and_drops_unsent_files(
     assert len(server.upstream.requests) == asked
 
 
-def test_start_story_posts_the_text_and_repository_and_shows_a_job_card(
-    app_page: Page, server: Server, evidence: Evidence
-) -> None:
-    server.upstream.reply = STORY
-    posted = open_chat(app_page, server, [REPO, "weyenk/other"])
-    say(app_page, "/story the chat gets a New chat button")
-    card = app_page.locator("[data-story-card]")
-    card.get_by_label("Story request").fill(STORY + "\nEdited.")
-    picker = card.get_by_role("combobox", name="Repository")
-    picker.fill("weyenk/")
-    evidence.expect(
-        card.get_by_role("option"), "the type-ahead offers one match per repository"
-    ).to_have_count(2)
-    picker.fill(REPO)
-    card.get_by_role("button", name="Start story").click()
-    job = app_page.locator("[data-card]")
-    evidence.expect(job, "a job card replaces the story card").to_contain_text("story started")
-    evidence.expect(job, "it names the repository").to_contain_text("airlie · story")
-    evidence.expect(app_page.locator("[data-story-card]"), "the story card is gone").to_have_count(0)
-    evidence.expect(
-        job.get_by_role("link", name=re.compile("Open workflow")), "it opens the workflow"
-    ).to_have_attribute("href", f"/workflows/{STARTED}")
-    assert posted == [{"text": STORY + "\nEdited.", "repo": REPO}]
-    # the card is part of the thread: it is there after a reload, and the repository is the default next time
-    app_page.reload()
-    evidence.expect(app_page.locator("[data-card]"), "the job card is there after a reload").to_be_visible()
-    assert app_page.evaluate("localStorage.getItem('airlie.repo')") == REPO
-
-
-def test_an_edited_story_and_the_last_repository_come_back(
-    app_page: Page, server: Server, evidence: Evidence
-) -> None:
-    server.upstream.reply = STORY
-    app_page.add_init_script(
-        f"if (!localStorage.getItem('airlie.repo')) localStorage.setItem('airlie.repo', {REPO!r});"
-    )
-    posted = open_chat(app_page, server, [REPO])
-    say(app_page, "/story the chat gets a New chat button")
-    card = app_page.locator("[data-story-card]")
-    evidence.expect(
-        card.get_by_role("combobox", name="Repository"), "the last repository is the default"
-    ).to_have_value(REPO)
-    card.get_by_label("Story request").fill("An edit that stays.")
-    app_page.reload()
-    evidence.expect(
-        app_page.locator("[data-story-card]").get_by_label("Story request"), "the edit survives a reload"
-    ).to_have_value("An edit that stays.")
-    assert posted == []  # nothing starts without the click
-
-
-def test_start_story_without_a_repository_says_to_pick_one_and_posts_nothing(
-    app_page: Page, server: Server, evidence: Evidence
-) -> None:
-    server.upstream.reply = STORY
-    posted = open_chat(app_page, server, [])
-    say(app_page, "/story the chat gets a New chat button")
-    app_page.locator("[data-story-card]").get_by_role("button", name="Start story").click()
-    evidence.expect(
-        app_page.locator("[data-story-card] [role=alert]"), "it asks for a repository"
-    ).to_have_text("Pick a repository first.")
-    evidence.expect(app_page.locator("[data-card]"), "no job card").to_have_count(0)
-    assert posted == []
-
-
-def test_the_composer_has_no_repository_row_and_the_story_card_has_the_picker(
-    app_page: Page, server: Server, evidence: Evidence
-) -> None:
-    server.upstream.reply = STORY
-    open_chat(app_page, server, [REPO, "weyenk/other"])
-    evidence.expect(
-        app_page.get_by_label("Repository"), "no repository picker under the message box"
-    ).to_have_count(0)
-    say(app_page, "/story the chat gets a New chat button")
-    evidence.expect(
-        app_page.locator("[data-story-card]").get_by_label("Repository"), "the story card has its own picker"
-    ).to_be_visible()
-
-
-def test_the_job_card_follows_the_story_with_no_reload(
-    app_page: Page, own_server: Server, evidence: Evidence
-) -> None:
-    own_server.upstream.reply = STORY
-    open_chat(app_page, own_server, [REPO])
-    say(app_page, "/story the chat gets a New chat button")
-    card = app_page.locator("[data-story-card]")
-    card.get_by_role("combobox", name="Repository").fill(REPO)
-    card.get_by_role("button", name="Start story").click()
-    job = app_page.locator("[data-card]")
-    evidence.expect(job.locator("[data-stage]"), "nothing has run yet").to_have_text(
-        re.compile("^(no state yet|starting)$")
-    )
-    evidence.expect(job.get_by_role("progressbar"), "so no progress").to_have_count(0)
-    _write_story(own_server.state, STARTED)  # as the tick would
-    evidence.expect(job.locator("[data-stage]"), "the stage follows the story").to_have_text(
-        "planning layers"
-    )
-    evidence.expect(job.get_by_role("progressbar"), "and the progress shows").to_be_visible()
-    job.get_by_role("link", name=re.compile("Open workflow")).click()
-    evidence.expect(app_page, "Open workflow opens the story").to_have_url(
-        re.compile(rf"/workflows/{STARTED}$")
-    )
-
-
 def test_the_slash_menu_and_the_tray_fit_on_a_phone(
     app_page: Page, server: Server, evidence: Evidence
 ) -> None:
     app_page.set_viewport_size({"width": 375, "height": 700})
-    open_chat(app_page, server, [])
+    open_chat(app_page, server)
     long_name = "a-very-long-name-" + "x" * 80 + ".log"
     attach(app_page, {"name": long_name, "mimeType": "text/plain", "buffer": b"x"})
     box = app_page.get_by_label("Message", exact=True)
@@ -417,32 +301,8 @@ def test_the_slash_menu_and_the_tray_fit_on_a_phone(
     assert fits
 
 
-def test_start_story_on_the_real_server_names_the_checkout_it_is_missing(
-    app_page: Page, server: Server, evidence: Evidence
-) -> None:
-    """Only the repository names are stubbed: owner/name reaches the real route, which looks for the
-    checkout in story.repos_root and says in words that there is none. (This server has no story topology and
-    no clone, so a story cannot run to its end here; owner/name resolving to a checkout is a unit test.)"""
-    server.upstream.reply = STORY
-    app_page.route("**/v1/airlie/repos/names", lambda route: route.fulfill(json={"repos": [REPO]}))
-    open_plain(app_page, server)
-    say(app_page, "/story the chat gets a New chat button")
-    card = app_page.locator("[data-story-card]")
-    card.get_by_role("combobox", name="Repository").fill(REPO)
-    with app_page.expect_response(re.compile(r"/v1/airlie/stories$")) as sent:
-        card.get_by_role("button", name="Start story").click()
-    assert sent.value.status == 400
-    evidence.expect(card.get_by_role("alert"), "the refusal is said in words").to_contain_text(
-        f"no checkout of {REPO}"
-    )
-    evidence.expect(
-        app_page.locator("[data-card]"), "no job card for a story that did not start"
-    ).to_have_count(0)
-    evidence.expect(card.get_by_role("button", name="Start story"), "it can be tried again").to_be_enabled()
-
-
 def test_a_failed_upload_says_why_and_x_clears_it(app_page: Page, server: Server, evidence: Evidence) -> None:
-    open_chat(app_page, server, [])
+    open_chat(app_page, server)
     app_page.route(
         "**/v1/airlie/uploads?*", lambda route: route.fulfill(status=507, json={"detail": "the disk is full"})
     )
