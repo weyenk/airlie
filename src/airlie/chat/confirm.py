@@ -27,6 +27,9 @@ from airlie.tools.registry import ToolRegistry
 Answer = Literal["allowed", "pending", "denied"]
 MAX_PENDING_PER_SESSION = 50
 WAITING = "waiting for your approval: the person has been asked; do not retry until they have answered"
+APPROVED = "the person approved this call: make it again, with the same arguments, to run it"
+DENIED = "refused: the person said no to this call"
+"""What the model's history shows for a call whose request the person has answered, in place of WAITING."""
 
 
 class Approval(BaseModel):
@@ -35,6 +38,21 @@ class Approval(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1, max_length=128)
     approved: bool
+
+
+@dataclass(frozen=True)
+class Answered:
+    """An answer `approve` applied: the request's id, the tool it was for, and the person's yes or no."""
+
+    id: str
+    tool: str
+    approved: bool
+
+
+def answered_note(answers: Sequence[Answered]) -> str:
+    """What the model is told when a turn resumes on the person's answers alone (no new message of theirs)."""
+    said = "; ".join(f"{a.tool}: {'approved' if a.approved else 'I said no'}" for a in answers)
+    return f"I answered your permission request ({said})."
 
 
 @dataclass
@@ -104,13 +122,16 @@ class Confirmations:
         self._items[item.id] = item
         return item.id
 
-    def approve(self, session_id: str, approvals: Sequence[Approval]) -> None:
-        """Apply the person's answers. An id that is not a pending request of this session (another
-        session's, an answered one, a made-up one) changes nothing."""
+    def approve(self, session_id: str, approvals: Sequence[Approval]) -> list[Answered]:
+        """Apply the person's answers and return those applied. An id that is not a pending request of this
+        session (another session's, an answered one, a made-up one) changes nothing."""
+        applied: list[Answered] = []
         for a in approvals:
             item = self._items.get(a.id)
             if item is not None and item.session == session_id and item.state == "pending":
                 item.state = "approved" if a.approved else "denied"
+                applied.append(Answered(item.id, item.tool, a.approved))
+        return applied
 
     def status(
         self, session_id: str, tool: str, args: Mapping[str, Any], kind: ChatKind = "repository"

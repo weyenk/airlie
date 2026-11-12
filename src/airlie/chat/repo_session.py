@@ -48,6 +48,11 @@ def slug_of(thread_id: str) -> str:
     return hashlib.sha256(thread_id.encode()).hexdigest()[:12]
 
 
+def session_branch(thread_id: str) -> str:
+    """The branch a repository chat's work goes on, in the VM and in the host's mirror."""
+    return f"airlie/chat-{slug_of(thread_id)}"
+
+
 def qualified(ref: str | None) -> str:
     """`ref` as the mirror knows it: a branch name is its remote-tracking branch; a commit or ref is as is."""
     ref = ref or DEFAULT_BASE
@@ -157,7 +162,7 @@ class RepoSessions:
             session_id=thread.id,
             slug=slug_of(thread.id),
             repo=thread.repo,
-            branch=f"airlie/chat-{slug_of(thread.id)}",
+            branch=session_branch(thread.id),
             base_ref=qualified(thread.base_ref),
             base_sha=base_sha,
             recipe=recipe,
@@ -235,7 +240,7 @@ class RepoSessions:
         if thread.repo is not None:
             try:  # the host's copy of the session branch (pushed or not)
                 mirror = self._mirror_for(thread.repo)
-                await mirror.git("update-ref", "-d", f"refs/heads/airlie/chat-{slug_of(thread.id)}")
+                await mirror.git("update-ref", "-d", f"refs/heads/{session_branch(thread.id)}")
             except Exception:
                 log.warning(
                     "could not drop the session branch of %s from the mirror", thread.id, exc_info=True

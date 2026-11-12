@@ -68,6 +68,10 @@ create table if not exists push_subscriptions (
 create table if not exists notification_settings (
     user_id text not null references users(id) on delete cascade, kind text not null,
     enabled integer not null, primary key (user_id, kind));
+-- no foreign key: the bootstrap admin and the API key pin too, and are no row of users
+create table if not exists chat_pins (
+    user_id text not null, repo text not null collate nocase, created_at real not null,
+    primary key (user_id, repo));
 """
 
 
@@ -115,6 +119,7 @@ class AuthStore:
 
     def delete_user(self, id: str) -> None:
         self.conn.execute("delete from users where id = ?", (id,))
+        self.conn.execute("delete from chat_pins where user_id = ?", (id,))
 
     # ---- invites ----
     def make_invite(self, user_id: str, hours: int) -> str:
@@ -249,3 +254,23 @@ class AuthStore:
             " on conflict (user_id, kind) do update set enabled = excluded.enabled",
             (user_id, kind, int(on)),
         )
+
+    # ---- the chat panel's pinned repositories ----
+    def pins(self, user_id: str) -> list[str]:
+        """This person's pinned repositories ("owner/name"), in the order they were pinned."""
+        rows = self.conn.execute(
+            "select repo from chat_pins where user_id = ? order by created_at, rowid", (user_id,)
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def pin(self, user_id: str, repo: str) -> None:
+        """Pin `repo`; one already pinned, in any case, keeps its place and its spelling."""
+        self.conn.execute(
+            "insert into chat_pins (user_id, repo, created_at) values (?, ?, ?) on conflict do nothing",
+            (user_id, repo, self._now()),
+        )
+
+    def unpin(self, user_id: str, repo: str) -> bool:
+        """False when `repo` was not pinned."""
+        cur = self.conn.execute("delete from chat_pins where user_id = ? and repo = ?", (user_id, repo))
+        return cur.rowcount > 0

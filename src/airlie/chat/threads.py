@@ -8,7 +8,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Awaitable, Callable
+import uuid
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -69,6 +70,9 @@ class ThreadSummary:
     title: str
     kind: ChatKind
     updated: float
+    created: float
+    repo: str | None
+    base_ref: str | None
 
 
 def _title_of(message: StoredMessage) -> str:
@@ -170,6 +174,12 @@ class ThreadStore:
             )
         return self._load(thread_id, owner, kind)
 
+    def create(
+        self, owner: str, kind: ChatKind, *, repo: str | None = None, base_ref: str | None = None
+    ) -> Thread:
+        """A new empty thread with an id the server chose (the chat panel's "New")."""
+        return self.open(f"chat-{uuid.uuid4().hex}", owner, kind, repo=repo, base_ref=base_ref)
+
     def set_base(self, thread_id: str, base_sha: str) -> None:
         self.conn.execute("update threads set base_sha = ? where id = ?", (base_sha, thread_id))
 
@@ -215,6 +225,58 @@ class ThreadStore:
             self.conn.execute("rollback")
             raise
 
+    def extend(
+        self,
+        thread_id: str,
+        message_id: str,
+        parts: list[dict[str, Any]],
+        usage: dict[str, Any] | None,
+        interrupted: bool,
+    ) -> None:
+        """Add `parts` to the end of a stored message (a turn that resumed it after a permission answer); its
+        usage and interrupted mark become this turn's."""
+        row = self.conn.execute(
+            "select seq, parts from messages where thread_id = ? and id = ?", (thread_id, message_id)
+        ).fetchone()
+        if row is None:
+            raise ThreadNotFound(f"{thread_id}: no message {message_id}")
+        self.conn.execute(
+            "update messages set parts = ?, usage = ?, interrupted = ? where seq = ?",
+            (
+                json.dumps([*json.loads(row[1]), *parts]),
+                None if usage is None else json.dumps(usage),
+                int(interrupted),
+                row[0],
+            ),
+        )
+        self.conn.execute("update threads set updated = ? where id = ?", (self._now(), thread_id))
+
+    def answer(self, thread_id: str, answers: Mapping[str, bool]) -> None:
+        """Mark the stored permission requests named in `answers` (approval id: yes or no) as answered: the
+        tool part becomes `approval-responded` with `approval.approved`, the `data-approval` part gains
+        `answer`, so a reload or another device shows the prompt answered."""
+        if not answers:
+            return
+        rows = self.conn.execute(
+            "select seq, parts from messages where thread_id = ? and role = 'assistant' "
+            "and parts like '%approval%'",
+            (thread_id,),
+        ).fetchall()
+        for seq, raw in rows:
+            parts = json.loads(raw)
+            changed = False
+            for part in parts:
+                approval = part.get("approval")
+                if isinstance(approval, dict) and approval.get("id") in answers:
+                    approval["approved"] = answers[approval["id"]]
+                    part["state"] = "approval-responded"
+                    changed = True
+                elif part.get("type") == "data-approval" and part.get("id") in answers:
+                    part["data"]["answer"] = "approved" if answers[part["id"]] else "denied"
+                    changed = True
+            if changed:
+                self.conn.execute("update messages set parts = ? where seq = ?", (json.dumps(parts), seq))
+
     def set_todos(self, thread_id: str, todos: list[dict[str, Any]]) -> None:
         self.conn.execute(
             "update threads set todos = ?, updated = ? where id = ?",
@@ -224,10 +286,11 @@ class ThreadStore:
     def list(self, owner: str, kind: ChatKind | None = None) -> list[ThreadSummary]:
         where, args = ("owner = ?", (owner,)) if kind is None else ("owner = ? and kind = ?", (owner, kind))
         rows = self.conn.execute(
-            f"select id, title, kind, updated from threads where {where} order by updated desc, rowid desc",
+            f"select id, title, kind, updated, created, repo, base_ref from threads where {where} "
+            "order by updated desc, rowid desc",
             args,
         ).fetchall()
-        return [ThreadSummary(r[0], r[1], cast(ChatKind, r[2]), r[3]) for r in rows]
+        return [ThreadSummary(r[0], r[1], cast(ChatKind, r[2]), r[3], r[4], r[5], r[6]) for r in rows]
 
     def on_delete(self, fn: Callable[[Thread], Awaitable[None]]) -> None:
         """`fn(thread)` runs before `remove` deletes a thread: a repository chat's VM goes first, and a

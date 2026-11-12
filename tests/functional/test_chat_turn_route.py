@@ -528,11 +528,14 @@ async def test_a_second_turn_on_a_busy_thread_is_409(tmp_path: Path) -> None:
     ) as c:
         r = await c.post("/v1/airlie/chat/turn", json=turn_body("again"))
         assert r.status_code == 409 and "turn running" in r.json()["error"]
+        assert (await c.get("/v1/airlie/chat/threads/t1")).json()["running"] is True  # a client that lost
+        assert [t["running"] for t in (await c.get("/v1/airlie/chat/threads")).json()] == [True]  # the stream
         assert (await c.delete("/v1/airlie/chat/threads/t1")).status_code == 409  # not while it runs
         other = await c.post("/v1/airlie/chat/turn", json={**turn_body(), "id": "t2"})
         assert other.status_code == 200  # a different thread is free
         await c.post("/v1/airlie/chat/threads/t1/stop")
         await asyncio.wait_for(first.task, 5)
+        assert (await c.get("/v1/airlie/chat/threads/t1")).json()["running"] is False
         assert (await c.post("/v1/airlie/chat/turn", json=turn_body("after"))).status_code == 200  # released
 
 
@@ -641,8 +644,9 @@ def test_thread_get_returns_the_thread_and_404s_for_none(tmp_path: Path) -> None
     post(c)
     t = c.get("/v1/airlie/chat/threads/t1").json()
     assert t["todos"] == [{"id": "1", "text": "x", "status": "pending"}]
-    keys = {"id", "title", "kind", "repo", "base_ref", "created", "updated", "todos", "messages"}
-    assert set(t) == keys and t["repo"] is None
+    keys = {"id", "title", "kind", "repo", "base_ref", "branch", "running", "created", "updated", "todos"}
+    keys.add("messages")
+    assert set(t) == keys and t["repo"] is None and t["branch"] is None
     r = c.get("/v1/airlie/chat/threads/ghost")
     assert r.status_code == 404 and r.json() == {"error": "no such thread"}
 

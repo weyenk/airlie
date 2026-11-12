@@ -74,8 +74,14 @@ class StreamWriter:
         its next turn's `approvals`. Sent after the call's own result so the part ends as requested."""
         return [sse({"type": "tool-approval-request", "approvalId": approval_id, "toolCallId": call_id})]
 
-    def data(self, name: str, payload: Any, *, transient: bool = False) -> list[str]:
-        chunk: dict[str, Any] = {"type": f"data-{name}", "data": payload}
+    def data(
+        self, name: str, payload: Any, *, transient: bool = False, part_id: str | None = None
+    ) -> list[str]:
+        """A data part; one with `part_id` replaces the client's part of the same type and id."""
+        chunk: dict[str, Any] = {"type": f"data-{name}"}
+        if part_id is not None:
+            chunk["id"] = part_id
+        chunk["data"] = payload
         if transient:
             chunk["transient"] = True
         return [sse(chunk)]

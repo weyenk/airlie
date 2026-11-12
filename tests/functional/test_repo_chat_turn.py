@@ -529,3 +529,112 @@ def test_serve_shutdown_stops_a_running_chat_vm_and_keeps_its_disk(tmp_path: Pat
 
     assert running == "running"
     assert rig.fakes.vm().state == "stopped" and not rig.fakes.vm().deleted
+
+
+# --- a permission prompt kept in the thread, and answered with no new message -------------------------------
+
+
+def answer(approval: str, approved: bool = True, thread: str = "t1") -> dict[str, Any]:
+    """The client's answer to a prompt: a turn that carries the yes or no and no new message of the person's
+    (the AI SDK resends the thread's last message, the assistant's)."""
+    last = {"id": "a1", "role": "assistant", "parts": [{"type": "text", "text": "asked"}]}
+    return {
+        "id": thread,
+        "kind": "repository",
+        "messages": [last],
+        "approvals": [{"id": approval, "approved": approved}],
+    }
+
+
+def stored_parts(rig: Rig) -> list[dict[str, Any]]:
+    messages = rig.c.get("/v1/airlie/chat/threads/t1").json()["messages"]
+    return [p for m in messages if m["role"] == "assistant" for p in m["parts"]]
+
+
+def test_a_permission_request_is_kept_in_the_thread_until_it_is_answered(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("waiting for you"))
+    rig.fakes.script_push()
+
+    r = rig.post()
+
+    asked = approval_id(r)
+    streamed = next(c for c in chunks(r.text) if c["type"] == "data-approval")
+    assert streamed["id"] == asked  # the client keeps one prompt part per request, replaced in place
+    parts = stored_parts(rig)
+    tool = next(p for p in parts if p["type"] == "tool-push_branch")
+    assert tool["state"] == "approval-requested" and tool["approval"] == {"id": asked}
+    shown = next(p for p in parts if p["type"] == "data-approval")
+    assert shown["id"] == asked
+    assert (shown["data"]["id"], shown["data"]["tool"]) == (asked, "push_branch")
+    assert "answer" not in shown["data"]
+
+
+def test_an_answer_alone_resumes_the_turn_and_pushes_once(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Call("push_branch", {}), Text("pushed"))
+    rig.fakes.script_push()
+    asked = approval_id(rig.post())
+
+    r = rig.post(answer(asked))
+
+    assert r.status_code == 200
+    done = next(c for c in chunks(r.text) if c["type"] == "tool-output-available")
+    assert done["output"] == f"pushed {BRANCH} at {rig.fakes.base}."
+    assert rig.pushes() == 1
+    told = rig.up.bodies[2]["messages"][-1]
+    assert told["role"] == "user" and "approved" in told["content"] and "push_branch" in told["content"]
+    t = rig.c.get("/v1/airlie/chat/threads/t1").json()
+    assert [m["role"] for m in t["messages"]] == ["user", "assistant"]  # no new message of the person's
+    parts = t["messages"][1]["parts"]
+    first = next(p for p in parts if p["type"] == "tool-push_branch")
+    assert first["state"] == "approval-responded" and first["approval"] == {"id": asked, "approved": True}
+    assert next(p for p in parts if p["type"] == "data-approval")["data"]["answer"] == "approved"
+    assert parts[-1] == {"type": "text", "text": "pushed"}  # the resumed turn goes on the same message
+
+
+def test_an_answer_sent_twice_runs_once_and_the_second_is_409(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Call("push_branch", {}), Text("pushed"))
+    rig.fakes.script_push()
+    asked = approval_id(rig.post())
+    rig.post(answer(asked))
+    calls = rig.up.calls
+
+    again = rig.post(answer(asked))  # the other device, or a second tap
+
+    assert again.status_code == 409
+    assert again.json() == {"error": "no permission request of this chat waits for that answer"}
+    assert rig.pushes() == 1 and rig.up.calls == calls
+
+
+def test_a_no_alone_resumes_the_turn_and_nothing_is_pushed(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Call("push_branch", {}), Text("not pushing"))
+    rig.fakes.script_push()
+    asked = approval_id(rig.post())
+
+    r = rig.post(answer(asked, approved=False))
+
+    assert r.status_code == 200 and rig.events == []
+    told = rig.up.bodies[2]["messages"]
+    assert "said no" in told[-1]["content"]
+    assert any(m["role"] == "tool" and "said no" in m["content"] for m in told)  # the answered call's result
+    shown = next(p for p in stored_parts(rig) if p["type"] == "data-approval")
+    assert shown["data"]["answer"] == "denied"
+
+
+def test_an_answer_alone_for_another_chats_request_is_409_and_one_for_no_chat_is_404(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("hello"))
+    rig.fakes.script_push()
+    asked = approval_id(rig.post())
+    rig.post({**body("hi"), "id": "t2"})
+
+    assert rig.post(answer(asked, thread="t2")).status_code == 409
+    missing = rig.post(answer(asked, thread="ghost"))
+    assert missing.status_code == 404 and missing.json() == {"error": "no such thread"}
+    assert rig.pushes() == 0
+
+
+def test_an_assistant_message_with_no_answer_is_still_422(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+
+    r = rig.post({**answer("x"), "approvals": []})
+
+    assert r.status_code == 422 and rig.up.calls == 0

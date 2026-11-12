@@ -545,6 +545,7 @@ def create_app(
     # imported here: the manager's clock lives under airlie.serve, whose package imports this module (and the
     # chat routes import the manager)
     from airlie.chat.api import Busy, chat_router
+    from airlie.chat.pins import pins_router
     from airlie.chat.repo_session import default_repo_sessions
     from airlie.manager.api import Leases, UnknownLease
     from airlie.manager.core import Manager as ManagerImpl
@@ -898,8 +899,10 @@ def create_app(
             busy=chat_busy,
             repo_sessions=repo_chats,
             confirmations=confirmations,
+            publish=lambda topic, key: feed.publish(topic, key),
         )
     )
+    app.include_router(pins_router(store, lambda topic, key: feed.publish(topic, key)))
 
     @app.post("/v1/chat/completions")
     async def chat(body: dict[str, Any], request: Request) -> Any:

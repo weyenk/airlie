@@ -21,7 +21,7 @@ from typing import Any
 
 import anyio
 
-from airlie.chat.confirm import NeedsApproval
+from airlie.chat.confirm import APPROVED, DENIED, NeedsApproval
 from airlie.chat.hooks import Hooks, ToolEvent, TurnContext, TurnSummary, Verdict
 from airlie.chat.stream import StreamWriter
 from airlie.chat.task_tool import OBSERVER, TaskObserver
@@ -71,11 +71,21 @@ class TurnHandle:
 @dataclass
 class TurnRequest:
     thread: Thread
-    user_message: StoredMessage
+    user_message: StoredMessage | None
+    """None for a turn that resumes on the person's answers to permission requests alone."""
     ctx: TurnContext
     user_parts: Mapping[str, tuple[ContentPart, ...]] = field(default_factory=dict)
     """Per user message id: what the model gets for a message that carries attachments (text, pictures and
     video frames, as `serve.uploads.resolve` made them). A message with no entry goes as its text."""
+    resumes: str | None = None
+    """The stored assistant message a resumed turn goes on (the thread's last); its parts are extended."""
+    note: str | None = None
+    """What the model is told, as the person, for this turn only: a resumed turn's answers."""
+
+
+def approval_part(approval_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The `data-approval` part a permission request is kept as (the client renders the prompt from it)."""
+    return {"type": "data-approval", "id": approval_id, "data": dict(payload)}
 
 
 def _user_message(message: StoredMessage, user_parts: Mapping[str, tuple[ContentPart, ...]]) -> Message:
@@ -129,9 +139,10 @@ def history_messages(
                 buffer += str(part.get("text") or "")
             elif kind.startswith(TOOL_PREFIX) and "toolCallId" in part:
                 call = _tool_part_call(part)
-                result = (
-                    part.get("output") if part.get("state") == "output-available" else part.get("errorText")
-                )
+                state = part.get("state")
+                result = part.get("output") if state == "output-available" else part.get("errorText")
+                if state == "approval-responded":  # the person answered: no longer "waiting for approval"
+                    result = APPROVED if (part.get("approval") or {}).get("approved") else DENIED
                 out.append(Message(role="assistant", content=buffer, tool_calls=(call,)))
                 out.append(
                     Message(
@@ -214,10 +225,15 @@ class _Run:
 
     def messages_for_model(self) -> list[Message]:
         thread, user = self.req.thread, self.req.user_message
-        return [
+        stored = [*thread.messages, user] if user is not None else list(thread.messages)
+        out = [
             Message(role="system", content=self.req.ctx.system_prompt),
-            *history_messages([*thread.messages, user], self.req.user_parts),
+            *history_messages(stored, self.req.user_parts),
         ]
+        if self.req.note:
+            note = Message(role="user", content=self.req.note)
+            out[-1:] = [_fold_users(out[-1], note)] if out[-1].role == "user" else [out[-1], note]
+        return out
 
     # --- the hold -------------------------------------------------------------------------------------------
 
@@ -375,19 +391,25 @@ class _Run:
             part.update(state="output-error", errorText=STOPPED_RESULT)
             self.parts.append(part)
             raise
+        asked: dict[str, Any] | None = None
         if parsed:
             self.emit(self.w.tool_result(call.id, result.output, result.ok))
             if verdict is not None and verdict.approval_id is not None:
                 self.emit(self.w.tool_approval_request(verdict.approval_id, call.id))
                 payload = {"id": verdict.approval_id, "tool": call.name, "arguments": verdict.arguments}
-                self.emit(self.w.data("approval", payload))
+                self.emit(self.w.data("approval", payload, part_id=verdict.approval_id))
+                asked = approval_part(verdict.approval_id, payload)
         else:
             self.emit(self.w.tool_input_error(call.id, call.name, call.arguments, result.output))
         if result.ok:
             part.update(state="output-available", output=result.output)
         else:
             part.update(state="output-error", errorText=result.output)
+        if asked is not None:  # kept as the stream left it (requested), so a reload shows the prompt
+            part.update(state="approval-requested", approval={"id": asked["id"]})
         self.parts.append(part)
+        if asked is not None:
+            self.parts.append(asked)
         await self.hooks.run(
             "after_tool",
             self.req.ctx,
@@ -462,7 +484,9 @@ class _Run:
         except NeedsApproval as e:  # a step that is no tool call (the image build) waits for a yes
             failed = True
             payload = {"id": e.approval_id, "tool": e.tool, "arguments": e.arguments}
-            self.emit(self.w.data("approval", payload))
+            self.emit(self.w.data("approval", payload, part_id=e.approval_id))
+            self.close_part()
+            self.parts.append(approval_part(e.approval_id, payload))
             self.emit(self.w.error(str(e)))
             self.emit(self.w.finish(self.finish_usage()))
         except EngineError as e:
@@ -494,8 +518,13 @@ class _Run:
         title = thread.title
         try:
             self.store.get(thread.id, owner)
-            self.store.append(thread.id, req.user_message)
-            if any(p.get("type") != "step-start" for p in parts):
+            if req.user_message is not None:
+                self.store.append(thread.id, req.user_message)
+            replied = any(p.get("type") != "step-start" for p in parts)
+            if replied and req.resumes is not None:
+                step = [{"type": "step-start"}]  # the resumed part of the message is a step of its own
+                self.store.extend(thread.id, req.resumes, [*step, *parts], usage, interrupted)
+            elif replied:
                 created = self.clock.wall()
                 assistant = StoredMessage(self.message_id, "assistant", parts, created, usage, interrupted)
                 self.store.append(thread.id, assistant)
@@ -541,6 +570,9 @@ async def run_turn(
     run = _Run(
         req, engine, engine_name, holder, registry, todos, store, hooks, role, max_steps, clock, status, out
     )
+    if req.resumes is not None:  # the client goes on with the message it has: the stream names it
+        run.message_id = req.resumes
+        run.w = StreamWriter(req.resumes)
     run.handle = handle
     run.around = around
     run.around_status = around_status
