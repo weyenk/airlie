@@ -20,6 +20,8 @@ from airlie.bench.trace_diff import TIMING, VOLATILE, same
 from airlie.engine import FakeEngine, FakeReply
 from airlie.story.board import text_card
 from airlie.supervisor.ledger import Row
+from airlie.topology.studio import StudioOrchestrator, SubtaskRun
+from airlie.topology.studio_plan import Subtask
 from tests.support.story import STORY, kinds_all, neutral, pipeline
 from tests.support.story_layer_checks_flow import (
     BROKEN,
@@ -132,6 +134,16 @@ def golden_prompts(tmp_path: Path) -> dict[str, str]:
         messages = json.loads(f.read_text())["messages"]
         found[str(f.parent.relative_to(trace))] = same(messages[-1]["content"])
     return found
+
+
+class AdvisedThenDies(StudioOrchestrator):
+    """A studio whose coder turn asks the supervisor (a ledger row opens, waiting for its outcome) and then
+    raises past the turn's own catch, as a cancel or a bug outside the team does."""
+
+    async def coder_turn(self, subtask: Subtask) -> SubtaskRun:
+        assert self.advisor is not None
+        await self.advisor.advise("gate_retry", subtask.id, "coder", "the gate is red", kinds=("gate_fails",))
+        raise RuntimeError("the engine fell over")
 
 
 # ---- recorded on 1de74237 (the driver, composer off) ----

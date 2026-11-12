@@ -19,7 +19,7 @@ from typing import Any, cast
 import pytest
 import yaml
 
-from airlie.bench.trace_diff import TIMING, diff_events, diff_prompts
+from airlie.bench.trace_diff import TIMING, diff_story_runs
 from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.flow.catalog import STORY_CATALOG, Catalog, Check
@@ -60,6 +60,7 @@ from tests.support.layer_golden import (
     GOLDEN_STORY_KINDS,
     GOLDEN_STORY_LAYER,
     GOLDEN_STUDIO,
+    AdvisedThenDies,
     build_run,
     clean,
     golden_prompts,
@@ -1220,40 +1221,14 @@ def ledger_rows(root: Path) -> list[tuple[Any, ...]]:
 Events = list[dict[str, Any]]
 
 
-def story_trace(st: StoryState, root: Path) -> tuple[Events, list[Events], list[str]]:
-    """The story's events, each studio run's events (in the order the story named its runs) and every
-    prompt the runs sent, with `root` spelled `<root>`."""
-
-    def rooted(path: Path) -> str:
-        return path.read_text().replace(str(root.resolve()), "<root>").replace(str(root), "<root>")
-
-    runs = [root / "state" / "runs" / r for r in st.runs]
-    assert {p.name for p in runs} == {p.name for p in (root / "state" / "runs").iterdir() if p.is_dir()}
-    events = untraced([json.loads(x) for x in rooted(st.path / "events.jsonl").splitlines()])
-    studio = [[json.loads(x) for x in rooted(r / "events.jsonl").splitlines()] for r in runs]
-    prompts = []
-    for r in runs:
-        for f in sorted((r / "trace").rglob("prompt.json")):
-            saved = json.loads(rooted(f))
-            said = "\n".join(f"[{m['role']}] {m['content']}" for m in saved["messages"])
-            prompts.append(f"[role={saved.get('role')} attempt={saved.get('attempt')}]\n{said}")
-    return events, studio, prompts
-
-
 def same_either_way(runs: list[tuple[StoryState, Path]]) -> None:
-    """The story's events, every studio run's events and prompts (the trace diff's comparisons, which drop
-    the node events and what differs run to run), every ledger row's fields, and the story's events and
-    state.json as `built_run` reads them: the same for the driver and the composer."""
+    """The bench's trace diff (`diff_story_runs`: the story's and every studio run's events, paired in the
+    order the story named its runs, the prompts and the ledger rows, without the node events and what
+    differs run to run), every ledger row's fields, and the story's events and state.json as `built_run`
+    reads them: the same for the driver and the composer."""
     (driver, d_root), (composer, c_root) = runs
-    (d_story, d_runs, d_prompts), (c_story, c_runs, c_prompts) = (
-        story_trace(driver, d_root),
-        story_trace(composer, c_root),
-    )
-    assert len(c_runs) == len(d_runs)
-    found = diff_events(d_story, c_story) + diff_prompts(d_prompts, c_prompts, cap=1000)
-    for n, (d, c) in enumerate(zip(d_runs, c_runs, strict=True)):
-        found += [f"run {n}: {line}" for line in diff_events(d, c)]
-    assert not found, "\n".join(found)
+    diff = diff_story_runs(d_root / "state", c_root / "state")
+    assert diff.clean, "\n".join(diff.lines())
     assert ledger_rows(c_root) == ledger_rows(d_root)
     (d_events, d_state), (c_events, c_state) = (
         built_run(driver, d_root, composer=False),
@@ -1384,6 +1359,21 @@ async def test_a_cut_off_coder_gets_no_gate_follow_up_either_way(tmp_path: Path)
     assert "gate_advice" in nodes_run(st, "node_skipped") and "gate_advice" not in nodes_run(st)
 
 
+async def test_a_broken_coder_gets_no_gate_follow_up_either_way(tmp_path: Path) -> None:
+    """The coder's turn breaks (the engine has nothing more to say: an engine_error result) with the gate red:
+    no gate_failed, no advice asked, no follow-up, and the last build stops the story (Review Focus 6)."""
+    engine = engine_of(coder=[BROKEN], supervisor=[answer(None, fix="restore add")])
+    runs = await layer_both_ways(tmp_path, engine)
+    same_either_way(runs)
+    st, root = runs[1]
+    assert st.blocked is not None and "fails on" in st.blocked
+    build = studio_runs(st, root)[-1]
+    assert {"gate_failed", "follow_up"}.isdisjoint(e["kind"] for e in build)
+    assert [e["stop_reason"] for e in build if e["kind"] == "subtask_done"] == ["engine_error"]
+    assert [r.trigger for r in rows(root)] == ["block"]  # no gate retry was asked about
+    assert "gate_advice" in nodes_run(st, "node_skipped") and "gate_advice" not in nodes_run(st)
+
+
 async def test_a_layer_that_changed_nothing_is_replanned_either_way(tmp_path: Path) -> None:
     """A gate that passes on a coder that wrote nothing: `changed nothing`, a replan and the next build
     (Review Focus 4)."""
@@ -1459,15 +1449,6 @@ async def test_the_last_attempt_blocks_either_way(tmp_path: Path) -> None:
     assert st.attempt is not None and Path(st.attempt["worktree"]).is_dir() and st.built == {}
     assert [r.outcome for r in rows(root)] == ["blocked", "not_helped"]
     assert read_phase(root / "state" / "stories")[0] != "decoding"
-
-
-class AdvisedThenDies(StudioOrchestrator):
-    """A coder turn that asks the supervisor (a ledger row opens), then raises past the turn's own catch."""
-
-    async def coder_turn(self, subtask: Subtask) -> SubtaskRun:
-        assert self.advisor is not None
-        await self.advisor.advise("gate_retry", subtask.id, "coder", "the gate is red", kinds=("gate_fails",))
-        raise RuntimeError("the engine fell over")
 
 
 async def test_a_node_that_raises_mid_layer_closes_its_rows_unknown_and_keeps_the_worktree_either_way(
@@ -2288,9 +2269,9 @@ async def test_the_review_gate_ends_the_run_and_releases_the_build_lane(
         ("stage", "review"),
         ("story_done", "review"),
     ]
-    # the layer bundle has a `review` node too: the gate is the story's
+    # the layer bundle has a `review` node too: a finish names its workflow, and the gate is the story's
     finished = [e for e in events if e["kind"] == "node_finished"]
-    gate = [e for e in finished if (e["node"], e["type"]) == ("review", "gate")]
+    gate = [e for e in finished if (e["workflow"], e["node"], e["item"]) == ("story", "review", None)]
     assert [e["outcome"] for e in gate] == ["done"]
     assert json.loads(phase_path(pipe.stories_dir).read_text())["phase"] == "idle"
     assert lock_held(pipe.stories_dir, "build") is False

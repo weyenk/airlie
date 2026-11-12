@@ -74,8 +74,10 @@ workflows:
         inputs: ["studio.{item}", "build.review.{item}"]
         outputs: {"build.fix.{item}": {format: json, transient: true}}
         to:
-          # back to the review after every fix (the review's own `fix` bounds the rounds); the line to the
-          # gate keeps the gate waiting while a fix runs, and takes over should the bound ever be spent
+          # back to the review after every fix (the review's own `fix` bounds the rounds). The line to the gate
+          # is a guard: it keeps the gate waiting while a fix runs, and never fires while loop.max is
+          # studio.review.rounds. Were it to fire (a lower max), the gate would follow a fix with no review,
+          # which the driver never does
           - {node: review, when: "build.fix.{item} exists", loop: {max: studio.review.rounds}}
           - final_gate
       final_gate:  # its `follow_up`: red, and the coder finished (one cut off or broken asks no advice)

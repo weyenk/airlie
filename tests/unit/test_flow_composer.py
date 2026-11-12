@@ -204,6 +204,38 @@ async def test_a_loop_inside_another_loops_body_has_its_whole_bound_on_each_pass
     assert calls == ["a", "b", "b", "c", "a", "b", "b", "c"]
 
 
+async def test_two_loops_into_one_node_keep_their_own_counts_and_the_run_ends_within_both_bounds(tmp_path):
+    """test and review both send code back (at most 2 re-runs each): neither firing resets the other's count,
+    so once both are spent the run ends, whatever the checks keep saying."""
+    calls = []
+
+    def run(n, c):
+        calls.append(c.node)
+        if c.node in ("test", "review"):
+            return {"__fail__": "again"}
+        return {k: c.node for k in n.outputs}
+
+    wf = {
+        "w": {
+            "nodes": {
+                "code": chk(outputs={"x": "text"}, to=["test"]),
+                "test": chk(
+                    outputs={"t": "text"},
+                    on_fail="continue",
+                    to=[{"node": "code", "loop": {"max": 2}}, "review"],
+                ),
+                "review": chk(
+                    outputs={"r": "text"}, on_fail="continue", to=[{"node": "code", "loop": {"max": 2}}]
+                ),
+            }
+        }
+    }
+    c = composer(tmp_path, wf, {"check": check_that(run)})
+    await asyncio.wait_for(c.run("w"), 5)
+    assert calls.count("code") == 5  # the first run, then two re-runs from each loop
+    assert len(calls) <= 15
+
+
 @pytest.mark.parametrize("on_fail", ["block", "continue"])
 async def test_a_loop_bound_spent_blocks_or_continues_by_on_fail(tmp_path, on_fail):
     calls = []
@@ -268,6 +300,12 @@ async def test_a_bundle_runs_once_per_item_and_writes_back_only_its_declared_out
     events = [(k, f["node"], f.get("item")) for k, f in store.events]
     assert events[0] == ("node_started", "lay", None) and events[-1][:2] == ("node_finished", "lay")
     assert ("node_skipped", "b", "01") in events
+    # a finish names its workflow and item as a start does: two nodes of one name are told apart
+    finished = [f for k, f in store.events if k == "node_finished" and f["node"] == "b"]
+    assert [(f["workflow"], f["item"], f["type"]) for f in finished] == [
+        ("layer", "02", "check"),
+        ("layer", "03", "check"),
+    ]
     assert store.done("lay/b@02") and store.done("lay/b@03") and store.done("lay")
 
     # a bundle node writing a name its workflow does not declare as an output is refused: by the check

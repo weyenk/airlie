@@ -766,11 +766,13 @@ async def outcome(ctx: RunContext) -> Mapping[str, Any]:
     title="Squash the built layer to one commit on its branch and record it",
 )
 async def squash(ctx: RunContext) -> Mapping[str, Any]:
-    """`squash_layer`, then the studio closed, as `_build_once` closes it after the squash."""
+    """`squash_layer`, then the studio closed, as `_build_once` closes it after the squash, and let go of:
+    nothing reads it after, and the run would hold every built layer's studio until it ends."""
     r, ls = _studio(ctx, "story.squash_layer")
     async with _closing(ls):
         await squash_layer(r.pipe, ls, r.st, ls.card, ls.story, ls.layers)
     await ls.close()
+    ctx.sessions.pop(f"studio.{ls.nn}")
     return {"built.{item}": r.st.built[ls.nn]}
 
 

@@ -121,3 +121,23 @@ def test_a_node_run_again_shows_its_latest_run() -> None:
     ]
     (job,) = by_id(node_flow(bugfix(), events), "reproduce")["jobs"]
     assert job["status"] == "running" and job["started"] == 3.0 and len(job["card"]["rows"]) == 3
+
+
+def test_a_finish_naming_its_workflow_closes_its_own_node_not_the_latest_start_of_its_name() -> None:
+    """The layer has a `review` as the story has: a finish that names its workflow and item closes that node,
+    though a node of its name in another workflow started after it; one that names none (from before the
+    composer named them) closes the latest start of its name."""
+    root = WorkflowSpec(
+        nodes={
+            "look": NodeSpec(type="check", run="story.look", to=[Line(node="sub")]),
+            "sub": NodeSpec(type="bundle", workflow="inner"),
+        }
+    )
+    inner = WorkflowSpec(nodes={"look": NodeSpec(type="check", run="story.look")})
+    spec = snapshot("w", {"w": root, "inner": inner})
+    started = [ev(1.0, "node_started", "look", "check", "w")]
+    started.append(ev(2.0, "node_started", "look", "check", "inner"))
+    named = node_flow(spec, [*started, done(3.0, "look", "check", workflow="w")])
+    assert [n["status"] for n in named] == ["passed", "running"]
+    old = node_flow(spec, [*started, done(3.0, "look", "check")])
+    assert [n["status"] for n in old] == ["running", "passed"]

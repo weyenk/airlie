@@ -18,8 +18,9 @@ Key = tuple[str, str, str | None]
 
 
 def _attributed(events: list[dict[str, Any]], root: str) -> dict[Key, list[dict[str, Any]]]:
-    """The node events by workflow, node and item. The composer's `node_finished` names only the node, so it
-    closes the latest open start of that name (a bundle's items run one after another)."""
+    """The node events by workflow, node and item. A `node_finished` names them as a start does; one from
+    before the composer named them names only the node, and closes the latest open start of that name (a
+    bundle's items run one after another)."""
     out: dict[Key, list[dict[str, Any]]] = {}
     open_: dict[str, list[Key]] = {}
     for e in events:
@@ -27,8 +28,14 @@ def _attributed(events: list[dict[str, Any]], root: str) -> dict[Key, list[dict[
         if kind not in _KINDS or not isinstance(node, str):
             continue
         if kind == "node_finished":
-            starts = open_.get(node)
-            key: Key = starts.pop() if starts else (root, node, None)
+            starts = open_.get(node, [])
+            if e.get("workflow"):
+                item = e.get("item")
+                key: Key = (str(e["workflow"]), node, item if isinstance(item, str) else None)
+                if key in starts:
+                    starts.remove(key)
+            else:
+                key = starts.pop() if starts else (root, node, None)
         else:
             item = e.get("item")
             key = (str(e.get("workflow") or root), node, item if isinstance(item, str) else None)

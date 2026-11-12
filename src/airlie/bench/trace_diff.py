@@ -41,6 +41,8 @@ def same(text: str) -> str:
 
 def _neutral_event(e: Mapping[str, Any]) -> dict[str, Any]:
     kept = {k: v for k, v in e.items() if k not in VOLATILE | TIMING}
+    if "traceback" in kept:  # an `error` event's frames: the driver's or the composer's, the same error
+        kept["traceback"] = "<traceback>"
     out: dict[str, Any] = json.loads(same(json.dumps(kept)))
     return out
 
@@ -93,8 +95,9 @@ def diff_prompts(a: Sequence[str], b: Sequence[str], *, cap: int = 40) -> list[s
     return lines
 
 
-def diff_ledger(a: Sequence[tuple[str, str, str]], b: Sequence[tuple[str, str, str]]) -> list[str]:
-    """One line per ledger row (trigger, category, outcome) that differs, one for rows only one side has."""
+def diff_ledger(a: Sequence[tuple[Any, ...]], b: Sequence[tuple[Any, ...]]) -> list[str]:
+    """One line per ledger row that differs (its fields as `_ledger` reads them: trigger, subtask, role,
+    kinds, category, owner, outcome, layer), one for rows only one side has."""
     lines = [f"ledger row {i}: {x} != {y}" for i, (x, y) in enumerate(zip(a, b, strict=False)) if x != y]
     if len(a) != len(b):
         lines.append(_more("ledger row", min(len(a), len(b)), len(a), len(b)))
@@ -115,12 +118,23 @@ class TraceDiff:
         return self.events + self.prompts + self.ledger
 
 
-def _rooted(text: str, root: Path) -> str:
-    return text.replace(str(root.resolve()), "<root>").replace(str(root), "<root>")
+@dataclass(frozen=True)
+class _Side:
+    """One run's state dir and the repository its story was built in (spelled `<repo>`; None: unknown)."""
+
+    state: Path
+    repo: Path | None
 
 
-def _jsonl(path: Path, root: Path) -> list[dict[str, Any]]:
-    text = _rooted(path.read_text(), root) if path.exists() else ""
+def _rooted(text: str, side: _Side) -> str:
+    for path, name in ((side.state, "<root>"), (side.repo, "<repo>")):
+        if path is not None:
+            text = text.replace(str(path.resolve()), name).replace(str(path), name)
+    return text
+
+
+def _jsonl(path: Path, side: _Side) -> list[dict[str, Any]]:
+    text = _rooted(path.read_text(), side) if path.exists() else ""
     return [json.loads(x) for x in text.splitlines() if x.strip()]
 
 
@@ -132,16 +146,45 @@ def _story_dir(state: Path) -> Path:
     return found[0]
 
 
+def _saved(state: Path) -> dict[str, Any]:
+    """The story's state.json (empty when it has none, or it cannot be read)."""
+    try:
+        data = json.loads((_story_dir(state) / "state.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _side(state: Path, repo: Path | None) -> _Side:
+    named = _saved(state).get("repo")
+    return _Side(state, repo or (Path(named) if isinstance(named, str) and named else None))
+
+
+def _started(run: Path) -> float:
+    """When a run started: its first event's time (0 when it has none)."""
+    try:
+        first = (run / "events.jsonl").read_text().split("\n", 1)[0]
+        ts = json.loads(first).get("ts") if first.strip() else None
+    except (OSError, ValueError, AttributeError):
+        ts = None
+    return float(ts) if isinstance(ts, int | float) else 0.0
+
+
 def _runs(state: Path) -> list[Path]:
-    """The studio runs' directories in order (run ids start with their start time)."""
-    return sorted(p for p in (state / "runs").glob("*") if p.is_dir())
+    """The studio runs' directories in the order the story named them (its state.json `runs`): run ids that
+    start in the same second sort by their random suffix. Runs it does not name follow, by their first
+    event's time."""
+    named = [r for r in _saved(state).get("runs") or [] if isinstance(r, str)]
+    dirs = {p.name: p for p in (state / "runs").glob("*") if p.is_dir()}
+    first = [dirs.pop(r) for r in dict.fromkeys(named) if r in dirs]
+    return first + sorted(dirs.values(), key=lambda p: (_started(p), p.name))
 
 
-def _run_events(run: Path, state: Path) -> list[dict[str, Any]]:
-    return [e for e in _jsonl(run / "events.jsonl", state) if e.get("kind") not in NODE_EVENTS]
+def _run_events(run: Path, side: _Side) -> list[dict[str, Any]]:
+    return [e for e in _jsonl(run / "events.jsonl", side) if e.get("kind") not in NODE_EVENTS]
 
 
-def _run_prompts(run: Path, state: Path) -> list[str]:
+def _run_prompts(run: Path, side: _Side) -> list[str]:
     out = []
     for f in sorted((run / "trace").rglob("prompt.json")):
         saved = json.loads(f.read_text())
@@ -150,14 +193,14 @@ def _run_prompts(run: Path, state: Path) -> list[str]:
             out.append(f"{head}\n<no messages key>")
             continue
         body = "\n".join(f"[{m.get('role')}] {m.get('content')}" for m in saved["messages"])
-        out.append(_rooted(f"{head}\n{body}", state))
+        out.append(_rooted(f"{head}\n{body}", side))
     return out
 
 
-def _boundaries(a: Path, b: Path) -> tuple[list[str], list[str]]:
+def _boundaries(a: _Side, b: _Side) -> tuple[list[str], list[str]]:
     """Lines (events, prompts) for a different number of studio runs and for each run whose event or prompt
     count differs, so a run split in two or two merged is never clean."""
-    ra, rb = _runs(a), _runs(b)
+    ra, rb = _runs(a.state), _runs(b.state)
     events, prompts = [], []
     if len(ra) != len(rb):
         events.append(f"runs: A has {len(ra)} studio runs, B has {len(rb)}")
@@ -171,19 +214,21 @@ def _boundaries(a: Path, b: Path) -> tuple[list[str], list[str]]:
     return events, prompts
 
 
-def _events(state: Path) -> list[dict[str, Any]]:
+def _events(side: _Side) -> list[dict[str, Any]]:
     """The story's events, then each studio run's in order."""
-    out = _jsonl(_story_dir(state) / "events.jsonl", state)
-    for run in _runs(state):
-        out += _run_events(run, state)
+    out = _jsonl(_story_dir(side.state) / "events.jsonl", side)
+    for run in _runs(side.state):
+        out += _run_events(run, side)
     return out
 
 
-def _prompts(state: Path) -> list[str]:
-    return [p for run in _runs(state) for p in _run_prompts(run, state)]
+def _prompts(side: _Side) -> list[str]:
+    return [p for run in _runs(side.state) for p in _run_prompts(run, side)]
 
 
-def _ledger(state: Path) -> list[tuple[str, str, str]]:
+def _ledger(state: Path) -> list[tuple[Any, ...]]:
+    """The story's ledger rows, oldest first: trigger, subtask, role, kinds, category, owner, outcome and
+    layer."""
     path = state / "supervisor.sqlite"
     if not path.exists():
         return []
@@ -191,17 +236,25 @@ def _ledger(state: Path) -> list[tuple[str, str, str]]:
     ledger = Ledger(path)
     try:
         rows = reversed(ledger.recent(limit=1_000_000))  # oldest first
-        return [(r.trigger, r.category or "", r.outcome or "") for r in rows if r.story == key]
+        return [
+            (r.trigger, r.subtask, r.role, r.kinds, r.category or "", r.owner or "", r.outcome or "", r.layer)
+            for r in rows
+            if r.story == key
+        ]
     finally:
         ledger.close()
 
 
-def diff_story_runs(a: Path, b: Path, *, prompts: bool = True) -> TraceDiff:
-    """Compare two bench state dirs: events (the story's, then each studio run's, paired by order), the studio
-    prompts, and the story's ledger rows."""
-    run_events, run_prompts = _boundaries(a, b)
+def diff_story_runs(
+    a: Path, b: Path, *, prompts: bool = True, repo_a: Path | None = None, repo_b: Path | None = None
+) -> TraceDiff:
+    """Compare two bench state dirs: events (the story's, then each studio run's, paired in the order each
+    story named its runs), the studio prompts, and the story's ledger rows. Each side's repository (`repo_a`,
+    `repo_b`, else the one its state.json names) is spelled `<repo>`, its state dir `<root>`."""
+    sa, sb = _side(a, repo_a), _side(b, repo_b)
+    run_events, run_prompts = _boundaries(sa, sb)
     return TraceDiff(
-        events=run_events + diff_events(_events(a), _events(b)),
-        prompts=run_prompts + diff_prompts(_prompts(a), _prompts(b)) if prompts else [],
+        events=run_events + diff_events(_events(sa), _events(sb)),
+        prompts=run_prompts + diff_prompts(_prompts(sa), _prompts(sb)) if prompts else [],
         ledger=diff_ledger(_ledger(a), _ledger(b)),
     )

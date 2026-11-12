@@ -242,9 +242,7 @@ COMPUTED = {
 }
 """The briefs' computed inputs (D13): transient, the value of the run that reads them."""
 BUILD_STEPS = {
-    name: outs
-    for name, (_, outs) in DECLARED.items()
-    if all(o.startswith("build.") for o in outs) and outs and name != "story.build_once"
+    name: outs for name, (_, outs) in DECLARED.items() if outs and all(o.startswith("build.") for o in outs)
 }
 """The layer build's steps: each output transient, the step's word for the lines after it."""
 EVERY_RUN = {"story.intake", "story.costed", "story.planned", "story.build_done", "story.layer_start"}
@@ -643,6 +641,27 @@ async def test_every_story_check_reads_only_what_it_declares(
         if left := allowed - store.read:
             unread[c.name] = left
     assert unread == THROUGH_THE_PIPELINE
+
+
+async def test_a_squashed_layer_closes_its_studio_and_the_run_lets_it_go(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After the squash nothing reads the layer's studio: it is closed and leaves the run's sessions, so a
+    story's built layers are not all held until its run ends."""
+    run = Run(tmp_path)
+    closed: list[str] = []
+
+    async def close() -> None:
+        closed.append("closed")
+
+    async def squashed(pipe: Any, ls: Any, st: StoryState, *args: Any) -> None:
+        st.built["01"] = {"sha": "x"}
+
+    monkeypatch.setattr("airlie.story.flow.squash_layer", squashed)
+    ctx = run.ctx({}, item="01")
+    ctx.sessions.put("studio.01", SimpleNamespace(nn="01", card=None, story=None, layers=None, close=close))
+    assert await call("story.squash_layer", ctx) == {"built.{item}": {"sha": "x"}}
+    assert closed == ["closed"] and ctx.sessions.get("studio.01") is None
 
 
 async def test_a_missing_input_names_the_node_the_check_and_the_input(tmp_path: Path) -> None:

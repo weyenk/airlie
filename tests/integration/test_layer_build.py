@@ -16,8 +16,7 @@ from airlie.story.model import Layer, Story
 from airlie.story.package import Package
 from airlie.story.phase import read_phase
 from airlie.story.state import StoryState
-from airlie.topology.studio import StudioOrchestrator, SubtaskRun
-from airlie.topology.studio_plan import Subtask
+from airlie.topology.studio import StudioOrchestrator
 from tests.support.layer_golden import (
     GOLDEN_LEDGER,
     GOLDEN_NUDGES,
@@ -26,6 +25,7 @@ from tests.support.layer_golden import (
     GOLDEN_STORY_LAYER,
     GOLDEN_STUDIO,
     TIMING,
+    AdvisedThenDies,
     build_run,
     clean,
     golden_prompts,
@@ -80,16 +80,6 @@ async def test_build_once_through_the_wrapper_matches_the_golden_run(tmp_path: P
     assert found == GOLDEN_LEDGER
     assert golden_state(tmp_path) == GOLDEN_STATE
     assert golden_prompts(tmp_path) == GOLDEN_NUDGES
-
-
-class AdvisedThenDies(StudioOrchestrator):
-    """A studio whose coder turn asks the supervisor (a ledger row opens, waiting for its outcome) and then
-    raises past the turn's own catch, as a cancel or a bug outside the team does."""
-
-    async def coder_turn(self, subtask: Subtask) -> SubtaskRun:
-        assert self.advisor is not None
-        await self.advisor.advise("gate_retry", subtask.id, "coder", "the gate is red", kinds=("gate_fails",))
-        raise RuntimeError("the engine fell over")
 
 
 async def test_a_raise_inside_the_coder_turn_closes_the_supervisors_rows_unknown_and_keeps_the_worktree(

@@ -531,7 +531,7 @@ class _Run:
 
     def finished(self, name: str, outcome: str, started: float) -> None:
         ms = int((time.monotonic() - started) * 1000)
-        self.store.emit("node_finished", node=name, type=self.nodes[name].type, outcome=outcome, ms=ms)
+        self.store.emit("node_finished", **self.fields(name), outcome=outcome, ms=ms)
 
     async def bundle_items(self, name: str, node: NodeSpec) -> Mapping[str, Any]:
         assert node.workflow is not None  # spec.py: a bundle needs workflow
@@ -595,7 +595,7 @@ class _Run:
                 name, line, result
             ):
                 again = self.readers({line.node} | self.downstream(line.node))
-                self.reset_loops(again, but=(name, line.node))
+                self.reset_loops(again, target=line.node)
                 if name not in again:
                     self.state[name] = "finished"
                     self.fire(name)
@@ -619,13 +619,15 @@ class _Run:
             self.store.put(self.feedback_name(line.node), result[line.loop.carry])
         return True
 
-    def reset_loops(self, names: set[str], *, but: tuple[str, str]) -> None:
-        """A loop line from and to nodes among `names` (the ones a loop sends back), other than the one firing
-        (`but`: its source and target), has its re-runs counted afresh: a loop inside another's body has its
-        whole bound on each pass, as a layer's second build has review rounds of its own."""
-        scope = f"{self.scope}{self.workflow}"
+    def reset_loops(self, names: set[str], *, target: str) -> None:
+        """A loop nested in the body a loop to `target` sends back (`names`): its source among them, its own
+        target strictly downstream of `target`. Its re-runs are counted afresh, so it has its whole bound on
+        each pass, as a layer's second build has review rounds of its own. A loop into `target` itself (the
+        one firing, or a sibling such as a red test and a review both going back to the coder) keeps its
+        count: every bound is still spent in the end, and the run ends."""
+        scope, below = f"{self.scope}{self.workflow}", self.downstream(target)
         for (src, _), ln in self.lines.items():
-            if ln.loop is not None and src in names and ln.node in names and (src, ln.node) != but:
+            if ln.loop is not None and src in names and ln.node != target and ln.node in below:
                 self.c.loops.pop((scope, self.item, src, ln.node), None)
 
     def readers(self, names: set[str]) -> set[str]:
