@@ -618,7 +618,7 @@ def create_app(
     story_notes: StoryNotes | None = None
     if sender is not None:  # the watcher polls with no page open only when push can send
         story_notes = StoryNotes(cfg.observability.state_dir.expanduser(), notifier)
-        watcher.on_story = story_notes.on_story_change
+        watcher.on_log = story_notes.on_log_change
     app.include_router(notifications_router(store, notifier, public_key, cfg.notifications.push_hosts))
 
     uploads = UploadStore(cfg.observability.state_dir.expanduser() / "uploads", cfg.chat.attachments, now=now)

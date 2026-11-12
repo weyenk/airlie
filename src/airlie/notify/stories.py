@@ -1,5 +1,6 @@
-"""A story that is blocked, published or waiting on a mockup pick sends a push: the lines appended to its
-`stories/<key>/events.jsonl` since the last look, one push at most per event."""
+"""A story, epic or initiative that is blocked, published or waiting on a mockup pick sends a push: the lines
+appended to its `stories/`, `epics/` or `initiatives/<key>/events.jsonl` since the last look, one push at most
+per event. Its page is `/board/<key>`: the board opens any card by key."""
 
 from __future__ import annotations
 
@@ -13,6 +14,8 @@ from airlie.notify.notifier import Notifier
 log = logging.getLogger("airlie.notify")
 
 REASON_CHARS = 120
+AREAS = ("stories", "epics", "initiatives")
+"""The folders of `state_dir` that hold a `<key>/events.jsonl` worth a push."""
 READ_BYTES = 1_000_000
 """The most of a log read in one call; the rest waits for the next."""
 
@@ -21,33 +24,36 @@ class StoryNotes:
     def __init__(self, state_dir: Path, notifier: Notifier) -> None:
         self._state = state_dir
         self._notifier = notifier
-        self._offsets: dict[str, int] = {}  # key: bytes of its event log already read
+        self._offsets: dict[tuple[str, str], int] = {}  # (area, key): bytes of its event log already read
 
     def prime(self) -> None:
-        """Record where every story's log ends now, so a restart does not replay history. A story first
-        seen after this (no offset) is new: its log is read from the start."""
-        root = self._state / "stories"
-        try:
-            keys = [e.name for e in root.iterdir() if e.is_dir()]
-        except OSError:
-            return
-        for key in keys:
+        """Record where every log ends now, so a restart does not replay history. A card first seen after
+        this (no offset) is new: its log is read from the start."""
+        for area in AREAS:
+            root = self._state / area
             try:
-                self._offsets[key] = (root / key / "events.jsonl").stat().st_size
+                keys = [e.name for e in root.iterdir() if e.is_dir()]
             except OSError:
-                self._offsets[key] = 0
+                continue
+            for key in keys:
+                try:
+                    self._offsets[(area, key)] = (root / key / "events.jsonl").stat().st_size
+                except OSError:
+                    self._offsets[(area, key)] = 0
 
-    async def on_story_change(self, key: str) -> int:
-        """Push for the events appended since the last call for `key`; the count sent. A last line with no
-        newline yet is still being written and waits for the next call."""
-        path = self._state / "stories" / key / "events.jsonl"
+    async def on_log_change(self, area: str, key: str) -> int:
+        """Push for the events appended since the last call for `area`/`key`; the count sent. A last line
+        with no newline yet is still being written and waits for the next call."""
+        if area not in AREAS:
+            return 0
+        path = self._state / area / key / "events.jsonl"
         try:
             size = path.stat().st_size
         except OSError:
             return 0
-        start = self._offsets.get(key, 0)
+        start = self._offsets.get((area, key), 0)
         if size < start:  # the log was replaced by a shorter one
-            self._offsets[key] = size
+            self._offsets[(area, key)] = size
             return 0
         if size == start:
             return 0
@@ -60,7 +66,7 @@ class StoryNotes:
         end = data.rfind(b"\n") + 1
         if end == 0 and len(data) == READ_BYTES:
             end = len(data)  # one line longer than a read is no event: skip it rather than stall on it
-        self._offsets[key] = start + end
+        self._offsets[(area, key)] = start + end
         sent = 0
         for raw in data[:end].splitlines():
             try:
