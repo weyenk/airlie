@@ -23,6 +23,7 @@ import logging
 import os
 import sqlite3
 import threading
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -94,7 +95,17 @@ def _stat(path: Path) -> os.stat_result | None:
 class Watcher:
     """`poll()` once, or let `ensure_running()` poll while pages are connected."""
 
-    def __init__(self, state_dir: Path, feed: Feed, *, recent_runs: int = 100) -> None:
+    def __init__(
+        self,
+        state_dir: Path,
+        feed: Feed,
+        *,
+        recent_runs: int = 100,
+        on_story: Callable[[str], Awaitable[object]] | None = None,
+    ) -> None:
+        self.on_story = on_story
+        """Awaited once per changed story key, after its hint is published; while it is set the loop keeps
+        polling with no page connected."""
         self._state = state_dir
         self._feed = feed
         self._recent = recent_runs
@@ -119,6 +130,19 @@ class Watcher:
             for topic, key in hints:
                 self._feed.publish(topic, key)
             return hints
+
+    async def tick(self) -> list[Hint]:
+        """`poll()`, then `on_story` for each story key that changed (one failing does not stop the rest)."""
+        hints = self.poll()
+        callback = self.on_story
+        if callback is not None:
+            for topic, key in hints:
+                if topic == "stories" and key is not None:
+                    try:
+                        await callback(key)
+                    except Exception:
+                        log.exception("story change %s: the callback failed", key)
+        return hints
 
     def ensure_running(self, interval_s: float = INTERVAL_S) -> None:
         """When no loop is running: poll at once, which records the starting point (so a write after this
@@ -149,10 +173,10 @@ class Watcher:
         try:
             while True:
                 await asyncio.sleep(interval_s)
-                if self._feed.subscribers == 0:
+                if self._feed.subscribers == 0 and self.on_story is None:
                     return  # no await between this and `finally`: ensure_running cannot see a dying loop
                 try:
-                    self.poll()
+                    await self.tick()
                 except Exception:
                     log.exception("watching %s failed; trying again in %ss", self._state, interval_s)
         finally:

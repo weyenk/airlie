@@ -517,3 +517,54 @@ async def test_the_events_route_has_the_watcher_running_and_its_baseline_taken_b
         await asyncio.wait_for(call, 5)
         watcher.stop()
     assert feed.subscribers == 0
+
+
+async def test_on_story_is_awaited_once_per_changed_story_after_a_poll(state: Path) -> None:
+    seen: list[str] = []
+
+    async def on_story(key: str) -> None:
+        seen.append(key)
+
+    write_story(state, "AIR-1", "new")
+    write_story(state, "AIR-2", "new")
+    w = Watcher(state, Feed(), on_story=on_story)
+    assert await w.tick() == []  # the baseline
+    write_story(state, "AIR-2", "coding")
+    write_story(state, "AIR-1", "coding")
+    await w.tick()
+    assert seen == ["AIR-1", "AIR-2"]
+    await w.tick()
+    assert seen == ["AIR-1", "AIR-2"]
+    w.stop()
+
+
+async def test_a_failing_on_story_does_not_stop_the_others(state: Path) -> None:
+    seen: list[str] = []
+
+    async def on_story(key: str) -> None:
+        seen.append(key)
+        raise RuntimeError("boom")
+
+    write_story(state, "AIR-1", "new")
+    w = Watcher(state, Feed(), on_story=on_story)
+    await w.tick()
+    write_story(state, "AIR-1", "coding")
+    write_story(state, "AIR-2", "coding")
+    await w.tick()
+    assert seen == ["AIR-1", "AIR-2"]
+    w.stop()
+
+
+async def test_the_loop_keeps_polling_with_no_page_while_on_story_is_set(state: Path) -> None:
+    seen: asyncio.Queue[str] = asyncio.Queue()
+
+    async def on_story(key: str) -> None:
+        seen.put_nowait(key)
+
+    write_story(state, "AIR-1", "new")
+    w = Watcher(state, Feed(), on_story=on_story)
+    w.ensure_running(interval_s=0.01)
+    write_story(state, "AIR-1", "coding")
+    assert await asyncio.wait_for(seen.get(), 5) == "AIR-1"
+    assert w.running  # no subscriber, still going
+    w.stop()

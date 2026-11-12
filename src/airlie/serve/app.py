@@ -44,6 +44,7 @@ from airlie.metrics import summary as metrics_summary
 from airlie.notify.api import notifications_router
 from airlie.notify.notifier import Notifier
 from airlie.notify.push import PushSender
+from airlie.notify.stories import StoryNotes
 from airlie.notify.vapid import application_server_key, load_or_create_vapid
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
@@ -614,6 +615,8 @@ def create_app(
         public_key = application_server_key(vapid)
     notifier = Notifier(store, sender, cfg.notifications.default_kinds)
     app.state.notifier = notifier
+    if sender is not None:  # nobody to push to otherwise: no reason to poll with no page open
+        watcher.on_story = StoryNotes(cfg.observability.state_dir.expanduser(), notifier).on_story_change
     app.include_router(notifications_router(store, notifier, public_key, cfg.notifications.push_hosts))
 
     uploads = UploadStore(cfg.observability.state_dir.expanduser() / "uploads", cfg.chat.attachments, now=now)
@@ -1469,6 +1472,8 @@ def create_app(
         from airlie.manager.client import serving
 
         serving_cm.enter_context(serving(manager))  # engines built anywhere in this process hold through it
+        if watcher.on_story is not None:
+            watcher.ensure_running()  # story pushes need the poll with no page connected
         ticker.start()  # the line's beat, every line.tick_s while serve is up (line.serve_ticks)
 
         # the HTTP server is up at once; engines already running are adopted, the pinned ones start, idle
