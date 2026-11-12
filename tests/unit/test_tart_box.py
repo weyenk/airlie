@@ -428,3 +428,33 @@ async def test_pump_keeps_only_the_first_bytes_up_to_its_limit_and_drains_the_re
     into = bytearray()
     await _pump(stream, into, limit=10)
     assert bytes(into) == b"a" * 10
+
+
+def test_exec_bytes_asks_the_runner_for_one_byte_past_its_cap_and_refuses_an_over_cap_stream(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner()
+    runner.reply(["tart", "exec"], 0, b"x" * 11)  # what a runner capped at cap + 1 hands back
+    rc, out = run(make(tmp_path, runner).exec_bytes(["git", "bundle"], max_bytes=10))
+    assert rc is None
+    assert out == b"output over 10 bytes"
+    assert runner.limits == [11]
+
+
+def test_exec_bytes_accepts_a_stream_of_exactly_its_cap(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    runner.reply(["tart", "exec"], 0, b"x" * 10)
+    assert run(make(tmp_path, runner).exec_bytes(["git", "bundle"], max_bytes=10)) == (0, b"x" * 10)
+
+
+def test_exec_keeps_the_tool_output_cap(tmp_path: Path) -> None:
+    from airlie.boxes.tart import OUTPUT_MAX
+
+    runner = FakeRunner()
+    run(make(tmp_path, runner).exec(["ls"]))
+    assert runner.limits == [OUTPUT_MAX]
+
+
+def test_the_real_runner_keeps_only_its_limit() -> None:
+    rc, out, _ = run(RealRunner()(["head", "-c", "100", "/dev/zero"], None, 5, 10))
+    assert (rc, len(out)) == (0, 10)

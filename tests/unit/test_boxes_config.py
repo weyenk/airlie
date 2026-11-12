@@ -99,3 +99,10 @@ def test_allow_hosts_may_be_empty() -> None:
 def test_boxes_refuse_a_non_positive_size_or_timeout(field: str, bad: int) -> None:
     with pytest.raises(ValidationError):
         BoxesSpec(**{field: bad})
+
+
+def test_the_bundle_cap_defaults_to_512_mb_and_must_be_positive() -> None:
+    assert BoxesSpec().bundle_max_mb == 512
+    assert BoxesSpec(bundle_max_mb=1).bundle_max_mb == 1
+    with pytest.raises(ValidationError):
+        BoxesSpec(bundle_max_mb=0)

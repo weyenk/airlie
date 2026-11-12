@@ -7,6 +7,10 @@ from typing import Literal, NamedTuple, Protocol
 
 from airlie.engine.types import EngineError
 
+OUTPUT_MAX = 4 * 1024 * 1024
+"""The most bytes of one command's stdout or stderr kept: a `yes` or a read of /dev/zero cannot fill the
+host's memory. The rest is read and dropped, so the command is not blocked; its timeout ends it."""
+
 
 class ExecResult(NamedTuple):
     rc: int | None
@@ -68,9 +72,11 @@ class Box(Protocol):
         cwd: str | None = None,
         stdin: bytes | None = None,
         timeout_s: float = 120.0,
+        max_bytes: int = OUTPUT_MAX,
     ) -> tuple[int | None, bytes]:
         """For bundles: stdout only on success; when the command fails (rc not 0, or None) the bytes are its
-        stderr instead, so a failed `git bundle` has a diagnostic."""
+        stderr instead, so a failed `git bundle` has a diagnostic. A stream over `max_bytes` is refused, never
+        cut: rc None and "output over N bytes"."""
         ...
 
     async def stop(self) -> None:

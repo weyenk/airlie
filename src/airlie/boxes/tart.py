@@ -15,12 +15,13 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
-from airlie.boxes.protocol import BoxUnavailable, ExecResult, Network
+from airlie.boxes.protocol import OUTPUT_MAX, BoxUnavailable, ExecResult, Network
 from airlie.subproc import DRAIN_S, kill_group, started
 
-Runner = Callable[[Sequence[str], bytes | None, float], Awaitable[tuple[int | None, bytes, bytes]]]
-"""Runs a host process (argv, stdin, timeout) and returns (rc, stdout, stderr), the streams apart (`tart exec`
-keeps the guest's apart too). On a timeout rc is None and the two are what it had written by then."""
+Runner = Callable[[Sequence[str], bytes | None, float, int], Awaitable[tuple[int | None, bytes, bytes]]]
+"""Runs a host process (argv, stdin, timeout, limit): (rc, stdout, stderr), the streams apart (`tart
+exec` keeps the guest's apart too), each cut at `limit` bytes. On a timeout rc is None and the two are what it
+had written by then."""
 
 INSTALL_HINT = (
     "Tart is not installed: brew install cirruslabs/cli/tart "
@@ -31,11 +32,6 @@ STOP_WAIT_S = 60.0
 RESOLVER = "192.168.64.1/32"
 """The vmnet gateway, which is the guest's DNS resolver. Allowed in allow_list mode (the guest cannot look up
 the allowed hosts without it) and never when the network is off."""
-
-
-OUTPUT_MAX = 4 * 1024 * 1024
-"""The most bytes of one command's stdout or stderr kept: a `yes` or a read of /dev/zero cannot fill the
-host's memory. The rest is read and dropped, so the command is not blocked; its timeout ends it."""
 
 
 async def _pump(stream: asyncio.StreamReader | None, into: bytearray, limit: int = OUTPUT_MAX) -> None:
@@ -56,7 +52,7 @@ async def _feed(proc: asyncio.subprocess.Process, data: bytes) -> None:
 
 class RealRunner:
     async def __call__(
-        self, argv: Sequence[str], stdin: bytes | None, timeout_s: float
+        self, argv: Sequence[str], stdin: bytes | None, timeout_s: float, limit: int = OUTPUT_MAX
     ) -> tuple[int | None, bytes, bytes]:
         proc = await started(
             asyncio.create_subprocess_exec(
@@ -69,8 +65,8 @@ class RealRunner:
         )
         out, err = bytearray(), bytearray()
         work = asyncio.gather(
-            _pump(proc.stdout, out),
-            _pump(proc.stderr, err),
+            _pump(proc.stdout, out, limit),
+            _pump(proc.stderr, err, limit),
             *([_feed(proc, stdin)] if stdin is not None else []),
             proc.wait(),
         )
@@ -177,10 +173,10 @@ class TartBox:
         self._proc: Spawned | None = None
 
     async def _tart_run(
-        self, *args: str, stdin: bytes | None = None, timeout_s: float = 120.0
+        self, *args: str, stdin: bytes | None = None, timeout_s: float = 120.0, limit: int = OUTPUT_MAX
     ) -> tuple[int | None, bytes, bytes]:
         try:
-            return await self._run([self._tart, *args], stdin, timeout_s)
+            return await self._run([self._tart, *args], stdin, timeout_s, limit)
         except FileNotFoundError as e:
             raise BoxUnavailable(INSTALL_HINT) from e
 
@@ -313,11 +309,15 @@ class TartBox:
         cwd: str | None = None,
         stdin: bytes | None = None,
         timeout_s: float = 120.0,
+        max_bytes: int = OUTPUT_MAX,
     ) -> tuple[int | None, bytes]:
-        """stdout on success; when the command fails (or times out) its stderr instead."""
+        """stdout on success; when the command fails (or times out) its stderr instead. The runner keeps one
+        byte more than `max_bytes`, so a stream over it is told apart from one exactly at it and refused."""
         env = {"PATH": "/usr/local/bin:/usr/bin:/bin"}
         args = self._exec_args(argv, env, cwd, stdin=stdin is not None)
-        rc, out, err = await self._tart_run(*args, stdin=stdin, timeout_s=timeout_s)
+        rc, out, err = await self._tart_run(*args, stdin=stdin, timeout_s=timeout_s, limit=max_bytes + 1)
+        if len(out) > max_bytes or len(err) > max_bytes:
+            return None, f"output over {max_bytes} bytes".encode()
         return rc, out if rc == 0 else err
 
     async def stop(self) -> None:

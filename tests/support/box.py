@@ -88,6 +88,15 @@ class FakeBox:
         cwd: str | None = None,
         stdin: bytes | None = None,
         timeout_s: float = 120.0,
+        max_bytes: int = 4 * 1024 * 1024,
+    ) -> tuple[int | None, bytes]:
+        rc, data = await self._exec_bytes(argv, cwd, stdin, timeout_s)
+        if len(data) > max_bytes:
+            return None, f"output over {max_bytes} bytes".encode()
+        return rc, data
+
+    async def _exec_bytes(
+        self, argv: Sequence[str], cwd: str | None, stdin: bytes | None, timeout_s: float
     ) -> tuple[int | None, bytes]:
         self.calls.append(Call(tuple(argv), {}, stdin, cwd))
         if self.state != "running":

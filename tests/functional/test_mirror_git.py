@@ -50,7 +50,7 @@ class RealGitBox(FakeBox):
 
     vm: Path
 
-    async def exec_bytes(self, argv, *, cwd=None, stdin=None, timeout_s=120.0):  # type: ignore[no-untyped-def]
+    async def exec_bytes(self, argv, *, cwd=None, stdin=None, timeout_s=120.0, max_bytes=10**9):  # type: ignore[no-untyped-def]
         done = subprocess.run(list(argv), cwd=self.vm, capture_output=True)
         return (done.returncode, done.stdout if done.returncode == 0 else done.stderr)
 
@@ -81,7 +81,7 @@ async def test_a_real_bundle_round_trips_a_commit_from_a_cloned_workdir_to_the_m
     box.vm = vm
     box.state = "running"
     box.handlers["git"] = vm_box(vm).handlers["git"]
-    result = await harvest(box, mirror, base_sha=base, branch=BRANCH, workdir=str(vm))
+    result = await harvest(box, mirror, base_sha=base, branch=BRANCH, workdir=str(vm), max_bytes=10_000_000)
 
     assert result.commits == 1
     assert result.changes_workflows is False
@@ -106,17 +106,19 @@ async def test_a_hostile_bundle_naming_another_branch_never_reaches_the_mirror(t
     git(vm, "branch", "main-takeover", BRANCH)
 
     class Hostile(RealGitBox):
-        async def exec_bytes(self, argv, *, cwd=None, stdin=None, timeout_s=120.0):  # type: ignore[no-untyped-def]
+        async def exec_bytes(self, argv, *, cwd=None, stdin=None, timeout_s=120.0, max_bytes=10**9):  # type: ignore[no-untyped-def]
             # the VM answers with a bundle that also carries a branch the host did not ask for
             argv = ["git", "bundle", "create", "-", f"{base}..{BRANCH}", f"{base}..main-takeover"]
-            return await super().exec_bytes(argv, cwd=cwd, stdin=stdin, timeout_s=timeout_s)
+            return await super().exec_bytes(
+                argv, cwd=cwd, stdin=stdin, timeout_s=timeout_s, max_bytes=max_bytes
+            )
 
     box = Hostile("vm")
     box.vm = vm
     box.state = "running"
     box.handlers["git"] = vm_box(vm).handlers["git"]
     with pytest.raises(TransitError, match="not only"):
-        await harvest(box, mirror, base_sha=base, branch=BRANCH, workdir=str(vm))
+        await harvest(box, mirror, base_sha=base, branch=BRANCH, workdir=str(vm), max_bytes=10_000_000)
     assert git(mirror.path, "for-each-ref", "--format=%(refname)", "refs/heads") == ""
 
 
@@ -124,3 +126,35 @@ async def test_a_mirror_without_a_checkout_or_app_says_what_is_missing(tmp_path:
     mirror = Mirror(tmp_path, "o/r", Publisher(), run=run_cmd)
     with pytest.raises(MirrorError, match="story.github_app"):
         await mirror.refresh()
+
+
+async def test_a_bundle_with_a_corrupt_object_fails_the_fetch_and_no_ref_lands(tmp_path: Path) -> None:
+    """The reviewer's badDate commit: git's own tools make it, bundle verify accepts it, and fsck on fetch
+    refuses it."""
+    source = local_checkout(tmp_path)
+    mirror = Mirror(tmp_path / "mirrors", "o/r", Publisher(), run=run_cmd, local_checkout=source)
+    await mirror.refresh()
+    base = await mirror.resolve("refs/remotes/origin/main")
+    vm = tmp_path / "vm"
+    subprocess.run(["git", "clone", "-q", str(source), str(vm)], check=True)
+    git(vm, "checkout", "-q", "-b", BRANCH)
+    tree = git(vm, "rev-parse", "HEAD^{tree}")
+    when = "not-a-date +0000"
+    raw = f"tree {tree}\nparent {base}\nauthor t <t@t> {when}\ncommitter t <t@t> {when}\n\nbad\n"
+    bad = subprocess.run(
+        ["git", "hash-object", "-t", "commit", "-w", "--literally", "--stdin"],
+        cwd=vm,
+        input=raw,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    git(vm, "update-ref", f"refs/heads/{BRANCH}", bad)
+
+    box = RealGitBox("vm")
+    box.vm = vm
+    box.state = "running"
+    box.handlers["git"] = vm_box(vm).handlers["git"]
+    with pytest.raises(TransitError, match="refused"):
+        await harvest(box, mirror, base_sha=base, branch=BRANCH, workdir=str(vm), max_bytes=10_000_000)
+    assert git(mirror.path, "for-each-ref", "--format=%(refname)", "refs/heads") == ""

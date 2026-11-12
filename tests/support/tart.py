@@ -17,15 +17,20 @@ class FakeRunner:
 
     replies: list[tuple[tuple[str, ...], Reply | Callable[[], Reply]]] = field(default_factory=list)
     calls: list[tuple[tuple[str, ...], bytes | None, float]] = field(default_factory=list)
+    limits: list[int] = field(default_factory=list)
+    """The output cap each call asked for."""
     missing: bool = False
 
     def reply(self, prefix: Sequence[str], rc: int | None, out: bytes = b"", err: bytes = b"") -> None:
         self.replies.append((tuple(prefix), (rc, out, err)))
 
-    async def __call__(self, argv: Sequence[str], stdin: bytes | None, timeout_s: float) -> Reply:
+    async def __call__(
+        self, argv: Sequence[str], stdin: bytes | None, timeout_s: float, limit: int = 4 * 1024 * 1024
+    ) -> Reply:
         if self.missing:
             raise FileNotFoundError(argv[0])
         self.calls.append((tuple(argv), stdin, timeout_s))
+        self.limits.append(limit)
         for prefix, answer in self.replies:
             if tuple(argv[: len(prefix)]) == prefix:
                 return answer() if callable(answer) else answer

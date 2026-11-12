@@ -21,9 +21,8 @@ from airlie.subproc import NO_HOOKS_ARGS
 
 BUNDLE_IN_VM = "/tmp/in.bundle"
 BUNDLE_TIMEOUT_S = 600.0
-DEFAULT_WORKDIR = "/home/admin/work"
 _BRANCH = re.compile(r"airlie/[A-Za-z0-9][A-Za-z0-9._-]*")
-_SHA = re.compile(r"[0-9a-f]{40,64}")
+_SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 class TransitError(EngineError):
@@ -77,11 +76,12 @@ async def seed(box: Box, mirror: Mirror, recipe: Recipe, *, ref: str, branch: st
 
 
 async def harvest(
-    box: Box, mirror: Mirror, *, base_sha: str, branch: str, workdir: str = DEFAULT_WORKDIR
+    box: Box, mirror: Mirror, *, base_sha: str, branch: str, workdir: str, max_bytes: int
 ) -> HarvestResult:
     """Take the commits on `branch` since `base_sha` out of the VM as a bundle and fetch them into the mirror
     as that branch alone. Nothing of the VM's configuration or hooks runs on the host, the bundle must verify
-    and name no ref but the branch, and git checks every object it receives (fsck)."""
+    and name no ref but the branch, git checks every object it receives (fsck), and a bundle over `max_bytes`
+    (boxes.bundle_max_mb) is refused, never cut."""
     _check_branch(branch)
     if not _SHA.fullmatch(base_sha):
         raise TransitError(f"base {base_sha!r} is not a commit id")
@@ -91,7 +91,10 @@ async def harvest(
     if counted.output.strip() == "0":
         return HarvestResult(0, base_sha, False)
     rc, data = await box.exec_bytes(
-        ["git", "bundle", "create", "-", f"{base_sha}..{branch}"], cwd=workdir, timeout_s=BUNDLE_TIMEOUT_S
+        ["git", "bundle", "create", "-", f"{base_sha}..{branch}"],
+        cwd=workdir,
+        timeout_s=BUNDLE_TIMEOUT_S,
+        max_bytes=max_bytes,
     )
     if rc != 0:
         raise TransitError(f"git bundle failed in the VM: {data.decode(errors='replace').strip()}")
@@ -100,13 +103,21 @@ async def harvest(
         bundle = Path(tmp) / "out.bundle"
         bundle.write_bytes(data)
         try:
-            await mirror.git("bundle", "verify", str(bundle))
             heads = await mirror.git("bundle", "list-heads", str(bundle))
             named = [line.split(maxsplit=1)[1].strip() for line in heads.splitlines() if " " in line.strip()]
             if named != [ref]:
                 raise TransitError(f"the VM's bundle holds {named or 'no refs'}, not only {ref}: refused")
+            await mirror.git("bundle", "verify", str(bundle))
             fetch = ["fetch", "-q", "--no-tags", "--refmap=", str(bundle), f"+{ref}:{ref}"]
-            git = ["git", *NO_HOOKS_ARGS, "-c", "transfer.fsckObjects=true", *fetch]
+            git = [
+                "git",
+                *NO_HOOKS_ARGS,
+                "-c",
+                "transfer.fsckObjects=true",
+                "-c",
+                "fetch.fsckObjects=true",
+                *fetch,
+            ]
             await mirror.run(git, mirror.path, mirror.env())
         except PublishError as e:
             raise TransitError(f"the VM's bundle was refused: {e}") from None
@@ -123,11 +134,14 @@ async def push_branch(
     box: Box,
     base_sha: str,
     branch: str,
-    workdir: str = DEFAULT_WORKDIR,
+    workdir: str,
+    max_bytes: int,
 ) -> HarvestResult:
     """Bring the branch out of the VM and push it from the mirror: the publisher's App token for that step,
     never anything in the VM."""
-    result = await harvest(box, mirror, base_sha=base_sha, branch=branch, workdir=workdir)
+    result = await harvest(
+        box, mirror, base_sha=base_sha, branch=branch, workdir=workdir, max_bytes=max_bytes
+    )
     if result.commits == 0:
         raise TransitError("nothing to push: the session branch has no new commits")
     if not mirror.can_push:

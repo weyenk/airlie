@@ -12,7 +12,7 @@ from pathlib import Path
 from airlie.boxes.recipe import RECIPE_PATH
 from airlie.engine.types import EngineError
 from airlie.story.publish import Publisher, PublishError, Runner
-from airlie.subproc import agent_env, without_hooks
+from airlie.subproc import NO_PROMPTS, agent_env, without_hooks
 
 
 class MirrorError(EngineError):
@@ -41,8 +41,11 @@ class Mirror:
         """Only as the GitHub App's bot: a chat never pushes with the person's own login."""
 
     def env(self) -> dict[str, str]:
-        """For airlie's own git here: no credentials, no prompt, no hook, no fsmonitor, no replace refs."""
-        return without_hooks(agent_env())
+        """For airlie's own git here: no credentials, no prompt, no hook, no fsmonitor, no replace refs, and
+        no GIT_* variable of the process's own (GIT_DIR, GIT_CONFIG_GLOBAL, GIT_EXEC_PATH ... point git
+        elsewhere); the no-prompt switches are re-added."""
+        env = {k: v for k, v in agent_env().items() if not k.startswith("GIT_")}
+        return without_hooks({**env, **NO_PROMPTS})
 
     async def git(self, *args: str) -> str:
         return await self.run(["git", *args], self.path, self.env())

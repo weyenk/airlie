@@ -215,3 +215,9 @@ def test_the_write_script_makes_the_parent_and_stores_stdin() -> None:
     script = 'mkdir -p "$(dirname "$1")" && cat > "$1"'
     result = run(box.exec(["sh", "-c", script, "sh", "/work/a/b.txt"], stdin=b"x"))
     assert (result.rc, box.files["/work/a/b.txt"], "/work/a" in box.dirs) == (0, b"x", True)
+
+
+def test_exec_bytes_refuses_a_stream_over_max_bytes_and_accepts_one_at_it() -> None:
+    box = running_box(**{"a": b"x" * 10})
+    assert run(box.exec_bytes(["cat", "/work/a"], max_bytes=10)) == (0, b"x" * 10)
+    assert run(box.exec_bytes(["cat", "/work/a"], max_bytes=9)) == (None, b"output over 9 bytes")

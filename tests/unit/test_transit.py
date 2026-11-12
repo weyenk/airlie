@@ -21,6 +21,7 @@ BASE = "a" * 40
 TIP = "b" * 40
 BRANCH = "airlie/chat-ab12cd34"
 WORKDIR = "/home/admin/work"
+CAP = 1024
 
 
 class FakeRunner:
@@ -178,7 +179,9 @@ def runner_with_heads(*refs: str) -> FakeRunner:
 async def test_harvest_fetches_the_bundle_with_fsck_and_no_hooks(tmp_path: Path) -> None:
     runner = runner_with_heads(f"refs/heads/{BRANCH}")
     mirror = mirror_of(tmp_path, runner, FakePublisher())
-    result = await harvest(vm_with_commits(), mirror, base_sha=BASE, branch=BRANCH)
+    result = await harvest(
+        vm_with_commits(), mirror, base_sha=BASE, branch=BRANCH, workdir=WORKDIR, max_bytes=CAP
+    )
 
     argv, cwd, env = next(c for c in runner.calls if FakeRunner.verb(c[0]) == "fetch")
     assert "transfer.fsckObjects=true" in argv
@@ -199,7 +202,12 @@ async def test_harvest_reads_the_bundle_the_vm_made(tmp_path: Path) -> None:
         return await runner(args, cwd, env)
 
     await harvest(
-        vm_with_commits(), Mirror(tmp_path, "o/r", FakePublisher(), run=spy), base_sha=BASE, branch=BRANCH
+        vm_with_commits(),
+        Mirror(tmp_path, "o/r", FakePublisher(), run=spy),
+        base_sha=BASE,
+        branch=BRANCH,
+        workdir=WORKDIR,
+        max_bytes=CAP,
     )
     assert seen == [b"VM-BUNDLE", b"VM-BUNDLE"]  # verify, then list-heads
 
@@ -208,7 +216,12 @@ async def test_harvest_says_when_the_commits_touch_workflows(tmp_path: Path) -> 
     runner = runner_with_heads(f"refs/heads/{BRANCH}")
     runner.answers["diff"] = ".github/workflows/ci.yml\n"
     result = await harvest(
-        vm_with_commits(), mirror_of(tmp_path, runner, FakePublisher()), base_sha=BASE, branch=BRANCH
+        vm_with_commits(),
+        mirror_of(tmp_path, runner, FakePublisher()),
+        base_sha=BASE,
+        branch=BRANCH,
+        workdir=WORKDIR,
+        max_bytes=CAP,
     )
     assert result.changes_workflows is True
 
@@ -218,7 +231,12 @@ async def test_harvest_rejects_a_bundle_that_does_not_verify(tmp_path: Path) -> 
     runner.failures["bundle verify"] = "the bundle requires this ref"
     with pytest.raises(TransitError, match="refused.*requires this ref"):
         await harvest(
-            vm_with_commits(), mirror_of(tmp_path, runner, FakePublisher()), base_sha=BASE, branch=BRANCH
+            vm_with_commits(),
+            mirror_of(tmp_path, runner, FakePublisher()),
+            base_sha=BASE,
+            branch=BRANCH,
+            workdir=WORKDIR,
+            max_bytes=CAP,
         )
     assert "fetch" not in runner.verbs()
 
@@ -232,7 +250,12 @@ async def test_harvest_refuses_a_bundle_with_any_ref_but_the_session_branch(
     runner = runner_with_heads(*refs)
     with pytest.raises(TransitError, match="not only"):
         await harvest(
-            vm_with_commits(), mirror_of(tmp_path, runner, FakePublisher()), base_sha=BASE, branch=BRANCH
+            vm_with_commits(),
+            mirror_of(tmp_path, runner, FakePublisher()),
+            base_sha=BASE,
+            branch=BRANCH,
+            workdir=WORKDIR,
+            max_bytes=CAP,
         )
     assert "fetch" not in runner.verbs()
 
@@ -243,13 +266,13 @@ async def test_harvest_reports_a_failed_bundle_in_the_vm(tmp_path: Path) -> None
     box.responses[key] = ExecResult(128, "")
     box.stderr[key] = b"fatal: bad revision"
     with pytest.raises(TransitError, match="bad revision"):
-        await harvest(box, mirror_of(tmp_path, FakeRunner(), FakePublisher()), base_sha=BASE, branch=BRANCH)
-
-
-async def test_harvest_refuses_a_base_that_is_not_a_commit_id(tmp_path: Path) -> None:
-    with pytest.raises(TransitError, match="not a commit id"):
         await harvest(
-            running_box(), mirror_of(tmp_path, FakeRunner(), FakePublisher()), base_sha="--all", branch=BRANCH
+            box,
+            mirror_of(tmp_path, FakeRunner(), FakePublisher()),
+            base_sha=BASE,
+            branch=BRANCH,
+            workdir=WORKDIR,
+            max_bytes=CAP,
         )
 
 
@@ -258,7 +281,13 @@ async def test_nothing_new_in_the_vm_is_not_pushed(tmp_path: Path) -> None:
     box = vm_with_commits("0")
     with pytest.raises(TransitError, match="nothing to push"):
         await push_branch(
-            mirror_of(tmp_path, runner, publisher), publisher, box=box, base_sha=BASE, branch=BRANCH
+            mirror_of(tmp_path, runner, publisher),
+            publisher,
+            box=box,
+            base_sha=BASE,
+            branch=BRANCH,
+            workdir=WORKDIR,
+            max_bytes=CAP,
         )
     assert publisher.events == []
     assert runner.calls == []
@@ -269,7 +298,9 @@ async def test_push_goes_through_the_publisher_from_the_mirror_and_never_the_box
     runner, publisher = runner_with_heads(f"refs/heads/{BRANCH}"), FakePublisher()
     box = vm_with_commits()
     mirror = mirror_of(tmp_path, runner, publisher)
-    result = await push_branch(mirror, publisher, box=box, base_sha=BASE, branch=BRANCH)
+    result = await push_branch(
+        mirror, publisher, box=box, base_sha=BASE, branch=BRANCH, workdir=WORKDIR, max_bytes=CAP
+    )
 
     assert publisher.events == [("push_top", (mirror.path, BRANCH))]
     assert result.commits == 2
@@ -286,6 +317,8 @@ async def test_push_without_a_github_app_says_how_to_enable_it(tmp_path: Path) -
             box=vm_with_commits(),
             base_sha=BASE,
             branch=BRANCH,
+            workdir=WORKDIR,
+            max_bytes=CAP,
         )
     assert publisher.events == []
 
@@ -303,6 +336,8 @@ async def test_a_failed_push_is_a_transit_error(tmp_path: Path) -> None:
             box=vm_with_commits(),
             base_sha=BASE,
             branch=BRANCH,
+            workdir=WORKDIR,
+            max_bytes=CAP,
         )
 
 
@@ -337,3 +372,84 @@ async def test_refresh_with_an_app_fetches_through_the_publisher_from_github(tmp
     assert remote == ["git", "remote", "add", "origin", "https://github.com/o/r.git"]
     assert steps == [("prepare o/r", mirror.path), ("fetch_all", mirror.path)]
     assert "fetch" not in runner.verbs()  # the credentialed fetch is the publisher's alone
+
+
+async def test_a_bundle_exactly_at_the_cap_is_taken_and_one_byte_over_is_refused(tmp_path: Path) -> None:
+    runner = runner_with_heads(f"refs/heads/{BRANCH}")
+    mirror = mirror_of(tmp_path, runner, FakePublisher())
+    at = await harvest(vm_with_commits(), mirror, base_sha=BASE, branch=BRANCH, workdir=WORKDIR, max_bytes=9)
+    assert at.commits == 2  # "VM-BUNDLE" is 9 bytes
+    with pytest.raises(TransitError, match="output over 8 bytes"):
+        await harvest(vm_with_commits(), mirror, base_sha=BASE, branch=BRANCH, workdir=WORKDIR, max_bytes=8)
+
+
+async def test_the_refs_are_checked_before_verify_reads_any_object(tmp_path: Path) -> None:
+    runner = runner_with_heads("refs/heads/main")
+    with pytest.raises(TransitError, match="not only"):
+        await harvest(
+            vm_with_commits(),
+            mirror_of(tmp_path, runner, FakePublisher()),
+            base_sha=BASE,
+            branch=BRANCH,
+            workdir=WORKDIR,
+            max_bytes=CAP,
+        )
+    assert "bundle verify" not in [" ".join(a[1:3]) for a, _, _ in runner.calls]
+
+
+async def test_harvest_fetch_checks_every_object_on_both_config_keys(tmp_path: Path) -> None:
+    runner = runner_with_heads(f"refs/heads/{BRANCH}")
+    await harvest(
+        vm_with_commits(),
+        mirror_of(tmp_path, runner, FakePublisher()),
+        base_sha=BASE,
+        branch=BRANCH,
+        workdir=WORKDIR,
+        max_bytes=CAP,
+    )
+    argv = next(a for a, _, _ in runner.calls if FakeRunner.verb(a) == "fetch")
+    assert "fetch.fsckObjects=true" in argv
+
+
+async def test_the_hosts_git_inherits_no_git_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG_GLOBAL", "GIT_EXEC_PATH"):
+        monkeypatch.setenv(name, "/elsewhere")
+    env = mirror_of(tmp_path, FakeRunner(), FakePublisher()).env()
+    assert not {k for k in env if k.startswith("GIT_")} & {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_EXEC_PATH",
+    }
+    assert env["GIT_TERMINAL_PROMPT"] == "0"  # airlie's own switches stay
+    assert env["GIT_CONFIG_COUNT"]
+
+
+@pytest.mark.parametrize("sha", ["a" * 39, "a" * 41, "a" * 50, "A" * 40, "a" * 63, "a" * 65])
+async def test_a_base_is_exactly_a_sha1_or_a_sha256_commit_id(tmp_path: Path, sha: str) -> None:
+    with pytest.raises(TransitError, match="not a commit id"):
+        await harvest(
+            running_box(),
+            mirror_of(tmp_path, FakeRunner(), FakePublisher()),
+            base_sha=sha,
+            branch=BRANCH,
+            workdir=WORKDIR,
+            max_bytes=CAP,
+        )
+
+
+async def test_a_sha256_base_is_accepted(tmp_path: Path) -> None:
+    sha = "c" * 64
+    box = running_box()
+    box.responses[("git", "rev-list", "--count", f"{sha}..{BRANCH}")] = ExecResult(0, "0\n")
+    result = await harvest(
+        box,
+        mirror_of(tmp_path, FakeRunner(), FakePublisher()),
+        base_sha=sha,
+        branch=BRANCH,
+        workdir=WORKDIR,
+        max_bytes=CAP,
+    )
+    assert result.commits == 0

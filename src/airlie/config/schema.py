@@ -493,6 +493,11 @@ class BoxesSpec(Strict):
     boot_timeout_s: float = Field(
         default=120.0, gt=0, description="seconds a box may take to answer after a start"
     )
+    bundle_max_mb: int = Field(
+        default=512,
+        gt=0,
+        description="the most MB of git bundle taken out of a box (a larger one is refused)",
+    )
     network: BoxNetworkSpec = Field(default_factory=BoxNetworkSpec)
 
 
