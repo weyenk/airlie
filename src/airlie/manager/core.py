@@ -89,6 +89,25 @@ class Manager:
     def clock(self) -> Clock:
         return self._clock
 
+    # ---- figures a page shows ----
+
+    @property
+    def budget_gb(self) -> float:
+        return self._budget_gb
+
+    def used_gb(self) -> float:
+        """The memory the resources in use hold, by their footprints (what the budget is checked against)."""
+        return self._used_gb("")
+
+    def footprint_gb(self, name: str) -> float:
+        return self._slot(name).resource.footprint_gb
+
+    def waiting(self) -> str | None:
+        """Why a resource waits for memory (its status detail), when one does."""
+        return next(
+            (s.detail or "waiting for memory" for s in self._slots.values() if s.state == "waiting"), None
+        )
+
     # ---- the registry ----
 
     def add(self, resource: Resource) -> None:

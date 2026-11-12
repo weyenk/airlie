@@ -176,6 +176,30 @@ class RepoSessions:
         self._chats[thread.id] = chat
         return chat
 
+    async def branch_state(self, thread: Thread) -> tuple[int | None, bool | None]:
+        """How far the session branch is from its base and whether the remote has it, read from the host's
+        mirror (never the VM): (commits ahead of the base commit, the remote's branch is at the same commit).
+        (None, None) before the session opened or when the mirror cannot say."""
+        assert thread.repo is not None
+        base_sha = self._threads.get(thread.id, thread.owner).base_sha
+        if base_sha is None:
+            return None, None
+        mirror = self._mirror_for(thread.repo)
+        branch = session_branch(thread.id)
+        try:
+            head = (await mirror.git("rev-parse", "--verify", "-q", f"refs/heads/{branch}")).strip()
+            ahead = int((await mirror.git("rev-list", "--count", f"{base_sha}..{head}")).strip())
+        except Exception:  # no branch in the mirror yet (nothing harvested), or the mirror cannot say
+            log.debug("could not count the commits of %s in the mirror", branch, exc_info=True)
+            return None, None
+        try:
+            pushed = (
+                await mirror.git("rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}")
+            ).strip() == head
+        except Exception:  # the remote has no such branch
+            pushed = False
+        return ahead, pushed
+
     def tool_context(self, chat: RepoChat) -> ToolContext:
         tools = self._cfg.tools
         return ToolContext(

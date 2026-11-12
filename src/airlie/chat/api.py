@@ -652,6 +652,60 @@ def chat_router(
             "messages": [shown_message(t.id, m) for m in t.messages],
         }
 
+    @router.get("/v1/airlie/chat/threads/{thread_id}/status")
+    async def thread_status(thread_id: str, request: Request) -> Any:
+        """What the chat's header shows behind its status chip: the VM (a repository chat's, once it exists),
+        the chat engine, the memory the manager holds against its budget, and the session branch's distance
+        from its base, counted in the host's mirror (never in the VM)."""
+        principal = principal_of(request)
+        if principal is None:
+            return error("not signed in", 401)
+        try:
+            t = threads.get(thread_id, principal.user_id)
+        except ThreadNotFound:
+            return error("no such thread", 404)
+        rows = {s.name: s for s in manager.status()}
+        clock_ = manager.clock
+        vm = None
+        branch = None
+        if t.kind == "repository":
+            row = rows.get(f"vm:{t.id}")
+            if row is not None:
+                vm = {
+                    "name": row.name,
+                    "state": row.state,
+                    "detail": row.detail,
+                    # the manager stamps a change on its monotonic clock; a page wants a date
+                    "since": clock_.wall() - (clock_.monotonic() - row.since),
+                    "memory_gb": manager.footprint_gb(row.name),
+                }
+            ahead, pushed = (None, None)
+            if repo_sessions is not None:
+                ahead, pushed = await repo_sessions.branch_state(t)
+            branch = {
+                "name": session_branch(t.id),
+                "base": (t.base_ref or "main"),
+                "ahead": ahead,
+                "pushed": pushed,
+            }
+        engine_name = cfg.engine_for_role("chat")
+        engine = rows.get(engine_name)
+        return {
+            "vm": vm,
+            "engine": {
+                "name": engine_name,
+                "model": cfg.roles["chat"].model,
+                "state": engine.state if engine is not None else "stopped",
+                "footprint_gb": manager.footprint_gb(engine_name) if engine is not None else 0.0,
+            },
+            "memory": {
+                "used_gb": manager.used_gb(),
+                "budget_gb": manager.budget_gb,
+                "waiting": manager.waiting(),
+            },
+            "branch": branch,
+        }
+
     @router.post("/v1/airlie/chat/threads/{thread_id}/stop")
     async def stop_thread(thread_id: str, request: Request) -> Any:
         """Stop the thread's turn: generation is cancelled and the partial reply saved as interrupted. A
