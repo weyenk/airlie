@@ -245,18 +245,16 @@ class GitHubApp:
             self._slug = slug
         return self._slug
 
-    async def _installation(self, repo: str) -> tuple[int, str]:
+    async def installation(self, repo: str) -> tuple[int, str] | None:
         """The id of the app's installation on `repo` (GET /repos/{owner}/{name}/installation, as the app),
-        and which repositories it covers ("all", or "selected")."""
+        and which repositories it covers ("all", or "selected"); None when the app is not installed on it
+        (404). A found installation is kept for the run; a missing one is asked again."""
         if repo not in self._installations:
-            slug = await self.slug()
+            await self.slug()
             path, bearer = f"repos/{repo}/installation", self._jwt()
             r = await self._call("GET", path, bearer)
             if r.status_code == 404:
-                raise GitHubAppError(
-                    f"the GitHub App {slug} is not installed on {repo}: install it on {repo} (or on all your "
-                    f"repositories) at https://github.com/apps/{slug}/installations/new"
-                )
+                return None
             if not r.is_success:
                 raise self._refused(r, "GET", path, bearer)
             body = self._json(r, "GET", path)
@@ -265,6 +263,17 @@ class GitHubApp:
                 raise GitHubAppError(f"GitHub GET {path}: {r.status_code}, but the reply has no id")
             self._installations[repo] = (found, str(body.get("repository_selection") or ""))
         return self._installations[repo]
+
+    async def _installation(self, repo: str) -> tuple[int, str]:
+        """installation(repo), or a GitHubAppError that says where to install the app."""
+        found = await self.installation(repo)
+        if found is None:
+            slug = await self.slug()
+            raise GitHubAppError(
+                f"the GitHub App {slug} is not installed on {repo}: install it on {repo} (or on all your "
+                f"repositories) at https://github.com/apps/{slug}/installations/new"
+            )
+        return found
 
     async def token(self, repo: str, *, workflows: bool = False) -> InstallationToken:
         """A token of the app's installation for `repo` ("owner/name") and no other repository, with
