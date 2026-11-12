@@ -82,9 +82,15 @@ class TurnRequest:
     note: str | None = None
     """What the model is told, as the person, for this turn only: a resumed turn's answers to requests that
     are no tool call (the image build)."""
-    answered_calls: tuple[ToolCall, ...] = ()
-    """The calls a resumed turn's answers were for, run (or refused) by the server before the model's first
-    reply, with the arguments that were asked about; each result goes to the model as that call's result."""
+    answered_calls: Mapping[str, ToolCall] = field(default_factory=dict)
+    """By approval id, the calls a resumed turn's answers were for, run (or refused) by the server before the
+    model's first reply, with the arguments that were asked about; each result goes to the model as that
+    call's result."""
+    answers: Mapping[str, bool] = field(default_factory=dict)
+    """The person's answers this turn came with (approval id: yes or no)."""
+    on_answers: Callable[[], None] | None = None
+    """Called once the turn holds what it waits for (the VM, the engine) and is about to use the answers:
+    from then on they are spent and shown answered. A turn that ends before it leaves them waiting."""
 
 
 def answered_calls(thread: Thread, answers: Mapping[str, bool]) -> dict[str, ToolCall]:
@@ -444,15 +450,46 @@ class _Run:
 
     # --- the loop -------------------------------------------------------------------------------------------
 
+    def shown_approval(self, approval_id: str) -> dict[str, Any] | None:
+        """The stored prompt of request `approval_id` (its `data-approval` part), as it now reads."""
+        for m in self.req.thread.messages:
+            for part in m.parts:
+                if part.get("type") == "data-approval" and part.get("id") == approval_id:
+                    return part
+        return None
+
+    def use_answers(self) -> None:
+        """The answers are about to be used: they are spent and shown answered, here and on the client."""
+        if self.req.on_answers is not None:
+            self.req.on_answers()
+        for approval_id in self.req.answers:
+            shown = self.shown_approval(approval_id)
+            if shown is not None:
+                self.emit(self.w.data("approval", shown["data"], part_id=approval_id))
+
+    async def run_answered(self, approval_id: str, call: ToolCall) -> None:
+        """Make the call the person answered (or refuse it); an approved call that fails says so on its
+        prompt, so the prompt does not read Approved over a call that did not happen."""
+        self.messages.append(Message(role="assistant", content="", tool_calls=(call,)))
+        await self.run_tool(call)
+        ran = next((p for p in reversed(self.parts) if p.get("toolCallId") == call.id), None)
+        if self.req.answers.get(approval_id) and ran is not None and ran.get("state") == "output-error":
+            error = str(ran.get("errorText") or "")
+            self.store.fail_answer(self.req.thread.id, approval_id, error)
+            shown = self.shown_approval(approval_id)
+            if shown is not None:
+                shown["data"].update(answer="failed", error=error)
+                self.emit(self.w.data("approval", shown["data"], part_id=approval_id))
+        self.emit(self.w.next_step())
+        self.parts.append({"type": "step-start"})
+
     async def loop(self) -> None:
+        self.use_answers()  # the VM and the engine are held: from here the answers are used
         self.messages = self.messages_for_model()
         schemas = self.registry.schemas() or None
         role = self.role
-        for call in self.req.answered_calls:  # the person answered: the server makes the call (or refuses it)
-            self.messages.append(Message(role="assistant", content="", tool_calls=(call,)))
-            await self.run_tool(call)
-            self.emit(self.w.next_step())
-            self.parts.append({"type": "step-start"})
+        for approval_id, call in self.req.answered_calls.items():  # the server makes the answered call
+            await self.run_answered(approval_id, call)
         for _ in range(self.max_steps):
             gen_req = GenRequest(
                 role="chat",

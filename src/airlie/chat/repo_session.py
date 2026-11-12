@@ -152,7 +152,10 @@ class RepoSessions:
         mirror = self._mirror_for(thread.repo)
         lock = self._repo_locks.setdefault(thread.repo, asyncio.Lock())
         async with lock:  # one repository's mirror is made and fetched by one chat at a time
-            base_sha = thread.base_sha
+            found = self._chats.get(thread.id)
+            if found is not None:  # opened meanwhile (the pre-warm, a turn): the same session
+                return found
+            base_sha = self._threads.get(thread.id, thread.owner).base_sha  # fixed by an open before
             if base_sha is None:
                 await mirror.refresh()
                 base_sha = await mirror.resolve(qualified(thread.base_ref))

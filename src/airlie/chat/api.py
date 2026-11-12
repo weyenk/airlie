@@ -358,6 +358,7 @@ def chat_router(
         engines: list[Engine] = []
         released = False
         started = [False]
+        used = [False]  # the turn reached its answers (it holds the VM and the engine)
 
         async def cleanup() -> None:
             """Free the thread and the engine client, once: the body or the response, whichever ends first."""
@@ -365,7 +366,7 @@ def chat_router(
             if released:
                 return
             released = True
-            if not started[0]:  # the turn never began: its answers were never used, so they still wait
+            if not used[0]:  # the turn ended before it used its answers: they still wait for it
                 confirmations.reopen(thread.id, answered)
             confirmations.end_turn(thread.id)  # a yes lasts as long as the turn it came with
             try:
@@ -380,7 +381,7 @@ def chat_router(
             return error("no permission request of this chat waits for that answer", 409)
         try:
             response = await start_turn(
-                body, principal, thread, engine_name, engines, cleanup, turn, answered, started
+                body, principal, thread, engine_name, engines, cleanup, turn, answered, started, used
             )
         except BaseException:
             if fresh:
@@ -403,6 +404,7 @@ def chat_router(
         turn: Running,
         answered: list[Answered],
         started: list[bool],
+        used: list[bool],
     ) -> Response:
         stored: StoredMessage | None = None
         parts: list[dict[str, Any]] = []
@@ -480,13 +482,18 @@ def chat_router(
         calls = answered_calls(thread, answers) if stored is None else {}
         noted = [a for a in answered if a.id not in calls]  # no call to run: the model is told instead
 
-        async def stream() -> AsyncIterator[str]:
-            started[0] = True
-            if answers:  # the turn has begun: from here on the answers are spent, and a reload shows them
+        def use_answers() -> None:
+            """The turn holds the VM and the engine and is about to use its answers: they are spent from
+            here, and a reload or another device shows them answered."""
+            used[0] = True
+            if answers:
                 threads.answer(thread.id, answers)
                 for m in thread.messages:
                     mark_answered(m.parts, answers)
                 publish("chat", None)
+
+        async def stream() -> AsyncIterator[str]:
+            started[0] = True
             try:
                 async for chunk in run_turn(
                     TurnRequest(
@@ -496,7 +503,9 @@ def chat_router(
                         user_parts,
                         resumes=resumes,
                         note=answered_note(noted) if stored is None and noted else None,
-                        answered_calls=tuple(calls.values()),
+                        answered_calls=calls,
+                        answers=answers,
+                        on_answers=use_answers,
                     ),
                     engine=engine,
                     engine_name=engine_name,
@@ -526,9 +535,11 @@ def chat_router(
 
         return TurnStream(stream(), cleanup, started, media_type="text/event-stream", headers=STREAM_HEADERS)
 
-    async def may_prewarm(owner: str, repo: str) -> bool:
+    async def may_prewarm(owner: str, thread_id: str, repo: str) -> bool:
         """A repository the person may pin, and fewer than `boxes.prewarm_max_per_person` of their chats
-        whose VM was started early and that have had no message yet."""
+        whose VM was started early and that have had no message yet. The slot is taken before the await
+        (the check and the take have no await between them), and given back when the repository is not one
+        airlie knows: concurrent requests cannot all pass the count."""
         if repo_sessions is None or pinnable is None:
             return False
         unused = [
@@ -536,15 +547,19 @@ def chat_router(
             for i in prewarmed.get(owner, [])
             if threads.exists(i) and not threads.get(i, owner).messages and i not in busy
         ]
-        prewarmed[owner] = unused
         if len(unused) >= cfg.boxes.prewarm_max_per_person:
+            prewarmed[owner] = unused
             return False
+        prewarmed[owner] = [*unused, thread_id]
         try:
-            known = await pinnable()
+            known = {r.lower() for r in await pinnable()}
         except Exception:
             log.warning("could not list the repositories that may be pre-warmed", exc_info=True)
-            return False
-        return repo.lower() in {r.lower() for r in known}
+            known = set()
+        if repo.lower() in known:
+            return True
+        prewarmed[owner] = [i for i in prewarmed.get(owner, []) if i != thread_id]
+        return False
 
     async def prewarm(thread: Thread) -> None:
         """Open the session and start its VM (the code goes in too), then let go: the first turn finds it
@@ -576,8 +591,7 @@ def chat_router(
             return error("repository chats are not configured on this server", 503)
         t = threads.create(principal.user_id, body.kind, repo=body.repo, base_ref=body.base_ref)
         publish("chat", None)
-        if t.repo is not None and await may_prewarm(principal.user_id, t.repo):
-            prewarmed.setdefault(principal.user_id, []).append(t.id)
+        if t.repo is not None and await may_prewarm(principal.user_id, t.id, t.repo):
             task = asyncio.create_task(prewarm(t))
             background.add(task)
             task.add_done_callback(background.discard)

@@ -5,7 +5,9 @@ happen; the same call, resent with the person's approval, pushes once."""
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -51,7 +53,8 @@ class Rig:
     def __init__(self, tmp_path: Path, *replies: Any, recipe: str | None = None, **app_kw: Any) -> None:
         self.fakes = RepoFakes(tmp_path) if recipe is None else RepoFakes(tmp_path, recipe=recipe)
         self.up = ScriptedUpstream(*replies)
-        self.manager = Manager([FakeEngine("main")], budget_gb=100.0, clock=StuckClock())
+        self.engine = FakeEngine("main")
+        self.manager = Manager([self.engine], budget_gb=100.0, clock=StuckClock())
         cfg = chat_cfg(tmp_path)
         self.app = create_app(
             cfg,
@@ -760,3 +763,150 @@ def test_a_pre_warm_that_fails_leaves_the_chat_and_its_first_turn_says_why(tmp_p
         assert [t["id"] for t in c.get("/v1/airlie/chat/threads").json()] == [chat]
         r = c.post("/v1/airlie/chat/turn", json={**body(), "id": chat, "repo": None})
         assert r.status_code == 409 and r.json() == {"error": SOFTNET_HINT}
+
+
+# --- an answer is spent only by the call it allows: a turn that fails before it leaves the prompt waiting --
+
+
+def asked_in(c: TestClient, rig: Rig) -> str:
+    """The first turn, which asks to push; the prompt it leaves."""
+    return approval_id(c.post("/v1/airlie/chat/turn", json=body()))
+
+
+def still_waiting(c: TestClient) -> None:
+    parts = [p for m in c.get("/v1/airlie/chat/threads/t1").json()["messages"] for p in m["parts"]]
+    assert next(p for p in parts if p["type"] == "tool-push_branch")["state"] == "approval-requested"
+    assert "answer" not in next(p for p in parts if p["type"] == "data-approval")["data"]
+
+
+def test_a_vm_that_fails_to_boot_on_the_answer_leaves_the_prompt_waiting(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("pushed"))
+    rig.fakes.script_push()
+    with TestClient(rig.app) as c:
+        asked = asked_in(c, rig)
+        c.portal.call(rig.manager.stop, "vm:t1")
+        rig.fakes.vm().fail_boot = "the VM did not answer in 120s"
+
+        r = c.post("/v1/airlie/chat/turn", json=answer(asked))
+
+        assert r.status_code == 200 and "the VM did not answer" in r.text and rig.pushes() == 0
+        still_waiting(c)
+        rig.fakes.vm().fail_boot = None
+        assert c.post("/v1/airlie/chat/turn", json=answer(asked)).status_code == 200
+        assert rig.pushes() == 1
+
+
+def test_an_engine_that_fails_to_start_on_the_answer_leaves_the_prompt_waiting(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("pushed"))
+    rig.fakes.script_push()
+    with TestClient(rig.app) as c:
+        asked = asked_in(c, rig)
+        c.portal.call(rig.manager.stop, "main")
+        rig.engine.fail = "out of memory"
+
+        r = c.post("/v1/airlie/chat/turn", json=answer(asked))
+
+        assert r.status_code == 200 and "out of memory" in r.text and rig.pushes() == 0
+        still_waiting(c)
+        rig.engine.fail = None
+        assert c.post("/v1/airlie/chat/turn", json=answer(asked)).status_code == 200
+        assert rig.pushes() == 1
+
+
+def test_stop_while_the_answer_waits_for_its_engine_leaves_the_prompt_waiting(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("pushed"))
+    rig.fakes.script_push()
+    with TestClient(rig.app) as c:
+        asked = asked_in(c, rig)
+        c.portal.call(rig.manager.stop, "main")
+        rig.engine.gate = gate = asyncio.Event()
+        rig.engine.reported = reported = asyncio.Event()
+        done: list[httpx.Response] = []
+        waiting = threading.Thread(
+            target=lambda: done.append(c.post("/v1/airlie/chat/turn", json=answer(asked)))
+        )
+        waiting.start()
+        c.portal.call(reported.wait)  # the answer's turn waits for the engine
+
+        assert c.post("/v1/airlie/chat/threads/t1/stop").status_code == 204
+
+        waiting.join(10)
+        assert done and done[0].status_code == 200 and rig.pushes() == 0
+        still_waiting(c)
+        rig.engine.gate = None
+        c.portal.call(gate.set)
+        assert c.post("/v1/airlie/chat/turn", json=answer(asked)).status_code == 200
+        assert rig.pushes() == 1
+
+
+def test_an_approved_call_that_fails_shows_failed_on_its_prompt(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("it failed"))
+    rig.fakes.script_push()
+    asked = approval_id(rig.post())
+    rig.fakes.runner.answers["bundle list-heads"] = ""  # the host's git no longer takes the bundle
+
+    r = rig.post(answer(asked))
+
+    assert r.status_code == 200 and rig.pushes() == 0
+    failed = next(c for c in chunks(r.text) if c["type"] == "tool-output-error")
+    live = [c for c in chunks(r.text) if c["type"] == "data-approval"]
+    assert live[-1]["id"] == asked and live[-1]["data"]["answer"] == "failed"
+    shown = shown_prompt(rig)["data"]
+    assert shown["answer"] == "failed" and shown["error"] == failed["errorText"]
+
+
+# --- the pre-warm's bound holds under concurrent requests; a first turn joins a pre-warm in flight ---------
+
+
+def test_concurrent_new_chats_pre_warm_no_more_than_the_cap(tmp_path: Path) -> None:
+    entered = 0
+
+    async def slow_pinnable() -> list[str]:
+        nonlocal entered
+        entered += 1
+        for _ in range(50):  # long enough for the other requests to come in, without the clock
+            if entered >= 3:
+                break
+            await asyncio.sleep(0)
+        return ["o/r"]
+
+    rig = Rig(tmp_path, pinnable=slow_pinnable)
+    with TestClient(rig.app) as c:
+        threads = [threading.Thread(target=made, args=(c,)) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        settle(c)
+
+        assert len([n for n in rig.fakes.boxes if n.startswith("airlie-chat-")]) == 2
+
+
+def test_a_first_turn_during_its_pre_warm_waits_on_the_same_start(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Text("hello"), pinnable=pinnable_or)
+    with TestClient(rig.app) as c:
+        rig.fakes.mirror.refresh_gate = gate = asyncio.Event()
+        rig.fakes.mirror.refreshing = refreshing = asyncio.Event()
+        chat = made(c)
+        c.portal.call(refreshing.wait)  # the pre-warm is opening the session
+        done: list[httpx.Response] = []
+        turn = threading.Thread(
+            target=lambda: done.append(
+                c.post("/v1/airlie/chat/turn", json={**body(), "id": chat, "repo": None})
+            )
+        )
+        turn.start()
+
+        async def turn_waits_on_the_session() -> None:
+            while chat not in rig.app.state.chat_busy:
+                await asyncio.sleep(0)
+            for _ in range(200):  # the turn goes on until it waits on the open the pre-warm began
+                await asyncio.sleep(0)
+            gate.set()
+
+        c.portal.call(turn_waits_on_the_session)
+        turn.join(10)
+        settle(c)
+
+        assert done and done[0].status_code == 200
+        assert rig.fakes.mirror.refreshes == 1 and len(rig.fakes.vm(chat).boots) == 1

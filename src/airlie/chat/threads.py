@@ -284,6 +284,22 @@ class ThreadStore:
             if mark_answered(parts, answers):
                 self.conn.execute("update messages set parts = ? where seq = ?", (json.dumps(parts), seq))
 
+    def fail_answer(self, thread_id: str, approval_id: str, error: str) -> None:
+        """The approved call of request `approval_id` ran and failed: its `data-approval` part reads
+        `answer: "failed"` with the call's `error`, so the prompt does not read Approved."""
+        rows = self.conn.execute(
+            "select seq, parts from messages where thread_id = ? and role = 'assistant' "
+            "and parts like '%approval%'",
+            (thread_id,),
+        ).fetchall()
+        for seq, raw in rows:
+            parts = json.loads(raw)
+            hit = [p for p in parts if p.get("type") == "data-approval" and p.get("id") == approval_id]
+            for part in hit:
+                part["data"].update(answer="failed", error=error)
+            if hit:
+                self.conn.execute("update messages set parts = ? where seq = ?", (json.dumps(parts), seq))
+
     def set_todos(self, thread_id: str, todos: list[dict[str, Any]]) -> None:
         self.conn.execute(
             "update threads set todos = ?, updated = ? where id = ?",

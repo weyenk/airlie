@@ -3,6 +3,7 @@ over a recording runner and a recording publisher, and the RepoSessions built ov
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,9 +30,15 @@ class FakeMirror(Mirror):
         super().__init__(root, repo, FakePublisher(), run=runner)
         self.recipe = recipe
         self.refreshes = 0
+        self.refresh_gate: asyncio.Event | None = None
+        """When set, a refresh waits on it (after counting itself): a session caught mid-open."""
+        self.refreshing = asyncio.Event()
 
     async def refresh(self) -> None:
         self.refreshes += 1
+        self.refreshing.set()
+        if self.refresh_gate is not None:
+            await self.refresh_gate.wait()
 
     async def recipe_text(self, ref: str) -> str | None:
         return self.recipe
