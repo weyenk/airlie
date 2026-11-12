@@ -165,6 +165,9 @@ equivalent = [
     { mutant = "airlie.manager.core.xǁManagerǁ_make_room__mutmut_7", line = "if self._used_gb(None) + need <= self._budget_gb:", reason = "the slot being made room for is never in use or stop_failed when this runs, so excluding it changes no sum" },
     { mutant = "airlie.manager.core.xǁManagerǁ_make_room__mutmut_9", line = "return", reason = "break leaves the try and the function ends: return does the same" },
     { mutant = "airlie.manager.core.xǁManagerǁ_make_room__mutmut_11", line = "victim = self._victim(None)", reason = "the slot being made room for is never ready, so it is never its own victim" },
+    { mutant = "airlie.manager.core.xǁManagerǁ_make_room__mutmut_21", line = "reason = \"waiting for memory: \" + \", \".join(self._blockers(None))", reason = "the slot being made room for is never in use or stop_failed when this runs, so excluding it names no other blocker" },
+    { mutant = "airlie.manager.core.xǁManagerǁ_blockers__mutmut_2", line = "others = self._using_memory(None)", reason = "its only caller is _make_room, whose slot is never in use or stop_failed then, so excluding it filters nothing" },
+    { mutant = "airlie.manager.core.xǁManagerǁ_used_gb__mutmut_2", line = "return sum(s.resource.footprint_gb for s in self._using_memory(None))", reason = "its only caller is _make_room, whose slot is never in use or stop_failed then, so excluding it changes no sum" },
     { mutant = "airlie.manager.core.xǁManagerǁ_start__mutmut_33", line = "slot.last_used = None", reason = "hold sets last_used on release before anything reads it, and no await sits between the start and the holder entry" },
 ]
 # Functions whose code runs only on macOS (module:function, or module:Class.method): their mutants are run on
