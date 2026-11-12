@@ -1177,3 +1177,53 @@ async def test_reap_goes_on_past_a_resource_discarded_while_an_earlier_stop_was_
     await m.discard("b")
     a.stop_gate.set()
     assert await reaping == ["a", "c"]
+
+
+async def test_nothing_waits_for_memory_when_no_resource_is_waiting() -> None:
+    m, _ = manager(FakeResource("a"), FakeResource("b"))
+    await _hold(m, "a")  # one ready, one stopped: neither is waiting
+    assert m.waiting() is None
+
+
+async def test_waiting_gives_the_reason_of_the_resource_that_waits() -> None:
+    a, b = FakeResource("a", 10), FakeResource("b", 10)
+    m, _ = manager(a, b, FakeResource("c", 10), budget_gb=15)
+    async with m.hold("a", "busy"):
+        task = asyncio.create_task(_hold(m, "b"))
+        await settle()
+        assert m.waiting() == "waiting for memory: busy"
+    await asyncio.wait_for(task, 5)
+    assert m.waiting() is None
+
+
+async def test_a_resource_waiting_with_no_detail_waits_for_memory() -> None:
+    class Waits(FakeResource):
+        async def start(self, report: Report) -> None:
+            report("waiting", "", None)
+            assert self.gate is not None
+            await self.gate.wait()
+            self.up = True
+
+    r = Waits("a")
+    r.gate = asyncio.Event()
+    m, _ = manager(r)
+    task = asyncio.create_task(_hold(m, "a"))
+    await settle()
+    assert m.waiting() == "waiting for memory"
+    r.gate.set()
+    await asyncio.wait_for(task, 5)
+
+
+async def test_used_gb_sums_the_footprints_of_every_resource_in_use() -> None:
+    m, _ = manager(FakeResource("a", 10), FakeResource("b", 4), FakeResource("c", 30))
+    assert m.used_gb() == 0
+    await _hold(m, "a")
+    await _hold(m, "b")
+    assert m.used_gb() == 14  # "c" is stopped: it holds no memory
+
+
+async def test_footprint_gb_is_the_named_resources_footprint() -> None:
+    m, _ = manager(FakeResource("a", 10), FakeResource("b", 4))
+    assert m.footprint_gb("b") == 4
+    with pytest.raises(EngineError, match="^z is not a resource$"):
+        m.footprint_gb("z")

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from airlie.chat.threads import StoredMessage, ThreadStore
+from airlie.chat.threads import StoredMessage, ThreadNotFound, ThreadStore
 from tests.support.auth_store import Clock
 
 
@@ -133,3 +133,58 @@ def test_drop_after_a_message_the_thread_does_not_have_keeps_everything(store: T
     store.drop_after("t1", "x1")
 
     assert [m.id for m in store.get("t1", "noah").messages] == ["u1", "a1"]
+
+
+def test_add_part_adds_the_part_to_the_end_of_the_named_message_and_keeps_its_usage(
+    store: ThreadStore,
+) -> None:
+    store.open("t1", "noah", "plain")
+    store.open("t2", "noah", "plain")
+    store.append("t1", msg("u1", "user"))
+    store.append(
+        "t1",
+        StoredMessage(
+            "a1", "assistant", [{"type": "text", "text": "on it"}], 2.0, {"in": 7}, interrupted=True
+        ),
+    )
+    store.append("t1", msg("a2"))
+    store.append("t2", msg("a1"))
+    card = {"type": "data-job", "id": "j1", "data": {"story": "AIR-1"}}
+
+    store.add_part("t1", "a1", card)
+    store.add_part("t1", "a1", {"type": "text", "text": "done"})
+
+    by_id = {m.id: m for m in store.get("t1", "noah").messages}
+    assert by_id["a1"].parts == [{"type": "text", "text": "on it"}, card, {"type": "text", "text": "done"}]
+    assert (by_id["a1"].usage, by_id["a1"].interrupted, by_id["a1"].created) == ({"in": 7}, True, 2.0)
+    assert by_id["u1"].parts == [{"type": "text", "text": "u1"}]
+    assert by_id["a2"].parts == [{"type": "text", "text": "a2"}]
+    assert parts_of(store, "t2") == {"a1": [{"type": "text", "text": "a1"}]}
+
+
+def test_add_part_to_a_message_the_thread_does_not_have_raises_thread_not_found(
+    store: ThreadStore,
+) -> None:
+    store.open("t1", "noah", "plain")
+    store.open("t2", "noah", "plain")
+    store.append("t2", msg("x1"))
+
+    with pytest.raises(ThreadNotFound) as missing:
+        store.add_part("t1", "x1", {"type": "text", "text": "late"})
+
+    assert str(missing.value) == "t1: no message x1"
+    assert parts_of(store, "t2") == {"x1": [{"type": "text", "text": "x1"}]}
+
+
+def test_count_empty_counts_only_the_owners_chats_with_no_message_yet(store: ThreadStore) -> None:
+    assert store.count_empty("noah") == 0
+    store.open("e1", "noah", "plain")
+    store.open("e2", "noah", "plain")
+    store.open("e3", "noah", "plain")
+    store.open("full", "noah", "plain")
+    store.append("full", msg("u1", "user"))
+    store.open("other", "ash", "plain")
+
+    assert store.count_empty("noah") == 3
+    assert store.count_empty("ash") == 1
+    assert store.count_empty("nobody") == 0

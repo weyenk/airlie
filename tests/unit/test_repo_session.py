@@ -943,3 +943,112 @@ async def test_a_vm_that_cannot_be_adopted_is_logged_with_its_chat_and_reason(
     [record] = caplog.records
     assert record.getMessage() == "could not adopt the VM of chat t1"
     assert record.exc_info and record.exc_info[1] is not None and record.levelname == "WARNING"
+
+
+# --- the session branch as the host's mirror sees it ---------------------------------------------------
+
+
+class GitAnswers:
+    """A mirror whose git answers only the exact commands it was given (a missing one fails, as git would);
+    every command is recorded."""
+
+    def __init__(self, answers: dict[tuple[str, ...], str]) -> None:
+        self.answers = answers
+        self.calls: list[tuple[str, ...]] = []
+
+    async def git(self, *args: str) -> str:
+        self.calls.append(args)
+        if args not in self.answers:
+            raise MirrorError(f"git {' '.join(map(str, args))} failed")
+        return self.answers[args]
+
+
+def _branch_world(world: World, answers: dict[tuple[str, ...], str]) -> tuple[GitAnswers, list[str]]:
+    mirror = GitAnswers(answers)
+    repos: list[str] = []
+    world.sessions._mirror_for = lambda repo: repos.append(repo) or mirror  # type: ignore[assignment,func-returns-value]
+    return mirror, repos
+
+
+BRANCH_HEAD = "c" * 40
+BRANCH = f"airlie/chat-{slug_of('t1')}"
+HEADS = ("rev-parse", "--verify", "-q", f"refs/heads/{BRANCH}")
+COUNT = ("rev-list", "--count", f"{TIP}..{BRANCH_HEAD}")
+REMOTE = ("rev-parse", "--verify", "-q", f"refs/remotes/origin/{BRANCH}")
+
+
+async def test_the_branch_state_counts_the_commits_past_the_base_and_sees_the_remote_at_the_head(
+    world: World,
+) -> None:
+    world.thread()
+    world.threads.set_base("t1", TIP)
+    mirror, repos = _branch_world(
+        world, {HEADS: f"{BRANCH_HEAD}\n", COUNT: " 3\n", REMOTE: f"{BRANCH_HEAD}\n"}
+    )
+
+    state = await world.sessions.branch_state(world.threads.get("t1", "noah"))
+
+    assert state == (3, True) and type(state[0]) is int and state[1] is True
+    assert mirror.calls == [HEADS, COUNT, REMOTE]  # the mirror alone: the VM is never asked
+    assert repos == ["o/r"]
+
+
+async def test_a_remote_branch_at_another_commit_is_not_pushed(world: World) -> None:
+    world.thread()
+    world.threads.set_base("t1", TIP)
+    _branch_world(world, {HEADS: BRANCH_HEAD, COUNT: "1", REMOTE: "d" * 40})
+
+    ahead, pushed = await world.sessions.branch_state(world.threads.get("t1", "noah"))
+
+    assert ahead == 1 and pushed is False
+
+
+async def test_a_branch_the_remote_does_not_have_is_not_pushed(world: World) -> None:
+    world.thread()
+    world.threads.set_base("t1", TIP)
+    mirror, _ = _branch_world(world, {HEADS: BRANCH_HEAD, COUNT: "2"})
+
+    ahead, pushed = await world.sessions.branch_state(world.threads.get("t1", "noah"))
+
+    assert ahead == 2 and pushed is False
+    assert mirror.calls[-1] == REMOTE
+
+
+async def test_a_chat_not_opened_yet_has_no_branch_state_and_asks_no_mirror(world: World) -> None:
+    world.thread()
+    mirror, repos = _branch_world(world, {HEADS: BRANCH_HEAD, COUNT: "2", REMOTE: BRANCH_HEAD})
+
+    assert await world.sessions.branch_state(world.threads.get("t1", "noah")) == (None, None)
+    assert repos == [] and mirror.calls == []
+
+
+async def test_a_branch_the_mirror_does_not_have_has_no_state_and_is_logged(
+    world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    world.thread()
+    world.threads.set_base("t1", TIP)
+    mirror, _ = _branch_world(world, {})
+
+    with caplog.at_level("DEBUG", logger="airlie.chat.repo_session"):
+        state = await world.sessions.branch_state(world.threads.get("t1", "noah"))
+
+    assert state == (None, None) and mirror.calls == [HEADS]  # the remote is not asked about a missing branch
+    [record] = caplog.records
+    assert record.getMessage() == f"could not count the commits of {BRANCH} in the mirror"
+    assert record.levelname == "DEBUG" and record.exc_info and isinstance(record.exc_info[1], MirrorError)
+
+
+async def test_a_count_the_mirror_cannot_give_has_no_state(world: World) -> None:
+    world.thread()
+    world.threads.set_base("t1", TIP)
+    mirror, _ = _branch_world(world, {HEADS: BRANCH_HEAD, REMOTE: BRANCH_HEAD})
+
+    assert await world.sessions.branch_state(world.threads.get("t1", "noah")) == (None, None)
+    assert mirror.calls == [HEADS, COUNT]
+
+
+async def test_a_chat_without_a_repository_has_no_branch_state(world: World) -> None:
+    plain = Thread("p1", "noah", "plain", "", 0.0, 0.0)
+
+    with pytest.raises(AssertionError):
+        await world.sessions.branch_state(plain)
