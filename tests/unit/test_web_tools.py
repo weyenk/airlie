@@ -131,7 +131,8 @@ def test_check_address_reports_tailnet_before_private() -> None:
         ("0.0.0.0", "refused: private address"),
         ("::", "refused: private address"),
         ("224.0.0.1", "refused: non-public address"),  # multicast
-        ("240.0.0.1", "refused: non-public address"),  # reserved
+        ("240.0.0.1", "refused: private address"),  # reserved
+        ("ff02::1", "refused: non-public address"),
     ],
 )
 def test_check_address_refuses_every_form_of_a_non_public_address(ip: str, refusal: str) -> None:

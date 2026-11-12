@@ -52,7 +52,7 @@ def check_address(ip: str) -> str | None:
         return "refused: link-local address"
     if a.is_private:
         return "refused: private address"
-    if not a.is_global:  # multicast, reserved, and the rest of what is not the public internet
+    if a.is_multicast or not a.is_global:  # multicast, and the rest of what is not the public internet
         return "refused: non-public address"
     return None
 
