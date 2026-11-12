@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+from airlie.boxes.protocol import Box
+
 
 @dataclass(frozen=True)
 class ToolContext:
@@ -46,6 +48,11 @@ class ToolContext:
     """Commands run where they cannot write outside the worktree (airlie.tools.confine; macOS only)."""
     writable: tuple[Path, ...] = ()
     """Directories a confined command may also write under (tools.writable, or a gate's report file)."""
+    box: Box | None = field(default=None, hash=False, compare=False)
+    """The session's VM: when set, every builtin tool runs in it and never on the host (tools.boxed, the
+    shell seam's box path, compute). `worktree` is then only a path inside the VM (the recipe's workdir)."""
+    box_env: Mapping[str, str] = field(default_factory=dict, hash=False, compare=False)
+    """The recipe's variables for commands in the box (airlie.subproc.box_env adds the fixed ones)."""
 
 
 @dataclass(frozen=True)

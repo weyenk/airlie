@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from airlie.engine.types import ToolCall, ToolSchema
+from airlie.tools.boxed import BoxEditFile, BoxGrep, BoxListDir, BoxReadFile, BoxWriteFile
 from airlie.tools.compute import Compute
 from airlie.tools.fs import EditFile, Grep, ListDir, ReadFile, WriteFile
 from airlie.tools.jsonargs import parse_tool_args
@@ -24,6 +25,17 @@ BUILTIN: dict[str, type] = {
     "git": Git,
     "compute": Compute,
 }
+
+BOXED: dict[str, type] = {
+    **BUILTIN,
+    "read_file": BoxReadFile,
+    "write_file": BoxWriteFile,
+    "edit_file": BoxEditFile,
+    "list_dir": BoxListDir,
+    "grep": BoxGrep,
+}
+"""BUILTIN with the file tools that run in the session's VM; shell, run_tests, git and compute are the same
+classes (they branch on `ctx.box`)."""
 
 
 _EXAMPLE_VALUES: dict[str, Any] = {"path": "src/app.py", "cmd": "ls"}
@@ -61,6 +73,18 @@ class ToolRegistry:
             if n not in BUILTIN:
                 raise KeyError(f"unknown builtin tool '{n}' (known: {sorted(BUILTIN)})")
             tools.append(BUILTIN[n]())
+        return cls(tools, ctx)
+
+    @classmethod
+    def boxed(cls, names: Iterable[str], ctx: ToolContext) -> ToolRegistry:
+        """`builtin` for a repository chat: every tool runs in `ctx.box`, never on the host."""
+        if ctx.box is None:
+            raise ValueError("boxed tools need a box: ToolContext.box is None")
+        tools: list[Tool] = []
+        for n in names:
+            if n not in BOXED:
+                raise KeyError(f"unknown builtin tool '{n}' (known: {sorted(BOXED)})")
+            tools.append(BOXED[n]())
         return cls(tools, ctx)
 
     def add(self, tool: Tool) -> None:

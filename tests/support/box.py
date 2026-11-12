@@ -146,6 +146,10 @@ class FakeBox:
             case ["sh", "-c", script] if m := re.fullmatch(r"cat > (\S+)", script):
                 self.files[m.group(1)] = stdin or b""
                 return ExecResult(0, "")
+            case ["sh", "-c", script, "sh", path] if script == 'mkdir -p "$(dirname "$1")" && cat > "$1"':
+                self._mkdir(path.rsplit("/", 1)[0] or "/")
+                self.files[path] = stdin or b""
+                return ExecResult(0, "")
             case ["test", "-e" | "-f", path]:
                 return ExecResult(0 if path in self.files else 1, "")
             case ["test", "-d", path]:

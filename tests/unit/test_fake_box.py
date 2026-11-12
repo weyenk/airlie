@@ -208,3 +208,10 @@ def test_rename_refuses_a_missing_or_running_box() -> None:
     run(box.boot(network=Network("open"), timeout_s=1))
     with pytest.raises(BoxUnavailable, match="running"):
         run(box.rename("x"))
+
+
+def test_the_write_script_makes_the_parent_and_stores_stdin() -> None:
+    box = running_box()
+    script = 'mkdir -p "$(dirname "$1")" && cat > "$1"'
+    result = run(box.exec(["sh", "-c", script, "sh", "/work/a/b.txt"], stdin=b"x"))
+    assert (result.rc, box.files["/work/a/b.txt"], "/work/a" in box.dirs) == (0, b"x", True)
