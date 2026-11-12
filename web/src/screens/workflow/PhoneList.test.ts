@@ -78,9 +78,8 @@ test("a built layer and a pending layer are one row each", () => {
 test("the now bar stays pinned at the top", () => {
   const w = draw(BUILD(), { now: now() });
   expect(w.get("[data-now]").classes()).toContain("sticky");
-  expect(w.get("[data-now]").classes().join(" ")).toContain("safe-area-inset-top");
-  // below the app's sticky top bar, not over it: the document scrolls under both
-  expect(w.get("[data-now]").classes()).toContain("top-[calc(var(--header-h)+env(safe-area-inset-top,0px))]");
+  // below the app's sticky top bar (--header-h already includes the notch inset), not over it
+  expect(w.get("[data-now]").classes()).toContain("top-(--header-h)");
 });
 
 test("an 8-layer story with 120-character titles keeps one line per layer", () => {

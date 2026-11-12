@@ -7,7 +7,7 @@ import TopBar from "./TopBar.vue";
 <template>
   <TopBar />
   <main
-    class="pr-[env(safe-area-inset-right)] pb-[calc(var(--tabbar-h)+env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left)] min-[641px]:pb-0"
+    class="pr-[env(safe-area-inset-right,0px)] pb-(--tabbar-h) pl-[env(safe-area-inset-left,0px)] min-[641px]:pb-0"
   >
     <slot />
   </main>
