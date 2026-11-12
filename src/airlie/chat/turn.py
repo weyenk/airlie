@@ -174,6 +174,8 @@ class _Run:
     handle: TurnHandle | None = None
     around: Callable[[], AbstractAsyncContextManager[Any]] | None = None
     """Entered before the engine hold and left after the turn is saved: a repository chat's VM."""
+    around_status: str | None = None
+    """The manager resource `around` holds (`vm:<thread>`): its status is relayed while it is entered."""
     w: StreamWriter = field(init=False)
 
     def __post_init__(self) -> None:
@@ -236,12 +238,26 @@ class _Run:
     async def enter_hold(self, stack: AsyncExitStack) -> None:
         """Take the engine as `chat:{thread}`; while it is not ready, relay the manager's status."""
         owner = f"chat:{self.req.thread.id}"
-        enter = asyncio.create_task(stack.enter_async_context(self.holder.hold(self.engine_name, owner)))
+        await self.enter_relayed(stack, self.holder.hold(self.engine_name, owner), self.engine_name)
+
+    async def enter_relayed(
+        self,
+        stack: AsyncExitStack,
+        cm: AbstractAsyncContextManager[Any],
+        name: str | None,
+        *,
+        quiet_ready: bool = False,
+    ) -> None:
+        """Enter `cm` on `stack`; while that waits, relay the manager's status row `name` (the engine, or the
+        VM: "building image", "starting VM", "waiting for memory: ..."). With `quiet_ready`, a first row that
+        says ready or stopped is not shown (a VM already up, or about to start, has nothing to say yet)."""
+        enter = asyncio.create_task(stack.enter_async_context(cm))
         seen: dict[str, tuple[str, str]] = {}
         try:
-            await asyncio.sleep(0)  # an engine already up is held at once: no status to show
+            await asyncio.sleep(0)  # a resource already up is held at once: no status to show
             while not enter.done():
-                self.emit_status(self.engine_name, seen)
+                if name is not None:
+                    self.emit_status(name, seen, quiet_ready=quiet_ready)
                 sleeper = asyncio.create_task(self.clock.sleep(STATUS_EVERY_S))
                 try:
                     await asyncio.wait({enter, sleeper}, return_when=asyncio.FIRST_COMPLETED)
@@ -280,8 +296,14 @@ class _Run:
         finally:
             OBSERVER.reset(token)
             relay.cancel()
-            with suppress(asyncio.CancelledError):
+            try:
                 await relay
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise  # the turn itself is being stopped, not just the relay
+            except Exception:  # the status relay failed: the tool's own result still stands
+                log.exception("chat turn %s: the task status relay failed", self.req.thread.id)
 
     # --- one generation -------------------------------------------------------------------------------------
 
@@ -432,7 +454,7 @@ class _Run:
             if self.handle is not None and self.handle.stopped:
                 raise asyncio.CancelledError
             if self.around is not None:
-                await stack.enter_async_context(self.around())
+                await self.enter_relayed(stack, self.around(), self.around_status, quiet_ready=True)
             await self.enter_hold(stack)
             await self.loop()
             self.settle()
@@ -511,6 +533,7 @@ async def run_turn(
     status: Callable[[], list[Status]],
     handle: TurnHandle | None = None,
     around: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
+    around_status: str | None = None,
 ) -> AsyncIterator[str]:
     """The turn's SSE strings. `req.ctx` is already prepared (the route ran `session_start` and `before_turn`
     first, so a refusal is an HTTP error before the first byte)."""
@@ -520,6 +543,7 @@ async def run_turn(
     )
     run.handle = handle
     run.around = around
+    run.around_status = around_status
     driver = asyncio.create_task(run.drive())
     if handle is not None:
         handle._driver = driver

@@ -3,13 +3,13 @@ over a recording runner and a recording publisher, and the RepoSessions built ov
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from airlie.boxes.images import Images, SecretStore
 from airlie.boxes.mirror import Mirror
-from airlie.boxes.protocol import Box, ExecResult
+from airlie.boxes.protocol import Box, ExecResult, Network
 from airlie.chat.confirm import Confirmations
 from airlie.chat.repo_session import RepoSessions, build_confirm, slug_of
 from airlie.chat.threads import ThreadStore
@@ -64,6 +64,8 @@ class RepoFakes:
         self.mirror = FakeMirror(tmp_path / "mirrors", "o/r", self.runner, recipe)
         self.publisher = self.mirror.publisher
         self.sessions: RepoSessions | None = None
+        self.network_check: Callable[[Network], None] = lambda network: None
+        """What the sessions ask before a VM is made: raise BoxUnavailable for "softnet is missing"."""
 
     def box_for(self, name: str) -> Box:
         if name not in self.boxes:
@@ -102,11 +104,11 @@ class RepoFakes:
         self.sessions = RepoSessions(
             cfg,
             manager,
-            publisher=self.publisher,
             images=images,
             confirmations=confirmations,
             mirror_for=lambda repo: self.mirror,
             box_for=self.box_for,
             threads=threads,
+            network_check=lambda network: self.network_check(network),
         )
         return self.sessions

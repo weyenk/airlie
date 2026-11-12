@@ -6,6 +6,7 @@ git in the mirror (airlie.boxes): the code runs in the VM."""
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import hashlib
 import logging
@@ -16,7 +17,7 @@ from pathlib import Path
 
 from airlie.boxes.images import Images
 from airlie.boxes.mirror import Mirror
-from airlie.boxes.protocol import Box, BoxUnavailable, ConfirmationRequired, Network
+from airlie.boxes.protocol import BackendMissing, Box, BoxUnavailable, ConfirmationRequired, Network
 from airlie.boxes.recipe import load_recipe
 from airlie.boxes.transit import seed
 from airlie.chat.confirm import Confirmations, NeedsApproval
@@ -26,7 +27,7 @@ from airlie.config.schema import AirlieConfig
 from airlie.engine.types import EngineError
 from airlie.manager.core import Manager
 from airlie.manager.vms import VMResource
-from airlie.story.publish import Publisher
+from airlie.story.publish import Publisher, Runner
 from airlie.tools.protocol import ToolContext
 
 log = logging.getLogger("airlie.chat.repo_session")
@@ -70,16 +71,20 @@ class RepoSessions:
         cfg: AirlieConfig,
         manager: Manager,
         *,
-        publisher: Publisher,
         images: Images,
         confirmations: Confirmations,
         mirror_for: Callable[[str], Mirror],
         box_for: Callable[[str], Box],
         threads: ThreadStore,
+        network_check: Callable[[Network], None] = lambda network: None,
     ) -> None:
+        """`mirror_for` gives each repository its own Mirror with its own Publisher (repo_mirrors).
+        `network_check` raises BoxUnavailable, with how to fix it, when the backend cannot give the VM the
+        configured network (softnet missing)."""
         self._cfg = cfg
         self._manager = manager
-        self._publisher = publisher
+        self._network_check = network_check
+        self._repo_locks: dict[str, asyncio.Lock] = {}
         self._images = images
         self._confirmations = confirmations
         self._mirror_for = mirror_for
@@ -120,6 +125,9 @@ class RepoSessions:
             _session.reset(token)
 
     async def _network(self) -> Network:
+        return self._configured_network()
+
+    def _configured_network(self) -> Network:
         spec = self._cfg.boxes.network
         return Network(spec.after_setup, tuple(spec.allow_hosts) if spec.after_setup == "allow_list" else ())
 
@@ -135,13 +143,16 @@ class RepoSessions:
             return found
         resource = self._resource(thread)
         await resource.box.exists()  # BoxUnavailable, with the install hint, when tart is not there
+        self._network_check(self._configured_network())  # and when softnet is not, for allow_list or off
         mirror = self._mirror_for(thread.repo)
-        base_sha = thread.base_sha
-        if base_sha is None:
-            await mirror.refresh()
-            base_sha = await mirror.resolve(qualified(thread.base_ref))
-            self._threads.set_base(thread.id, base_sha)
-        recipe = load_recipe(await mirror.recipe_text(base_sha), self._cfg.boxes)
+        lock = self._repo_locks.setdefault(thread.repo, asyncio.Lock())
+        async with lock:  # one repository's mirror is made and fetched by one chat at a time
+            base_sha = thread.base_sha
+            if base_sha is None:
+                await mirror.refresh()
+                base_sha = await mirror.resolve(qualified(thread.base_ref))
+                self._threads.set_base(thread.id, base_sha)
+            recipe = load_recipe(await mirror.recipe_text(base_sha), self._cfg.boxes)
         chat = RepoChat(
             session_id=thread.id,
             slug=slug_of(thread.id),
@@ -152,7 +163,6 @@ class RepoSessions:
             recipe=recipe,
             box=resource.box,
             mirror=mirror,
-            publisher=self._publisher,
             max_bytes=self._cfg.boxes.bundle_max_mb * 1024 * 1024,
         )
         self._chats[thread.id] = chat
@@ -212,8 +222,15 @@ class RepoSessions:
         try:
             if await box.exists():
                 await box.delete()
-        except BoxUnavailable:  # no tart: no VM disk can be there
+        except BackendMissing:  # no tart at all: no VM disk can be there
             pass
+        except BoxUnavailable as e:  # tart failed: the disk may be there, so the chat that names it stays
+            if chat is not None:
+                self._chats[thread.id] = chat
+            if resource is not None:
+                self._resources[thread.id] = resource
+                self._manager.add(resource)  # discarded above: registered again, stopped
+            raise EngineError(f"could not delete the VM {box.name} (the chat is kept; try again): {e}") from e
         self._confirmations.forget(thread.id)
         if thread.repo is not None:
             try:  # the host's copy of the session branch (pushed or not)
@@ -223,6 +240,16 @@ class RepoSessions:
                 log.warning(
                     "could not drop the session branch of %s from the mirror", thread.id, exc_info=True
                 )
+
+    async def stop_all(self) -> None:
+        """At serve's shutdown: stop every chat VM that runs (the disks stay; the next start adopts or boots
+        them). A VM that will not stop is logged and left: shutdown goes on."""
+        for thread_id, resource in list(self._resources.items()):
+            try:
+                if await resource.running():
+                    await self._manager.stop(resource.name)
+            except Exception:
+                log.warning("could not stop the VM of chat %s at shutdown", thread_id, exc_info=True)
 
     async def adopt(self) -> None:
         """At serve's start: register the VM of every stored repository chat whose disk exists, and have the
@@ -237,35 +264,61 @@ class RepoSessions:
         await self._manager.adopt()
 
 
+def repo_mirrors(
+    root: Path,
+    publisher: Callable[[], Publisher],
+    *,
+    run: Runner,
+    local_checkout: Callable[[str], Path | None] = lambda repo: None,
+) -> Callable[[str], Mirror]:
+    """`mirror_for`: one Mirror per repository ("owner/name"), made on its first use and kept, each with a
+    Publisher of its own. A Publisher holds the one repository its steps may fetch from and push to (what
+    `prepare` read), so one shared by two repositories would send a push of one to the other's check (and
+    refuse it), or mint a token for the wrong repository."""
+    made: dict[str, Mirror] = {}
+
+    def mirror_for(repo: str) -> Mirror:
+        found = made.get(repo)
+        if found is None:
+            found = made[repo] = Mirror(root, repo, publisher(), run=run, local_checkout=local_checkout(repo))
+        return found
+
+    return mirror_for
+
+
 def default_repo_sessions(
     cfg: AirlieConfig, manager: Manager, threads: ThreadStore, confirmations: Confirmations
 ) -> RepoSessions:
-    """The serve wiring: Tart boxes, the story's publisher (the GitHub App's bot when configured) and a host
-    mirror per repository under `<state_dir>/chat/mirrors` (from `story.repos_root` when there is no App)."""
+    """The serve wiring: Tart boxes (softnet checked for a filtered network), and a host mirror per
+    repository under `<state_dir>/chat/mirrors` with its own publisher, as the GitHub App's bot when one is
+    configured (else read from `story.repos_root`, and nothing is pushed)."""
     from airlie.boxes.images import SecretStore
     from airlie.boxes.mirror import MirrorError
-    from airlie.boxes.tart import TartBox
+    from airlie.boxes.tart import SOFTNET_HINT, TartBox, softnet_installed
     from airlie.story.checkout import find_checkout
     from airlie.story.factory import github_app
     from airlie.story.model import RepositoryError
     from airlie.story.publish import run_cmd
 
     state = cfg.observability.state_dir.expanduser()
-    publisher = Publisher(remote=cfg.story.remote, app=github_app(cfg), publish="single")
+    app = github_app(cfg)
     log_dir = state / "boxes" / "logs"
 
     def box_for(name: str) -> Box:
         log_dir.mkdir(parents=True, exist_ok=True)
         return TartBox(name, log_dir=log_dir)
 
-    def mirror_for(repo: str) -> Mirror:
-        local: Path | None = None
+    def local_checkout(repo: str) -> Path | None:
         try:
-            local = find_checkout(cfg.story.repos_root.expanduser(), repo)
+            return find_checkout(cfg.story.repos_root.expanduser(), repo)
         except RepositoryError as e:
-            if publisher.app is None:  # nothing else to read the code from
+            if app is None:  # nothing else to read the code from
                 raise MirrorError(str(e)) from e
-        return Mirror(state / "chat" / "mirrors", repo, publisher, run=run_cmd, local_checkout=local)
+            return None
+
+    def network_check(network: Network) -> None:
+        if network.mode != "open" and not softnet_installed():
+            raise BoxUnavailable(SOFTNET_HINT)
 
     images = Images(
         box_for,
@@ -276,10 +329,15 @@ def default_repo_sessions(
     return RepoSessions(
         cfg,
         manager,
-        publisher=publisher,
         images=images,
         confirmations=confirmations,
-        mirror_for=mirror_for,
+        mirror_for=repo_mirrors(
+            state / "chat" / "mirrors",
+            lambda: Publisher(remote=cfg.story.remote, app=app, publish="single"),
+            run=run_cmd,
+            local_checkout=local_checkout,
+        ),
         box_for=box_for,
         threads=threads,
+        network_check=network_check,
     )

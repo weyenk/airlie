@@ -11,6 +11,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from airlie.boxes.mirror import Mirror
 from airlie.boxes.protocol import Box
@@ -21,6 +22,10 @@ from airlie.subproc import NO_HOOKS_ARGS
 
 BUNDLE_IN_VM = "/tmp/in.bundle"
 BUNDLE_TIMEOUT_S = 600.0
+SHOWN_COMMITS = 20
+SHOWN_PATHS = 50
+"""How many commits and changed paths a push's approval request lists; the rest are counted."""
+WORKFLOWS = ".github/workflows/"
 _BRANCH = re.compile(r"airlie/[A-Za-z0-9][A-Za-z0-9._-]*")
 _SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
@@ -34,6 +39,27 @@ class HarvestResult:
     commits: int
     sha: str
     changes_workflows: bool
+    log: tuple[str, ...] = ()
+    """The new commits, newest first: short sha and subject."""
+    paths: tuple[str, ...] = ()
+    """Every path the new commits change."""
+
+
+def _shown(items: tuple[str, ...], limit: int) -> list[str]:
+    extra = len(items) - limit
+    return [*items[:limit], f"... and {extra} more"] if extra > 0 else list(items)
+
+
+def push_subject(branch: str, result: HarvestResult) -> dict[str, Any]:
+    """What a person says yes to before `push_branch`: what will be pushed, bound to its head commit, so a
+    yes for one head never pushes another."""
+    return {
+        "branch": branch,
+        "head": result.sha,
+        "commits": _shown(result.log, SHOWN_COMMITS),
+        "paths": _shown(result.paths, SHOWN_PATHS),
+        "changes_workflows": result.changes_workflows,
+    }
 
 
 def _check_branch(branch: str) -> None:
@@ -51,11 +77,14 @@ async def _vm(box: Box, argv: list[str], *, stdin: bytes | None = None, cwd: str
 
 async def seed(box: Box, mirror: Mirror, recipe: Recipe, *, ref: str, branch: str, session_id: str) -> None:
     """Put `ref` in the VM as a clone with no remote, on the new `branch`. A workdir that already holds a
-    clone (a resumed session) is left alone."""
+    clone (a resumed session) is left alone. The clone is made beside the workdir and moved into place only
+    once it is whole, so a seed that was stopped or failed half way leaves no clone a later turn would take
+    for a seeded one: that turn seeds again."""
     _check_branch(branch)
     workdir = recipe.workdir
     if (await box.exec(["test", "-d", f"{workdir}/.git"])).rc == 0:
         return
+    staging = f"{workdir.rstrip('/')}.seed-tmp"
     sha = await mirror.resolve(ref)
     seed_ref = f"refs/heads/airlie-seed-{re.sub(r'[^A-Za-z0-9]', '', session_id) or 'x'}"
     await mirror.git("update-ref", seed_ref, sha)
@@ -66,12 +95,14 @@ async def seed(box: Box, mirror: Mirror, recipe: Recipe, *, ref: str, branch: st
             data = bundle.read_bytes()
     finally:
         await mirror.git("update-ref", "-d", seed_ref)
+    await _vm(box, ["rm", "-rf", staging])  # what an earlier seed that did not finish left
     await _vm(box, ["sh", "-c", f"cat > {BUNDLE_IN_VM}"], stdin=data)
-    await _vm(box, ["git", "clone", "-q", "--no-checkout", BUNDLE_IN_VM, workdir])
-    await _vm(box, ["git", "remote", "remove", "origin"], cwd=workdir)
-    await _vm(box, ["git", "checkout", "-q", "-b", branch, sha], cwd=workdir)
-    await _vm(box, ["git", "config", "user.name", "airlie"], cwd=workdir)
-    await _vm(box, ["git", "config", "user.email", "airlie@local"], cwd=workdir)
+    await _vm(box, ["git", "clone", "-q", "--no-checkout", BUNDLE_IN_VM, staging])
+    await _vm(box, ["git", "remote", "remove", "origin"], cwd=staging)
+    await _vm(box, ["git", "checkout", "-q", "-b", branch, sha], cwd=staging)
+    await _vm(box, ["git", "config", "user.name", "airlie"], cwd=staging)
+    await _vm(box, ["git", "config", "user.email", "airlie@local"], cwd=staging)
+    await _vm(box, ["mv", "-T", staging, workdir])  # the last step: only a whole clone is ever the workdir
     await box.exec(["rm", "-f", BUNDLE_IN_VM])
 
 
@@ -123,42 +154,55 @@ async def harvest(
             raise TransitError(f"the VM's bundle was refused: {e}") from None
     sha = (await mirror.git("rev-parse", "--verify", ref)).strip()
     commits = int((await mirror.git("rev-list", "--count", f"{base_sha}..{sha}")).strip())
-    touched = await mirror.git("diff", "--name-only", base_sha, sha, "--", ".github/workflows")
-    return HarvestResult(commits, sha, bool(touched.strip()))
-
-
-async def push_branch(
-    mirror: Mirror,
-    publisher: Publisher,
-    *,
-    box: Box,
-    base_sha: str,
-    branch: str,
-    workdir: str,
-    max_bytes: int,
-) -> HarvestResult:
-    """Bring the branch out of the VM and push it from the mirror: the publisher's App token for that step,
-    never anything in the VM."""
-    result = await harvest(
-        box, mirror, base_sha=base_sha, branch=branch, workdir=workdir, max_bytes=max_bytes
+    log = await mirror.git("log", "--no-show-signature", "--format=%h %s", f"{base_sha}..{sha}")
+    names = await mirror.git("diff", "-z", "--name-only", base_sha, sha)
+    paths = tuple(p.strip("\n") for p in names.split("\0") if p.strip())
+    return HarvestResult(
+        commits,
+        sha,
+        any(p.startswith(WORKFLOWS) for p in paths),
+        tuple(line for line in log.splitlines() if line.strip()),
+        paths,
     )
-    if result.commits == 0:
-        raise TransitError("nothing to push: the session branch has no new commits")
+
+
+async def push_branch(mirror: Mirror, publisher: Publisher, *, branch: str, head: str) -> None:
+    """Push the harvested `branch` from the mirror, as it is at `head` (the commit the person said yes to)
+    and at no other: the publisher's App token for that step, never anything in the VM."""
+    _check_branch(branch)
     if not mirror.can_push:
         raise TransitError("set story.github_app to push from chat")
+    try:
+        now = (await mirror.git("rev-parse", "--verify", "-q", f"refs/heads/{branch}")).strip()
+    except PublishError:
+        now = ""
+    if now != head:
+        raise TransitError(f"{branch} is at {now or 'nothing'} now, not the {head} the person approved")
     try:
         await publisher.push_top(mirror.path, branch)
     except PublishError as e:
         raise TransitError(f"the push failed: {e}") from None
-    return result
+
+
+async def pushed_head(mirror: Mirror, branch: str) -> str:
+    """The commit the remote's `branch` was last pushed at from the mirror (its remote-tracking branch)."""
+    _check_branch(branch)
+    if not mirror.can_push:
+        raise TransitError("set story.github_app to open a pull request from chat")
+    try:
+        return (await mirror.git("rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}")).strip()
+    except PublishError:
+        raise TransitError(f"{branch} has not been pushed: call push_branch first") from None
 
 
 async def open_pr(
-    mirror: Mirror, publisher: Publisher, *, branch: str, base: str, title: str
+    mirror: Mirror, publisher: Publisher, *, branch: str, base: str, title: str, head: str
 ) -> tuple[int, str]:
-    """Open a draft PR on the pushed `branch` against `base` and return its number and URL. Always a draft; a
-    host tool that never runs in the VM."""
-    _check_branch(branch)
+    """Open a draft PR on the pushed `branch` against `base` and return its number and URL, while the pushed
+    branch is still at `head` (what the person said yes to). Always a draft; a host tool that never runs in
+    the VM, and only as the GitHub App's bot."""
+    if await pushed_head(mirror, branch) != head:
+        raise TransitError(f"{branch} was pushed again since the person approved the pull request at {head}")
     try:
         await publisher.create_draft(mirror.path, branch, base, title)
         return await publisher.pr(mirror.path, branch)

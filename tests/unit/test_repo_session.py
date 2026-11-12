@@ -135,7 +135,7 @@ async def test_the_first_turn_seeds_the_clone_and_the_second_does_not(world: Wor
         pass
 
     clones = [c.argv for c in world.vm().calls if c.argv[:2] == ("git", "clone")]
-    assert clones == [("git", "clone", "-q", "--no-checkout", "/tmp/in.bundle", "/w")]
+    assert clones == [("git", "clone", "-q", "--no-checkout", "/tmp/in.bundle", "/w.seed-tmp")]
     assert ("git", "checkout", "-q", "-b", chat.branch, TIP) in [c.argv for c in world.vm().calls]
 
 
@@ -381,3 +381,91 @@ async def test_deleting_forgets_the_session_before_the_disk_goes(world: World) -
     await world.sessions.delete(thread)
 
     assert seen == [False]  # a turn that starts now cannot find the session being deleted
+
+
+# --- final review fixes ---------------------------------------------------------------------------------
+
+
+async def test_a_tart_delete_that_fails_keeps_the_chat_and_names_the_vm(world: World) -> None:
+    thread = world.thread()
+    chat = await world.sessions.open(thread)
+    async with world.sessions.turn(chat, "chat:t1"):
+        pass
+    box = world.vm()
+
+    async def locked() -> None:
+        raise BoxUnavailable("tart delete airlie-chat-x failed: the VM is locked")
+
+    box.delete = locked  # type: ignore[method-assign]
+
+    with pytest.raises(EngineError, match=f"could not delete the VM {box.name}.*locked"):
+        await world.sessions.delete(thread)
+
+    assert [s.name for s in world.manager.status()] == ["vm:t1"]  # still registered, to be deleted again
+    assert await world.sessions.open(thread) is chat
+    dropped = [a[3] for a, _, _ in world.runner.calls if a[1:3] == ["update-ref", "-d"]]
+    assert f"refs/heads/{chat.branch}" not in dropped  # the session branch is kept too
+
+
+async def test_deleting_a_chat_without_tart_at_all_is_quiet(world: World) -> None:
+    from airlie.boxes.protocol import BackendMissing
+
+    class NoTart(FakeBox):
+        async def exists(self) -> bool:
+            raise BackendMissing(INSTALL_HINT)
+
+    world.boxes[f"airlie-chat-{slug_of('t1')}"] = NoTart("x")
+
+    await world.sessions.delete(world.thread())  # no tart: no disk can be there
+
+
+async def test_two_chats_opening_one_repository_refresh_its_mirror_one_at_a_time(world: World) -> None:
+    inside: list[int] = []
+    overlapped: list[bool] = []
+
+    async def refresh() -> None:
+        inside.append(1)
+        overlapped.append(len(inside) > 1)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        inside.pop()
+
+    world.mirror.refresh = refresh  # type: ignore[method-assign]
+
+    await asyncio.gather(world.sessions.open(world.thread("t1")), world.sessions.open(world.thread("t2")))
+
+    assert overlapped == [False, False]
+
+
+async def test_a_filtered_network_without_softnet_is_refused_before_anything_runs(
+    tmp_path: Path, cfg: AirlieConfig
+) -> None:
+    from airlie.boxes.protocol import Network
+    from airlie.boxes.tart import SOFTNET_HINT
+
+    world = World(tmp_path, cfg)
+    asked: list[Network] = []
+
+    def no_softnet(network: Network) -> None:
+        asked.append(network)
+        raise BoxUnavailable(SOFTNET_HINT)
+
+    world.sessions._network_check = no_softnet
+
+    with pytest.raises(BoxUnavailable, match="softnet"):
+        await world.sessions.open(world.thread())
+
+    assert asked[0].mode == cfg.boxes.network.after_setup
+    assert world.runner.calls == [] and world.mirror.refreshes == 0
+
+
+async def test_shutdown_stops_every_running_chat_vm_and_keeps_its_disk(world: World) -> None:
+    chat = await world.sessions.open(world.thread())
+    async with world.sessions.turn(chat, "chat:t1"):
+        pass
+
+    await world.sessions.stop_all()
+
+    vm = world.vm()
+    assert vm.state == "stopped" and not vm.deleted
+    assert [(s.name, s.state) for s in world.manager.status()] == [("vm:t1", "stopped")]

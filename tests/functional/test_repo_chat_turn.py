@@ -14,8 +14,8 @@ import pytest
 
 from airlie.auth.principal import SESSION_COOKIE
 from airlie.auth.store import AuthStore
-from airlie.boxes.protocol import BoxUnavailable
-from airlie.boxes.tart import INSTALL_HINT
+from airlie.boxes.protocol import BackendMissing, BoxUnavailable
+from airlie.boxes.tart import INSTALL_HINT, SOFTNET_HINT
 from airlie.chat.repo_session import slug_of
 from airlie.manager.core import Manager
 from airlie.serve.app import create_app
@@ -81,6 +81,8 @@ def approval_id(response: httpx.Response) -> str:
 def test_a_push_call_streams_a_permission_request_and_does_not_push(tmp_path: Path) -> None:
     rig = Rig(tmp_path, Call("push_branch", {}), Text("waiting for you"))
     rig.fakes.script_push()
+    rig.fakes.runner.answers["log"] = "b2b2b2b fix the parser\nb1b1b1b add a test\n"
+    rig.fakes.runner.answers["diff"] = ".github/workflows/ci.yml\0src/parse.py\0"
 
     r = rig.post()
 
@@ -91,11 +93,20 @@ def test_a_push_call_streams_a_permission_request_and_does_not_push(tmp_path: Pa
     assert request["toolCallId"] == "call_1" and request["approvalId"]
     assert types.index("tool-output-error") < types.index("tool-approval-request")  # the part ends requested
     shown = next(c for c in got if c["type"] == "data-approval")["data"]
-    assert shown == {"id": request["approvalId"], "tool": "push_branch", "arguments": {}}
+    assert shown == {
+        "id": request["approvalId"],
+        "tool": "push_branch",
+        "arguments": {  # what would be pushed: harvested into the host's mirror first, then asked about
+            "branch": BRANCH,
+            "head": rig.fakes.base,
+            "commits": ["b2b2b2b fix the parser", "b1b1b1b add a test"],
+            "paths": [".github/workflows/ci.yml", "src/parse.py"],
+            "changes_workflows": True,
+        },
+    }
     refusal = next(c for c in got if c["type"] == "tool-output-error")
     assert "waiting for your approval" in refusal["errorText"]
-    assert rig.events == [] and rig.pushes() == 0
-    assert not any("bundle" in c.argv for c in rig.fakes.vm().calls)  # the VM was not even asked
+    assert rig.events == [] and rig.pushes() == 0  # asked, and nothing pushed
     assert "tool-input-error" not in types and types[-1] == "finish"
 
 
@@ -127,7 +138,7 @@ def test_a_turn_resent_with_the_approval_pushes_once(tmp_path: Path) -> None:
 
     assert second.status_code == 200
     done = next(c for c in chunks(second.text) if c["type"] == "tool-output-available")
-    assert done["output"].startswith("pushed 2 commit(s) to " + BRANCH)
+    assert done["output"] == f"pushed {BRANCH} at {rig.fakes.base}."
     assert rig.events == [("push_top", (rig.fakes.mirror.path, BRANCH))]
     assert "tool-approval-request" not in kinds(second.text)
 
@@ -204,8 +215,8 @@ def test_an_approved_pr_opens_a_draft_against_the_base_branch(tmp_path: Path) ->
 def test_another_chats_approval_does_not_let_this_chat_push(tmp_path: Path) -> None:
     rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Call("push_branch", {}), Text("asked"))
     rig.fakes.script_push("t1")
-    rig.fakes.script_push("t2")
     first = rig.post()
+    rig.fakes.script_push("t2")
     other = {**body("sneaky", approvals=[{"id": approval_id(first), "approved": True}]), "id": "t2"}
 
     second = rig.post(other)
@@ -239,13 +250,15 @@ def test_a_first_turn_opens_the_session_seeds_the_vm_and_keeps_the_repo(tmp_path
     assert r.status_code == 200
     assert rig.fakes.mirror.refreshes == 1
     vm = rig.fakes.vm()
-    assert ("git", "clone", "-q", "--no-checkout", "/tmp/in.bundle", "/w") in [c.argv for c in vm.calls]
+    calls = [c.argv for c in vm.calls]
+    assert ("git", "clone", "-q", "--no-checkout", "/tmp/in.bundle", "/w.seed-tmp") in calls
+    assert ("mv", "-T", "/w.seed-tmp", "/w") in calls
     t = rig.c.get("/v1/airlie/chat/threads/t1").json()
     assert (t["kind"], t["repo"], t["base_ref"]) == ("repository", "o/r", "dev")
     again = rig.post({**body("more"), "repo": None})  # the repo is named once
     assert again.status_code == 200 and rig.fakes.mirror.refreshes == 1
     assert [c.argv for c in vm.calls].count(
-        ("git", "clone", "-q", "--no-checkout", "/tmp/in.bundle", "/w")
+        ("git", "clone", "-q", "--no-checkout", "/tmp/in.bundle", "/w.seed-tmp")
     ) == 1
 
 
@@ -331,7 +344,7 @@ def test_a_new_repository_chat_must_name_its_repo(tmp_path: Path) -> None:
 def test_tart_missing_is_a_409_with_the_install_hint(tmp_path: Path) -> None:
     class NoTart(FakeBox):
         async def exists(self) -> bool:
-            raise BoxUnavailable(INSTALL_HINT)
+            raise BackendMissing(INSTALL_HINT)
 
     rig = Rig(tmp_path)
     rig.fakes.boxes[f"airlie-chat-{slug_of('t1')}"] = NoTart("x")
@@ -473,3 +486,46 @@ def test_deleting_a_chat_takes_its_turn_slot_so_a_turn_cannot_start_meanwhile(tm
 
     assert seen == [True]
     assert "t1" not in rig.app.state.chat_busy  # released once it is gone
+
+
+def test_a_vm_whose_tart_delete_fails_keeps_the_chat_and_is_a_409_naming_it(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Text("hi"))
+    rig.post()
+    vm = rig.fakes.vm()
+
+    async def locked() -> None:
+        raise BoxUnavailable("tart delete failed: the VM is locked")
+
+    vm.delete = locked  # type: ignore[method-assign]
+
+    r = rig.c.delete("/v1/airlie/chat/threads/t1")
+
+    assert r.status_code == 409
+    assert f"could not delete the VM {vm.name}" in r.json()["error"] and "locked" in r.json()["error"]
+    assert [t["id"] for t in rig.c.get("/v1/airlie/chat/threads").json()] == ["t1"]
+
+
+def test_softnet_missing_is_a_409_with_its_install_hint(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+
+    def no_softnet(network: Any) -> None:
+        raise BoxUnavailable(SOFTNET_HINT)
+
+    rig.fakes.network_check = no_softnet
+
+    r = rig.post()
+
+    assert r.status_code == 409 and r.json() == {"error": SOFTNET_HINT}
+    assert "sudo softnet install" in SOFTNET_HINT
+    assert rig.up.calls == 0
+    assert rig.c.get("/v1/airlie/chat/threads").json() == []
+
+
+def test_serve_shutdown_stops_a_running_chat_vm_and_keeps_its_disk(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Text("hi"))
+    with TestClient(rig.app) as c:
+        c.post("/v1/airlie/chat/turn", json=body())
+        running = rig.fakes.vm().state
+
+    assert running == "running"
+    assert rig.fakes.vm().state == "stopped" and not rig.fakes.vm().deleted

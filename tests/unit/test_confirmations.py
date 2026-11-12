@@ -250,6 +250,83 @@ async def test_an_approved_call_runs_the_tool_once(cfg: AirlieConfig) -> None:
     assert inner.runs == 1
 
 
+class Harvesting(Pushy):
+    """A push whose person is asked about what it would push (its subject), read fresh for every look: the
+    head moves when the model commits again."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.head = "h1"
+        self.pushed: list[str] = []
+
+    async def subject(self, args: dict[str, Any]) -> dict[str, Any]:
+        return {"branch": "airlie/chat-x", "head": self.head, "changes_workflows": True}
+
+    async def run_approved(
+        self, args: dict[str, Any], subject: dict[str, Any], ctx: ToolContext
+    ) -> ToolResult:
+        self.pushed.append(subject["head"])
+        return ToolResult(True, f"pushed {subject['head']}")
+
+
+async def test_the_hook_asks_about_the_tools_subject_not_the_models_arguments(cfg: AirlieConfig) -> None:
+    c = Confirmations(cfg)
+    guard(ToolRegistry([Harvesting()], CTX), c, "s1", "repository")
+
+    verdict = await before_tool(c)(turn_ctx(), ToolCall("1", "push_branch", "{}"))
+
+    assert verdict is not None and verdict.kind == "pending"
+    assert verdict.arguments == {"branch": "airlie/chat-x", "head": "h1", "changes_workflows": True}
+
+
+async def test_a_yes_for_one_head_pushes_that_head_once(cfg: AirlieConfig) -> None:
+    c = Confirmations(cfg)
+    inner = Harvesting()
+    registry = guard(ToolRegistry([inner], CTX), c, "s1", "repository")
+    verdict = await before_tool(c)(turn_ctx(), ToolCall("1", "push_branch", "{}"))
+    assert verdict is not None and verdict.approval_id
+    c.approve("s1", [Approval(id=verdict.approval_id, approved=True)])
+
+    result = await registry.call(ToolCall("2", "push_branch", "{}"))
+
+    assert result.ok and inner.pushed == ["h1"]
+
+
+async def test_a_yes_for_one_head_never_pushes_another(cfg: AirlieConfig) -> None:
+    c = Confirmations(cfg)
+    inner = Harvesting()
+    registry = guard(ToolRegistry([inner], CTX), c, "s1", "repository")
+    verdict = await before_tool(c)(turn_ctx(), ToolCall("1", "push_branch", "{}"))
+    assert verdict is not None and verdict.approval_id
+    c.approve("s1", [Approval(id=verdict.approval_id, approved=True)])
+    inner.head = "h2"  # the model committed again after the person said yes
+
+    asked_again = await before_tool(c)(turn_ctx(), ToolCall("2", "push_branch", "{}"))
+    result = await registry.call(ToolCall("3", "push_branch", "{}"))
+
+    assert asked_again is not None and asked_again.kind == "pending"
+    assert not result.ok and inner.pushed == []
+
+
+async def test_a_subject_that_cannot_be_read_is_an_error_and_asks_nothing(cfg: AirlieConfig) -> None:
+    from airlie.engine.types import EngineError
+
+    class NothingToPush(Harvesting):
+        async def subject(self, args: dict[str, Any]) -> dict[str, Any]:
+            raise EngineError("nothing to push: the session branch has no new commits")
+
+    c = Confirmations(cfg)
+    registry = guard(ToolRegistry([NothingToPush()], CTX), c, "s1", "repository")
+
+    verdict = await before_tool(c)(turn_ctx(), ToolCall("1", "push_branch", "{}"))
+    result = await registry.call(ToolCall("2", "push_branch", "{}"))
+
+    assert verdict is not None and verdict.approval_id is None
+    assert verdict.message == "error: nothing to push: the session branch has no new commits"
+    assert not result.ok and "nothing to push" in result.output
+    assert len(c) == 0
+
+
 def test_guard_wraps_only_the_listed_tools(cfg: AirlieConfig) -> None:
     class Reads(Pushy):
         name = "read_file"

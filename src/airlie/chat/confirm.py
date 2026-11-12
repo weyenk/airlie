@@ -10,9 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -61,10 +61,31 @@ class NeedsApproval(EngineError):
         self.arguments = dict(arguments)
 
 
+Subject = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+"""What a tool asks the person about in place of the model's arguments (`push_branch`: the commits it would
+push, bound to their head); read fresh at every look, so a yes for one subject never lets another through.
+A tool has one when it has `subject(args)` and `run_approved(args, subject, ctx)`."""
+
+
 class Confirmations:
     def __init__(self, cfg: AirlieConfig) -> None:
         self._cfg = cfg
         self._items: dict[str, _Item] = {}
+        self._subjects: dict[str, dict[str, Subject]] = {}
+
+    def use_subjects(self, session_id: str, subjects: Mapping[str, Subject]) -> None:
+        """The subjects of the session's tools that have one, for this turn's registry (guard sets them)."""
+        if subjects:
+            self._subjects[session_id] = dict(subjects)
+        else:  # a plain chat's: nothing kept per session
+            self._subjects.pop(session_id, None)
+
+    async def subject(self, session_id: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        """What the person is asked about for this call: the tool's subject when it has one, else the
+        arguments. A subject that cannot be read raises its EngineError: the call is an error, not a
+        request."""
+        found = self._subjects.get(session_id, {}).get(tool)
+        return args if found is None else await found(args)
 
     def required(self, tool: str, kind: ChatKind = "repository") -> bool:
         return tool in needs_yes(kind, self._cfg)  # the config cannot drop the always-asked ones
@@ -134,6 +155,7 @@ class Confirmations:
         return len(self._items)
 
     def forget(self, session_id: str) -> None:
+        self._subjects.pop(session_id, None)
         for item_id in [i.id for i in self._items.values() if i.session == session_id]:
             del self._items[item_id]
 
@@ -146,9 +168,13 @@ def before_tool(confirmations: Confirmations) -> Any:
         if not confirmations.required(call.name, ctx.kind):
             return None
         try:
-            args = parse_tool_args(call.arguments)
+            parsed = parse_tool_args(call.arguments)
         except ValueError:
             return None  # the call never runs: the registry answers it as malformed
+        try:
+            args = await confirmations.subject(ctx.thread_id, call.name, parsed)
+        except EngineError as e:  # nothing to ask about (nothing to push): the call is an error
+            return Verdict("denied", f"error: {e}")
         answer = confirmations.status(ctx.thread_id, call.name, args, ctx.kind)
         if answer == "allowed":
             return None
@@ -166,12 +192,21 @@ def before_tool(confirmations: Confirmations) -> Any:
 def guard(
     registry: ToolRegistry, confirmations: Confirmations, session_id: str, kind: ChatKind
 ) -> ToolRegistry:
-    """`registry` with every tool the kind lists in `ask_first` wrapped in `Confirmed`."""
+    """`registry` with every tool the kind lists in `ask_first` wrapped in `Confirmed`, and the subjects of
+    those that have one given to `confirmations` for the hook."""
+    subjects: dict[str, Subject] = {}
     for name in registry.names():
         tool = registry.get(name)
         if tool is not None and confirmations.required(name, kind):
+            if _has_subject(tool):
+                subjects[name] = cast(Any, tool).subject
             registry.add(Confirmed(tool, confirmations, session_id, kind))
+    confirmations.use_subjects(session_id, subjects)
     return registry
+
+
+def _has_subject(tool: Tool) -> bool:
+    return callable(getattr(tool, "subject", None)) and callable(getattr(tool, "run_approved", None))
 
 
 class Confirmed:
@@ -188,6 +223,16 @@ class Confirmed:
         self._kind: ChatKind = kind
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        if self._confirmations.check(self._session, self.name, args, self._kind) != "allowed":
+        """A tool with a subject is checked against it, read now, and runs with exactly that subject."""
+        inner: Any = self._inner
+        subject = args
+        if _has_subject(self._inner):
+            try:
+                subject = await inner.subject(args)
+            except EngineError as e:
+                return ToolResult(False, f"error: {e}")
+        if self._confirmations.check(self._session, self.name, subject, self._kind) != "allowed":
             return ToolResult(False, f"error: {self.name} needs the person's approval first")
+        if _has_subject(self._inner):
+            return cast(ToolResult, await inner.run_approved(args, subject, ctx))
         return await self._inner.run(args, ctx)

@@ -8,6 +8,7 @@ reason when everything that could go is held, and `reap`s on-demand resources le
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
@@ -224,6 +225,13 @@ class Manager:
                 self._set(slot, "stopped")
         self._notify()
 
+    async def stop(self, name: str) -> None:
+        """Stop a resource nobody holds, keeping it registered (serve's shutdown stops its VMs this way)."""
+        slot = self._slot(name)
+        if slot.holders:
+            raise EngineError(f"{name}: in use")
+        await self._stop(slot)
+
     async def _forget_the_dead(self) -> None:
         """A resource whose stop failed counts for memory until it is seen not running."""
         for slot in list(self._slots.values()):
@@ -271,6 +279,17 @@ class Manager:
         self._set(slot, "starting")
         try:
             await slot.resource.start(report)
+        except asyncio.CancelledError:  # a Stop mid-start: not a failure, unless what it started lives on
+            alive = True  # cannot say (the check failed, or was cancelled too): counted until seen gone
+            with contextlib.suppress(BaseException):
+                alive = await slot.resource.running()
+            if alive:
+                slot.stop_failed = True  # counts for memory until it is seen not running
+                self._set(slot, "failed", "start cancelled with it still running")
+            else:
+                self._set(slot, "stopped")
+            self._notify()
+            raise
         except BaseException as e:
             self._set(slot, "failed", str(e) or type(e).__name__)
             self._notify()

@@ -5,16 +5,19 @@ into the "VM", a commit made there comes back as a bundle, and only the session 
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
 from airlie.boxes.mirror import Mirror, MirrorError
 from airlie.boxes.protocol import ExecResult
-from airlie.boxes.transit import TransitError, harvest
+from airlie.boxes.transit import TransitError, harvest, push_branch
+from airlie.chat.repo_session import repo_mirrors
 from airlie.story.publish import Publisher, run_cmd
 from tests.support.box import FakeBox
 from tests.support.git import git
+from tests.unit.github_helpers import WRITE, FakeGitHub, fake_app
 
 BRANCH = "airlie/chat-ab12cd34"
 IDENT = ["-c", "user.name=t", "-c", "user.email=t@t"]
@@ -120,6 +123,46 @@ async def test_a_hostile_bundle_naming_another_branch_never_reaches_the_mirror(t
     with pytest.raises(TransitError, match="not only"):
         await harvest(box, mirror, base_sha=base, branch=BRANCH, workdir=str(vm), max_bytes=10_000_000)
     assert git(mirror.path, "for-each-ref", "--format=%(refname)", "refs/heads") == ""
+
+
+class ScriptedPublishRunner:
+    """The publisher's git and gh: every command recorded, none run (no network)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], Path]] = []
+
+    async def __call__(self, args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+        self.calls.append((list(args), cwd))
+        return ""
+
+
+async def test_each_repository_pushes_through_its_own_publisher_after_another_was_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two repository chats, o/a then o/b, over real Publishers (a FakeGitHub behind the App) and real
+    mirrors: the first one's push still goes to o/a, with a token for o/a alone."""
+    no_rules = tmp_path / "gitconfig"  # this machine's own url rewrites are no part of the test
+    no_rules.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(no_rules))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    github = FakeGitHub(installed=("o/a", "o/b"), permissions={**WRITE, "workflows": "write"})
+    app = fake_app(tmp_path, github)
+    gh = ScriptedPublishRunner()
+    mirrors = repo_mirrors(
+        tmp_path / "mirrors", lambda: Publisher(run=gh, app=app, publish="single"), run=run_cmd
+    )
+    a, b = mirrors("o/a"), mirrors("o/b")
+    await a.refresh()
+    await b.refresh()  # the second repository's first open: prepare reads o/b for its own publisher
+    head = git(local_checkout(tmp_path), "rev-parse", "HEAD")
+    git(a.path, "fetch", "-q", str(tmp_path / "checkout"), f"main:refs/heads/{BRANCH}")
+
+    await push_branch(a, a.publisher, branch=BRANCH, head=head)
+
+    assert gh.calls[-1] == (["git", "push", "-q", "origin", BRANCH], a.path)
+    assert github.minted_for()[-1] == ["a"]
+    assert mirrors("o/a") is a and a.publisher is not b.publisher
+    assert (a.publisher.repository, b.publisher.repository) == ("o/a", "o/b")
 
 
 async def test_a_mirror_without_a_checkout_or_app_says_what_is_missing(tmp_path: Path) -> None:

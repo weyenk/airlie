@@ -418,6 +418,7 @@ def chat_router(
                     status=manager.status,
                     handle=turn.handle,
                     around=around,
+                    around_status=chat.vm_name if chat is not None else None,
                 ):
                     yield chunk
             except Exception as e:  # after the first byte a failure is a chunk, not a status

@@ -1,7 +1,8 @@
 """The tools of a repository chat: the builtin ones in the session's VM (ToolRegistry.boxed), and the two that
 act on GitHub, which run on the host and only from the mirror: `push_branch` and `open_pr`. Both are on the
-kind's `ask_first` list, so a person's yes for the exact call comes first (chat.confirm); neither is ever in a
-plain chat's registry."""
+kind's `ask_first` list, so a person's yes comes first (chat.confirm), for what the call would do (its
+subject: the commits and their head, or the PR's title and head) rather than its bare arguments; neither is
+ever in a plain chat's registry."""
 
 from __future__ import annotations
 
@@ -12,9 +13,8 @@ from typing import Any
 from airlie.boxes.mirror import Mirror
 from airlie.boxes.protocol import Box
 from airlie.boxes.recipe import Recipe
-from airlie.boxes.transit import open_pr, push_branch
+from airlie.boxes.transit import TransitError, harvest, open_pr, push_branch, push_subject, pushed_head
 from airlie.engine.types import EngineError
-from airlie.story.publish import Publisher
 from airlie.tools.protocol import Tool, ToolContext, ToolResult
 from airlie.tools.registry import BOXED, ToolRegistry
 
@@ -36,7 +36,7 @@ class RepoChat:
     recipe: Recipe
     box: Box
     mirror: Mirror
-    publisher: Publisher
+    """The repository's own mirror, with its own publisher (Mirror.publisher)."""
     max_bytes: int
 
     @property
@@ -51,37 +51,59 @@ class RepoChat:
 
 
 class PushBranch:
+    """The person is asked about what will be pushed, not about a bare call: `subject` brings the branch out
+    of the VM into the mirror first and names its head, commits and changed paths (and whether they touch
+    .github/workflows, which a push may then do with a workflows-scoped token). A yes is for that head:
+    a commit made after it needs a new one."""
+
     name = "push_branch"
     description = (
         "Push this session's branch to GitHub (the commits you made since the session began). The person is "
-        "asked first; commit your work with git before calling it."
+        "asked first, shown the commits and the files they change; commit your work with git before calling "
+        "it."
     )
     parameters: dict[str, Any] = {"type": "object", "properties": {}}
 
     def __init__(self, chat: RepoChat) -> None:
         self._chat = chat
 
-    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    async def subject(self, args: dict[str, Any]) -> dict[str, Any]:
+        chat = self._chat
+        if not chat.mirror.can_push:
+            raise TransitError("set story.github_app to push from chat")
+        result = await harvest(
+            chat.box,
+            chat.mirror,
+            base_sha=chat.base_sha,
+            branch=chat.branch,
+            workdir=chat.recipe.workdir,
+            max_bytes=chat.max_bytes,
+        )
+        if result.commits == 0:
+            raise TransitError("nothing to push: the session branch has no new commits")
+        return push_subject(chat.branch, result)
+
+    async def run_approved(
+        self, args: dict[str, Any], subject: dict[str, Any], ctx: ToolContext
+    ) -> ToolResult:
         chat = self._chat
         try:
-            result = await push_branch(
-                chat.mirror,
-                chat.publisher,
-                box=chat.box,
-                base_sha=chat.base_sha,
-                branch=chat.branch,
-                workdir=chat.recipe.workdir,
-                max_bytes=chat.max_bytes,
+            await push_branch(
+                chat.mirror, chat.mirror.publisher, branch=chat.branch, head=str(subject["head"])
             )
         except EngineError as e:
             return ToolResult(False, f"error: {e}")
-        note = " It changes .github/workflows." if result.changes_workflows else ""
-        return ToolResult(
-            True, f"pushed {result.commits} commit(s) to {chat.branch} (now {result.sha}).{note}"
-        )
+        note = " It changes .github/workflows." if subject.get("changes_workflows") else ""
+        return ToolResult(True, f"pushed {chat.branch} at {subject['head']}.{note}")
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        """Only through Confirmed, which asks about the subject first; called bare it is refused."""
+        return ToolResult(False, "error: push_branch needs the person's approval first")
 
 
 class OpenPr:
+    """The person is asked about the title, the branch and the head it was pushed at."""
+
     name = "open_pr"
     description = (
         "Open a draft pull request for the pushed session branch against the branch the session began on. "
@@ -96,18 +118,34 @@ class OpenPr:
     def __init__(self, chat: RepoChat) -> None:
         self._chat = chat
 
-    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    async def subject(self, args: dict[str, Any]) -> dict[str, Any]:
         chat = self._chat
         title = str(args.get("title") or "").strip()
         if not title or len(title) > TITLE_MAX:
-            return ToolResult(False, f"error: title must be 1 to {TITLE_MAX} characters")
+            raise TransitError(f"title must be 1 to {TITLE_MAX} characters")
+        head = await pushed_head(chat.mirror, chat.branch)
+        return {"title": title, "branch": chat.branch, "base": chat.base_branch, "head": head}
+
+    async def run_approved(
+        self, args: dict[str, Any], subject: dict[str, Any], ctx: ToolContext
+    ) -> ToolResult:
+        chat = self._chat
         try:
             number, url = await open_pr(
-                chat.mirror, chat.publisher, branch=chat.branch, base=chat.base_branch, title=title
+                chat.mirror,
+                chat.mirror.publisher,
+                branch=chat.branch,
+                base=chat.base_branch,
+                title=str(subject["title"]),
+                head=str(subject["head"]),
             )
         except EngineError as e:
             return ToolResult(False, f"error: {e}")
         return ToolResult(True, f"opened draft pull request #{number}: {url}")
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        """Only through Confirmed, which asks about the subject first; called bare it is refused."""
+        return ToolResult(False, "error: open_pr needs the person's approval first")
 
 
 def build_repo_tools(

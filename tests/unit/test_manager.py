@@ -1020,3 +1020,44 @@ async def test_a_hold_that_waited_on_a_discarded_resource_is_refused() -> None:
     with pytest.raises(EngineError, match="a is not a resource"):
         await late
     assert r.starts == 1
+
+
+async def test_stop_stops_an_idle_resource_and_keeps_it_registered() -> None:
+    r = FakeResource("a")
+    m, _ = manager(r)
+    await _hold(m, "a")
+
+    await m.stop("a")
+
+    assert (r.stops, state(m, "a").state) == (1, "stopped")
+
+
+async def test_stop_refuses_a_held_resource() -> None:
+    r = FakeResource("a")
+    m, _ = manager(r)
+
+    async with m.hold("a", "chat:1"):
+        with pytest.raises(EngineError, match="a: in use"):
+            await m.stop("a")
+
+    assert r.stops == 0
+
+
+async def test_a_cancelled_start_whose_running_check_fails_counts_for_memory() -> None:
+    class Unsure(FakeResource):
+        async def running(self) -> bool:
+            if self.starts:  # asked about a start that was cut short
+                raise RuntimeError("cannot ask")
+            return self.up
+
+    r = Unsure("a")
+    r.gate = asyncio.Event()
+    m, _ = manager(r)
+    task = asyncio.create_task(_hold(m, "a"))
+    await settle()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert state(m, "a").state == "failed" and m._used_gb("other") == r.footprint_gb

@@ -42,10 +42,13 @@ class VMResource:
         spec = self.spec
         try:
             if not await self.box.exists():
-                report("starting", "preparing the environment", None)
+                report("starting", "building image", None)
                 image = await self._image()
+                # `tart clone` pulls an image it does not have yet, with no progress to show: the doctor's
+                # tart row says to pull the default image once (`tart pull`)
+                report("starting", f"cloning {image} (its first use downloads it)", None)
                 await self.box.create(image, cpus=spec.cpus, memory_gb=spec.memory_gb, disk_gb=spec.disk_gb)
-            report("starting", "", None)
+            report("starting", "starting VM", None)
             await self.box.boot(network=await self._network(), timeout_s=spec.boot_timeout_s)
         except BoxUnavailable as e:
             raise EngineError(str(e)) from e

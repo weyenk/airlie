@@ -1559,6 +1559,10 @@ def create_app(
             t.cancel()
         await asyncio.gather(*engine_tasks, return_exceptions=True)
         engine_tasks.clear()
+        try:  # a chat VM's `tart run` is a session of its own and would outlive serve: stopped, disk kept
+            await repo_chats.stop_all()
+        except Exception:
+            log.exception("stopping the chat VMs at shutdown failed")
         await leases.close()  # engines stay running
         serving_cm.close()
         watcher.stop()

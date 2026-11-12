@@ -64,19 +64,22 @@ async def test_a_vm_is_named_and_shown_by_its_session_and_repository() -> None:
     assert (r.name, r.display, r.kind, r.lifecycle) == ("vm:s9", "acme/app VM", "vm", "on_demand")
 
 
-async def test_the_start_reports_preparing_while_the_disk_is_cloned_then_clears_it() -> None:
+async def test_the_start_reports_the_image_the_clone_and_the_boot_in_turn() -> None:
     r, _, _ = vm()
     m, _ = manager(r)
     seen: list[tuple[str, str]] = []
     m.watch(lambda s: seen.append((s.state, s.detail)))
     async with m.hold(r.name, "o"):
         pass
-    assert ("starting", "preparing the environment") in seen
-    after = seen[seen.index(("starting", "preparing the environment")) + 1 :]
-    assert after[0] == ("starting", "")
+    starting = [d for s, d in seen if s == "starting" and d]
+    assert starting == [
+        "building image",
+        "cloning airlie-env-abc (its first use downloads it)",
+        "starting VM",
+    ]
 
 
-async def test_an_existing_disk_is_booted_without_a_preparing_report() -> None:
+async def test_an_existing_disk_is_booted_without_an_image_report() -> None:
     box = FakeBox("chat-s1", state="stopped")
     r, _, wiring = vm(box=box)
     m, _ = manager(r)
@@ -84,7 +87,64 @@ async def test_an_existing_disk_is_booted_without_a_preparing_report() -> None:
     m.watch(lambda s: seen.append(s.detail))
     async with m.hold(r.name, "o"):
         pass
-    assert "preparing the environment" not in seen and wiring.images == 0 and box.created == []
+    assert "building image" not in seen and "starting VM" in seen
+    assert wiring.images == 0 and box.created == []
+
+
+class HangingBoot(FakeBox):
+    """A boot that never answers; a cancel kills it, as TartBox kills its `tart run`."""
+
+    async def boot(self, *, network: Network, timeout_s: float) -> None:
+        self.state = "running"
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.state = "stopped"
+            raise
+
+
+async def test_a_start_cancelled_during_the_boot_leaves_a_stopped_slot_and_no_vm() -> None:
+    r, box, _ = vm(box=HangingBoot("chat-s1"))
+    m, _ = manager(r)
+
+    async def hold() -> None:
+        async with m.hold(r.name, "chat:1"):
+            pass
+
+    task = asyncio.create_task(hold())
+    while state(m, r.name).detail != "starting VM":
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert state(m, r.name).state == "stopped" and box.state == "stopped"
+
+
+class SurvivingBoot(HangingBoot):
+    """A boot whose cancel leaves the VM running (a kill that did not take)."""
+
+    async def boot(self, *, network: Network, timeout_s: float) -> None:
+        self.state = "running"
+        await asyncio.Event().wait()
+
+
+async def test_a_cancelled_start_that_leaves_the_vm_running_still_counts_its_memory() -> None:
+    r, _, _ = vm(box=SurvivingBoot("chat-s1"))
+    m, _ = manager(r)
+
+    async def hold() -> None:
+        async with m.hold(r.name, "chat:1"):
+            pass
+
+    task = asyncio.create_task(hold())
+    while state(m, r.name).detail != "starting VM":
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert state(m, r.name).state == "failed" and m._used_gb("other") == r.footprint_gb
 
 
 async def test_a_failed_image_build_is_a_failed_status_with_the_reason() -> None:

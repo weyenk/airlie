@@ -23,7 +23,7 @@ from airlie.tools.protocol import ToolContext
 from airlie.tools.registry import ToolRegistry
 from tests.support.box import FakeBox
 from tests.unit.test_chat_turn import Rig, Step, collect, parse, reply, words
-from tests.unit.test_manager import FakeResource
+from tests.unit.test_manager import FakeResource, settle
 
 ROOT = Path(__file__).resolve().parents[2]
 VM = "/home/admin/work"
@@ -121,3 +121,33 @@ async def test_the_status_of_an_engine_a_subagent_waits_on_is_relayed_with_its_r
     ]
     assert (sub, "waiting", "waiting for memory: chat:t1, story:1") in shown
     assert [c["output"] for c in chunks if c["type"] == "tool-output-available"] == ["reviewed"]
+
+
+async def test_a_status_relay_that_fails_never_replaces_the_tasks_result(
+    tmp_path: Path, role: RoleSpec, cfg: AirlieConfig
+) -> None:
+    rig = Rig(tmp_path, role, chat_calls_task())
+    with_task(rig, cfg, write_then_answer())
+
+    def broken_status() -> list[Any]:
+        raise RuntimeError("the manager's status could not be read")
+
+    rig.status = broken_status  # type: ignore[method-assign]
+
+    chunks = parse(await asyncio.wait_for(collect(rig.turn()), 5))
+
+    assert [c["output"] for c in chunks if c["type"] == "tool-output-available"] == ["wrote a.txt"]
+    assert not any(c["type"] == "error" for c in chunks)
+
+
+async def test_the_status_relay_stops_when_the_task_call_ends(
+    tmp_path: Path, role: RoleSpec, cfg: AirlieConfig
+) -> None:
+    rig = Rig(tmp_path, role, chat_calls_task())
+    with_task(rig, cfg, write_then_answer())
+    await collect(rig.turn())
+    polls = rig.holder.polls
+
+    await settle()  # a relay still running would read the status again here
+
+    assert rig.holder.polls == polls

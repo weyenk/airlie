@@ -13,7 +13,18 @@ import pytest
 from airlie.boxes.mirror import Mirror
 from airlie.boxes.protocol import ExecResult
 from airlie.boxes.recipe import Recipe
-from airlie.boxes.transit import TransitError, harvest, open_pr, push_branch, seed
+from airlie.boxes.transit import (
+    SHOWN_COMMITS,
+    SHOWN_PATHS,
+    HarvestResult,
+    TransitError,
+    harvest,
+    open_pr,
+    push_branch,
+    push_subject,
+    pushed_head,
+    seed,
+)
 from airlie.story.publish import Publisher, PublishError
 from tests.support.box import FakeBox
 
@@ -21,6 +32,7 @@ BASE = "a" * 40
 TIP = "b" * 40
 BRANCH = "airlie/chat-ab12cd34"
 WORKDIR = "/home/admin/work"
+STAGING = f"{WORKDIR}.seed-tmp"
 CAP = 1024
 
 
@@ -101,20 +113,54 @@ async def test_seed_streams_a_bundle_in_clones_it_and_removes_the_remote(tmp_pat
 
     calls = vm_verbs(box)
     steps = [
+        ("rm", "-rf", STAGING),
         ("sh", "-c", "cat > /tmp/in.bundle"),
-        ("git", "clone", "-q", "--no-checkout", "/tmp/in.bundle", WORKDIR),
+        ("git", "clone", "-q", "--no-checkout", "/tmp/in.bundle", STAGING),
         ("git", "remote", "remove", "origin"),
         ("git", "checkout", "-q", "-b", BRANCH, TIP),
+        ("mv", "-T", STAGING, WORKDIR),
     ]
     positions = [calls.index(s) for s in steps]
     assert positions == sorted(positions)
-    assert box.calls[positions[0]].stdin == b"BUNDLE-FROM-HOST"
-    assert box.calls[positions[2]].cwd == WORKDIR
+    assert box.calls[positions[1]].stdin == b"BUNDLE-FROM-HOST"
+    assert box.calls[positions[3]].cwd == STAGING
     assert ("git", "config", "user.name", "airlie") in calls
     assert ("git", "config", "user.email", "airlie@local") in calls
     # the temporary ref the bundle was cut from is gone again
     assert runner.verbs().count("update-ref") == 2
     assert runner.calls[-1][0][2] == "-d"
+
+
+class Checkouts:
+    """The VM's git: a clone leaves a .git where it was asked to; the first checkout fails (the seed is cut
+    short half way, as a Stop or a timeout would), later ones work."""
+
+    def __init__(self) -> None:
+        self.checkouts = 0
+
+    def __call__(self, box: FakeBox, argv: Any, stdin: bytes | None) -> ExecResult:
+        if argv[1] == "clone":
+            box.files[f"{argv[-1]}/.git/HEAD"] = b"ref: refs/heads/main"
+        if argv[1] == "checkout":
+            self.checkouts += 1
+            if self.checkouts == 1:
+                return ExecResult(None, "error: command timed out after 600s")
+        return ExecResult(0, "")
+
+
+async def test_a_seed_cut_short_leaves_no_clone_and_the_next_turn_seeds_again(tmp_path: Path) -> None:
+    box = running_box()
+    box.handlers["git"] = Checkouts()
+    mirror = mirror_of(tmp_path, FakeRunner(), FakePublisher())
+    with pytest.raises(TransitError, match="checkout"):
+        await seed(box, mirror, Recipe(), ref="origin/main", branch=BRANCH, session_id="ab12cd34")
+    assert (await box.exec(["test", "-d", f"{WORKDIR}/.git"])).rc == 1  # nothing a turn would take as seeded
+
+    await seed(box, mirror, Recipe(), ref="origin/main", branch=BRANCH, session_id="ab12cd34")
+
+    assert f"{WORKDIR}/.git/HEAD" in box.files
+    assert not any(f.startswith(STAGING) for f in box.files)
+    assert vm_verbs(box).count(("git", "clone", "-q", "--no-checkout", "/tmp/in.bundle", STAGING)) == 2
 
 
 async def test_seed_leaves_an_existing_clone_alone(tmp_path: Path) -> None:
@@ -149,7 +195,7 @@ async def test_seed_refuses_a_branch_that_is_not_a_chat_branch(tmp_path: Path) -
 
 async def test_seed_names_the_vm_command_that_failed(tmp_path: Path) -> None:
     box = running_box()
-    box.responses[("git", "clone", "-q", "--no-checkout", "/tmp/in.bundle", WORKDIR)] = ExecResult(
+    box.responses[("git", "clone", "-q", "--no-checkout", "/tmp/in.bundle", STAGING)] = ExecResult(
         128, "fatal: boom"
     )
     with pytest.raises(TransitError, match="git clone.*exit 128.*fatal: boom"):
@@ -276,50 +322,68 @@ async def test_harvest_reports_a_failed_bundle_in_the_vm(tmp_path: Path) -> None
         )
 
 
-async def test_nothing_new_in_the_vm_is_not_pushed(tmp_path: Path) -> None:
-    runner, publisher = FakeRunner(), FakePublisher()
-    box = vm_with_commits("0")
-    with pytest.raises(TransitError, match="nothing to push"):
-        await push_branch(
-            mirror_of(tmp_path, runner, publisher),
-            publisher,
-            box=box,
-            base_sha=BASE,
-            branch=BRANCH,
-            workdir=WORKDIR,
-            max_bytes=CAP,
-        )
-    assert publisher.events == []
-    assert runner.calls == []
-    assert not any(c.argv[:2] == ("git", "bundle") for c in box.calls)
+async def test_harvest_lists_the_new_commits_and_every_changed_path(tmp_path: Path) -> None:
+    runner = runner_with_heads(f"refs/heads/{BRANCH}")
+    runner.answers["log"] = "b2b2b2b add the parser\nb1b1b1b start\n"
+    runner.answers["diff"] = "src/parse.py\0README.md\0"
 
-
-async def test_push_goes_through_the_publisher_from_the_mirror_and_never_the_box(tmp_path: Path) -> None:
-    runner, publisher = runner_with_heads(f"refs/heads/{BRANCH}"), FakePublisher()
-    box = vm_with_commits()
-    mirror = mirror_of(tmp_path, runner, publisher)
-    result = await push_branch(
-        mirror, publisher, box=box, base_sha=BASE, branch=BRANCH, workdir=WORKDIR, max_bytes=CAP
+    result = await harvest(
+        vm_with_commits(),
+        mirror_of(tmp_path, runner, FakePublisher()),
+        base_sha=BASE,
+        branch=BRANCH,
+        workdir=WORKDIR,
+        max_bytes=CAP,
     )
 
+    assert result.log == ("b2b2b2b add the parser", "b1b1b1b start")
+    assert result.paths == ("src/parse.py", "README.md")
+    assert result.changes_workflows is False
+
+
+def test_the_push_subject_names_the_head_the_commits_the_paths_and_the_workflows() -> None:
+    result = HarvestResult(2, TIP, True, ("b2 two", "b1 one"), (".github/workflows/ci.yml", "a.py"))
+
+    assert push_subject(BRANCH, result) == {
+        "branch": BRANCH,
+        "head": TIP,
+        "commits": ["b2 two", "b1 one"],
+        "paths": [".github/workflows/ci.yml", "a.py"],
+        "changes_workflows": True,
+    }
+
+
+def test_the_push_subject_caps_what_it_lists_and_counts_the_rest() -> None:
+    paths = tuple(f"f{i}.py" for i in range(SHOWN_PATHS + 3))
+    log = tuple(f"c{i} commit" for i in range(SHOWN_COMMITS + 1))
+
+    subject = push_subject(BRANCH, HarvestResult(len(log), TIP, False, log, paths))
+
+    assert subject["paths"][-1] == "... and 3 more" and len(subject["paths"]) == SHOWN_PATHS + 1
+    assert subject["commits"][-1] == "... and 1 more" and len(subject["commits"]) == SHOWN_COMMITS + 1
+
+
+async def test_push_goes_through_the_publisher_from_the_mirror(tmp_path: Path) -> None:
+    runner, publisher = FakeRunner(), FakePublisher()
+    mirror = mirror_of(tmp_path, runner, publisher)
+
+    await push_branch(mirror, publisher, branch=BRANCH, head=TIP)
+
     assert publisher.events == [("push_top", (mirror.path, BRANCH))]
-    assert result.commits == 2
-    assert not any("push" in c.argv for c in box.calls)
-    assert not any(c.env for c in box.calls)
+
+
+async def test_a_push_of_a_head_the_person_did_not_approve_is_refused(tmp_path: Path) -> None:
+    runner, publisher = FakeRunner(), FakePublisher()  # the mirror's branch is at TIP
+
+    with pytest.raises(TransitError, match=f"is at {TIP} now, not the {BASE} the person approved"):
+        await push_branch(mirror_of(tmp_path, runner, publisher), publisher, branch=BRANCH, head=BASE)
+    assert publisher.events == []
 
 
 async def test_push_without_a_github_app_says_how_to_enable_it(tmp_path: Path) -> None:
-    runner, publisher = runner_with_heads(f"refs/heads/{BRANCH}"), FakePublisher(app=False)
+    publisher = FakePublisher(app=False)
     with pytest.raises(TransitError, match="set story.github_app to push from chat"):
-        await push_branch(
-            mirror_of(tmp_path, runner, publisher),
-            publisher,
-            box=vm_with_commits(),
-            base_sha=BASE,
-            branch=BRANCH,
-            workdir=WORKDIR,
-            max_bytes=CAP,
-        )
+        await push_branch(mirror_of(tmp_path, FakeRunner(), publisher), publisher, branch=BRANCH, head=TIP)
     assert publisher.events == []
 
 
@@ -330,27 +394,57 @@ async def test_a_failed_push_is_a_transit_error(tmp_path: Path) -> None:
 
     publisher = Refusing()
     with pytest.raises(TransitError, match="push failed: rejected"):
-        await push_branch(
-            mirror_of(tmp_path, runner_with_heads(f"refs/heads/{BRANCH}"), publisher),
-            publisher,
-            box=vm_with_commits(),
-            base_sha=BASE,
-            branch=BRANCH,
-            workdir=WORKDIR,
-            max_bytes=CAP,
-        )
+        await push_branch(mirror_of(tmp_path, FakeRunner(), publisher), publisher, branch=BRANCH, head=TIP)
 
 
 async def test_open_pr_is_a_draft(tmp_path: Path) -> None:
     publisher = FakePublisher()
     mirror = mirror_of(tmp_path, FakeRunner(), publisher)
-    number, url = await open_pr(mirror, publisher, branch=BRANCH, base="main", title="Fix it")
+    number, url = await open_pr(mirror, publisher, branch=BRANCH, base="main", title="Fix it", head=TIP)
 
     assert (number, url) == (7, "https://github.com/o/r/pull/7")
     assert publisher.events == [
         ("create_draft", (mirror.path, BRANCH, "main", "Fix it")),
         ("pr", (mirror.path, BRANCH)),
     ]
+
+
+async def test_open_pr_without_a_github_app_is_refused_and_never_runs_gh(tmp_path: Path) -> None:
+    publisher = FakePublisher(app=False)
+
+    with pytest.raises(TransitError, match="story.github_app"):
+        await open_pr(
+            mirror_of(tmp_path, FakeRunner(), publisher),
+            publisher,
+            branch=BRANCH,
+            base="main",
+            title="t",
+            head=TIP,
+        )
+    assert publisher.events == []
+
+
+async def test_open_pr_on_a_branch_never_pushed_says_to_push_first(tmp_path: Path) -> None:
+    runner, publisher = FakeRunner(), FakePublisher()
+    runner.failures["rev-parse"] = "fatal: Needed a single revision"
+
+    with pytest.raises(TransitError, match="push_branch first"):
+        await pushed_head(mirror_of(tmp_path, runner, publisher), BRANCH)
+
+
+async def test_open_pr_on_a_branch_pushed_again_since_the_yes_is_refused(tmp_path: Path) -> None:
+    publisher = FakePublisher()
+
+    with pytest.raises(TransitError, match="pushed again"):
+        await open_pr(
+            mirror_of(tmp_path, FakeRunner(), publisher),
+            publisher,
+            branch=BRANCH,
+            base="main",
+            title="t",
+            head=BASE,
+        )
+    assert publisher.events == []
 
 
 async def test_refresh_with_an_app_fetches_through_the_publisher_from_github(tmp_path: Path) -> None:
