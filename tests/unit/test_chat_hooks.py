@@ -15,6 +15,7 @@ from airlie.chat.hooks import (
     TurnRefused,
     TurnSummary,
     UnknownSkill,
+    Verdict,
     build_system_prompt,
     default_hooks,
     notify_reply,
@@ -538,3 +539,69 @@ async def test_a_refusal_outside_before_turn_is_logged_and_the_next_hook_still_r
     assert record.getMessage() == "chat hook session_start raised TurnRefused outside before_turn"
     assert record.exc_info is not None and isinstance(record.exc_info[1], TurnRefused)
     assert seen == ["ran"]
+
+
+CALL = ToolCall("c1", "write_file", "{}")
+
+
+async def test_gate_lets_a_call_through_when_no_hook_refuses_and_hands_each_hook_the_context_and_call() -> (
+    None
+):
+    hooks = Hooks()
+    seen: list[tuple[Any, Any]] = []
+
+    async def watcher(c: TurnContext, call: ToolCall) -> None:
+        seen.append((c, call))
+        return None
+
+    hooks.on("before_tool", watcher)
+    turn = ctx()
+
+    assert await hooks.gate(turn, CALL) is None
+    assert seen == [(turn, CALL)]
+
+
+async def test_gate_with_no_before_tool_hooks_lets_the_call_through() -> None:
+    assert await Hooks().gate(ctx(), CALL) is None
+
+
+async def test_gate_returns_the_first_refusal_and_asks_no_later_hook() -> None:
+    hooks = Hooks()
+    asked: list[str] = []
+    refusal = Verdict("pending", "needs a yes", approval_id="a1")
+
+    async def lets_through(c: TurnContext, call: ToolCall) -> None:
+        asked.append("first")
+
+    async def refuses(c: TurnContext, call: ToolCall) -> Verdict:
+        asked.append("second")
+        return refusal
+
+    async def never_reached(c: TurnContext, call: ToolCall) -> Verdict:
+        asked.append("third")
+        return Verdict("denied", "no")
+
+    for fn in (lets_through, refuses, never_reached):
+        hooks.on("before_tool", fn)
+
+    assert await hooks.gate(ctx(), CALL) is refusal
+    assert asked == ["first", "second"]
+
+
+async def test_gate_refuses_a_call_whose_permission_hook_raises_and_logs_the_tool(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    hooks = Hooks()
+
+    async def broken(c: TurnContext, call: ToolCall) -> None:
+        raise RuntimeError("policy store down")
+
+    hooks.on("before_tool", broken)
+
+    with caplog.at_level(logging.ERROR, logger="airlie.chat.hooks"):
+        verdict = await hooks.gate(ctx(), CALL)
+
+    assert verdict == Verdict("denied", "error: write_file was refused because its permission check failed")
+    assert [r.getMessage() for r in caplog.records] == [
+        "chat hook before_tool failed: refusing the call write_file"
+    ]

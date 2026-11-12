@@ -189,3 +189,70 @@ def test_needs_yes_is_the_kinds_ask_first_and_for_a_repository_the_always_asked(
     cfg.chat.kinds.plain.ask_first = ["todo"]
     got = needs_yes(kind, cfg)  # type: ignore[arg-type]
     assert got == (frozenset({"todo"}) if kind == "plain" else {"push_branch", "open_pr", "build_image"})
+
+
+async def test_the_registrys_task_tool_runs_on_the_engine_for_its_role_with_the_chat_skills(
+    cfg: AirlieConfig, library: SuperpowersLibrary, tmp_path: Path
+) -> None:
+    import json
+
+    from airlie.engine.fake import FakeEngine, FakeReply
+    from airlie.engine.types import ToolCall
+    from airlie.skills.library import Skill
+    from tests.support.box import FakeBox
+
+    cfg = cfg.model_copy(deep=True)
+    cfg.chat.task.roles = ["coder", "chat"]
+    engine = FakeEngine({"chat": [FakeReply(text="done")]})
+    asked: list[str] = []
+
+    def engine_for(role: str) -> FakeEngine:
+        asked.append(role)
+        return engine
+
+    ctx = ToolContext(worktree=Path("/w"), box=FakeBox("vm", state="running"))
+    skills = {"story": Skill("story", "Draft a story", "BODY", tmp_path / "story.md")}
+    reg = registry_for(
+        "repository",
+        cfg,
+        library=library,
+        todos=TodoList(),
+        ctx=ctx,
+        web=WEB,
+        skills_extra=skills,
+        repo=object(),  # type: ignore[arg-type]
+        task_engine_for=engine_for,
+    )
+
+    result = await reg.call(ToolCall("c1", "task", json.dumps({"role": "chat", "prompt": "x"})))
+
+    assert (result.ok, result.output, asked) == (True, "done", ["chat"])
+    assert "- /story: Draft a story" in engine.requests[0].messages[0].content
+
+
+async def test_the_registrys_push_tool_belongs_to_the_session_it_was_given(
+    cfg: AirlieConfig, library: SuperpowersLibrary
+) -> None:
+    from airlie.boxes.transit import TransitError
+    from tests.support.box import FakeBox
+
+    class Mirror:
+        can_push = False
+
+    class Session:
+        mirror = Mirror()
+
+    ctx = ToolContext(worktree=Path("/w"), box=FakeBox("vm", state="running"))
+    reg = registry_for(
+        "repository",
+        cfg,
+        library=library,
+        todos=TodoList(),
+        ctx=ctx,
+        web=WEB,
+        repo=Session(),  # type: ignore[arg-type]
+    )
+    push: Any = reg.get("push_branch")
+
+    with pytest.raises(TransitError):
+        await push.subject({})

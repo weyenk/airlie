@@ -310,3 +310,107 @@ def test_list_of_nobody_is_empty_and_a_summary_has_every_field(store: ThreadStor
     [s] = store.list("noah")
 
     assert (s.id, s.title, s.kind, s.updated) == ("t1", "hello", "plain", clock.t)
+
+
+def test_a_repository_thread_keeps_its_repo_and_base_ref_from_the_first_open(store: ThreadStore) -> None:
+    store.open("t1", "noah", "repository", repo="acme/web", base_ref="main")
+
+    again = store.open("t1", "noah", "repository", repo="other/repo", base_ref="dev")
+
+    assert (again.repo, again.base_ref, again.base_sha) == ("acme/web", "main", None)
+
+
+def test_set_base_records_the_base_sha_apart_from_the_base_ref(store: ThreadStore) -> None:
+    store.open("t1", "noah", "repository", repo="acme/web", base_ref="main")
+    store.set_base("t1", "abc123")
+
+    t = store.get("t1", "noah")
+
+    assert (t.repo, t.base_ref, t.base_sha) == ("acme/web", "main", "abc123")
+
+
+def test_a_store_made_before_repository_chats_gains_the_columns_once_and_keeps_its_threads(
+    tmp_path: Path, clock: Clock
+) -> None:
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.executescript(
+        "create table threads (id text primary key, owner text not null, kind text not null, "
+        "title text not null, todos text not null, created real not null, updated real not null);"
+        "insert into threads values ('t1', 'noah', 'plain', 'old', '[]', 1.0, 2.0);"
+    )
+    conn.close()
+
+    first = ThreadStore(path, now=clock)
+    first.close()
+    second = ThreadStore(path, now=clock)  # the columns are there now: not added twice
+    t = second.get("t1", "noah")
+    second.close()
+
+    assert (t.title, t.repo, t.base_ref, t.base_sha) == ("old", None, None, None)
+
+
+def test_repository_threads_lists_only_opened_sessions_of_any_owner_without_messages(
+    store: ThreadStore,
+) -> None:
+    store.open("r1", "noah", "repository", repo="acme/web", base_ref="main")
+    store.set_base("r1", "sha1")
+    store.append("r1", msg("m1"))
+    store.open("r2", "ann", "repository", repo="acme/api", base_ref="main")  # no session yet
+    store.open("p1", "noah", "plain")
+    store.set_base("p1", "shaP")  # a plain chat is not a repository chat
+
+    [t] = store.repository_threads()
+
+    assert (t.id, t.owner, t.repo, t.base_sha) == ("r1", "noah", "acme/web", "sha1")
+    assert t.messages == []
+
+
+async def test_remove_runs_the_delete_callbacks_with_the_thread_then_deletes_it(
+    store: ThreadStore,
+) -> None:
+    store.open("t1", "noah", "plain")
+    store.append("t1", msg("m1"))
+    seen: list[tuple[str, list[Any], bool]] = []
+
+    async def before(thread: Any) -> None:
+        seen.append((thread.id, thread.messages, store.exists("t1")))
+
+    store.on_delete(before)
+
+    assert await store.remove("t1", "noah") is True
+
+    assert seen == [("t1", [], True)]  # called once, thread still there, messages left out
+    assert store.exists("t1") is False
+
+
+async def test_remove_of_a_missing_or_foreign_thread_is_false_and_runs_no_callback(
+    store: ThreadStore,
+) -> None:
+    store.open("t1", "noah", "plain")
+    called: list[str] = []
+
+    async def before(thread: Any) -> None:
+        called.append(thread.id)
+
+    store.on_delete(before)
+
+    assert await store.remove("t1", "mallory") is False
+    assert await store.remove("nope", "noah") is False
+
+    assert called == []
+    assert store.exists("t1") is True
+
+
+async def test_a_delete_callback_that_raises_keeps_the_thread(store: ThreadStore) -> None:
+    store.open("t1", "noah", "plain")
+
+    async def boom(thread: Any) -> None:
+        raise RuntimeError("vm stuck")
+
+    store.on_delete(boom)
+
+    with pytest.raises(RuntimeError):
+        await store.remove("t1", "noah")
+
+    assert store.exists("t1") is True

@@ -169,3 +169,20 @@ def test_a_reasoning_delta_carries_its_text_and_the_part_id() -> None:
 
     assert (first[1]["delta"], second[0]["delta"]) == ("think ", "more")
     assert first[0]["id"] == first[1]["id"] == second[0]["id"]
+
+
+def test_an_approval_request_names_the_approval_and_the_call_it_waits_on() -> None:
+    assert StreamWriter("m").tool_approval_request("ap1", "c9") == [
+        'data: {"type":"tool-approval-request","approvalId":"ap1","toolCallId":"c9"}\n\n'
+    ]
+
+
+def test_an_approval_request_leaves_an_open_text_part_open() -> None:
+    w = StreamWriter("m")
+    w.text("hello")
+
+    request = chunks(w.tool_approval_request("ap1", "c9"))
+    after = chunks(w.text(" world"))
+
+    assert [c["type"] for c in request] == ["tool-approval-request"]
+    assert [c["type"] for c in after] == ["text-delta"]
