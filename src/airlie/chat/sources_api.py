@@ -35,6 +35,7 @@ from airlie.sources.vault import VaultError
 
 Publish = Callable[[str, str | None], None]
 NO_CLIENT_ID = "set story.github_app.client_id in airlie.local.yaml to connect GitHub"
+TITLES = {"github_app": "GitHub"}
 NO_LINK = "there is no such link in progress: start again"
 
 
@@ -50,6 +51,7 @@ class Attempt:
     expires_at: float
     next_poll_at: float
     interval: int
+    ended: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -79,10 +81,18 @@ class LinkAttempts:
         return found
 
     def end(self, link_id: str) -> None:
-        self._by_id.pop(link_id, None)
+        gone = self._by_id.pop(link_id, None)
+        if gone is not None:
+            gone.ended = True
 
-    def end_for(self, user_id: str, source: str) -> None:
-        self._by_id = {i: a for i, a in self._by_id.items() if (a.user_id, a.source) != (user_id, source)}
+    def end_for(self, user_id: str, source: str) -> list[Attempt]:
+        """Mark every attempt of the person's for `source` ended and drop it; a poll that is with GitHub
+        sees `ended` when it comes back."""
+        gone = [a for a in self._by_id.values() if (a.user_id, a.source) == (user_id, source)]
+        for a in gone:
+            a.ended = True
+        self._by_id = {i: a for i, a in self._by_id.items() if not a.ended}
+        return gone
 
 
 def sources_router(
@@ -116,10 +126,27 @@ def sources_router(
         if user is None:
             return error("not signed in", 401)
         found = await access.view(user, refresh=refresh)
+        missing: list[dict[str, Any]] = [
+            {
+                "name": n,
+                "source": n,
+                "title": TITLES.get(n, n),
+                "linked": False,
+                "login": None,
+                "repositories": [],
+                "error": None,
+                "listed_at": None,
+                "status": "needs_setup",
+                "fix": NO_CLIENT_ID,
+            }
+            for n in sorted(known - set(sources))
+        ]
         return {
             "sources": [
                 {
                     "name": v.name,
+                    "source": v.name,
+                    "status": "error" if v.error else "ok",
                     "title": v.title,
                     "linked": v.linked,
                     "login": v.login,
@@ -131,7 +158,8 @@ def sources_router(
                     "listed_at": v.listed_at,
                 }
                 for v in found.sources
-            ],
+            ]
+            + missing,
             "extras": list(found.extras),
             "extra_candidates": list(found.extra_candidates),
         }
@@ -179,13 +207,24 @@ def sources_router(
             if now < attempt.next_poll_at:
                 return JSONResponse({"state": "pending", "interval": attempt.interval}, status_code=202)
             try:
-                got = await found.poll_link(attempt.code.device_code)
+                try:
+                    got = await found.poll_link(attempt.code.device_code)
+                finally:
+                    attempt.next_poll_at = clock() + attempt.interval  # every ask costs the interval
                 if isinstance(got, LinkPending):
                     attempt.interval = got.interval
                     attempt.next_poll_at = clock() + got.interval
                     return JSONResponse({"state": "pending", "interval": got.interval}, status_code=202)
                 assert isinstance(got, UserTokens)
-                login = await access.save(user, source, got)
+                if attempt.ended:  # unlinked while GitHub was answering: nothing is saved
+                    await found.revoke(got.access_token)
+                    return error(NO_LINK, 404)
+                try:
+                    login = await access.save(user, source, got)
+                except (SourceError, VaultError):
+                    attempts.end(link_id)  # the code is spent: start again
+                    await found.revoke(got.access_token)
+                    raise
             except LinkExpired:
                 attempts.end(link_id)
                 return error("the code expired: start again", 410)
@@ -208,7 +247,9 @@ def sources_router(
         found = source_of(source)
         if isinstance(found, JSONResponse):
             return found
-        attempts.end_for(user, source)
+        for attempt in attempts.end_for(user, source):
+            async with attempt.lock:  # a poll with GitHub finishes (and saves nothing) before the link goes
+                pass
         if not await access.forget(user, source):
             return error(f"you have not linked {found.title}", 404)
         publish("chat", None)

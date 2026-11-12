@@ -5,6 +5,7 @@ one app. Another person's link id is a 404, as one that is not there."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ from airlie.auth.store import AuthStore
 from airlie.config import load_config
 from airlie.serve.app import create_app
 from airlie.sources.github import GitHubSource
+from airlie.sources.protocol import SourceError
 from tests.support.github_user import CODE_S, INTERVAL, Clock, FakeGitHubUser
 from tests.support.serve_chat import ScriptedUpstream, chat_cfg
 from tests.unit.github_helpers import APP_ID, FakeGitHub, app_spec
@@ -275,7 +277,6 @@ def test_without_a_client_id_linking_is_503_with_the_fix(tmp_path: Path) -> None
 
     assert (r.status_code, r.json()) == (503, {"error": NO_CLIENT_ID})
     assert c.post(f"{LINK}/x", headers=noah).status_code == 503
-    assert c.get("/v1/airlie/chat/repositories", headers=noah).json()["sources"] == []
 
 
 def test_a_github_failure_on_start_is_502_without_secrets(world: World) -> None:
@@ -414,3 +415,130 @@ def test_a_repository_airlie_does_not_have_still_cannot_be_pinned(world: World) 
     r = world.client.put("/v1/airlie/chat/pins/nobody/nothing", headers=world.noah)
 
     assert r.status_code == 422 and "not a repository airlie knows" in r.json()["error"]
+
+
+# --- races, retries and set-up ------------------------------------------------------------------------------
+
+
+def asgi(world: World) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=world.client.app, client=ELSEWHERE), base_url="http://t"
+    )
+
+
+def source_of(world: World) -> Any:
+    return world.client.app.state.repo_access._sources["github_app"]  # type: ignore[attr-defined]
+
+
+def test_an_unlink_while_a_poll_is_with_github_leaves_the_person_not_linked(world: World) -> None:
+    source = source_of(world)
+    inside, release = asyncio.Event(), asyncio.Event()
+    real = source.poll_link
+
+    async def held(device_code: str) -> Any:
+        got = await real(device_code)  # GitHub has issued the tokens
+        inside.set()
+        await release.wait()
+        return got
+
+    source.poll_link = held
+
+    async def scenario() -> tuple[httpx.Response, httpx.Response]:
+        async with asgi(world) as c:
+            started = (await c.post(LINK, headers=world.noah)).json()
+            world.fake.approve(started["user_code"], "weyenk")
+            world.clock.advance(INTERVAL)
+            polling = asyncio.create_task(c.post(f"{LINK}/{started['link_id']}", headers=world.noah))
+            await inside.wait()
+            unlinking = asyncio.create_task(c.delete(LINK, headers=world.noah))
+            await asyncio.sleep(0.05)
+            release.set()
+            return await polling, await unlinking
+
+    polled, unlinked = asyncio.run(scenario())
+
+    assert polled.status_code == 404
+    assert unlinked.status_code == 404  # there was nothing linked to drop
+    assert world.listing(world.noah)["sources"][0]["linked"] is False
+    assert len(world.fake.revoked_tokens) == 1  # the token GitHub issued to the ended attempt
+
+
+def test_two_polls_at_once_ask_github_once(world: World) -> None:
+    async def scenario() -> list[httpx.Response]:
+        async with asgi(world) as c:
+            started = (await c.post(LINK, headers=world.noah)).json()
+            world.clock.advance(INTERVAL)
+            url = f"{LINK}/{started['link_id']}"
+            return list(await asyncio.gather(*(c.post(url, headers=world.noah) for _ in range(3))))
+
+    got = asyncio.run(scenario())
+
+    assert [r.status_code for r in got] == [202, 202, 202]
+    assert world.polls() == 1
+
+
+def test_after_a_github_failure_the_next_poll_waits_the_interval(world: World) -> None:
+    source = source_of(world)
+    asked: list[str] = []
+
+    async def failing(device_code: str) -> Any:
+        asked.append(device_code)
+        raise SourceError("GitHub POST login/oauth/access_token: no reply")
+
+    source.poll_link = failing
+    started = world.start(world.noah)
+    world.clock.advance(INTERVAL)
+
+    first = world.poll(world.noah, started["link_id"])
+    again = world.poll(world.noah, started["link_id"])
+
+    assert first.status_code == 502
+    assert (again.status_code, again.json()["state"]) == (202, "pending")
+    assert len(asked) == 1
+
+
+def test_a_link_that_cannot_be_saved_revokes_the_tokens_github_issued(world: World) -> None:
+    source = source_of(world)
+
+    async def failing(access_token: str) -> Any:
+        raise SourceError("GitHub GET user: no reply")
+
+    source.account = failing
+    started = world.start(world.noah)
+    world.fake.approve(started["user_code"], "weyenk")
+    world.clock.advance(INTERVAL)
+
+    r = world.poll(world.noah, started["link_id"])
+
+    assert r.status_code == 502
+    assert len(world.fake.revoked_tokens) == 1
+    assert world.poll(world.noah, started["link_id"]).status_code == 404
+    assert world.listing(world.noah)["sources"][0]["linked"] is False
+
+
+def test_a_source_without_a_client_id_is_listed_as_needing_setup(tmp_path: Path) -> None:
+    store = AuthStore(tmp_path / "auth.sqlite")
+    noah = {"Cookie": f"{SESSION_COOKIE}={store.make_session(store.add_user('Noah', 'member').id, 30)}"}
+    app = create_app(
+        config(tmp_path),
+        transport=httpx.MockTransport(ScriptedUpstream()),
+        auth_store=store,
+        pinnable=local_names,
+    )
+
+    got = TestClient(app, client=ELSEWHERE).get("/v1/airlie/chat/repositories", headers=noah).json()
+
+    assert got["sources"] == [
+        {
+            "name": "github_app",
+            "source": "github_app",
+            "title": "GitHub",
+            "linked": False,
+            "login": None,
+            "repositories": [],
+            "error": None,
+            "listed_at": None,
+            "status": "needs_setup",
+            "fix": NO_CLIENT_ID,
+        }
+    ]
