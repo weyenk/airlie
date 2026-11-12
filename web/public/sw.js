@@ -2,6 +2,8 @@
 // pass straight through, so a stale answer can never stand in for the Studio's.
 const VERSION = "__AIRLIE_BUILD__";
 const CACHE = `airlie-shell-${VERSION}`;
+// the built entry chunks and stylesheet, which the build stamps in: the shell alone would open blank offline
+const ASSETS = /*__AIRLIE_ASSETS__*/ [];
 const SHELL = [
   "/",
   "/offline.html",
@@ -13,7 +15,7 @@ const SHELL = [
 
 self.addEventListener("install", (event) => {
   // no skipWaiting here: a new worker waits until the person taps "Reload" (SKIP_WAITING below)
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll([...SHELL, ...ASSETS])));
 });
 
 self.addEventListener("activate", (event) => {
@@ -80,15 +82,19 @@ self.addEventListener("push", (event) => {
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
-// A tap opens the page it is about: an open window is focused and sent there, else a new one opens.
+// A tap opens the page it is about: a window this worker controls is focused and sent there (an uncontrolled one
+// may refuse to navigate), else a new one opens.
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const url = (event.notification.data && event.notification.data.url) || "/";
   event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
+    self.clients.matchAll({ type: "window" }).then((windows) => {
       const open = windows[0];
       if (!open) return self.clients.openWindow(url);
-      return open.focus().then(() => open.navigate(url));
+      return open
+        .focus()
+        .then(() => open.navigate(url))
+        .catch(() => self.clients.openWindow(url));
     }),
   );
 });

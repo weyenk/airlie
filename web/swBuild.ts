@@ -15,3 +15,21 @@ export function stampBuildId(src: string, id: string): string {
   }
   return src.replace(BUILD_TOKEN, id);
 }
+
+export const ASSETS_TOKEN = "__AIRLIE_ASSETS__";
+
+/** The hashed files the built index.html loads (entry chunk, preloads, stylesheet), once each, in page order. */
+export function assetsOf(html: string): string[] {
+  const found = new Set<string>();
+  for (const m of html.matchAll(/\b(?:src|href)="(\/assets\/[^"]+)"/g)) found.add(m[1]);
+  return [...found];
+}
+
+/** sw.js with its empty asset list swapped for the built one; without the placeholder the first offline launch would be blank. */
+export function stampAssets(src: string, assets: string[]): string {
+  const placeholder = `/*${ASSETS_TOKEN}*/ []`;
+  if (!src.includes(placeholder)) {
+    throw new Error(`sw.js has no ${ASSETS_TOKEN} list to stamp: the built chunks would not be precached`);
+  }
+  return src.replace(placeholder, JSON.stringify(assets));
+}

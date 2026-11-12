@@ -2,6 +2,7 @@
 
 import { expect, test, vi } from "vitest";
 import SRC from "../public/sw.js?raw";
+import { stampAssets } from "../swBuild";
 const ORIGIN = "https://airlie.test";
 
 type Handler = (event: unknown) => void;
@@ -17,7 +18,7 @@ function fakeCache(initial: Record<string, unknown> = {}) {
   };
 }
 
-function loadWorker(opts: { cache?: ReturnType<typeof fakeCache>; names?: string[]; fetch?: ReturnType<typeof vi.fn>; windows?: unknown[] } = {}) {
+function loadWorker(opts: { cache?: ReturnType<typeof fakeCache>; names?: string[]; fetch?: ReturnType<typeof vi.fn>; windows?: unknown[]; assets?: string[] } = {}) {
   const cache = opts.cache ?? fakeCache();
   const windows = opts.windows ?? [];
   const handlers: Record<string, Handler> = {};
@@ -34,7 +35,7 @@ function loadWorker(opts: { cache?: ReturnType<typeof fakeCache>; names?: string
     delete: vi.fn(async () => true),
   };
   const fetchFn = opts.fetch ?? vi.fn(async () => ({ ok: true, clone: () => "copy" }));
-  new Function("self", "caches", "fetch", SRC)(self, caches, fetchFn);
+  new Function("self", "caches", "fetch", opts.assets ? stampAssets(SRC, opts.assets) : SRC)(self, caches, fetchFn);
   return {
     self,
     caches,
@@ -178,7 +179,7 @@ test("tapping a notification focuses an open window and sends it to the page", a
   w.dispatch("notificationclick", e);
   await e.done();
   expect(e.notification.close).toHaveBeenCalled();
-  expect(w.self.clients.matchAll).toHaveBeenCalledWith({ type: "window", includeUncontrolled: true });
+  expect(w.self.clients.matchAll).toHaveBeenCalledWith({ type: "window" }); // only windows this worker controls
   expect(win.focus).toHaveBeenCalled();
   expect(win.navigate).toHaveBeenCalledWith("/board/AIR-9");
   expect(w.self.clients.openWindow).not.toHaveBeenCalled();
@@ -190,4 +191,23 @@ test("tapping a notification opens a window when none is open", async () => {
   w.dispatch("notificationclick", e);
   await e.done();
   expect(w.self.clients.openWindow).toHaveBeenCalledWith("/board/AIR-9");
+});
+
+test("a window that will not navigate gets a new window instead", async () => {
+  const win = { focus: vi.fn(async () => undefined), navigate: vi.fn(async () => Promise.reject(new TypeError("not controlled"))) };
+  const w = loadWorker({ windows: [win] });
+  const e = { notification: { close: vi.fn(), data: { url: "/board/AIR-9" } }, ...waitEvent() };
+  w.dispatch("notificationclick", e);
+  await e.done();
+  expect(w.self.clients.openWindow).toHaveBeenCalledWith("/board/AIR-9");
+});
+
+test("install precaches the built entry chunks and stylesheet with the shell, so the first offline launch has them", async () => {
+  const w = loadWorker({ assets: ["/assets/index-AbC123.js", "/assets/index-Q1w2.css"] });
+  const install = waitEvent();
+  w.dispatch("install", install);
+  await install.done();
+  expect(w.cache.addAll.mock.calls[0][0]).toEqual(
+    expect.arrayContaining(["/", "/offline.html", "/assets/index-AbC123.js", "/assets/index-Q1w2.css"]),
+  );
 });

@@ -4,9 +4,10 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
-import { buildOutDir, stampBuildId } from "./swBuild";
+import { assetsOf, buildOutDir, stampAssets, stampBuildId } from "./swBuild";
 
-// sw.js names its cache after the build: the hash of the built index.html, which names every hashed asset.
+// sw.js names its cache after the build (the hash of the built index.html, which names every hashed asset) and
+// precaches the assets that page loads.
 function swBuildId(): Plugin {
   let outDir = "";
   return {
@@ -16,9 +17,10 @@ function swBuildId(): Plugin {
       outDir = buildOutDir(config.root, config.build.outDir);
     },
     closeBundle() {
-      const id = createHash("sha256").update(readFileSync(outDir + "index.html")).digest("hex").slice(0, 12);
+      const html = readFileSync(outDir + "index.html");
+      const id = createHash("sha256").update(html).digest("hex").slice(0, 12);
       const sw = outDir + "sw.js";
-      writeFileSync(sw, stampBuildId(readFileSync(sw, "utf8"), id));
+      writeFileSync(sw, stampAssets(stampBuildId(readFileSync(sw, "utf8"), id), assetsOf(new TextDecoder().decode(html))));
     },
   };
 }
