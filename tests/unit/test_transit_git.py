@@ -430,11 +430,6 @@ async def gpg_runs_for_a_signed_vm_commit(tmp_path: Path, source: Path) -> int:
     return len(marker.read_text().splitlines()) if marker.exists() else 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: _changed_paths's `log -z --name-only` has no --no-show-signature, so a VM commit's gpgsig "
-    "header still starts gpg.program on the host when log.showSignature is set (the commit list has it)",
-)
 async def test_harvest_never_runs_the_signature_program_a_vm_commit_names(
     tmp_path: Path, shared_source: Path
 ) -> None:

@@ -175,7 +175,9 @@ async def _changed_paths(mirror: Mirror, base_sha: str, sha: str) -> tuple[str, 
         width = 3 if status[i][0] in "RC" else 2
         paths.update(dict.fromkeys(p for p in status[i + 1 : i + width] if p))
         i += width
-    names = await mirror.git("log", "-z", "--name-only", "--no-renames", "--format=", f"{base_sha}..{sha}")
+    names = await mirror.git(
+        "log", "--no-show-signature", "-z", "--name-only", "--no-renames", "--format=", f"{base_sha}..{sha}"
+    )
     paths.update(dict.fromkeys(p.strip("\n") for p in names.split("\0") if p.strip()))
     return tuple(paths)
 
