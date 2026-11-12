@@ -107,7 +107,18 @@ from airlie.story.harvest import (
     place_tests,
     rebase_draft,
 )
-from airlie.story.layer_build import layer_outcome, open_layer
+from airlie.story.layer_build import (
+    coder_step,
+    done_check_step,
+    final_gate_step,
+    fix_step,
+    follow_up_step,
+    gate_advice_step,
+    layer_outcome,
+    open_layer,
+    regate_step,
+    review_step,
+)
 from airlie.story.layer_checks import Finding, Said, checks_for
 from airlie.story.lessons import Lesson, LessonsStore
 from airlie.story.local_board import LocalBoard
@@ -165,7 +176,7 @@ from airlie.teams.worktree import (
     rev_parse,
 )
 from airlie.tools import ToolContext, ToolRegistry
-from airlie.topology.studio import SKILL_QUESTION, StudioOrchestrator, WrongTest
+from airlie.topology.studio import SKILL_QUESTION, StudioOrchestrator
 from airlie.topology.studio_plan import extract_json_block
 
 _SHORT = {
@@ -1624,30 +1635,16 @@ class StoryPipeline:
         advice) and the gate again."""
         ls = await open_layer(self, st, card, story, layers, i, package, where, built, attempt)
         try:
-            orch = ls.orch
-            ls.run = run = await orch.coder_turn(ls.plan.subtasks[0])
-            await orch.done_check(run)
-            while True:
-                ls.review = await orch.review_round(run, ls.round_no)
-                if not orch.wants_fix(ls.review, ls.round_no):
-                    break
-                assert ls.review is not None
-                await orch.fix_turn(run, ls.review)
-                ls.round_no += 1
-            orch.close_subtask(run)
-            ls.final = orch.results_text()  # before the follow-up replaces the coder's result
-            ls.passed = await orch.gate_once(self.test_cmd)
-            if orch.gate_follows_up(ls.passed, run.subtask.id):
-                text = orch.gate_tail(run.subtask.id)
-                try:
-                    ls.follow_up_text = await orch.gate_advice(run.subtask.id, text)
-                except WrongTest:
-                    ls.passed = False
-                else:
-                    await orch.follow_up(run.subtask.id, ls.follow_up_text)
-                    ls.passed = await orch.gate_once(self.test_cmd)
-                    orch.settle_gate(ls.passed, run.subtask.id)
-            return await layer_outcome(self, ls, st, card, story, layers)
+            await coder_step(ls)
+            await done_check_step(ls)
+            while (await review_step(ls))["fix"]:
+                await fix_step(ls)
+            # a red gate on a coder that finished asks the advice; its `go` sends the follow-up, then the gate
+            gated = await final_gate_step(self, ls)
+            if gated["follow_up"] and (await gate_advice_step(ls))["verdict"] == "go":
+                await follow_up_step(ls)
+                await regate_step(self, ls)
+            return await layer_outcome(self, ls, st, card, story, layers, squash=True)
         finally:
             await ls.close()  # after every subtask has finished: an advice in flight is never cut off
 

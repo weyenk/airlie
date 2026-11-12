@@ -83,10 +83,11 @@ test("the layer bundle: its inputs and outputs, item-scoped artifacts as written
   expect(g.type).toBeNull();
   expect(g.inputs).toEqual(["card", "repo", "story", "layers", "base", "gate", "agreement"]);
   expect(g.outputs).toEqual(["drafted", "built.{item}", "satisfied.{item}"]);
-  expect(line(g, "package", "build")).toEqual([{ from: "package", to: "build", artifacts: ["package.{item}"], when: "package.{item} exists and not satisfied.{item} exists" }]);
+  expect(line(g, "package", "place")).toEqual([{ from: "package", to: "place", artifacts: ["package.{item}"], when: "package.{item} exists and not satisfied.{item} exists" }]);
   expect(line(g, "drafts", "package")[0].artifacts).toEqual(["drafts_session"]);
-  expect(line(g, "build", "package")).toEqual([{ from: "build", to: "package", artifacts: [], loop: { max: "story.layer_attempts", carry: "feedback" } }]);
-  expect(line(g, "build", "costed_layer")).toEqual([{ from: "build", to: "costed_layer", artifacts: [] }]);
+  expect(line(g, "place", "build")).toEqual([{ from: "place", to: "build", artifacts: ["studio.{item}"] }]);
+  expect(line(g, "outcome", "package")).toEqual([{ from: "outcome", to: "package", artifacts: [], loop: { max: "story.layer_attempts", carry: "feedback" } }]);
+  expect(line(g, "squash", "costed_layer")).toEqual([{ from: "squash", to: "costed_layer", artifacts: [] }]);
 });
 
 test("a target reading a name its source does not write gets an ordering line, no error", () => {

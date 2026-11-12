@@ -595,6 +595,7 @@ class _Run:
                 name, line, result
             ):
                 again = self.readers({line.node} | self.downstream(line.node))
+                self.reset_loops(again, but=(name, line.node))
                 if name not in again:
                     self.state[name] = "finished"
                     self.fire(name)
@@ -617,6 +618,15 @@ class _Run:
         if line.loop.carry is not None and line.loop.carry in result:
             self.store.put(self.feedback_name(line.node), result[line.loop.carry])
         return True
+
+    def reset_loops(self, names: set[str], *, but: tuple[str, str]) -> None:
+        """A loop line from and to nodes among `names` (the ones a loop sends back), other than the one firing
+        (`but`: its source and target), has its re-runs counted afresh: a loop inside another's body has its
+        whole bound on each pass, as a layer's second build has review rounds of its own."""
+        scope = f"{self.scope}{self.workflow}"
+        for (src, _), ln in self.lines.items():
+            if ln.loop is not None and src in names and ln.node in names and (src, ln.node) != but:
+                self.c.loops.pop((scope, self.item, src, ln.node), None)
 
     def readers(self, names: set[str]) -> set[str]:
         """`names` and every node that has run (or is running) and reads, among its inputs, an output of

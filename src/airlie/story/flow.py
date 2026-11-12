@@ -7,15 +7,17 @@ inputs from the store and calls the step the driver calls, so a story runs the s
 nodes run from their own fields through the generic runners (`story_runners`); the survey is an ask from its
 prompt file. Refine, the layer plan and the packages' drafting are catalog operations that wrap the driver's
 steps (their briefs, parsers and protocols: the plan's rounds, the drafting's turn per layer), interim until
-Part 2 makes them model nodes, as are the layer's package and build. The pieces those steps share with the
-driver (`surveyed`, `refined`, `plan_layers`, `draft_packages`, ...) are defined here once; the pipeline
-imports them."""
+a later plan makes them model nodes, as is the layer's package. The layer's build is one check per step over
+the layer's studio (`airlie.story.layer_build`), the steps the driver's `_build_once` calls in order. The
+pieces those steps share with the driver (`surveyed`, `refined`, `plan_layers`, `draft_packages`, ...) are
+defined here once; the pipeline imports them."""
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import functools
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +48,20 @@ from airlie.story.amigos import ROLES, Agreement
 from airlie.story.board import Card, note
 from airlie.story.briefs import drafts_brief, layer_sources, layers_brief, request_section, story_text
 from airlie.story.context import guide_budget, repo_guide
+from airlie.story.layer_build import (
+    LayerStudio,
+    coder_step,
+    done_check_step,
+    final_gate_step,
+    fix_step,
+    follow_up_step,
+    gate_advice_step,
+    layer_outcome,
+    open_layer,
+    regate_step,
+    review_step,
+    squash_layer,
+)
 from airlie.story.model import Layer, Story, parse_layers, parse_story
 from airlie.story.package import Package, Satisfied
 from airlie.story.rounds import plan_verdict, same_layers
@@ -500,9 +516,9 @@ async def covered(ctx: RunContext) -> Mapping[str, Any]:
     return {}
 
 
-# ---- the layer's package and build: today's steps until Part 2 dissolves them into model nodes. The
-# package node names the drafting session in `args.session`; the build node's loop line carries its
-# feedback back to the package node (`ctx.feedback`).
+# ---- the layer's package, and its build in one node (a card on an old snapshot). The package node names the
+# drafting session in `args.session`; the build's loop line (the outcome node's, below) carries its feedback
+# back to the package node (`ctx.feedback`).
 
 
 @check(
@@ -536,12 +552,14 @@ async def ready_package(ctx: RunContext, *, session: str | None = None) -> Mappi
     inputs=("card", "repo", "package.{item}", "story", "layers"),
     outputs=("built.{item}",),
     formats={"built.{item}": "json"},
-    title="Build the layer once from its package (interim: Part 2 makes it a write node)",
+    title="Build the layer once from its package, in one node (a card on an old snapshot)",
 )
 async def build_once(ctx: RunContext) -> Mapping[str, Any]:
     """One `_build_once` from the stored package: the layer's built record, or a failure that carries the
     feedback back to the package node. The attempt counts this run's builds, so the last of
-    story.layer_attempts stops the story there, as the driver's loop does."""
+    story.layer_attempts stops the story there, as the driver's loop does. The layer bundle now builds by
+    the steps below, one node each; a card that started before keeps this node on its snapshot (D21), and
+    `_build_once` calls the same steps in order."""
     r = _run(ctx, "story.build_once")
     nn, i, story, layers = _at(ctx, "story.build_once")
     where, built, _ = r.sites[nn]
@@ -552,6 +570,208 @@ async def build_once(ctx: RunContext) -> Mapping[str, Any]:
     if again is not None:
         return {FAIL_KEY: "layer red", "feedback": again}
     return {"built.{item}": r.st.built[nn]}
+
+
+# ---- the layer's build as nodes (generic nodes Part 2, "The layer bundle"): `place` opens the layer's studio
+# (`LayerStudio`, the run's session `studio.<layer>`), each step after it is one of `layer_build`'s over it,
+# the steps `_build_once` calls in order, and each returns a transient `build.<step>.<layer>` that the lines
+# after its node read. Whatever a step raises closes the studio first, as `_build_once`'s `finally` does:
+# the supervisor's open rows are closed `unknown` and the worktree stays for the restart.
+
+
+def _studio(ctx: RunContext, name: str) -> tuple[StoryRun, LayerStudio]:
+    """The story run and the layer studio `place` opened for the bundle's layer."""
+    r = _run(ctx, name)
+    nn, _ = _item(ctx, name)
+    ls: LayerStudio | None = ctx.sessions.get(f"studio.{nn}")
+    if ls is None:
+        raise MissingInput(f"node '{ctx.node}': {name} needs 'studio.{nn}', which the run does not hold")
+    return r, ls
+
+
+@contextlib.asynccontextmanager
+async def _closing(ls: LayerStudio) -> AsyncIterator[None]:
+    """What raises in it closes the layer's studio, then propagates."""
+    try:
+        yield
+    except BaseException:
+        await ls.close()
+        raise
+
+
+@check(
+    "story.place_layer",
+    inputs=("card", "repo", "story", "layers", "package.{item}"),
+    outputs=("studio.{item}",),
+    formats={"studio.{item}": "session"},
+    title="Open the layer's studio: its run, supervisor, brief and worktree, with the package placed",
+)
+async def place_layer(ctx: RunContext) -> Mapping[str, Any]:
+    """`open_layer` where `covered` found the layer is built, from the stored package: the attempt counts
+    this run's builds, as `story.build_once` does. The studio is held on the run's stack (`ctx.held`), which
+    closes it however the run ends, and leaves the run's sessions after."""
+    name = "story.place_layer"
+    r = _run(ctx, name)
+    if ctx.held is None:
+        raise RuntimeError(f"node '{ctx.node}' outputs a session, but the run holds nothing open")
+    nn, i, story, layers = _at(ctx, name)
+    where, built, _ = r.sites[nn]
+    r.attempts[nn] = attempt = r.attempts.get(nn, 0) + 1
+    package = Package.from_dict(_in(ctx, name, f"package.{nn}"))
+    card = _card(ctx, name)
+    ls = await open_layer(r.pipe, r.st, card, story, layers, i, package, where, built, attempt)
+    ctx.held.callback(ctx.sessions.pop, f"studio.{nn}")  # after the studio closes (LIFO)
+    ctx.held.push_async_callback(ls.close)
+    return {"studio.{item}": ls}
+
+
+@check(
+    "story.coder_turn",
+    inputs=("studio.{item}",),
+    outputs=("build.coder.{item}",),
+    formats={"build.coder.{item}": "json"},
+    transient=("build.coder.{item}",),
+    title="The coder's turn on the layer: how it stopped, and whether it finished",
+)
+async def coder_turn(ctx: RunContext) -> Mapping[str, Any]:
+    _, ls = _studio(ctx, "story.coder_turn")
+    async with _closing(ls):
+        return {"build.coder.{item}": await coder_step(ls)}
+
+
+@check(
+    "story.done_check",
+    inputs=("studio.{item}", "build.coder.{item}"),
+    outputs=("build.done_check.{item}",),
+    formats={"build.done_check.{item}": "json"},
+    transient=("build.done_check.{item}",),
+    title="Ask the coder whether the layer is done (studio.done_check)",
+)
+async def done_check(ctx: RunContext) -> Mapping[str, Any]:
+    _, ls = _studio(ctx, "story.done_check")
+    async with _closing(ls):
+        return {"build.done_check.{item}": await done_check_step(ls)}
+
+
+@check(
+    "story.review_round",
+    inputs=("studio.{item}",),
+    outputs=("build.review.{item}",),
+    formats={"build.review.{item}": "json"},
+    transient=("build.review.{item}",),
+    title="Review the layer's change: the verdict, and whether a fix round follows (one left, a blocker)",
+)
+async def review_round(ctx: RunContext) -> Mapping[str, Any]:
+    _, ls = _studio(ctx, "story.review_round")
+    async with _closing(ls):
+        return {"build.review.{item}": await review_step(ls)}
+
+
+@check(
+    "story.fix_turn",
+    inputs=("studio.{item}", "build.review.{item}"),
+    outputs=("build.fix.{item}",),
+    formats={"build.fix.{item}": "json"},
+    transient=("build.fix.{item}",),
+    title="The coder's fix round for the review's blocking findings",
+)
+async def fix_turn(ctx: RunContext) -> Mapping[str, Any]:
+    _, ls = _studio(ctx, "story.fix_turn")
+    async with _closing(ls):
+        return {"build.fix.{item}": await fix_step(ls)}
+
+
+@check(
+    "story.final_gate",
+    inputs=("studio.{item}",),
+    outputs=("build.gate.{item}",),
+    formats={"build.gate.{item}": "json"},
+    transient=("build.gate.{item}",),
+    title="Run the whole gate on the layer: whether it passed, and whether its red goes back to the coder",
+)
+async def final_gate(ctx: RunContext) -> Mapping[str, Any]:
+    r, ls = _studio(ctx, "story.final_gate")
+    async with _closing(ls):
+        return {"build.gate.{item}": await final_gate_step(r.pipe, ls)}
+
+
+@check(
+    "story.gate_advice",
+    inputs=("studio.{item}", "build.gate.{item}"),
+    outputs=("build.advice.{item}",),
+    formats={"build.advice.{item}": "json"},
+    transient=("build.advice.{item}",),
+    title="Put the red gate on record and ask the supervisor: go (a follow-up), or the test is wrong",
+)
+async def gate_advice(ctx: RunContext) -> Mapping[str, Any]:
+    _, ls = _studio(ctx, "story.gate_advice")
+    async with _closing(ls):
+        return {"build.advice.{item}": await gate_advice_step(ls)}
+
+
+@check(
+    "story.follow_up_turn",
+    inputs=("studio.{item}", "build.advice.{item}"),
+    outputs=("build.follow_up.{item}",),
+    formats={"build.follow_up.{item}": "json"},
+    transient=("build.follow_up.{item}",),
+    title="Send the coder the red gate's output with the advice, in its conversation",
+)
+async def follow_up_turn(ctx: RunContext) -> Mapping[str, Any]:
+    _, ls = _studio(ctx, "story.follow_up_turn")
+    async with _closing(ls):
+        return {"build.follow_up.{item}": await follow_up_step(ls)}
+
+
+@check(
+    "story.regate",
+    inputs=("studio.{item}",),
+    outputs=("build.regate.{item}",),
+    formats={"build.regate.{item}": "json"},
+    transient=("build.regate.{item}",),
+    title="Run the whole gate again after the follow-up, and tell the supervisor what came of its advice",
+)
+async def regate(ctx: RunContext) -> Mapping[str, Any]:
+    r, ls = _studio(ctx, "story.regate")
+    async with _closing(ls):
+        return {"build.regate.{item}": await regate_step(r.pipe, ls)}
+
+
+@check(
+    "story.layer_outcome",
+    inputs=("studio.{item}",),
+    outputs=("build.outcome.{item}",),
+    formats={"build.outcome.{item}": "json"},
+    transient=("build.outcome.{item}",),
+    title="End the layer's studio run: built, or back to the architect (the last build stops the story)",
+)
+async def outcome(ctx: RunContext) -> Mapping[str, Any]:
+    """`layer_outcome` without the squash (the `squash` node's): a red layer's failure carries its feedback
+    back to the package node, its studio closed first as `_build_once`'s `finally` closes it; on the last
+    build StoryBlocked."""
+    r, ls = _studio(ctx, "story.layer_outcome")
+    async with _closing(ls):
+        again = await layer_outcome(r.pipe, ls, r.st, ls.card, ls.story, ls.layers, squash=False)
+    if again is not None:
+        await ls.close()
+        return {FAIL_KEY: "layer red", "feedback": again}
+    return {"build.outcome.{item}": {"built": True}}
+
+
+@check(
+    "story.squash_layer",
+    inputs=("studio.{item}", "build.outcome.{item}"),
+    outputs=("built.{item}",),
+    formats={"built.{item}": "json"},
+    title="Squash the built layer to one commit on its branch and record it",
+)
+async def squash(ctx: RunContext) -> Mapping[str, Any]:
+    """`squash_layer`, then the studio closed, as `_build_once` closes it after the squash."""
+    r, ls = _studio(ctx, "story.squash_layer")
+    async with _closing(ls):
+        await squash_layer(r.pipe, ls, r.st, ls.card, ls.story, ls.layers)
+    await ls.close()
+    return {"built.{item}": r.st.built[ls.nn]}
 
 
 @check(

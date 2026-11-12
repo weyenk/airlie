@@ -164,7 +164,7 @@ test("renameOutput follows an item-scoped output into its own lines' conditions;
   expect(lineOf(g, "covered", "drafts")[0].when).toBe("not covered.{item} exists and not drafted and not built");
   expect(lineOf(g, "covered", "package")[0].when).toBe("not covered.{item} exists");
   // package writes satisfied.{item} too: its line keeps the name
-  expect(lineOf(g, "package", "build")[0].when).toBe("package.{item} exists and not satisfied.{item} exists");
+  expect(lineOf(g, "package", "place")[0].when).toBe("package.{item} exists and not satisfied.{item} exists");
   // drafted has one writer: every line's condition follows
   const d = renameOutput(layer, "drafts", "drafted", "packages_drafted");
   if ("refused" in d) throw new Error("refused");

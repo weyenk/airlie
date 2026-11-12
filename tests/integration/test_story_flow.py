@@ -17,7 +17,9 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+import yaml
 
+from airlie.bench.trace_diff import TIMING, diff_events, diff_prompts
 from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.flow.catalog import STORY_CATALOG, Catalog, Check
@@ -44,10 +46,26 @@ from airlie.story.asking import StoryBlocked
 from airlie.story.board import text_card
 from airlie.story.flow import story_registry, story_runners
 from airlie.story.model import Layer, Story, StoryError
-from airlie.story.phase import phase_path
+from airlie.story.phase import phase_path, read_phase
 from airlie.story.pipeline import REASON_CHARS, StoryPipeline, _cap, _reason
 from airlie.story.state import StoryState, lane_lock, lock_held
+from airlie.story.workflows import snapshot
+from airlie.topology.studio import StudioOrchestrator, SubtaskRun
+from airlie.topology.studio_plan import Subtask
 from tests.support.git import git
+from tests.support.layer_golden import (
+    GOLDEN_LEDGER,
+    GOLDEN_NUDGES,
+    GOLDEN_STATE,
+    GOLDEN_STORY_KINDS,
+    GOLDEN_STORY_LAYER,
+    GOLDEN_STUDIO,
+    build_run,
+    clean,
+    golden_prompts,
+    golden_state,
+    layer_engine,
+)
 from tests.support.story import (
     AGREED_SPLIT,
     B2,
@@ -64,9 +82,11 @@ from tests.support.story import (
     SATISFIED,
     STORY,
     SURVEY_NOTES,
+    WORKFLOWS,
     card_of_epic,
     gated,
     happy_engine,
+    kinds,
     kinds_all,
     layer,
     neutral,
@@ -91,9 +111,20 @@ from tests.support.story_flow import (
     write_events,
     write_story,
 )
-from tests.support.story_layer_checks_flow import BROKEN, FEATURE, OTHER_RED, RED, STILL_BROKEN, calc_repo
+from tests.support.story_layer_checks_flow import (
+    BROKEN,
+    FEATURE,
+    FIXED,
+    OTHER_RED,
+    PYTEST,
+    RED,
+    STILL_BROKEN,
+    calc_repo,
+    write,
+)
 from tests.support.story_layer_checks_flow import LAYERS as CALC_LAYERS
-from tests.support.studio import APPROVE, DONE, RUN, WRITE_PASS, cfg_for
+from tests.support.studio import APPROVE, CHANGES, DONE, RUN, WRITE_PASS, cfg_for
+from tests.support.supervisor_flow import SUPERVISOR_ROLES, answer, rows
 
 
 @pytest.fixture
@@ -593,9 +624,12 @@ def test_the_shipped_workflow_lists_the_diagram_boxes_in_order():
         "costed_amigos", "planned", "build_layers", "built", "publish", "costed_publish", "review",
     ]  # fmt: skip
     layer = cfg.workflows["layer"]
-    assert list(layer.nodes) == ["start", "covered", "drafts", "package", "build", "costed_layer"]
+    assert list(layer.nodes) == [
+        "start", "covered", "drafts", "package", "place", "build", "done_check", "review", "fix",
+        "final_gate", "gate_advice", "follow_up", "regate", "outcome", "squash", "costed_layer",
+    ]  # fmt: skip
     assert cfg.workflows["story"].nodes["amigos"].role == ["product", "architect", "tester"]
-    [back] = [line for line in layer.nodes["build"].to if line.loop is not None]
+    [back] = [line for line in layer.nodes["outcome"].to if line.loop is not None]
     assert back.node == "package" and back.loop is not None
     assert (back.loop.max, back.loop.carry) == ("story.layer_attempts", "feedback")
     assert layer.outputs == ["drafted", "built.{item}", "satisfied.{item}"]
@@ -733,7 +767,8 @@ def test_every_check_the_workflows_name_is_in_the_catalog_and_every_prompt_file_
     runs = {node.run for node in nodes if node.type in ("check", "gate")}
     assert None not in runs
     assert {"story.refine", "story.plan_layers", "story.draft_packages", "story.request"} <= runs
-    assert {"story.ready_package", "story.build_once", "story.to_build", "story.is_story_card"} <= runs
+    assert {"story.ready_package", "story.place_layer", "story.squash_layer", "story.to_build"} <= runs
+    assert "story.build_once" not in runs  # declared still, for a card on an old snapshot (D21)
     assert all(registry.check(str(run)) is STORY_CATALOG[str(run)].fn for run in sorted(map(str, runs)))
     prompts = {node.prompt for node in nodes if node.prompt is not None}
     assert prompts == {"prompt:story-survey", "prompt:amigos-opening"}
@@ -1073,11 +1108,9 @@ async def test_a_resumed_build_skips_the_layers_already_built(tmp_path: Path) ->
         if composer:
             skipped = [(e["node"], e["item"]) for e in events if e["kind"] == "node_skipped"]
             assert [node for node, item in skipped if item == "01"] == [
-                "covered",
-                "drafts",
-                "package",
-                "build",
-            ]
+                "covered", "drafts", "package", "place", "build", "done_check", "review", "fix", "final_gate",
+                "gate_advice", "follow_up", "regate", "outcome", "squash",
+            ]  # fmt: skip
             assert ("drafts", "02") in skipped  # the drafting was held once, before layer 01
         seen.append(built_run(st, root, composer=composer))
     assert seen[1] == seen[0]
@@ -1138,6 +1171,368 @@ async def test_a_satisfied_layer_runs_the_same_through_the_composer(tmp_path: Pa
         assert list(st.built) == ["01"] and list(st.satisfied) == ["02"]
         seen.append(built_run(st, root, composer=composer))
     assert seen[1] == seen[0]
+
+
+# ---- the dissolved layer bundle (generic nodes Part 2, Task 5): the build's steps as check nodes over one
+# layer studio, beside the driver's `_build_once` on the same script. Only the composer's node events may
+# differ: the story's events, every studio run's events and prompts, the ledger rows and state.json match.
+
+
+async def layer_both_ways(
+    tmp_path: Path,
+    engine: Callable[[], FakeEngine],
+    *,
+    story: dict[str, object] | None = None,
+    studio: type[StudioOrchestrator] = StudioOrchestrator,
+    supervisor: bool = True,
+    done_check: bool = False,
+    test_cmd: str = PYTEST,
+) -> list[tuple[StoryState, Path]]:
+    """The one-layer calc story run by the driver, then by the composer, each in its own root on a fresh
+    `engine()`: each run's state and root."""
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        settings: dict[str, object] = {"supervisor": {"enabled": True}} if supervisor else {}
+        pipe = pipeline(
+            root,
+            calc_repo(root),
+            engine(),
+            test_cmd=test_cmd,
+            story={**settings, **(story or {})},
+            roles=SUPERVISOR_ROLES,
+            done_check=done_check,
+            composer=composer,
+            studio=studio,
+        )
+        seen.append((await pipe.run(text_card("multiply")), root))
+    return seen
+
+
+def ledger_rows(root: Path) -> list[tuple[Any, ...]]:
+    return [
+        (r.trigger, r.subtask, r.role, r.kinds, r.category, r.owner, r.message, r.outcome, r.layer)
+        for r in rows(root)
+    ]
+
+
+Events = list[dict[str, Any]]
+
+
+def story_trace(st: StoryState, root: Path) -> tuple[Events, list[Events], list[str]]:
+    """The story's events, each studio run's events (in the order the story named its runs) and every
+    prompt the runs sent, with `root` spelled `<root>`."""
+
+    def rooted(path: Path) -> str:
+        return path.read_text().replace(str(root.resolve()), "<root>").replace(str(root), "<root>")
+
+    runs = [root / "state" / "runs" / r for r in st.runs]
+    assert {p.name for p in runs} == {p.name for p in (root / "state" / "runs").iterdir() if p.is_dir()}
+    events = untraced([json.loads(x) for x in rooted(st.path / "events.jsonl").splitlines()])
+    studio = [[json.loads(x) for x in rooted(r / "events.jsonl").splitlines()] for r in runs]
+    prompts = []
+    for r in runs:
+        for f in sorted((r / "trace").rglob("prompt.json")):
+            saved = json.loads(rooted(f))
+            said = "\n".join(f"[{m['role']}] {m['content']}" for m in saved["messages"])
+            prompts.append(f"[role={saved.get('role')} attempt={saved.get('attempt')}]\n{said}")
+    return events, studio, prompts
+
+
+def same_either_way(runs: list[tuple[StoryState, Path]]) -> None:
+    """The story's events, every studio run's events and prompts (the trace diff's comparisons, which drop
+    the node events and what differs run to run), every ledger row's fields, and the story's events and
+    state.json as `built_run` reads them: the same for the driver and the composer."""
+    (driver, d_root), (composer, c_root) = runs
+    (d_story, d_runs, d_prompts), (c_story, c_runs, c_prompts) = (
+        story_trace(driver, d_root),
+        story_trace(composer, c_root),
+    )
+    assert len(c_runs) == len(d_runs)
+    found = diff_events(d_story, c_story) + diff_prompts(d_prompts, c_prompts, cap=1000)
+    for n, (d, c) in enumerate(zip(d_runs, c_runs, strict=True)):
+        found += [f"run {n}: {line}" for line in diff_events(d, c)]
+    assert not found, "\n".join(found)
+    assert ledger_rows(c_root) == ledger_rows(d_root)
+    (d_events, d_state), (c_events, c_state) = (
+        built_run(driver, d_root, composer=False),
+        built_run(composer, c_root, composer=True),
+    )
+    assert untraced(c_events) == untraced(d_events)
+    assert c_state == d_state
+
+
+def untraced(events: Events) -> Events:
+    """An `error` event's traceback names the frames it went through: the driver's or the composer's."""
+    return [{**e, "traceback": "<traceback>"} if "traceback" in e else e for e in events]
+
+
+def nodes_run(st: StoryState, kind: str = "node_started") -> list[str]:
+    """The layer bundle's nodes for layer 01, in the order the composer started (or skipped) them."""
+    return [
+        e["node"] for e in kinds_all(st.path / "events.jsonl") if e["kind"] == kind and e.get("item") == "01"
+    ]
+
+
+def studio_runs(st: StoryState, root: Path) -> list[Events]:
+    """The events of each studio run of the story, in the order it named them (run ids that start in the
+    same second sort by chance)."""
+    return [kinds_all(root / "state" / "runs" / r / "events.jsonl") for r in st.runs]
+
+
+def run_kinds(st: StoryState, root: Path) -> list[list[str]]:
+    return [[e["kind"] for e in run] for run in studio_runs(st, root)]
+
+
+def engine_of(**scripts: list[Any]) -> Callable[[], FakeEngine]:
+    """A fresh engine on the calc story's replies (`scripted`'s), any role's replaced by `scripts`."""
+    base = {"product": [STORY], "architect": [CALC_LAYERS, RED], "reviewer": [APPROVE, APPROVE]}
+    return lambda: FakeEngine({role: list(replies) for role, replies in {**base, **scripts}.items()})
+
+
+async def test_the_dissolved_layer_runs_the_golden_script_the_same_either_way(tmp_path: Path) -> None:
+    """Task 1's script (a done-check miss, a blocking review and its fix, a red gate with the supervisor's
+    advice, the follow-up and a green regate) through the layer bundle's nodes: the golden story, studio,
+    ledger, state and prompts, as the driver gives them."""
+    runs = await layer_both_ways(tmp_path, layer_engine, done_check=True)
+    same_either_way(runs)
+    st, root = runs[1]
+    assert st.blocked is None and list(st.built) == ["01"], st.blocked
+    story = [e for e in clean(kinds_all(st.path / "events.jsonl"), root) if not e["kind"].startswith("node_")]
+    assert [e["kind"] for e in story] == GOLDEN_STORY_KINDS
+    layer = [
+        e for e in story if e["kind"] in {"layer_start", "package_placed", "supervisor_triage", "layer_built"}
+    ]
+    assert layer == GOLDEN_STORY_LAYER
+    assert clean(kinds_all(build_run(root) / "events.jsonl"), root, drop=TIMING) == GOLDEN_STUDIO
+    assert ledger_rows(root) == GOLDEN_LEDGER
+    assert golden_state(root) == GOLDEN_STATE
+    assert golden_prompts(root) == GOLDEN_NUDGES
+    # each step its own node, the fix's line going back to the review once
+    assert nodes_run(st) == [
+        "start", "covered", "drafts", "package", "place", "build", "done_check", "review", "fix", "review",
+        "final_gate", "gate_advice", "follow_up", "regate", "outcome", "squash", "costed_layer",
+    ]  # fmt: skip
+
+
+async def test_review_rounds_running_out_still_reach_the_gate_either_way(tmp_path: Path) -> None:
+    """studio.review.rounds 1 and two blocking reviews: the review after the one fix round still runs and
+    goes to the gate, which builds the layer; the review bound never blocks it (Review Focus 2)."""
+    engine = engine_of(
+        coder=[FEATURE, DONE, write("README.md", "mul multiplies.\n"), DONE], reviewer=[CHANGES, CHANGES]
+    )
+    runs = await layer_both_ways(tmp_path, engine, supervisor=False)
+    same_either_way(runs)
+    st, root = runs[1]
+    assert st.blocked is None and list(st.built) == ["01"], st.blocked
+    kinds_of = run_kinds(st, root)[-1]
+    assert kinds_of.count("review") == 2 and kinds_of.count("fix_round") == 1 and "gate_passed" in kinds_of
+    assert nodes_run(st).count("review") == 2 and "final_gate" in nodes_run(st)
+
+
+async def test_a_layer_sent_back_after_a_fix_round_gets_its_review_rounds_again_either_way(
+    tmp_path: Path,
+) -> None:
+    """story.layer_attempts 2, a blocking review and its fix on each build: the second build has review
+    rounds of its own (the fix's loop back to the review is counted per build, as the driver's are)."""
+    readme, again = write("README.md", "mul multiplies.\n"), write("notes.txt", "again\n")
+    engine = engine_of(
+        architect=[CALC_LAYERS, RED, OTHER_RED],
+        coder=[BROKEN, DONE, STILL_BROKEN, DONE, again, DONE, FEATURE, DONE, readme, DONE],
+        reviewer=[CHANGES, APPROVE, CHANGES, APPROVE],
+    )
+    runs = await layer_both_ways(tmp_path, engine, story={"layer_attempts": 2}, supervisor=False)
+    same_either_way(runs)
+    st, root = runs[1]
+    assert st.blocked is None and list(st.built) == ["01"], st.blocked
+    assert [ks.count("fix_round") for ks in run_kinds(st, root)[-2:]] == [1, 1]
+    assert [ks.count("review") for ks in run_kinds(st, root)[-2:]] == [2, 2]
+
+
+async def test_a_wrong_test_verdict_at_the_gate_skips_the_follow_up_either_way(tmp_path: Path) -> None:
+    """The supervisor says the acceptance test is wrong: no follow-up turn, and the package retry carries
+    `package-test-wrong` before `package-replan` (Review Focus 3)."""
+    wrong = answer("MMMDCCCLXXXIX is 3889: correct the test.", category="wrong_acceptance_test")
+    engine = engine_of(
+        architect=[CALC_LAYERS, RED, RED], coder=[BROKEN, DONE, FIXED, DONE], supervisor=[wrong]
+    )
+    runs = await layer_both_ways(tmp_path, engine, story={"layer_attempts": 2})
+    same_either_way(runs)
+    st, root = runs[1]
+    assert st.blocked is None and list(st.built) == ["01"], st.blocked
+    first = run_kinds(st, root)[-2]
+    assert "gate_failed" in first and "follow_up" not in first
+    said = [e["id"] for e in kinds(st.path / "events.jsonl", "steer") if e["role"] == "architect"]
+    assert said[-2:] == ["package-test-wrong", "package-replan"], said
+    assert "gate_advice" in nodes_run(st) and "follow_up" not in nodes_run(st)
+
+
+async def test_a_cut_off_coder_gets_no_gate_follow_up_either_way(tmp_path: Path) -> None:
+    """The coder is cut off with the gate red: no gate_failed, no advice asked, no follow-up; the layer goes
+    back to the architect and builds (Review Focus 6)."""
+    coder = [BROKEN, CUT_THINKING, FEATURE, DONE]
+    engine = engine_of(architect=[CALC_LAYERS, RED, RED], coder=coder, supervisor=[])
+    runs = await layer_both_ways(tmp_path, engine, story={"layer_attempts": 2})
+    same_either_way(runs)
+    st, root = runs[1]
+    assert st.blocked is None and list(st.built) == ["01"], st.blocked
+    first = studio_runs(st, root)[-2]
+    assert {"gate_failed", "follow_up"}.isdisjoint(e["kind"] for e in first)
+    assert [e["stop_reason"] for e in first if e["kind"] == "subtask_done"] == ["cut_off"]
+    assert rows(root) == []  # the supervisor was asked nothing
+    assert "gate_advice" in nodes_run(st, "node_skipped") and "gate_advice" not in nodes_run(st)
+
+
+async def test_a_layer_that_changed_nothing_is_replanned_either_way(tmp_path: Path) -> None:
+    """A gate that passes on a coder that wrote nothing: `changed nothing`, a replan and the next build
+    (Review Focus 4)."""
+    # the first build's coder says it is done twice (the first is nudged to act) and writes nothing
+    engine = engine_of(architect=[CALC_LAYERS, RED, RED], coder=[DONE, DONE, FEATURE, DONE], supervisor=[])
+    runs = await layer_both_ways(tmp_path, engine, story={"layer_attempts": 2}, test_cmd="true")
+    same_either_way(runs)
+    st, _ = runs[1]
+    assert st.blocked is None and list(st.built) == ["01"], st.blocked
+    [replanned] = kinds(st.path / "events.jsonl", "layer_replanned")
+    assert (replanned["why"], replanned["detail"]) == ("gate_red", "changed nothing")
+
+
+class KilledAfterCoder(StudioOrchestrator):
+    """A studio whose first coder turn finishes, and then the run is killed."""
+
+    killed = False
+
+    async def coder_turn(self, subtask: Subtask) -> SubtaskRun:
+        run = await super().coder_turn(subtask)
+        if not KilledAfterCoder.killed:
+            KilledAfterCoder.killed = True
+            raise asyncio.CancelledError
+        return run
+
+
+async def test_a_run_killed_after_the_coder_turn_resumes_from_place_either_way(tmp_path: Path) -> None:
+    """Killed between the coder turn and the squash: the layer has no built record, its studio is gone and
+    its attempt names a kept worktree. The next build places the package again on the same branch and runs
+    every step after it, none skipped (Review Focus 1)."""
+    seen = []
+    for composer in (False, True):
+        KilledAfterCoder.killed = False
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo, card = calc_repo(root), text_card("multiply")
+        kw: dict[str, Any] = {"test_cmd": PYTEST, "roles": SUPERVISOR_ROLES, "composer": composer}
+        first = pipeline(root, repo, engine_of(coder=[FEATURE, DONE])(), studio=KilledAfterCoder, **kw)
+        with pytest.raises(asyncio.CancelledError):
+            await first.run(card)
+        saved = StoryState.open(first.stories_dir / card.key, card, repo)
+        assert saved.built == {} and saved.attempt is not None and Path(saved.attempt["worktree"]).is_dir()
+        log = saved.path / "events.jsonl"
+        before = len(log.read_text().splitlines())
+        engine = FakeEngine({"architect": [RED], "coder": [FEATURE, DONE], "reviewer": [APPROVE]})
+        st = await pipeline(root, repo, engine, **kw).build(card)
+        assert st.blocked is None and list(st.built) == ["01"], st.blocked
+        starts = kinds(log, "layer_start")
+        assert len(starts) == 2 and starts[0]["branch"] == starts[1]["branch"]
+        if composer:
+            later = kinds_all(log)[before:]
+            ran = [e["node"] for e in later if e["kind"] == "node_started" and e["item"] == "01"]
+            skipped = {e["node"] for e in later if e["kind"] == "node_skipped" and e["item"] == "01"}
+            after = ran[ran.index("place") :]
+            assert after == ["place", "build", "done_check", "review", "final_gate", "outcome", "squash",
+                             "costed_layer"]  # fmt: skip
+            assert skipped.isdisjoint(after) and "covered" in ran
+        seen.append((st, root))
+    same_either_way(seen)
+
+
+async def test_the_last_attempt_blocks_either_way(tmp_path: Path) -> None:
+    """Red after the follow-up on the last build: StoryBlocked with the gate's reason, the worktree kept for
+    the restart and the supervisor's rows closed (the block's diagnosis, the retry not helped)."""
+    engine = engine_of(
+        coder=[BROKEN, DONE, STILL_BROKEN, DONE],
+        supervisor=[answer("Put add back."), answer(None, fix="restore add to return a + b")],
+    )
+    runs = await layer_both_ways(tmp_path, engine)
+    same_either_way(runs)
+    st, root = runs[1]
+    assert st.blocked is not None and "fails on" in st.blocked
+    assert st.attempt is not None and Path(st.attempt["worktree"]).is_dir() and st.built == {}
+    assert [r.outcome for r in rows(root)] == ["blocked", "not_helped"]
+    assert read_phase(root / "state" / "stories")[0] != "decoding"
+
+
+class AdvisedThenDies(StudioOrchestrator):
+    """A coder turn that asks the supervisor (a ledger row opens), then raises past the turn's own catch."""
+
+    async def coder_turn(self, subtask: Subtask) -> SubtaskRun:
+        assert self.advisor is not None
+        await self.advisor.advise("gate_retry", subtask.id, "coder", "the gate is red", kinds=("gate_fails",))
+        raise RuntimeError("the engine fell over")
+
+
+async def test_a_node_that_raises_mid_layer_closes_its_rows_unknown_and_keeps_the_worktree_either_way(
+    tmp_path: Path,
+) -> None:
+    """The coder's node raises: the layer studio `place` opened is closed (its open ledger row `unknown`, the
+    build lane out of its decode) and the worktree stays for the restart, as the driver's `finally` does
+    (Review Focus 5)."""
+    engine = engine_of(coder=[], supervisor=[answer("Put add back as it was.")])
+    runs = await layer_both_ways(tmp_path, engine, studio=AdvisedThenDies)
+    same_either_way(runs)
+    st, root = runs[1]
+    assert st.blocked == "RuntimeError: the engine fell over"
+    assert [r.outcome for r in rows(root) if r.trigger == "gate_retry"] == ["unknown"]
+    assert st.attempt is not None and Path(st.attempt["worktree"]).is_dir()
+    assert read_phase(root / "state" / "stories")[0] != "decoding"
+
+
+def old_layer_snapshot() -> dict[str, Any]:
+    """The story and layer workflows as a card that started before the layer's build was split snapshotted
+    them: the build one `story.build_once` node."""
+    specs = {
+        name: raw
+        for part in ("story", "layer")
+        for name, raw in yaml.safe_load((WORKFLOWS / f"{part}.yaml").read_text())["workflows"].items()
+    }
+    nodes = specs["layer"]["nodes"]
+    for name in ("place", "build", "done_check", "review", "fix", "final_gate", "gate_advice", "follow_up",
+                 "regate", "outcome", "squash"):  # fmt: skip
+        del nodes[name]
+    nodes["package"]["to"][0]["node"] = "build"
+    nodes["build"] = {
+        "type": "check",
+        "run": "story.build_once",
+        "inputs": ["card", "repo", "package.{item}", "story", "layers"],
+        "outputs": {"built.{item}": "json"},
+        "to": [
+            {"node": "package", "loop": {"max": "story.layer_attempts", "carry": "feedback"}},
+            "costed_layer",
+        ],
+    }
+    return snapshot("story", {n: WorkflowSpec.model_validate(s) for n, s in specs.items()})
+
+
+async def test_a_card_on_the_old_layer_snapshot_still_builds_through_build_once(tmp_path: Path) -> None:
+    """A card in flight finishes on its snapshot (D21): its layer's one build node runs `story.build_once`,
+    now the wrapper over the steps, with the driver's events and state."""
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo, card = calc_repo(root), text_card("multiply")
+        kw: dict[str, Any] = {"test_cmd": PYTEST, "roles": SUPERVISOR_ROLES, "done_check": True}
+        story = {"supervisor": {"enabled": True}}
+        pipe = pipeline(root, repo, layer_engine(), story=story, composer=composer, **kw)
+        if composer:
+            started = StoryState.open(pipe.stories_dir / card.key, card, repo)
+            started.workflow = old_layer_snapshot()
+            started.save()
+        st = await pipe.run(card)
+        assert st.blocked is None and list(st.built) == ["01"], st.blocked
+        if composer:
+            assert "build" in nodes_run(st) and "place" not in nodes_run(st)
+        seen.append((st, root))
+    same_either_way(seen)
 
 
 # ---- the conversation type (`conversation_runner`): held conversations, and sessions that cross nodes ----
@@ -1893,7 +2288,9 @@ async def test_the_review_gate_ends_the_run_and_releases_the_build_lane(
         ("stage", "review"),
         ("story_done", "review"),
     ]
-    gate = [e for e in events if e["kind"] == "node_finished" and e["node"] == "review"]
+    # the layer bundle has a `review` node too: the gate is the story's
+    finished = [e for e in events if e["kind"] == "node_finished"]
+    gate = [e for e in finished if (e["node"], e["type"]) == ("review", "gate")]
     assert [e["outcome"] for e in gate] == ["done"]
     assert json.loads(phase_path(pipe.stories_dir).read_text())["phase"] == "idle"
     assert lock_held(pipe.stories_dir, "build") is False

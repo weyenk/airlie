@@ -1,11 +1,11 @@
 """A layer's build as separate steps over one studio (generic nodes Part 2, "The layer bundle"): the glue that
 sat around the one `execute_task` call in the driver's `_build_once`. `open_layer` starts the layer (its
 studio run on record, the supervisor, the brief, the worktree with the package placed, the plan);
-the studio's own steps run the coder, the done-check, the review and fix rounds and the gate
-(`StudioOrchestrator.coder_turn` ... `settle_gate`); `layer_outcome` ends the run and says whether the layer
-is built or goes back to the architect, and `squash_layer` records a built one. The driver's `_build_once`
-calls them in order, and the layer bundle's check nodes call them one at a time (Task 5): the same events
-either way.
+the steps run the coder, the done-check, the review and fix rounds and the gate over the studio's own
+(`coder_step` ... `regate_step`, over `StudioOrchestrator.coder_turn` ... `settle_gate`); `layer_outcome`
+ends the run and says whether the layer is built or goes back to the architect, and `squash_layer` records a
+built one. The driver's `_build_once` calls them in order, and the layer bundle's check nodes
+(config/workflows/layer.yaml) call them one at a time: the same events either way.
 
 `LayerStudio` is what they share: never saved (`state.json` holds only what `squash_layer` records), and
 `close` ends it however the layer ended, so the supervisor's open ledger rows are closed `unknown` and the
@@ -38,7 +38,7 @@ from airlie.teams.worktree import (
     squash_since,
 )
 from airlie.topology.review import Review
-from airlie.topology.studio import StudioOrchestrator, SubtaskRun
+from airlie.topology.studio import StudioOrchestrator, SubtaskRun, WrongTest
 from airlie.topology.studio_plan import Plan
 
 if TYPE_CHECKING:
@@ -53,7 +53,8 @@ class LayerDied(RuntimeError):
 class LayerStudio:
     """One build of layer `nn` (index `i`, build `attempt`, the `last` of story.layer_attempts): its studio
     (`orch`), its supervisor (`sup`, None when off), `where` (its base ref and commit, its branch and its
-    commit's author), its package, brief and plan, and what its steps have produced so far."""
+    commit's author), its package, brief and plan, the card, story and layers it is built for, and what its
+    steps have produced so far."""
 
     orch: StudioOrchestrator
     sup: LayerSupervisor | None
@@ -66,6 +67,9 @@ class LayerStudio:
     brief: Brief
     plan: Plan
     started: float
+    card: Card
+    story: Story
+    layers: tuple[Layer, ...]
     run: SubtaskRun | None = None
     review: Review | None = None
     round_no: int = 0
@@ -181,8 +185,92 @@ async def open_layer(
         brief=brief,
         plan=plan,
         started=orch.started,
+        card=card,
+        story=story,
+        layers=layers,
         _decoding=lane,
     )
+
+
+# ---- the steps between the open and the outcome, over the studio's (`StudioOrchestrator.coder_turn` ...
+# `settle_gate`): the driver's `_build_once` calls them in order and the layer bundle's check nodes one each.
+# Each returns what the lines after its node read (the node's transient output).
+
+
+def _ran(ls: LayerStudio) -> SubtaskRun:
+    if ls.run is None:
+        raise LayerDied(f"layer {ls.nn}: a step after the coder turn was asked before it ran")
+    return ls.run
+
+
+async def coder_step(ls: LayerStudio) -> dict[str, Any]:
+    """The coder's turn on the plan's one subtask: how it stopped, and whether it finished."""
+    ls.run = run = await ls.orch.coder_turn(ls.plan.subtasks[0])
+    result = run.result
+    return {"stop_reason": result.stop_reason if result else None, "ok": bool(result and result.ok)}
+
+
+async def done_check_step(ls: LayerStudio) -> dict[str, Any]:
+    """The done-check (a writer's, when studio.done_check is on)."""
+    await ls.orch.done_check(_ran(ls))
+    return {"checked": True}
+
+
+async def review_step(ls: LayerStudio) -> dict[str, Any]:
+    """Review round `round_no`, and whether it sends the coder a fix round (`wants_fix`: changes asked
+    with a blocking finding, and a round left)."""
+    ls.review = review = await ls.orch.review_round(_ran(ls), ls.round_no)
+    return {
+        "verdict": review.verdict if review is not None else None,
+        "blocking": len(review.blocking) if review is not None else 0,
+        "fix": ls.orch.wants_fix(review, ls.round_no),
+    }
+
+
+async def fix_step(ls: LayerStudio) -> dict[str, Any]:
+    """The fix round for the last review's blocking findings; the next review is the next round."""
+    assert ls.review is not None  # review_step: a fix is asked only for a review
+    await ls.orch.fix_turn(_ran(ls), ls.review)
+    ls.round_no += 1
+    return {"round": ls.round_no}
+
+
+async def final_gate_step(pipe: StoryPipeline, ls: LayerStudio) -> dict[str, Any]:
+    """The coder's subtask closed, the run's answer kept (`final`: the follow-up replaces the coder's
+    result), the final gate run once, and whether its red goes back to the coder (`gate_follows_up`: only a
+    coder that finished; one cut off or broken has its own stop to report)."""
+    run, orch = _ran(ls), ls.orch
+    orch.close_subtask(run)
+    ls.final = orch.results_text()
+    ls.passed = await orch.gate_once(pipe.test_cmd)
+    return {"passed": ls.passed, "follow_up": orch.gate_follows_up(ls.passed, run.subtask.id)}
+
+
+async def gate_advice_step(ls: LayerStudio) -> dict[str, Any]:
+    """The red gate on record (`gate_failed`) and the advisor's word on it: `go` with the follow-up's text,
+    or `wrong_test` (no follow-up; the layer goes back to the architect)."""
+    follow_up = _ran(ls).subtask.id
+    text = ls.orch.gate_tail(follow_up)
+    try:
+        ls.follow_up_text = await ls.orch.gate_advice(follow_up, text)
+    except WrongTest:
+        ls.passed = False
+        return {"verdict": "wrong_test"}
+    return {"verdict": "go"}
+
+
+async def follow_up_step(ls: LayerStudio) -> dict[str, Any]:
+    """The gate-failed follow-up, in the coder's conversation."""
+    assert ls.follow_up_text is not None  # gate_advice_step: `go` carries the text
+    await ls.orch.follow_up(_ran(ls).subtask.id, ls.follow_up_text)
+    return {"sent": True}
+
+
+async def regate_step(pipe: StoryPipeline, ls: LayerStudio) -> dict[str, Any]:
+    """The gate again after the follow-up, and what came of the advice told to the advisor."""
+    ls.passed = await ls.orch.gate_once(pipe.test_cmd)
+    ls.orch.settle_gate(ls.passed, _ran(ls).subtask.id)
+    return {"passed": ls.passed}
 
 
 async def layer_outcome(
@@ -193,13 +281,14 @@ async def layer_outcome(
     story: Story,
     layers: tuple[Layer, ...],
     *,
-    squash: bool = True,
+    squash: bool,
 ) -> str | None:
     """The end of the layer's studio run (its report and `run_done`, then out of the decode) and what came of
     it. A layer that changed nothing, or whose whole gate is still red, is a lesson and then, on the last
     build, StoryBlocked; else `layer_replanned` and what to tell the architect for the next package (the
     worktree and branch are removed so the layer's branch name is free again). A built layer is squashed
-    and recorded (`squash_layer`, unless `squash` is False: the caller squashes it) and the answer is None.
+    and recorded (`squash_layer`) when `squash` says so (the layer bundle's own `squash` node does it
+    otherwise), and the answer is None.
     LayerDied when the build never reached its final gate."""
     from airlie.story.pipeline import (  # the pipeline imports this module
         _cut_off,
@@ -218,7 +307,7 @@ async def layer_outcome(
         goal=layer_goal(story, layers, ls.i),
         final=ls.final,
         passed=ls.passed,
-        started=orch.started,
+        started=ls.started,
         branch=orch.branch,
     )
     await ls.leave_decoding()

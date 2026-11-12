@@ -133,7 +133,7 @@ async def test_layer_outcome_without_a_coder_turn_is_a_layer_died(tmp_path: Path
     ) -> str | None:
         ls = await open_layer(pipe, st, card, story, layers, i, package, where, built, attempt)
         try:
-            return await layer_outcome(pipe, ls, st, card, story, layers)
+            return await layer_outcome(pipe, ls, st, card, story, layers, squash=True)
         finally:
             await ls.close()
 

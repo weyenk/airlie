@@ -197,8 +197,7 @@ async def test_only_the_layer_planning_starts_with_a_repository_map_and_its_map_
 
     class Records(StudioOrchestrator):
         async def execute_task(self, query_text: str, **kwargs: Any) -> RunReport:
-            if kwargs.get("gate_follow_up") != "build":
-                asked.setdefault(query_text.split(":")[0], kwargs)
+            asked.setdefault(query_text.split(":")[0], kwargs)  # only asks: a layer builds by its steps
             return await super().execute_task(query_text, **kwargs)
 
     repo = repo_with_marker_tests(tmp_path)

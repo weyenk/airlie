@@ -174,6 +174,36 @@ async def test_a_loop_line_reruns_the_target_and_everything_downstream_and_clear
     assert all(c.store.done(n) for n in "abcd")
 
 
+async def test_a_loop_inside_another_loops_body_has_its_whole_bound_on_each_pass(tmp_path):
+    """b's line back to itself (at most 1 re-run) lies in the body c's loop sends back: each pass of the outer
+    loop runs b again with its own bound, as a layer's second build has review rounds of its own."""
+    calls = []
+
+    def run(n, c):
+        calls.append(c.node)
+        if c.node == "b":
+            return {"again": {"yes": calls.count("b") % 2 == 1}}
+        if c.node == "c" and calls.count("c") == 1:
+            return {"__fail__": "red"}
+        return {k: c.node for k in n.outputs}
+
+    wf = {
+        "w": {
+            "nodes": {
+                "a": chk(outputs={"x": "text"}, to=["b"]),
+                "b": chk(
+                    outputs={"again": "json"},
+                    to=[{"node": "b", "when": "again.yes", "loop": {"max": 1}}, {"node": "c"}],
+                ),
+                "c": chk(outputs={"z": "text"}, to=[{"node": "a", "loop": {"max": 1}}]),
+            }
+        }
+    }
+    c = composer(tmp_path, wf, {"check": check_that(run)})
+    assert await c.run("w") == "c"
+    assert calls == ["a", "b", "b", "c", "a", "b", "b", "c"]
+
+
 @pytest.mark.parametrize("on_fail", ["block", "continue"])
 async def test_a_loop_bound_spent_blocks_or_continues_by_on_fail(tmp_path, on_fail):
     calls = []
