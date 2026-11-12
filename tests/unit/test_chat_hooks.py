@@ -8,14 +8,17 @@ import pytest
 
 from airlie.auth.principal import Principal
 from airlie.chat.hooks import (
+    PLAIN_NOTE,
     Hooks,
     ToolEvent,
     TurnContext,
     TurnRefused,
     TurnSummary,
+    UnknownSkill,
     build_system_prompt,
     default_hooks,
     notify_reply,
+    slash_section,
 )
 from airlie.chat.kinds import registry_for
 from airlie.chat.superpowers import SuperpowersLibrary
@@ -357,3 +360,157 @@ async def test_registry_passes_chat_skills_to_the_skill_tool(
     result = await reg.call(ToolCall("c1", "skill", '{"name": "story"}'))
 
     assert result.ok and result.output.startswith("STORY BODY")
+
+
+# ---- exact outputs: what a mutant that changes a string or a strip must not survive -----------------
+
+
+def test_turn_refused_carries_its_status_and_its_message_as_the_exception_text() -> None:
+    e = TurnRefused(404, "gone")
+
+    assert (e.status, e.message, str(e)) == (404, "gone", "gone")
+
+
+def test_unknown_skill_names_the_skill_and_the_known_ones() -> None:
+    e = UnknownSkill("nope", "a, b")
+
+    assert (e.skill, e.known, e.args) == ("nope", "a, b", ("nope",))
+    assert str(e) == "unknown skill 'nope'; skills: a, b"
+
+
+def two_skills(tmp_path: Path) -> dict[str, Skill]:
+    return {
+        "story": Skill("story", "Draft a story", "  STORY BODY \n\n", tmp_path / "story.md"),
+        "plan": Skill("plan", "Plan it", "PLAN BODY\n", tmp_path / "plan.md"),
+    }
+
+
+def test_slash_section_is_empty_with_no_skills_and_none_asked() -> None:
+    assert slash_section({}, None) == ""
+
+
+def test_slash_section_lists_every_skill_one_per_line(tmp_path: Path) -> None:
+    assert slash_section(two_skills(tmp_path), None) == (
+        "## Slash commands\n\n- /story: Draft a story\n- /plan: Plan it\n"
+    )
+
+
+def test_slash_section_adds_the_asked_skill_body_stripped_after_the_list(tmp_path: Path) -> None:
+    assert slash_section(two_skills(tmp_path), "story") == (
+        "## Slash commands\n\n- /story: Draft a story\n- /plan: Plan it\n\n## Skill: /story\n\nSTORY BODY\n"
+    )
+
+
+def test_slash_section_with_an_unknown_skill_names_it_and_the_known_ones(tmp_path: Path) -> None:
+    with pytest.raises(UnknownSkill) as e:
+        slash_section(two_skills(tmp_path), "nope")
+    assert (e.value.skill, e.value.known) == ("nope", "story, plan")
+
+    with pytest.raises(UnknownSkill) as none:
+        slash_section({}, "nope")
+    assert (none.value.skill, none.value.known) == ("nope", "none")
+
+
+def prompt_cfg(cfg: AirlieConfig, tmp_path: Path) -> AirlieConfig:
+    """The chat role's prompt is a file whose text has whitespace at both ends."""
+    out = cfg.model_copy(deep=True)
+    f = tmp_path / "chat-role.md"
+    f.write_text("\n\n  Role body.  \n\n")
+    out.roles["chat"].prompt = f
+    return out
+
+
+def test_the_prompt_is_its_parts_joined_by_blank_lines_and_ends_with_one_newline(
+    cfg: AirlieConfig, library: SuperpowersLibrary, tmp_path: Path
+) -> None:
+    c = prompt_cfg(cfg, tmp_path)
+    prompt = build_system_prompt(c, "plain", library, two_skills(tmp_path), skill="plan")
+
+    assert (
+        prompt
+        == "\n\n".join(
+            [
+                "\n\n  Role body.",
+                library.bootstrap().rstrip(),
+                f"## Skills\n\n{library.listing()}",
+                "## Slash commands\n\n- /story: Draft a story\n- /plan: Plan it\n\n"
+                "## Skill: /plan\n\nPLAN BODY",
+                PLAIN_NOTE,
+            ]
+        )
+        + "\n"
+    )
+
+
+def test_a_repository_prompt_without_skills_is_the_role_body_alone(cfg: AirlieConfig, tmp_path: Path) -> None:
+    assert build_system_prompt(prompt_cfg(cfg, tmp_path), "repository", None, {}) == "\n\n  Role body.\n"
+
+
+async def test_the_refusals_say_exactly_what_was_too_many_and_which_skills_exist(
+    cfg: AirlieConfig, library: SuperpowersLibrary, tmp_path: Path
+) -> None:
+    hooks = default_hooks(cfg, library, chat_skills=two_skills(tmp_path), uploads_limit=2)
+    with pytest.raises(TurnRefused) as many:
+        await hooks.run("before_turn", ctx(attachments=3))
+    with pytest.raises(TurnRefused) as unknown:
+        await hooks.run("before_turn", ctx(skill="nope"))
+    bare = default_hooks(cfg, library, chat_skills={}, uploads_limit=2)
+    with pytest.raises(TurnRefused) as none:
+        await bare.run("before_turn", ctx(skill="nope"))
+
+    assert many.value.message == "a message may carry up to 2 attachments"
+    assert unknown.value.message == "unknown skill 'nope'; skills: story, plan"
+    assert none.value.message == "unknown skill 'nope'; skills: none"
+
+
+async def test_the_audit_record_is_one_exact_line_and_counts_bytes_not_characters(
+    cfg: AirlieConfig, library: SuperpowersLibrary, caplog: pytest.LogCaptureFixture
+) -> None:
+    hooks = default_hooks(cfg, library, chat_skills={}, uploads_limit=2)
+    with caplog.at_level(logging.INFO, logger="airlie.chat.audit"):
+        await hooks.run("after_tool", ctx(), ToolEvent("c1", "todo", "é{}", "ok", False))
+
+    [record] = caplog.records
+    assert record.name == "airlie.chat.audit"
+    assert record.getMessage() == "thread=t1 call=c1 tool=todo ok=False args_bytes=4 output_bytes=2"
+
+
+async def test_a_failing_hook_is_logged_with_its_name_and_the_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    hooks = Hooks()
+
+    async def bad(*_: Any) -> None:
+        raise RuntimeError("boom")
+
+    hooks.on("on_finish", bad)
+    with caplog.at_level(logging.ERROR, logger="airlie.chat.hooks"):
+        await hooks.run("on_finish", summary())
+
+    [record] = caplog.records
+    assert record.name == "airlie.chat.hooks"
+    assert record.getMessage() == "chat hook on_finish failed"
+    assert record.exc_info is not None and isinstance(record.exc_info[1], RuntimeError)
+
+
+async def test_a_refusal_outside_before_turn_is_logged_and_the_next_hook_still_runs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    seen: list[str] = []
+    hooks = Hooks()
+
+    async def refuse(*_: Any) -> None:
+        raise TurnRefused(400, "no")
+
+    async def after(*_: Any) -> None:
+        seen.append("ran")
+
+    hooks.on("session_start", refuse)
+    hooks.on("session_start", after)
+    with caplog.at_level(logging.ERROR, logger="airlie.chat.hooks"):
+        await hooks.run("session_start", ctx())
+
+    [record] = caplog.records
+    assert record.getMessage() == "chat hook session_start raised TurnRefused outside before_turn"
+    assert record.exc_info is not None and isinstance(record.exc_info[1], TurnRefused)
+    assert seen == ["ran"]

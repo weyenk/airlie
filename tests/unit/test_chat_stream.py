@@ -160,3 +160,12 @@ def test_unparseable_tool_arguments_are_an_input_error_chunk() -> None:
             "errorText": "arguments are not JSON",
         },
     ]
+
+
+def test_a_reasoning_delta_carries_its_text_and_the_part_id() -> None:
+    w = StreamWriter("m")
+    first = chunks(w.reasoning("think "))
+    second = chunks(w.reasoning("more"))
+
+    assert (first[1]["delta"], second[0]["delta"]) == ("think ", "more")
+    assert first[0]["id"] == first[1]["id"] == second[0]["id"]

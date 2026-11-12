@@ -198,3 +198,53 @@ def test_the_items_of_a_todo_list_are_a_copy() -> None:
     todos.items().clear()
 
     assert len(todos.items()) == 1
+
+
+async def test_skill_without_a_name_is_an_error_naming_an_empty_skill(library: SuperpowersLibrary) -> None:
+    result = await SkillTool(library).run({}, CTX)
+
+    assert (result.ok, result.output) == (False, "error: no skill ''; the skills are alpha, zeta")
+
+
+async def test_the_unknown_skill_error_lists_library_and_extra_skills_sorted(
+    library: SuperpowersLibrary, tmp_path: Path
+) -> None:
+    extra = {"beta": Skill("beta", "b", "B body\n", tmp_path / "beta.md")}
+
+    result = await SkillTool(library, extra).run({"name": "nope"}, CTX)
+
+    assert result.output == "error: no skill 'nope'; the skills are alpha, beta, zeta"
+
+
+async def test_an_extra_skill_is_read_whole_and_has_no_files_beside_it(
+    library: SuperpowersLibrary, tmp_path: Path
+) -> None:
+    extra = {"beta": Skill("beta", "b", "B body\n", tmp_path / "beta.md")}
+    tool = SkillTool(library, extra)
+
+    body = await tool.run({"name": "beta"}, CTX)
+    sibling = await tool.run({"name": "beta", "file": "x.md"}, CTX)
+
+    assert (body.ok, body.output) == (True, "B body\n")
+    assert (sibling.ok, sibling.output) == (False, "error: the beta skill has no files beside it")
+
+
+async def test_a_todo_call_without_a_list_is_an_error_with_the_expected_shape() -> None:
+    result = await TodoTool(TodoList()).run({"items": "x"}, CTX)
+
+    assert (result.ok, result.output) == (False, "error: items must be a list of {id, text, status}")
+
+
+async def test_a_todo_item_without_an_id_takes_its_position_and_one_with_an_id_keeps_it() -> None:
+    todos = TodoList()
+    rows = [{"text": "a", "status": "pending"}, {"id": "x", "text": "b", "status": "done"}]
+    result = await TodoTool(todos).run({"items": rows}, CTX)
+
+    assert result.output == "[ ] 1: a\n[x] x: b"
+    assert [i.id for i in todos.items()] == ["1", "x"]
+
+
+async def test_a_todo_row_that_is_not_an_object_names_its_position() -> None:
+    result = await TodoTool(TodoList()).run({"items": [{"text": "a", "status": "pending"}, "x"]}, CTX)
+
+    assert result.output == "error: item 2 must be an object with id, text and status"
