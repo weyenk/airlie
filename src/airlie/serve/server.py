@@ -29,7 +29,7 @@ class Server(uvicorn.Server):
 
     async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
         self.feed.close()  # every open stream ends, before uvicorn starts waiting for connections
-        self.chat_busy.stop_all()  # a hung engine must not hold the wait for open connections (max_steps x 600 s)
+        self.chat_busy.stop_all()  # a hung engine must not hold the wait (max_steps x 600 s)
         await super().shutdown(sockets)
 
 
