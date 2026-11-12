@@ -218,10 +218,10 @@ def test_a_body_with_no_user_message_is_422(tmp_path: Path, messages: list[dict[
     assert c.get("/v1/airlie/chat/threads").json() == []
 
 
-def test_a_repository_chat_is_400_naming_plan_4(tmp_path: Path) -> None:
+def test_a_new_repository_chat_without_a_repo_is_422(tmp_path: Path) -> None:
     c, up = client_for(tmp_path)
     r = post(c, {**turn_body(), "kind": "repository"})
-    assert r.status_code == 400 and "plan 4" in r.json()["error"]
+    assert r.status_code == 422 and "owner/name" in r.json()["error"]
     assert up.calls == 0
     assert c.get("/v1/airlie/chat/threads").json() == []  # the refused turn left no empty thread
 
@@ -634,7 +634,8 @@ def test_thread_get_returns_the_thread_and_404s_for_none(tmp_path: Path) -> None
     post(c)
     t = c.get("/v1/airlie/chat/threads/t1").json()
     assert t["todos"] == [{"id": "1", "text": "x", "status": "pending"}]
-    assert set(t) == {"id", "title", "kind", "created", "updated", "todos", "messages"}
+    keys = {"id", "title", "kind", "repo", "base_ref", "created", "updated", "todos", "messages"}
+    assert set(t) == keys and t["repo"] is None
     r = c.get("/v1/airlie/chat/threads/ghost")
     assert r.status_code == 404 and r.json() == {"error": "no such thread"}
 

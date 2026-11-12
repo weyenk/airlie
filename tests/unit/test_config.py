@@ -1623,7 +1623,7 @@ def test_notifications_push_hosts_can_be_replaced_and_rejects_non_hosts(tmp_path
 
 _REPO_TOOLS = [
     "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git",
-    "compute", "skill", "todo", "task", "web_search", "web_fetch",
+    "compute", "skill", "todo", "task", "web_search", "web_fetch", "push_branch", "open_pr",
 ]  # fmt: skip
 
 
@@ -1635,7 +1635,8 @@ def test_chat_kind_defaults(tmp_path: Path) -> None:
     kinds = load_config(write(tmp_path, MINIMAL)).chat.kinds
     assert kinds.plain.tools == ["web_search", "web_fetch", "skill", "todo"]
     assert kinds.repository.tools == _REPO_TOOLS
-    assert kinds.plain.ask_first == [] and kinds.repository.ask_first == []
+    assert kinds.plain.ask_first == []
+    assert kinds.repository.ask_first == ["push_branch", "open_pr", "build_image"]
 
 
 @pytest.mark.parametrize(
@@ -1651,6 +1652,8 @@ def test_chat_kind_defaults(tmp_path: Path) -> None:
         "git",
         "compute",
         "task",
+        "push_branch",
+        "open_pr",
     ],
 )
 def test_plain_chat_refuses_a_file_or_shell_tool_in_config(tmp_path: Path, tool: str) -> None:
@@ -1665,6 +1668,15 @@ def test_a_chat_tool_outside_the_known_names_is_refused(tmp_path: Path) -> None:
         load_config(_chat(tmp_path, {"kinds": {"repository": {"tools": ["nope", "skill"]}}}))
     with pytest.raises(ConfigError, match="chat.kinds.plain.ask_first names bogus"):
         load_config(_chat(tmp_path, {"kinds": {"plain": {"tools": ["skill"], "ask_first": ["bogus"]}}}))
+
+
+def test_build_image_is_a_gate_to_ask_first_not_a_tool(tmp_path: Path) -> None:
+    gate = {"kinds": {"repository": {"tools": ["skill"], "ask_first": ["build_image"]}}}
+    assert load_config(_chat(tmp_path, gate)).chat.kinds.repository.ask_first == ["build_image"]
+    with pytest.raises(ConfigError, match="chat.kinds.repository.tools names build_image"):
+        load_config(_chat(tmp_path, {"kinds": {"repository": {"tools": ["build_image"]}}}))
+    with pytest.raises(ConfigError, match="chat.kinds.plain cannot hold build_image"):
+        load_config(_chat(tmp_path, {"kinds": {"plain": {"tools": ["skill"], "ask_first": ["build_image"]}}}))
 
 
 def test_a_repository_chat_may_ask_first_before_a_tool(tmp_path: Path) -> None:

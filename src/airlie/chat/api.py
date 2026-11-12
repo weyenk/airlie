@@ -12,6 +12,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
+from functools import partial
 from typing import Any
 
 import anyio
@@ -21,8 +22,12 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from airlie.auth.principal import Principal
+from airlie.boxes.protocol import BoxUnavailable
+from airlie.chat.confirm import Approval, Confirmations, before_tool, guard
 from airlie.chat.hooks import Hooks, TurnContext, TurnRefused
 from airlie.chat.kinds import ChatKind, KindUnavailable, registry_for
+from airlie.chat.repo_session import RepoSessions, valid_repo
+from airlie.chat.repo_tools import RepoChat
 from airlie.chat.stream import DONE, STREAM_HEADERS, sse
 from airlie.chat.superpowers import SuperpowersLibrary
 from airlie.chat.threads import StoredMessage, Thread, ThreadNotFound, ThreadStore
@@ -30,7 +35,7 @@ from airlie.chat.tools import TodoList
 from airlie.chat.turn import TurnHandle, TurnRequest, run_turn
 from airlie.config import AirlieConfig
 from airlie.engine.protocol import Engine
-from airlie.engine.types import ContentPart
+from airlie.engine.types import ContentPart, EngineError
 from airlie.manager.client import InProcessHolder
 from airlie.manager.core import Manager
 from airlie.serve.bridge.clock import Clock, RealClock
@@ -93,14 +98,33 @@ def last_user(messages: list[UIMessage]) -> UIMessage | None:
 
 
 class TurnBody(BaseModel):
-    """The AI SDK's request body plus `kind` and `skill`; unknown fields (a `tools` list among them) are
-    ignored."""
+    """The AI SDK's request body plus `kind`, `skill` and, for a repository chat, `repo` (owner/name, named
+    when the chat is first opened), `base_ref` (a branch or commit; default main) and `approvals` (the
+    person's answers to the permission requests the stream carried); unknown fields (a `tools` list among
+    them) are ignored."""
 
     model_config = ConfigDict(extra="ignore")
     id: str = Field(min_length=1, max_length=128)
     kind: ChatKind
     messages: list[UIMessage]
     skill: str | None = None
+    repo: str | None = Field(default=None, max_length=200)
+    base_ref: str | None = Field(default=None, max_length=200)
+    approvals: list[Approval] = Field(default_factory=list, max_length=50)
+
+    @field_validator("repo")
+    @classmethod
+    def _owner_name(cls, repo: str | None) -> str | None:
+        if repo is not None and not valid_repo(repo):
+            raise ValueError("repo must be owner/name")
+        return repo
+
+    @field_validator("base_ref")
+    @classmethod
+    def _a_ref(cls, ref: str | None) -> str | None:
+        if ref is not None and (not ref or ref.startswith("-")):
+            raise ValueError("base_ref must be a branch name or a commit")
+        return ref
 
     @field_validator("messages")
     @classmethod
@@ -222,10 +246,23 @@ def chat_router(
     transport: httpx.AsyncBaseTransport | None = None,
     clock: Clock | None = None,
     busy: Busy | None = None,
+    repo_sessions: RepoSessions | None = None,
+    confirmations: Confirmations | None = None,
 ) -> APIRouter:
     router = APIRouter()
     busy = busy if busy is not None else Busy()
     clock = clock or RealClock()
+    confirmations = confirmations if confirmations is not None else Confirmations(cfg)
+    hooks.on("before_tool", before_tool(confirmations))
+
+    async def drop_empty(thread: Thread, principal: Principal) -> None:
+        """A thread this request opened and could not start leaves no empty row (nor VM) behind."""
+        if thread.messages:
+            return
+        try:
+            await threads.remove(thread.id, principal.user_id)
+        except Exception:
+            log.exception("removing the empty thread %s failed", thread.id)
 
     def principal_of(request: Request) -> Principal | None:
         return getattr(request.state, "principal", None)
@@ -243,13 +280,21 @@ def chat_router(
             engine_name = cfg.engine_for_role("chat")
         except Exception as e:  # no engine serves the chat role's model
             return error(f"the chat role has no engine: {e}", 503)
+        if body.kind == "repository":
+            if repo_sessions is None:
+                return error("repository chats are not configured on this server", 503)
+            if body.repo is None and not threads.exists(body.id):
+                return error("a repository chat names its repository: repo is owner/name", 422)
         try:
-            thread = threads.open(body.id, principal.user_id, body.kind)
+            thread = threads.open(
+                body.id, principal.user_id, body.kind, repo=body.repo, base_ref=body.base_ref
+            )
         except ThreadNotFound:
             return error("no such thread", 404)
         turn = busy.take(thread.id)
         if turn is None:
             return error("this thread has a turn running; wait for it to finish", 409)
+        confirmations.approve(thread.id, body.approvals)  # the person's own answers, never the model's
         engines: list[Engine] = []
         released = False
 
@@ -268,13 +313,11 @@ def chat_router(
         try:
             response = await start_turn(body, principal, thread, engine_name, engines, cleanup, turn)
         except BaseException:
-            if not thread.messages:  # a failed start leaves no empty row behind either
-                threads.delete(thread.id, principal.user_id)
+            await drop_empty(thread, principal)  # a failed start leaves no empty row behind either
             await cleanup()
             raise
         if not isinstance(response, TurnStream):  # refused: nothing streams
-            if not thread.messages:  # a thread this request opened leaves no empty row behind
-                threads.delete(thread.id, principal.user_id)
+            await drop_empty(thread, principal)  # a thread this request opened leaves no empty row behind
             await cleanup()
         return response
 
@@ -310,12 +353,23 @@ def chat_router(
             reason = ctx.prompt_error or "the system prompt is empty"
             return error(f"chat is misconfigured: {reason}", 503)
         todos = TodoList.load(thread.todos)
-        tool_ctx = ToolContext(
-            cfg.observability.state_dir.expanduser(),
-            cfg.tools.shell_timeout_s,
-            cfg.tools.output_cap_chars,
-            role="chat",
-        )
+        chat: RepoChat | None = None
+        if thread.kind == "repository":
+            assert repo_sessions is not None  # checked at the top of the route
+            try:
+                chat = await repo_sessions.open(thread)
+            except BoxUnavailable as e:
+                return error(str(e), 409)
+            except EngineError as e:  # the repository or its recipe cannot be read
+                return error(str(e), 422)
+            tool_ctx = repo_sessions.tool_context(chat)
+        else:
+            tool_ctx = ToolContext(
+                cfg.observability.state_dir.expanduser(),
+                cfg.tools.shell_timeout_s,
+                cfg.tools.output_cap_chars,
+                role="chat",
+            )
         try:
             registry = registry_for(
                 thread.kind,
@@ -325,9 +379,14 @@ def chat_router(
                 ctx=tool_ctx,
                 web=web,
                 skills_extra=chat_skills,
+                repo=chat,
             )
-        except KindUnavailable:
-            return error("repository chats arrive with plan 4", 400)
+        except KindUnavailable as e:
+            return error(str(e), 400)
+        guard(registry, confirmations, thread.id, thread.kind)  # a listed tool cannot run without a yes
+        around: Callable[[], Any] | None = None
+        if chat is not None and repo_sessions is not None:  # the VM is held for the turn, inside the stream
+            around = partial(repo_sessions.turn, chat, f"chat:{thread.id}")  # (a boot failure is a chunk)
         try:
             user_parts = await attachment_parts(attach, principal, thread, stored)
         except TooManyAttachments as e:
@@ -356,6 +415,7 @@ def chat_router(
                     clock=clock,
                     status=manager.status,
                     handle=turn.handle,
+                    around=around,
                 ):
                     yield chunk
             except Exception as e:  # after the first byte a failure is a chunk, not a status
@@ -390,6 +450,8 @@ def chat_router(
             "id": t.id,
             "title": t.title,
             "kind": t.kind,
+            "repo": t.repo,
+            "base_ref": t.base_ref,
             "created": t.created,
             "updated": t.updated,
             "todos": t.todos,
@@ -422,7 +484,11 @@ def chat_router(
             return error("not signed in", 401)
         if thread_id in busy:
             return error("this thread has a turn running; wait for it to finish", 409)
-        if not threads.delete(thread_id, principal.user_id):
+        try:
+            removed = await threads.remove(thread_id, principal.user_id)
+        except EngineError as e:  # its VM could not be deleted (in use): the chat stays
+            return error(str(e), 409)
+        if not removed:
             return error("no such thread", 404)
         return Response(status_code=204)
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -56,6 +56,11 @@ class Thread:
     updated: float
     messages: list[StoredMessage] = field(default_factory=list)
     todos: list[dict[str, Any]] = field(default_factory=list)
+    repo: str | None = None
+    """A repository chat's "owner/name"; None for a plain chat."""
+    base_ref: str | None = None
+    base_sha: str | None = None
+    """The commit `base_ref` named when the session opened: the base of the session branch."""
 
 
 @dataclass(frozen=True)
@@ -94,13 +99,20 @@ class ThreadStore:
         self.conn.execute("pragma journal_mode=wal")
         self.conn.execute("pragma foreign_keys=on")
         self.conn.executescript(SCHEMA)
+        have = {r[1] for r in self.conn.execute("pragma table_info(threads)")}
+        for column in ("repo", "base_ref", "base_sha"):  # a store made before repository chats
+            if column not in have:
+                self.conn.execute(f"alter table threads add column {column} text")
+        self._on_delete: list[Callable[[Thread], Awaitable[None]]] = []
 
     def close(self) -> None:
         self.conn.close()
 
     def _load(self, thread_id: str, owner: str, kind: ChatKind | None = None) -> Thread:
         row = self.conn.execute(
-            "select id, owner, kind, title, todos, created, updated from threads where id = ?", (thread_id,)
+            "select id, owner, kind, title, todos, created, updated, repo, base_ref, base_sha "
+            "from threads where id = ?",
+            (thread_id,),
         ).fetchone()
         if row is None or row[1] != owner or (kind is not None and row[2] != kind):
             raise ThreadNotFound(thread_id)
@@ -121,18 +133,58 @@ class ThreadStore:
             for r in rows
         ]
         todos = _valid_todos(row[4])
-        return Thread(row[0], row[1], cast(ChatKind, row[2]), row[3], row[5], row[6], messages, todos)
+        return Thread(
+            row[0],
+            row[1],
+            cast(ChatKind, row[2]),
+            row[3],
+            row[5],
+            row[6],
+            messages,
+            todos,
+            row[7],
+            row[8],
+            row[9],
+        )
 
-    def open(self, thread_id: str, owner: str, kind: ChatKind) -> Thread:
-        exists = self.conn.execute("select 1 from threads where id = ?", (thread_id,)).fetchone()
-        if exists is None:
+    def exists(self, thread_id: str) -> bool:
+        return self.conn.execute("select 1 from threads where id = ?", (thread_id,)).fetchone() is not None
+
+    def open(
+        self,
+        thread_id: str,
+        owner: str,
+        kind: ChatKind,
+        *,
+        repo: str | None = None,
+        base_ref: str | None = None,
+    ) -> Thread:
+        """The thread, created on its first open; `repo` and `base_ref` (a repository chat's) are kept from
+        that first open and ignored after it."""
+        if not self.exists(thread_id):
             t = self._now()
             self.conn.execute(
-                "insert into threads (id, owner, kind, title, todos, created, updated) "
-                "values (?, ?, ?, '', '[]', ?, ?)",
-                (thread_id, owner, kind, t, t),
+                "insert into threads (id, owner, kind, title, todos, created, updated, repo, base_ref) "
+                "values (?, ?, ?, '', '[]', ?, ?, ?, ?)",
+                (thread_id, owner, kind, t, t, repo, base_ref),
             )
         return self._load(thread_id, owner, kind)
+
+    def set_base(self, thread_id: str, base_sha: str) -> None:
+        self.conn.execute("update threads set base_sha = ? where id = ?", (base_sha, thread_id))
+
+    def repository_threads(self) -> list[Thread]:
+        """Every repository chat with its session opened (whoever owns it), without messages: serve's restart
+        finds their VMs from these."""
+        rows = self.conn.execute(
+            "select id, owner from threads where kind = 'repository' and base_sha is not null"
+        ).fetchall()
+        out: list[Thread] = []
+        for thread_id, owner in rows:
+            t = self._load(thread_id, owner)
+            t.messages = []
+            out.append(t)
+        return out
 
     def get(self, thread_id: str, owner: str) -> Thread:
         return self._load(thread_id, owner)
@@ -176,6 +228,22 @@ class ThreadStore:
             args,
         ).fetchall()
         return [ThreadSummary(r[0], r[1], cast(ChatKind, r[2]), r[3]) for r in rows]
+
+    def on_delete(self, fn: Callable[[Thread], Awaitable[None]]) -> None:
+        """`fn(thread)` runs before `remove` deletes a thread: a repository chat's VM goes first, and a
+        callback that raises keeps the thread."""
+        self._on_delete.append(fn)
+
+    async def remove(self, thread_id: str, owner: str) -> bool:
+        """`delete`, after the `on_delete` callbacks have run."""
+        try:
+            thread = self._load(thread_id, owner)
+        except ThreadNotFound:
+            return False
+        thread.messages = []
+        for fn in list(self._on_delete):
+            await fn(thread)
+        return self.delete(thread_id, owner)
 
     def delete(self, thread_id: str, owner: str) -> bool:
         cur = self.conn.execute("delete from threads where id = ? and owner = ?", (thread_id, owner))

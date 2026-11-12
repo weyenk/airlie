@@ -313,14 +313,17 @@ class AttachmentsSpec(Strict):
 CHAT_TOOLS = frozenset(
     {
         "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git", "compute",
-        "skill", "todo", "task", "web_search", "web_fetch",
+        "skill", "todo", "task", "web_search", "web_fetch", "push_branch", "open_pr",
     }
 )  # fmt: skip
+ASK_FIRST_ONLY = frozenset({"build_image"})
+"""Names `ask_first` takes that are not tools: a gate on the image build (boxes.images), which needs a yes
+before setup secrets reach a recipe nobody has built."""
 # What a plain chat (no repository) may never hold, whatever the config says.
 PLAIN_CHAT_FORBIDDEN = frozenset(
     {
         "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git", "compute",
-        "task",
+        "task", "push_branch", "open_pr",
     }
 )  # fmt: skip
 
@@ -347,8 +350,9 @@ class ChatKindsSpec(Strict):
         default_factory=lambda: ChatKindSpec(
             tools=[
                 "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git",
-                "compute", "skill", "todo", "task", "web_search", "web_fetch",
-            ]
+                "compute", "skill", "todo", "task", "web_search", "web_fetch", "push_branch", "open_pr",
+            ],
+            ask_first=["push_branch", "open_pr", "build_image"],
         )
     )  # fmt: skip
 
@@ -356,13 +360,16 @@ class ChatKindsSpec(Strict):
     def _check_tools(self) -> ChatKindsSpec:
         for kind, spec in (("plain", self.plain), ("repository", self.repository)):
             for field, names in (("tools", spec.tools), ("ask_first", spec.ask_first)):
-                unknown = sorted(set(names) - CHAT_TOOLS)
+                allowed = CHAT_TOOLS | ASK_FIRST_ONLY if field == "ask_first" else CHAT_TOOLS
+                unknown = sorted(set(names) - allowed)
                 if unknown:
                     known = ", ".join(sorted(CHAT_TOOLS))
                     raise ValueError(
                         f"chat.kinds.{kind}.{field} names {', '.join(unknown)}; the chat tools are {known}"
                     )
-        held = sorted((set(self.plain.tools) | set(self.plain.ask_first)) & PLAIN_CHAT_FORBIDDEN)
+        held = sorted(
+            (set(self.plain.tools) | set(self.plain.ask_first)) & (PLAIN_CHAT_FORBIDDEN | ASK_FIRST_ONLY)
+        )
         if held:
             raise ValueError(
                 f"chat.kinds.plain cannot hold {', '.join(held)}: a plain chat has no repository"

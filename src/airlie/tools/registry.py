@@ -92,6 +92,9 @@ class ToolRegistry:
     def add(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
 
+    def get(self, name: str) -> Tool | None:
+        return self._tools.get(name)
+
     def distinct_by_arguments(self, name: str) -> bool:
         """Whether two calls of tool `name` with the same result but other arguments are different actions (a
         tool says so with a true `distinct_by_arguments`): the repeat guard then counts them apart."""

@@ -31,6 +31,7 @@ from airlie.auth.store import AuthStore
 from airlie.board import BoardStore
 from airlie.board.api import board_router
 from airlie.board.model import WorkflowDraft
+from airlie.chat.confirm import Confirmations
 from airlie.chat.hooks import UnknownSkill, default_hooks, slash_section
 from airlie.chat.superpowers import SuperpowersLibrary, check_library
 from airlie.chat.threads import ThreadStore
@@ -108,6 +109,7 @@ IMMUTABLE = "public, max-age=31536000, immutable"
 """The cache header of a built file under assets/: Vite hashes their names, so a changed file is a new URL."""
 
 if TYPE_CHECKING:
+    from airlie.chat.repo_session import RepoSessions
     from airlie.manager.core import Manager
 
 
@@ -489,6 +491,7 @@ def create_app(
     tick_s: float | None = None,
     line_beat: LineFor | None = None,
     manager: Manager | None = None,
+    repo_sessions: Callable[..., RepoSessions] | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
@@ -501,7 +504,9 @@ def create_app(
     default NEXT_DIR), `tick_s` (the line's beat interval, default line.tick_s) and `line_beat` (replaces the
     line's beat, given the function that starts a lane's job) are for tests.
     `manager` starts, holds and stops the engines (default: one over the config's mlx-vlm engines, inside
-    the memory budget `memory.wired_limit_mb` less the OS reserve and `manager.margin_gb`)."""
+    the memory budget `memory.wired_limit_mb` less the OS reserve and `manager.margin_gb`).
+    `repo_sessions` builds what runs repository chats in VMs, given `(cfg, manager, threads, confirmations)`
+    (default: Tart boxes, chat.repo_session.default_repo_sessions; tests give one over FakeBox)."""
     app = FastAPI(title="airlie", version="0.1.0")
     started_commit = (
         build_commit()
@@ -522,6 +527,7 @@ def create_app(
     # imported here: the manager's clock lives under airlie.serve, whose package imports this module (and the
     # chat routes import the manager)
     from airlie.chat.api import Busy, chat_router
+    from airlie.chat.repo_session import default_repo_sessions
     from airlie.manager.api import Leases, UnknownLease
     from airlie.manager.core import Manager as ManagerImpl
     from airlie.manager.engines import engine_resources
@@ -849,6 +855,10 @@ def create_app(
     )
     app.state.chat_threads = chat_threads
     app.state.chat_hooks = chat_hooks
+    confirmations = Confirmations(cfg)
+    repo_chats = (repo_sessions or default_repo_sessions)(cfg, manager, chat_threads, confirmations)
+    app.state.repo_sessions = repo_chats
+    chat_threads.on_delete(repo_chats.delete)  # a chat's VM goes with it
     chat_busy = Busy()
     app.state.chat_busy = chat_busy  # `Server.shutdown` stops its turns before uvicorn waits for them
     app.include_router(
@@ -867,6 +877,8 @@ def create_app(
             attach=attach_for,
             transport=transport,
             busy=chat_busy,
+            repo_sessions=repo_chats,
+            confirmations=confirmations,
         )
     )
 
@@ -1527,7 +1539,11 @@ def create_app(
         # the HTTP server is up at once; engines already running are adopted, the pinned ones start, idle
         # on-demand ones are reaped
         async def boot() -> None:
-            for step in (manager.adopt, manager.start_pinned):  # one failing must not stop the other
+            for step in (
+                repo_chats.adopt,
+                manager.adopt,
+                manager.start_pinned,
+            ):  # one failing must not stop the other
                 try:
                     await step()
                 except Exception:

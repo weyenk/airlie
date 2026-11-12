@@ -7,12 +7,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from airlie.auth.principal import Principal
 from airlie.chat.kinds import ChatKind
 from airlie.chat.superpowers import SuperpowersLibrary
 from airlie.config.schema import AirlieConfig
+from airlie.engine.types import ToolCall
 from airlie.skills.library import Skill, prompt_text
 
 if TYPE_CHECKING:
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("airlie.chat.hooks")
 audit_log = logging.getLogger("airlie.chat.audit")
 
-HookName = Literal["session_start", "before_turn", "after_tool", "on_finish"]
+HookName = Literal["session_start", "before_turn", "before_tool", "after_tool", "on_finish"]
 REPLY_BODY_CHARS = 120
 PLAIN_NOTE = (
     "This is a plain chat on the host: there is no repository, file or shell; "
@@ -59,6 +60,17 @@ class TurnContext:
 
 
 @dataclass(frozen=True)
+class Verdict:
+    """A `before_tool` hook's refusal: the call does not run and `message` is its result. `approval_id` is set
+    when a person's yes would let it through (the stream then carries a request for it)."""
+
+    kind: Literal["pending", "denied"]
+    message: str
+    approval_id: str | None = None
+    arguments: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
 class ToolEvent:
     call_id: str
     name: str
@@ -87,6 +99,7 @@ Hook = Callable[..., Awaitable[None]]
 class Hooks:
     session_start: list[Hook] = field(default_factory=list)
     before_turn: list[Hook] = field(default_factory=list)
+    before_tool: list[Hook] = field(default_factory=list)
     after_tool: list[Hook] = field(default_factory=list)
     on_finish: list[Hook] = field(default_factory=list)
 
@@ -103,6 +116,21 @@ class Hooks:
                 log.exception("chat hook %s raised TurnRefused outside before_turn", name)
             except Exception:
                 log.exception("chat hook %s failed", name)
+
+    async def gate(self, ctx: TurnContext, call: ToolCall) -> Verdict | None:
+        """The first refusal a `before_tool` hook gives `call`, or None to let it run. A hook that raises
+        refuses it: a gate that fails must not let the call through."""
+        for fn in list(self.before_tool):
+            try:
+                verdict: Verdict | None = await cast(Any, fn)(ctx, call)
+            except Exception:
+                log.exception("chat hook before_tool failed: refusing the call %s", call.name)
+                return Verdict(
+                    "denied", f"error: {call.name} was refused because its permission check failed"
+                )
+            if verdict is not None:
+                return verdict
+        return None
 
 
 def slash_section(chat_skills: Mapping[str, Skill], skill: str | None) -> str:

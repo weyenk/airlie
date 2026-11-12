@@ -69,6 +69,11 @@ class StreamWriter:
             return [sse({"type": "tool-output-available", "toolCallId": call_id, "output": output})]
         return [sse({"type": "tool-output-error", "toolCallId": call_id, "errorText": output})]
 
+    def tool_approval_request(self, approval_id: str, call_id: str) -> list[str]:
+        """The tool call at `call_id` waits for a person's yes: the client shows the request and answers it in
+        its next turn's `approvals`. Sent after the call's own result so the part ends as requested."""
+        return [sse({"type": "tool-approval-request", "approvalId": approval_id, "toolCallId": call_id})]
+
     def data(self, name: str, payload: Any, *, transient: bool = False) -> list[str]:
         chunk: dict[str, Any] = {"type": f"data-{name}", "data": payload}
         if transient:

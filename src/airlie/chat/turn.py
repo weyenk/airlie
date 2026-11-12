@@ -15,13 +15,14 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
-from contextlib import AsyncExitStack, suppress
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, suppress
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 import anyio
 
-from airlie.chat.hooks import Hooks, ToolEvent, TurnContext, TurnSummary
+from airlie.chat.confirm import NeedsApproval
+from airlie.chat.hooks import Hooks, ToolEvent, TurnContext, TurnSummary, Verdict
 from airlie.chat.stream import StreamWriter
 from airlie.chat.threads import StoredMessage, Thread, ThreadStore
 from airlie.chat.tools import TodoList
@@ -33,6 +34,7 @@ from airlie.manager.core import Status
 from airlie.prompts import text
 from airlie.serve.bridge.clock import Clock
 from airlie.tools.jsonargs import history_arguments, parse_tool_args
+from airlie.tools.protocol import ToolResult
 from airlie.tools.registry import ToolRegistry
 
 log = logging.getLogger("airlie.chat.turn")
@@ -169,6 +171,8 @@ class _Run:
     usage: dict[str, Any] | None = None
     completion_tokens: int = 0
     handle: TurnHandle | None = None
+    around: Callable[[], AbstractAsyncContextManager[Any]] | None = None
+    """Entered before the engine hold and left after the turn is saved: a repository chat's VM."""
     w: StreamWriter = field(init=False)
 
     def __post_init__(self) -> None:
@@ -299,14 +303,24 @@ class _Run:
             self.emit(self.w.tool_call(call.id, call.name, history_arguments(call.arguments)))
         else:
             part["rawInput"] = call.arguments
+        verdict: Verdict | None = None
         try:
-            result = await self.registry.call(call)  # never runs a call whose arguments do not parse
+            if parsed:
+                verdict = await self.hooks.gate(self.req.ctx, call)
+            if verdict is not None:  # refused before it runs: a request for the person's yes, or a no
+                result = ToolResult(False, verdict.message)
+            else:
+                result = await self.registry.call(call)  # never runs a call whose arguments do not parse
         except asyncio.CancelledError:  # stopped mid-call: history keeps the call the client saw
             part.update(state="output-error", errorText=STOPPED_RESULT)
             self.parts.append(part)
             raise
         if parsed:
             self.emit(self.w.tool_result(call.id, result.output, result.ok))
+            if verdict is not None and verdict.approval_id is not None:
+                self.emit(self.w.tool_approval_request(verdict.approval_id, call.id))
+                payload = {"id": verdict.approval_id, "tool": call.name, "arguments": verdict.arguments}
+                self.emit(self.w.data("approval", payload))
         else:
             self.emit(self.w.tool_input_error(call.id, call.name, call.arguments, result.output))
         if result.ok:
@@ -379,9 +393,17 @@ class _Run:
             )  # first, so a Stop before the turn began still ends a stream that opened
             if self.handle is not None and self.handle.stopped:
                 raise asyncio.CancelledError
+            if self.around is not None:
+                await stack.enter_async_context(self.around())
             await self.enter_hold(stack)
             await self.loop()
             self.settle()
+            self.emit(self.w.finish(self.finish_usage()))
+        except NeedsApproval as e:  # a step that is no tool call (the image build) waits for a yes
+            failed = True
+            payload = {"id": e.approval_id, "tool": e.tool, "arguments": e.arguments}
+            self.emit(self.w.data("approval", payload))
+            self.emit(self.w.error(str(e)))
             self.emit(self.w.finish(self.finish_usage()))
         except EngineError as e:
             failed = True
@@ -450,6 +472,7 @@ async def run_turn(
     clock: Clock,
     status: Callable[[], list[Status]],
     handle: TurnHandle | None = None,
+    around: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
 ) -> AsyncIterator[str]:
     """The turn's SSE strings. `req.ctx` is already prepared (the route ran `session_start` and `before_turn`
     first, so a refusal is an HTTP error before the first byte)."""
@@ -458,6 +481,7 @@ async def run_turn(
         req, engine, engine_name, holder, registry, todos, store, hooks, role, max_steps, clock, status, out
     )
     run.handle = handle
+    run.around = around
     driver = asyncio.create_task(run.drive())
     if handle is not None:
         handle._driver = driver

@@ -20,7 +20,10 @@ from airlie.tools.protocol import ToolContext, ToolResult
 
 ROOT = Path(__file__).resolve().parents[2]
 CTX = ToolContext(worktree=Path("."))
-FORBIDDEN = {"read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git", "task"}
+FORBIDDEN = {
+    "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git", "task",
+    "push_branch", "open_pr",
+}  # fmt: skip
 
 
 class _Web:
@@ -108,12 +111,14 @@ def test_the_todo_tool_of_a_registry_writes_the_list_it_was_given(
     assert result.ok and len(todos.items()) == 1
 
 
-def test_repository_kind_is_unavailable_until_plan_4(cfg: AirlieConfig, library: SuperpowersLibrary) -> None:
+def test_a_repository_registry_needs_an_opened_session(
+    cfg: AirlieConfig, library: SuperpowersLibrary
+) -> None:
     with pytest.raises(KindUnavailable) as err:
         registry_for("repository", cfg, library=library, todos=TodoList(), ctx=CTX, web=WEB)
 
     assert err.value.kind == "repository"
-    assert str(err.value) == "the repository chat kind is not available yet"
+    assert str(err.value) == "the repository chat kind needs a repository session to build its tools"
 
 
 def test_ask_first_is_read_from_the_kind_config(cfg: AirlieConfig) -> None:

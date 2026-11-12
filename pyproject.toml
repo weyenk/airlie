@@ -163,6 +163,8 @@ enrolled = [
     "src/airlie/chat/stream.py",
     "src/airlie/chat/threads.py",
     "src/airlie/chat/hooks.py",
+    "src/airlie/chat/confirm.py",
+    "src/airlie/chat/repo_session.py",
     "src/airlie/boxes/mirror.py",
     "src/airlie/boxes/transit.py",
 ]
