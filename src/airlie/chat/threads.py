@@ -268,6 +268,16 @@ class ThreadStore:
         )
         self.conn.execute("update threads set updated = ? where id = ?", (self._now(), thread_id))
 
+    def add_part(self, thread_id: str, message_id: str, part: dict[str, Any]) -> None:
+        """Add one part to the end of a stored message, keeping its usage (a story card's started job)."""
+        row = self.conn.execute(
+            "select seq, parts from messages where thread_id = ? and id = ?", (thread_id, message_id)
+        ).fetchone()
+        if row is None:
+            raise ThreadNotFound(f"{thread_id}: no message {message_id}")
+        parts = [*json.loads(row[1]), part]
+        self.conn.execute("update messages set parts = ? where seq = ?", (json.dumps(parts), row[0]))
+
     def answer(self, thread_id: str, answers: Mapping[str, bool]) -> None:
         """Mark the stored permission requests named in `answers` (approval id: yes or no) as answered: the
         tool part becomes `approval-responded` with `approval.approved`, the `data-approval` part gains
@@ -322,6 +332,15 @@ class ThreadStore:
             args,
         ).fetchall()
         return [ThreadSummary(r[0], r[1], cast(ChatKind, r[2]), r[3], r[4], r[5], r[6]) for r in rows]
+
+    def count_empty(self, owner: str) -> int:
+        """How many of `owner`'s chats have no message yet."""
+        row = self.conn.execute(
+            "select count(*) from threads t where owner = ? "
+            "and not exists (select 1 from messages m where m.thread_id = t.id)",
+            (owner,),
+        ).fetchone()
+        return int(row[0])
 
     def on_delete(self, fn: Callable[[Thread], Awaitable[None]]) -> None:
         """`fn(thread)` runs before `remove` deletes a thread: a repository chat's VM goes first, and a

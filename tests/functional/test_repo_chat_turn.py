@@ -957,6 +957,39 @@ def test_a_pre_warm_that_fails_gives_its_slot_back_at_once(tmp_path: Path) -> No
         assert f"airlie-chat-{slug_of(failed)}" not in running
 
 
+def test_deleting_a_chat_during_its_pre_warm_stops_the_pre_warm_and_leaves_no_session(
+    tmp_path: Path,
+) -> None:
+    rig = Rig(tmp_path, pinnable=pinnable_or)
+    with TestClient(rig.app) as c:
+        rig.fakes.mirror.refresh_gate = asyncio.Event()  # never set: the pre-warm stays in open()
+        rig.fakes.mirror.refreshing = refreshing = asyncio.Event()
+        chat = made(c)
+        c.portal.call(refreshing.wait)
+
+        r = c.delete(f"/v1/airlie/chat/threads/{chat}")
+        settle(c)
+
+        assert r.status_code == 204
+        assert c.get("/v1/airlie/chat/threads").json() == []
+        assert rig.fakes.sessions is not None and chat not in rig.fakes.sessions._chats
+        vm = rig.fakes.boxes.get(f"airlie-chat-{slug_of(chat)}")
+        assert vm is None or vm.state != "running"
+
+
+def test_deleting_a_chat_right_after_new_is_204_and_leaves_no_vm(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, pinnable=pinnable_or)
+    with TestClient(rig.app) as c:
+        chat = made(c)
+
+        r = c.delete(f"/v1/airlie/chat/threads/{chat}")
+        settle(c)
+
+        assert r.status_code == 204
+        vm = rig.fakes.boxes.get(f"airlie-chat-{slug_of(chat)}")
+        assert vm is None or vm.state != "running"
+
+
 def test_a_retry_that_replaces_a_reply_with_a_prompt_drops_that_request(tmp_path: Path) -> None:
     rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("answered again"), Text("never"))
     rig.fakes.script_push()

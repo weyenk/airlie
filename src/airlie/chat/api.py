@@ -56,6 +56,9 @@ MISCONFIGURED = "chat is misconfigured; see the server log or run airlie doctor"
 
 STOP_WAIT_S = 30.0
 """The most a Stop waits for the cancelled turn to finish saving."""
+EMPTY_CHATS_MAX = 20
+"""The most chats with no message yet one person may have: New makes a row (and may start a VM) each time."""
+NO_ENGINE = "the chat role has no engine; see the server log or run airlie doctor"
 STORED_PART_TYPES = ("text", "airlie_upload")
 """The parts of a user message the server keeps and the model can take; any other part is dropped."""
 Attach = Callable[[Principal, list[dict[str, Any]]], Awaitable[list[dict[str, Any]]]]
@@ -172,6 +175,19 @@ class NewThread(BaseModel):
         if self.kind == "plain" and (self.repo is not None or self.base_ref is not None):
             raise ValueError("a plain chat has no repository")
         return self
+
+
+JobId = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:-]+$")]
+
+
+class StartedJob(BaseModel):
+    """`POST .../stories/{story}/job`: the job a story card started (`/v1/airlie/stories` answered it), kept
+    on the card's message so a reload shows it started."""
+
+    model_config = ConfigDict(extra="forbid")
+    job_id: JobId
+    kind: str = Field(min_length=1, max_length=40)
+    label: str | None = Field(default=None, max_length=200)
 
 
 def branch_of(thread_id: str, kind: ChatKind) -> str | None:
@@ -306,6 +322,7 @@ def chat_router(
     router = APIRouter()
     background = background if background is not None else set()
     prewarmed: dict[str, list[str]] = {}  # per person: the chats whose VM was started before a message
+    prewarms: dict[str, asyncio.Task[None]] = {}  # by chat: its pre-warm while it runs (a delete stops it)
     busy = busy if busy is not None else Busy()
     clock = clock or RealClock()
     confirmations = confirmations if confirmations is not None else Confirmations(cfg)
@@ -336,7 +353,7 @@ def chat_router(
             engine_name = cfg.engine_for_role("chat")
         except Exception as e:  # no engine serves the chat role's model
             log.error("the chat role has no engine: %s", e)
-            return error("the chat role has no engine; see the server log or run airlie doctor", 503)
+            return error(NO_ENGINE, 503)
         if body.resumes and not threads.exists(body.id):  # an answer is for a chat that asked
             return error("no such thread", 404)
         if body.kind == "repository":
@@ -493,6 +510,7 @@ def chat_router(
         await engine.start()
         answers = {a.id: a.approved for a in answered}
         calls = answered_calls(thread, answers) if body.resumes else {}
+        skill = (chat_skills or {}).get(body.skill) if body.skill else None
         noted = [a for a in answered if a.id not in calls]  # no call to run: the model is told instead
 
         def use_answers() -> None:
@@ -520,6 +538,7 @@ def chat_router(
                         answered_calls=calls,
                         answers=answers,
                         on_answers=use_answers,
+                        action=skill.action if skill is not None else "",
                     ),
                     engine=engine,
                     engine_name=engine_name,
@@ -575,6 +594,10 @@ def chat_router(
         prewarmed[owner] = [i for i in prewarmed.get(owner, []) if i != thread_id]
         return False
 
+    def forget_prewarm(thread_id: str, task: asyncio.Task[None]) -> None:
+        if prewarms.get(thread_id) is task:
+            del prewarms[thread_id]
+
     async def prewarm(thread: Thread) -> None:
         """Open the session and start its VM (the code goes in too), then let go: the first turn finds it
         ready, or waits for it. A failure is only logged: the first turn meets it again and says why."""
@@ -605,12 +628,16 @@ def chat_router(
             return error("not signed in", 401)
         if body.kind == "repository" and repo_sessions is None:
             return error("repository chats are not configured on this server", 503)
+        if threads.count_empty(principal.user_id) >= EMPTY_CHATS_MAX:
+            return error(f"you have {EMPTY_CHATS_MAX} chats with no message yet; use one or delete some", 429)
         t = threads.create(principal.user_id, body.kind, repo=body.repo, base_ref=body.base_ref)
         publish("chat", None)
         if t.repo is not None and await may_prewarm(principal.user_id, t.id, t.repo):
             task = asyncio.create_task(prewarm(t))
             background.add(task)
+            prewarms[t.id] = task
             task.add_done_callback(background.discard)
+            task.add_done_callback(partial(forget_prewarm, t.id))
         made = ThreadSummary(t.id, t.title, t.kind, t.updated, t.created, t.repo, t.base_ref)
         return JSONResponse(summary_json(made, False), status_code=201)
 
@@ -664,6 +691,11 @@ def chat_router(
             t = threads.get(thread_id, principal.user_id)
         except ThreadNotFound:
             return error("no such thread", 404)
+        try:
+            engine_name = cfg.engine_for_role("chat")
+        except Exception as e:  # no engine serves the chat role's model: as the turn route says it
+            log.error("the chat role has no engine: %s", e)
+            return error(NO_ENGINE, 503)
         rows = {s.name: s for s in manager.status()}
         clock_ = manager.clock
         vm = None
@@ -688,7 +720,6 @@ def chat_router(
                 "ahead": ahead,
                 "pushed": pushed,
             }
-        engine_name = cfg.engine_for_role("chat")
         engine = rows.get(engine_name)
         model = cfg.models[cfg.roles["chat"].model]
         return {
@@ -740,6 +771,16 @@ def chat_router(
         if busy.take(thread_id) is None:  # the slot is held while it goes: no turn starts on it meanwhile
             return error("this thread has a turn running; wait for it to finish", 409)
         try:
+            threads.get(thread_id, principal.user_id)
+        except ThreadNotFound:
+            busy.release(thread_id)
+            return error("no such thread", 404)
+        warming = prewarms.pop(thread_id, None)
+        if warming is not None:  # a VM started for a chat that is going: stopped first, so nothing holds it
+            warming.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await warming
+        try:
             removed = await threads.remove(thread_id, principal.user_id)
         except EngineError as e:  # its VM could not be deleted (in use): the chat stays
             return error(str(e), 409)
@@ -749,5 +790,37 @@ def chat_router(
             return error("no such thread", 404)
         publish("chat", None)
         return Response(status_code=204)
+
+    @router.post("/v1/airlie/chat/threads/{thread_id}/stories/{story_id}/job", status_code=201)
+    async def story_started(thread_id: str, story_id: str, body: StartedJob, request: Request) -> Any:
+        """The story card `story_id` (a /story reply's `data-story` part) was started: its job is kept as a
+        `data-job` part on the same message, once, so a reload or another device shows the job card."""
+        principal = principal_of(request)
+        if principal is None:
+            return error("not signed in", 401)
+        try:
+            t = threads.get(thread_id, principal.user_id)
+        except ThreadNotFound:
+            return error("no such thread", 404)
+        found = next(
+            (
+                m
+                for m in t.messages
+                if any(p.get("type") == "data-story" and p.get("id") == story_id for p in m.parts)
+            ),
+            None,
+        )
+        if found is None:
+            return error("no such story in this chat", 404)
+        part_id = f"{story_id}-job"
+        if any(p.get("type") == "data-job" and p.get("id") == part_id for p in found.parts):
+            return error("this story was started already", 409)
+        data: dict[str, Any] = {"story": story_id, "job_id": body.job_id, "kind": body.kind}
+        if body.label is not None:
+            data["label"] = body.label
+        part = {"type": "data-job", "id": part_id, "data": data}
+        threads.add_part(thread_id, found.id, part)
+        publish("chat", None)
+        return JSONResponse(part, status_code=201)
 
     return router

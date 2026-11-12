@@ -137,6 +137,19 @@ def test_a_made_chat_stays_listed_when_its_first_turn_is_refused(tmp_path: Path)
     assert [t["id"] for t in c.get("/v1/airlie/chat/threads").json()] == [made["id"]]
 
 
+def test_a_person_has_at_most_twenty_chats_with_no_message_yet(tmp_path: Path) -> None:
+    c = client_for(tmp_path, ScriptedUpstream(Text("hi")))
+    made = [c.post("/v1/airlie/chat/threads", json={"kind": "plain"}) for _ in range(20)]
+    assert {r.status_code for r in made} == {201}
+
+    r = c.post("/v1/airlie/chat/threads", json={"kind": "plain"})
+
+    assert r.status_code == 429 and "20 chats with no message" in r.json()["error"]
+    assert len(c.get("/v1/airlie/chat/threads").json()) == 20
+    c.post("/v1/airlie/chat/turn", json=turn(made[0].json()["id"]))  # one is used: it no longer counts
+    assert c.post("/v1/airlie/chat/threads", json={"kind": "plain"}).status_code == 201
+
+
 def test_the_first_turn_of_a_made_chat_runs_on_it_and_titles_it(tmp_path: Path) -> None:
     c = client_for(tmp_path, ScriptedUpstream(Text("hi there")))
     made = c.post("/v1/airlie/chat/threads", json={"kind": "plain"}).json()
@@ -356,6 +369,19 @@ def test_status_of_another_persons_chat_is_404(tmp_path: Path) -> None:
 
     assert c.get(f"/v1/airlie/chat/threads/{made}/status", headers=as_pat).status_code == 200
     assert c.get(f"/v1/airlie/chat/threads/{made}/status", headers=as_sam).status_code == 404
+
+
+def test_status_when_no_engine_serves_the_chat_role_is_503(tmp_path: Path) -> None:
+    cfg = chat_cfg(tmp_path)
+    cfg.models["other"] = cfg.models["base"]
+    cfg.roles["chat"] = cfg.roles["chat"].model_copy(update={"model": "other"})
+    c = TestClient(create_app(cfg, transport=httpx.MockTransport(ScriptedUpstream()), pinnable=known))
+    made = c.post("/v1/airlie/chat/threads", json={"kind": "plain"}).json()["id"]
+
+    r = c.get(f"/v1/airlie/chat/threads/{made}/status")
+
+    assert r.status_code == 503
+    assert r.json() == {"error": "the chat role has no engine; see the server log or run airlie doctor"}
 
 
 def test_a_plain_chats_status_has_no_vm_and_no_branch_but_the_engine_and_memory(tmp_path: Path) -> None:

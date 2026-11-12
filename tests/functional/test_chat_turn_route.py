@@ -755,3 +755,116 @@ def test_a_retry_counts_the_attachments_of_the_saved_message_not_the_clients(tmp
 
     assert r.status_code == 200  # the saved message is what is retried: it has no attachments
     assert up.calls == 2
+
+
+# --- /story: the reply is a story card the person starts, kept with the message ---------------------------
+
+STORY = "Add a New chat button\n\nDone when a click empties the thread."
+
+
+def story_part(c: TestClient, headers: dict[str, str] | None = None) -> tuple[str, dict[str, Any]]:
+    """The saved reply of the thread's /story turn: its id and its `data-story` part."""
+    reply = c.get("/v1/airlie/chat/threads/t1", headers=headers).json()["messages"][-1]
+    return reply["id"], next(p for p in reply["parts"] if p["type"] == "data-story")
+
+
+def job_url(story_id: str) -> str:
+    return f"/v1/airlie/chat/threads/t1/stories/{story_id}/job"
+
+
+def test_a_story_turn_ends_with_a_story_part_that_streams_and_is_saved(tmp_path: Path) -> None:
+    c, _ = client_for(tmp_path, ScriptedUpstream(Text(STORY)))
+
+    r = post(c, turn_body("a new chat button", skill="story"))
+
+    live = [ch for ch in chunks(r.text) if ch["type"] == "data-story"]
+    assert len(live) == 1 and live[0]["data"] == {"text": STORY}
+    assert kinds(r.text).index("data-story") < kinds(r.text).index("finish")
+    _, saved = story_part(c)
+    assert saved == {"type": "data-story", "id": live[0]["id"], "data": {"text": STORY}}
+
+
+def test_a_story_part_holds_only_the_last_reply_after_a_tool_call(tmp_path: Path) -> None:
+    c, _ = client_for(tmp_path, ScriptedUpstream(Call("todo", {"items": []}), Text(STORY)))
+
+    post(c, turn_body("a new chat button", skill="story"))
+
+    assert story_part(c)[1]["data"] == {"text": STORY}
+
+
+@pytest.mark.parametrize("skill", [None, "why"])
+def test_a_turn_of_another_skill_has_no_story_part(tmp_path: Path, skill: str | None) -> None:
+    skills = {
+        "story": "---\nsummary: Make a story\naction: story\n---\nSTORY BODY\n",
+        "why": "---\nsummary: Why\naction: why\n---\nWHY BODY\n",
+    }
+    up = httpx.MockTransport(ScriptedUpstream(Text(STORY)))
+    c = TestClient(create_app(chat_cfg(tmp_path, skills), transport=up))
+
+    r = post(c, turn_body(skill=skill) if skill else turn_body())
+
+    assert r.status_code == 200 and "data-story" not in kinds(r.text)
+    parts = c.get("/v1/airlie/chat/threads/t1").json()["messages"][-1]["parts"]
+    assert not [p for p in parts if p["type"] == "data-story"]
+
+
+def test_a_story_turn_that_fails_has_no_story_part(tmp_path: Path) -> None:
+    c, _ = client_for(tmp_path, ScriptedUpstream(Fail(500)))
+
+    r = post(c, turn_body(skill="story"))
+
+    assert r.status_code == 200 and "data-story" not in kinds(r.text)
+
+
+def test_a_started_story_is_saved_as_a_job_part_on_its_message(tmp_path: Path) -> None:
+    c, _ = client_for(tmp_path, ScriptedUpstream(Text(STORY)))
+    post(c, turn_body(skill="story"))
+    message_id, story = story_part(c)
+    job = {"job_id": "story-AIR-38", "kind": "story", "label": "airlie · story"}
+
+    r = c.post(job_url(story["id"]), json=job)
+
+    assert r.status_code == 201
+    part = {"type": "data-job", "id": f"{story['id']}-job", "data": {"story": story["id"], **job}}
+    assert r.json() == part
+    reply = c.get("/v1/airlie/chat/threads/t1").json()["messages"][-1]
+    assert reply["id"] == message_id and reply["parts"][-1] == part  # a reload shows it started
+
+
+def test_a_story_is_started_once(tmp_path: Path) -> None:
+    c, _ = client_for(tmp_path, ScriptedUpstream(Text(STORY)))
+    post(c, turn_body(skill="story"))
+    _, story = story_part(c)
+    assert c.post(job_url(story["id"]), json={"job_id": "story-AIR-38", "kind": "story"}).status_code == 201
+
+    r = c.post(job_url(story["id"]), json={"job_id": "story-AIR-39", "kind": "story"})
+
+    assert r.status_code == 409
+    parts = c.get("/v1/airlie/chat/threads/t1").json()["messages"][-1]["parts"]
+    assert [p["data"]["job_id"] for p in parts if p["type"] == "data-job"] == ["story-AIR-38"]
+
+
+@pytest.mark.parametrize(
+    "job", [{"job_id": "", "kind": "story"}, {"job_id": "a/../b", "kind": "story"}, {"kind": "story"}]
+)
+def test_a_job_that_is_no_job_id_is_422(tmp_path: Path, job: dict[str, Any]) -> None:
+    c, _ = client_for(tmp_path, ScriptedUpstream(Text(STORY)))
+    post(c, turn_body(skill="story"))
+    _, story = story_part(c)
+
+    assert c.post(job_url(story["id"]), json=job).status_code == 422
+
+
+def test_a_job_for_a_story_that_is_not_there_or_not_yours_is_404(tmp_path: Path) -> None:
+    store = AuthStore(tmp_path / "auth.sqlite")
+    pat, sam = store.add_user("Pat", "member"), store.add_user("Sam", "member")
+    as_pat = {"Cookie": f"{SESSION_COOKIE}={store.make_session(pat.id, 30)}"}
+    as_sam = {"Cookie": f"{SESSION_COOKIE}={store.make_session(sam.id, 30)}"}
+    c = TestClient(app_for(tmp_path, ScriptedUpstream(Text(STORY)), auth_store=store), client=ELSEWHERE)
+    post(c, turn_body(skill="story"), headers=as_pat)
+    _, story = story_part(c, as_pat)
+    job = {"job_id": "story-AIR-38", "kind": "story"}
+
+    assert c.post(job_url(story["id"]), json=job, headers=as_sam).status_code == 404
+    assert c.post(job_url("story-nope"), json=job, headers=as_pat).status_code == 404
+    assert c.post(job_url(story["id"]), json=job).status_code == 401
