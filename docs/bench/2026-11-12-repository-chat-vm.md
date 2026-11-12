@@ -46,8 +46,8 @@ repository with a two-test pytest suite and a recipe (`setup`: apt install pytho
    `sync` before `stop`, the restart (6.8 s) had the clone, history and passing tests intact. See
    `TartBox.stop` (tart.py, `stop`): it should `sync` in the guest before `tart stop` (the image build's stop
    in `Images._build` has the same exposure).
-7. Needs serve on this branch - after the final review.
-8. Needs serve on this branch - after the final review.
+7. BLOCKED by softnet (2026-11-12, serve on 9ac83f1c): `boxes.network.after_setup` accepts only `off` and `allow_list`, both need softnet, so opening a repository chat answers 409 with the install hint until softnet is installed. The manager hold per role is covered by tests/unit/test_task_tool.py and the functional repo chat turn.
+8. PARTIAL (doctor on 9ac83f1c): pinned engines read 80-88 GB against the 124 GB wired limit; adding the VM (8 GB) and Muse on demand (19.4 + 3.5 GB) gives about 111-119 GB, under the limit with 5-13 GB to spare. The live resident row with a VM up waits for softnet (check 7).
 
 ## After the final review (fix wave)
 
