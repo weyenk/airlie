@@ -236,12 +236,15 @@ async def test_harvest_fetches_the_bundle_with_fsck_and_no_hooks(tmp_path: Path)
         vm_with_commits(), mirror, base_sha=BASE, branch=BRANCH, workdir=WORKDIR, max_bytes=CAP
     )
 
-    argv, cwd, env = next(c for c in runner.calls if FakeRunner.verb(c[0]) == "fetch")
-    assert "transfer.fsckObjects=true" in argv
-    assert "core.hooksPath=/dev/null" in argv
-    assert cwd == mirror.path
-    assert argv[-1] == f"+refs/heads/{BRANCH}:refs/heads/{BRANCH}"
-    assert env["GIT_CONFIG_COUNT"]  # the same switches in the environment, for any git the fetch starts
+    # the bundle into a scratch repository, then that one into the mirror (old git skips fsck on a bundle)
+    into_scratch, into_mirror = [c for c in runner.calls if FakeRunner.verb(c[0]) == "fetch"]
+    assert into_scratch[0][-2].endswith("out.bundle") and into_scratch[1].name == "scratch.git"
+    assert into_mirror[0][-2] == str(into_scratch[1]) and into_mirror[1] == mirror.path
+    for argv, _cwd, env in (into_scratch, into_mirror):
+        assert "transfer.fsckObjects=true" in argv
+        assert "core.hooksPath=/dev/null" in argv
+        assert argv[-1] == f"+refs/heads/{BRANCH}:refs/heads/{BRANCH}"
+        assert env["GIT_CONFIG_COUNT"]  # the same switches in the environment, for any git the fetch starts
     assert (result.commits, result.sha, result.changes_workflows) == (2, TIP, False)
 
 

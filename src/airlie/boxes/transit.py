@@ -139,17 +139,24 @@ async def harvest(
             if named != [ref]:
                 raise TransitError(f"the VM's bundle holds {named or 'no refs'}, not only {ref}: refused")
             await mirror.git("bundle", "verify", str(bundle))
-            fetch = ["fetch", "-q", "--no-tags", "--refmap=", str(bundle), f"+{ref}:{ref}"]
-            git = [
-                "git",
-                *NO_HOOKS_ARGS,
-                "-c",
-                "transfer.fsckObjects=true",
-                "-c",
-                "fetch.fsckObjects=true",
-                *fetch,
-            ]
-            await mirror.run(git, mirror.path, mirror.env())
+            # git before 2.49 skips fsck on a fetch from a bundle (Debian's 2.39 took the badDate commit),
+            # so the bundle lands in a scratch repository first and the mirror fetches from that one: a fetch
+            # over the pack protocol is checked by every git
+            scratch = Path(tmp) / "scratch.git"
+            scratch.mkdir()
+            object_format = "sha1" if len(base_sha) == 40 else "sha256"
+            await mirror.run(
+                ["git", "init", "-q", "--bare", f"--object-format={object_format}", str(scratch)],
+                scratch,
+                mirror.env(),
+            )
+            info = scratch / "objects" / "info"
+            info.mkdir(parents=True, exist_ok=True)
+            (info / "alternates").write_text(f"{(mirror.path / 'objects').resolve()}\n")
+            checked = ["-c", "transfer.fsckObjects=true", "-c", "fetch.fsckObjects=true"]
+            for source, cwd in ((str(bundle), scratch), (str(scratch), mirror.path)):
+                fetch = ["fetch", "-q", "--no-tags", "--refmap=", source, f"+{ref}:{ref}"]
+                await mirror.run(["git", *NO_HOOKS_ARGS, *checked, *fetch], cwd, mirror.env())
         except PublishError as e:
             raise TransitError(f"the VM's bundle was refused: {e}") from None
     sha = (await mirror.git("rev-parse", "--verify", ref)).strip()
