@@ -615,8 +615,10 @@ def create_app(
         public_key = application_server_key(vapid)
     notifier = Notifier(store, sender, cfg.notifications.default_kinds)
     app.state.notifier = notifier
-    if sender is not None:  # nobody to push to otherwise: no reason to poll with no page open
-        watcher.on_story = StoryNotes(cfg.observability.state_dir.expanduser(), notifier).on_story_change
+    story_notes: StoryNotes | None = None
+    if sender is not None:  # the watcher polls with no page open only when push can send
+        story_notes = StoryNotes(cfg.observability.state_dir.expanduser(), notifier)
+        watcher.on_story = story_notes.on_story_change
     app.include_router(notifications_router(store, notifier, public_key, cfg.notifications.push_hosts))
 
     uploads = UploadStore(cfg.observability.state_dir.expanduser() / "uploads", cfg.chat.attachments, now=now)
@@ -1472,7 +1474,8 @@ def create_app(
         from airlie.manager.client import serving
 
         serving_cm.enter_context(serving(manager))  # engines built anywhere in this process hold through it
-        if watcher.on_story is not None:
+        if story_notes is not None:
+            story_notes.prime()  # stories as they stand now are history; later events push
             watcher.ensure_running()  # story pushes need the poll with no page connected
         ticker.start()  # the line's beat, every line.tick_s while serve is up (line.serve_ticks)
 

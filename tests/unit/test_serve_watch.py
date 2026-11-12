@@ -22,6 +22,7 @@ from airlie.serve.app import create_app
 from airlie.serve.feed import Feed
 from airlie.serve.watch import Watcher
 from tests.support.serve import FakeUpstream, cfg
+from tests.unit.serve_helpers import TestClient
 
 
 @pytest.fixture
@@ -568,3 +569,36 @@ async def test_the_loop_keeps_polling_with_no_page_while_on_story_is_set(state: 
     assert await asyncio.wait_for(seen.get(), 5) == "AIR-1"
     assert w.running  # no subscriber, still going
     w.stop()
+
+
+def push_cfg(tmp_path: Path):
+    base = cfg(tmp_path)
+    return base.model_copy(
+        update={"notifications": base.notifications.model_copy(update={"contact": "mailto:a@b.co"})}
+    )
+
+
+def test_story_pushes_are_wired_only_when_push_can_send(tmp_path: Path) -> None:
+    transport = httpx.MockTransport(FakeUpstream())
+    assert create_app(cfg(tmp_path), transport=transport, api_key="k").state.watcher.on_story is None
+    assert create_app(push_cfg(tmp_path), transport=transport, api_key="k").state.watcher.on_story is not None
+
+
+def test_startup_primes_the_stories_and_starts_the_watcher_with_no_page(tmp_path: Path) -> None:
+    log = tmp_path / "state" / "stories" / "AIR-1" / "events.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_text('{"kind": "blocked", "reason": "old"}\n')
+    app = create_app(push_cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    sent: list[tuple[Any, ...]] = []
+
+    async def notify(*args: Any, **kwargs: Any) -> int:
+        sent.append(args)
+        return 1
+
+    app.state.notifier.notify = notify
+    with TestClient(app):
+        assert app.state.watcher.running  # no page is connected
+        with log.open("a") as f:
+            f.write('{"kind": "blocked", "reason": "new"}\n')
+        asyncio.run(app.state.watcher.tick())  # the loop's own poll, driven here
+    assert [(a[1], a[4]) for a in sent] == [("story_blocked", "new")]  # the old event was history
