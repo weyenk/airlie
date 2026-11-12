@@ -65,9 +65,9 @@ test("it shows loading, then a toggle per kind with its label, and Send a test",
   await flushPromises();
   const boxes = [...document.body.querySelectorAll<HTMLInputElement>("input[type=checkbox]")];
   expect(boxes.map((b) => b.closest("label")?.textContent?.trim())).toEqual([
-    "A chat reply is ready",
-    "A model or VM is ready",
-    "Something needs your OK",
+    "A chat reply is ready (coming soon)",
+    "A model or VM is ready (coming soon)",
+    "Something needs your OK (coming soon)",
     "A story is blocked",
     "A story is published",
     "Mockups to pick",

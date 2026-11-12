@@ -17,9 +17,9 @@ import {
 const open = defineModel<boolean>("open", { default: false });
 
 const LABELS: Record<string, string> = {
-  chat_reply: "A chat reply is ready",
-  model_ready: "A model or VM is ready",
-  confirmation: "Something needs your OK",
+  chat_reply: "A chat reply is ready (coming soon)",
+  model_ready: "A model or VM is ready (coming soon)",
+  confirmation: "Something needs your OK (coming soon)",
   story_blocked: "A story is blocked",
   story_published: "A story is published",
   story_mockups: "Mockups to pick",
