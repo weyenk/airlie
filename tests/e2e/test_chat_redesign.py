@@ -1,12 +1,14 @@
-"""The redesigned chat in Chromium, the one critical journey: open a pinned repository's chat from the panel,
-send a message, see a tool block and a permission prompt, approve it, see the reply; once on a desktop and
-once at 375 px through the slide-over. The turn route is the real one: its model is a scripted engine (a
-read, then a push the person must approve, then a reply), its VM a FakeBox (tests/support) and its GitHub a
-recording publisher. Each check leaves its screenshot in test-results/e2e/evidence/ (conftest.Evidence)."""
+"""The redesigned chat in Chromium, the one critical journey: make a chat in a pinned repository from the
+panel (its VM starts before the first message), send a message, see a tool block and a permission prompt
+that waits while the reply still streams, approve it once the reply ends, see the push reach GitHub and the
+reply, reload and find the prompt answered, then delete the chat; once on a desktop and once at 375 px
+through the slide-over. The turn route is the real one: its model is a scripted engine (a read, then a push
+the person must approve, a reply streamed slowly, then the reply after the push), its VM a FakeBox
+(tests/support) and its GitHub a recording publisher. Each check leaves its screenshot in
+test-results/e2e/evidence/ (conftest.Evidence)."""
 
 from __future__ import annotations
 
-import time
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
@@ -21,7 +23,7 @@ from airlie.serve.bridge.clock import RealClock
 from tests.e2e.conftest import KEY, Evidence, Server, _serve
 from tests.support.repo_chat import RegisteredBox, RepoFakes, cloning
 from tests.support.serve import FakeEngine
-from tests.support.serve_chat import Call, ScriptedUpstream, Text
+from tests.support.serve_chat import Call, ScriptedUpstream, Slow, Text
 from tests.unit.test_transit import FakeRunner
 
 pytestmark = pytest.mark.e2e
@@ -77,11 +79,17 @@ def _fakes(root: Path) -> RepoFakes:
 
 
 @pytest.fixture
-def chat_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
+def chat_fakes(tmp_path_factory: pytest.TempPathFactory) -> RepoFakes:
+    return _fakes(tmp_path_factory.mktemp("airlie"))
+
+
+@pytest.fixture
+def chat_server(chat_fakes: RepoFakes) -> Iterator[Server]:
     """A server of the test's own: repository chats in FakeBox VMs, `o/r` pinnable, and a model that reads a
-    file, asks to push, and (once the push is approved) says it is done."""
-    root = tmp_path_factory.mktemp("airlie")
-    fakes = _fakes(root)
+    file, asks to push (its words after the ask streaming for about two seconds), and once the push is
+    approved says it is done."""
+    fakes = chat_fakes
+    root = fakes.tmp
 
     async def pinnable() -> list[str]:
         return [REPO]
@@ -89,7 +97,7 @@ def chat_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
     scripted = ScriptedUpstream(
         Call("read_file", {"path": "README.md"}),
         Call("push_branch", {}),
-        Text("I need your OK to push."),
+        Slow("I need your OK to push the two commits.", pause_s=0.4),
         Text("Pushed the branch; it is ready for a pull request."),
     )
     manager = Manager([FakeEngine("main")], budget_gb=100.0, clock=RealClock())
@@ -97,15 +105,20 @@ def chat_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
 
 
 def _prepare(server: Server) -> None:
-    """The person's pinned repository with a chat of its own, then a plain chat (so `/` opens that one)."""
+    """The person's pinned repository (no chat in it yet) and a plain chat (so `/` opens that one)."""
     with httpx.Client(base_url=server.url, headers=AUTH, timeout=10) as c:
         c.put(f"/v1/airlie/chat/pins/{REPO}").raise_for_status()
-        c.post("/v1/airlie/chat/threads", json={"kind": "repository", "repo": REPO}).raise_for_status()
-        time.sleep(1.1)  # the plain chat is the newest by a second (times are whole seconds)
         c.post("/v1/airlie/chat/threads", json={"kind": "plain"}).raise_for_status()
 
 
-def _journey(page: Page, server: Server, evidence: Evidence, *, phone: bool) -> None:
+def _panel(page: Page, *, phone: bool) -> Any:
+    if phone:
+        page.get_by_role("button", name="Show chats").click()
+        return page.locator("[data-test=panel-slide-over]")
+    return page.locator("aside[aria-label=Chats]")
+
+
+def _journey(page: Page, server: Server, fakes: RepoFakes, evidence: Evidence, *, phone: bool) -> None:
     _prepare(server)
     page.goto(f"{server.url}/")
     page.get_by_label("Message", exact=True).wait_for()
@@ -123,10 +136,12 @@ def _journey(page: Page, server: Server, evidence: Evidence, *, phone: bool) -> 
         panel = page.locator("aside[aria-label=Chats]")
         evidence.expect(panel, "the panel is open beside the thread").to_be_visible()
     group = panel.locator(f"section[aria-label='{REPO}']")
-    evidence.expect(group, "the pinned repository is listed with its chat").to_be_visible()
-    group.locator("[data-test=chat-row]").first.get_by_role("button", name=f"{REPO}, airlie/chat-").click()
+    evidence.expect(group, "the pinned repository is listed").to_be_visible()
+    plain = page.url
+    group.get_by_role("button", name=f"New chat in {REPO}").click()
+    page.wait_for_url(lambda url: url != plain)
     if phone:
-        evidence.expect(panel, "picking a chat closes the slide-over").to_have_count(0)
+        evidence.expect(panel, "making a chat closes the slide-over").to_have_count(0)
     else:
         evidence.expect(
             panel.locator("[aria-current=page]"), "the open chat is marked in the panel"
@@ -151,11 +166,20 @@ def _journey(page: Page, server: Server, evidence: Evidence, *, phone: bool) -> 
     permission = page.locator("[data-permission]")
     evidence.expect(permission, "the push waits for my yes").to_contain_text("Push session branch to origin?")
     evidence.expect(permission, "it says what it would push").to_contain_text("b2b2b2b fix the parser")
+    approve = permission.get_by_role("button", name="Approve")
+    evidence.expect(approve, "while the reply still streams Approve waits").to_be_disabled()
+    evidence.expect(permission.get_by_role("button", name="Deny"), "and so does Deny").to_be_disabled()
+    evidence.expect(permission, "the prompt says why").to_contain_text("Answer when the reply ends")
+    approve.click(force=True)  # a tap now does nothing: no answer the server would refuse
+    evidence.expect(permission.get_by_role("alert"), "an early tap is not refused").to_have_count(0)
     evidence.expect(
-        page.get_by_text("I need your OK to push."), "and the model says it waits"
+        page.get_by_text("I need your OK to push the two commits."), "the model says it waits"
     ).to_be_visible()
+    evidence.expect(approve, "once the reply ends Approve is enabled").to_be_enabled()
+    assert not [e for e in fakes.publisher.events if e[0] == "push_top"]
+    evidence.shot("nothing was pushed before the yes", permission)
 
-    permission.get_by_role("button", name="Approve").click()
+    approve.click()
     evidence.expect(permission.get_by_role("status"), "the prompt reads Approved").to_have_text("Approved")
     evidence.expect(
         page.get_by_text("Pushed the branch; it is ready for a pull request."),
@@ -165,17 +189,47 @@ def _journey(page: Page, server: Server, evidence: Evidence, *, phone: bool) -> 
         page.locator("[data-tool][data-phase=done]"), "the push ran as a tool block too"
     ).to_have_count(2)
     evidence.expect(page.get_by_role("button", name="Send"), "the composer is ready again").to_be_visible()
+    pushed = [args for name, args in fakes.publisher.events if name == "push_top"]
+    assert len(pushed) == 1 and pushed[0][1].startswith("airlie/chat-")
+    evidence.shot("the approved push reached GitHub (the recording publisher) once", permission)
+
+    page.reload()
+    page.get_by_label("Message", exact=True).wait_for()
+    evidence.expect(
+        page.locator("[data-permission]").get_by_role("status"), "after a reload the prompt reads Approved"
+    ).to_have_text("Approved")
+    evidence.expect(
+        page.locator("[data-permission]").get_by_role("button", name="Approve"), "with no buttons"
+    ).to_have_count(0)
+    evidence.expect(
+        page.get_by_text("Pushed the branch; it is ready for a pull request."), "and the saved reply"
+    ).to_be_visible()
+
+    chat = page.url.rsplit("/", 1)[-1]
+    panel = _panel(page, phone=phone)
+    row = panel.locator(f"section[aria-label='{REPO}'] [data-test=chat-row]")
+    evidence.expect(row, "the chat is listed under its repository").to_have_count(1)
+    row.get_by_role("button", name="Chat actions").click()
+    page.get_by_role("menuitem", name="Delete").click()
+    dialog = page.get_by_role("dialog").filter(has_text="Delete this chat?")
+    evidence.expect(dialog, "deleting asks first").to_contain_text("Delete this chat?")
+    dialog.locator("[data-confirm-ok]").click()
+    evidence.expect(row, "the deleted chat leaves the panel").to_have_count(0)
+    page.wait_for_url(lambda url: chat not in url)
+    with httpx.Client(base_url=server.url, headers=AUTH, timeout=10) as c:
+        assert c.get(f"/v1/airlie/chat/threads/{chat}").status_code == 404
+    evidence.shot("the chat is gone on the server too")
 
 
 def test_a_pinned_repository_chat_runs_a_turn_with_a_tool_block_and_an_approved_push(
-    app_page: Page, chat_server: Server, evidence: Evidence
+    app_page: Page, chat_server: Server, chat_fakes: RepoFakes, evidence: Evidence
 ) -> None:
     app_page.set_viewport_size({"width": 1280, "height": 800})
-    _journey(app_page, chat_server, evidence, phone=False)
+    _journey(app_page, chat_server, chat_fakes, evidence, phone=False)
 
 
 def test_the_same_journey_at_375_px_through_the_slide_over(
-    app_page: Page, chat_server: Server, evidence: Evidence
+    app_page: Page, chat_server: Server, chat_fakes: RepoFakes, evidence: Evidence
 ) -> None:
     app_page.set_viewport_size({"width": 375, "height": 700})
-    _journey(app_page, chat_server, evidence, phone=True)
+    _journey(app_page, chat_server, chat_fakes, evidence, phone=True)
