@@ -17,6 +17,7 @@ from airlie.config.schema import BoxesSpec
 from airlie.subproc import box_env
 
 TAIL_CHARS = 2000
+SYNC_S = 60.0
 NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 REPO = re.compile(r"[\w.-]+/[\w.-]+")
 
@@ -109,7 +110,12 @@ class Images:
 
     async def _build(self, recipe: Recipe, base: str, name: str, secrets: dict[str, str]) -> None:
         """Build under a temporary name and rename it to `name` once setup has succeeded and the VM is
-        stopped: whatever a failure leaves behind (a cleanup that itself fails) is never `name`."""
+        stopped: whatever a failure leaves behind (a cleanup that itself fails) is never `name`.
+
+        The build VM is not a manager resource of its own: it runs only inside the start of the chat VM
+        that needs the image (VMResource.start), whose slot is counted for memory, `starting`, while it
+        builds, and that chat VM is not booted until the build VM has stopped. So one footprint covers
+        both, and the manager's budget holds."""
         spec = self._spec
         box = self._box_for(f"{name}-building-{self._token()}")
         try:
@@ -125,6 +131,9 @@ class Images:
                     tail = _redact(result.output, secrets)[-TAIL_CHARS:].strip()
                     shown = "timed out" if result.rc is None else f"exit {result.rc}"
                     raise RecipeError(f"setup failed ({shown}) at: {line}\n{tail}")
+            synced = await box.exec(["sync"], timeout_s=SYNC_S)  # a VM's stop loses what is not on its disk
+            if synced.rc != 0:
+                raise RecipeError(f"the image's sync failed before it was saved: {synced.output.strip()}")
             await box.stop()
             await box.rename(name)
         except BaseException as failure:

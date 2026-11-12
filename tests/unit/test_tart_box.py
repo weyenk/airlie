@@ -147,7 +147,7 @@ def test_a_boot_attempt_never_outlasts_the_time_left(tmp_path: Path) -> None:
 def test_boot_stops_waiting_when_tart_run_ended(tmp_path: Path) -> None:
     runner, spawner = FakeRunner(), FakeSpawner(proc=FakeProc(returncode=1))
     runner.reply(["tart", "exec"], 1)
-    with pytest.raises(BoxUnavailable, match="did not answer"):
+    with pytest.raises(BoxUnavailable, match="tart run exited"):
         run(make(tmp_path, runner, spawner).boot(network=Network("open"), timeout_s=100))
     assert len(runner.argvs()) == 1
 
@@ -301,14 +301,14 @@ def test_stop_keeps_the_disk_and_waits_for_the_process(tmp_path: Path) -> None:
     run(box.boot(network=Network("open"), timeout_s=5))
     runner.calls.clear()
     run(box.stop())
-    assert runner.argvs() == [["tart", "stop", "airlie-chat-ab12"]]
+    assert runner.argvs()[-1] == ["tart", "stop", "airlie-chat-ab12"]
     assert spawner.proc.waited and not spawner.proc.killed
 
 
 def test_stop_without_a_spawned_process_just_stops(tmp_path: Path) -> None:
     runner = FakeRunner()
     run(make(tmp_path, runner).stop())
-    assert runner.argvs() == [["tart", "stop", "airlie-chat-ab12"]]
+    assert [a[1] for a in runner.argvs()] == ["exec", "stop"]  # the guest's sync, then the stop
 
 
 def test_a_failed_stop_raises(tmp_path: Path) -> None:
@@ -328,7 +328,7 @@ def test_delete_removes_the_disk_after_stopping_a_running_vm(tmp_path: Path) -> 
     runner = FakeRunner()
     runner.reply(["tart", "get"], 0, info(running=True))
     run(make(tmp_path, runner).delete())
-    assert [a[1] for a in runner.argvs()] == ["get", "stop", "delete"]
+    assert [a[1] for a in runner.argvs()] == ["get", "exec", "stop", "delete"]
     assert runner.argvs()[-1] == ["tart", "delete", "airlie-chat-ab12"]
 
 
@@ -458,3 +458,109 @@ def test_exec_keeps_the_tool_output_cap(tmp_path: Path) -> None:
 def test_the_real_runner_keeps_only_its_limit() -> None:
     rc, out, _ = run(RealRunner()(["head", "-c", "100", "/dev/zero"], None, 5, 10))
     assert (rc, len(out)) == (0, 10)
+
+
+class HangingRunner(FakeRunner):
+    """`tart exec` never answers (a guest that is still booting); everything else answers at once."""
+
+    async def __call__(
+        self, argv: Any, stdin: bytes | None, timeout_s: float, limit: int = 4 * 1024 * 1024
+    ) -> Any:
+        if list(argv[1:2]) == ["exec"]:
+            self.calls.append((tuple(argv), stdin, timeout_s))
+            await asyncio.Event().wait()
+        return await super().__call__(argv, stdin, timeout_s, limit)
+
+
+async def test_a_boot_cancelled_while_it_waits_kills_tart_run(tmp_path: Path) -> None:
+    runner, spawner = HangingRunner(), FakeSpawner()
+    booting = asyncio.create_task(
+        make(tmp_path, runner, spawner).boot(network=Network("open"), timeout_s=100)
+    )
+    while not runner.calls:
+        await asyncio.sleep(0)
+
+    booting.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await booting
+    assert spawner.proc.killed
+
+
+def test_a_tart_run_that_exits_early_says_it_exited_with_its_rc_and_log(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    spawner = FakeSpawner(proc=FakeProc(returncode=1), log_text="Error: softnet not found in PATH")
+    runner.reply(["tart", "exec"], 1)
+
+    with pytest.raises(BoxUnavailable) as err:
+        run(make(tmp_path, runner, spawner).boot(network=Network("off"), timeout_s=120))
+
+    message = str(err.value)
+    assert "tart run exited (rc 1) before airlie-chat-ab12 answered" in message
+    assert "within" not in message
+    assert message.endswith("softnet not found in PATH")
+
+
+def test_stop_syncs_the_guest_before_tart_stop(tmp_path: Path) -> None:
+    runner = FakeRunner()
+
+    run(make(tmp_path, runner).stop())
+
+    assert [a[:3] for a in runner.argvs()] == [
+        ["tart", "exec", "airlie-chat-ab12"],
+        ["tart", "stop", "airlie-chat-ab12"],
+    ]
+    assert runner.argvs()[0][-1] == "sync" and runner.calls[0][2] <= 30
+
+
+def test_a_sync_that_fails_still_stops_the_vm(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    runner.reply(["tart", "exec"], None)  # timed out: the guest did not answer
+
+    run(make(tmp_path, runner).stop())
+
+    assert runner.argvs()[-1] == ["tart", "stop", "airlie-chat-ab12"]
+
+
+def test_a_missing_tart_is_the_backend_missing_not_a_failed_command(tmp_path: Path) -> None:
+    from airlie.boxes.protocol import BackendMissing
+
+    with pytest.raises(BackendMissing):
+        run(make(tmp_path, FakeRunner(missing=True)).exists())
+
+
+def test_a_failed_tart_command_is_not_the_backend_missing(tmp_path: Path) -> None:
+    from airlie.boxes.protocol import BackendMissing
+
+    runner = FakeRunner()
+    runner.reply(["tart", "delete"], 1, b"", b"VM is locked")
+
+    with pytest.raises(BoxUnavailable) as err:
+        run(make(tmp_path, runner).delete())
+
+    assert not isinstance(err.value, BackendMissing)
+
+
+def test_the_real_runner_gives_tart_a_minimal_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AIRLIE_SERVE_SECRET", "s3cret")
+    monkeypatch.setenv("TART_HOME", "/tmp/tart-home")
+
+    _rc, out, _ = run(RealRunner()(["env"], None, 20))
+
+    names = {line.split("=", 1)[0] for line in out.decode().splitlines()}
+    assert "AIRLIE_SERVE_SECRET" not in names
+    assert {"PATH", "HOME", "TART_HOME"} <= names
+
+
+async def test_the_real_spawn_gives_tart_a_minimal_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.boxes.tart import real_spawn
+
+    monkeypatch.setenv("AIRLIE_SERVE_SECRET", "s3cret")
+    log = tmp_path / "spawn.log"
+
+    proc = await real_spawn(["env"], log)
+    await proc.wait()
+
+    assert "AIRLIE_SERVE_SECRET" not in log.read_text() and "PATH=" in log.read_text()

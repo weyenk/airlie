@@ -30,6 +30,11 @@ class BoxUnavailable(EngineError):
     """The backend cannot be used; the message says why and how to fix it."""
 
 
+class BackendMissing(BoxUnavailable):
+    """The backend's program is not installed at all (no `tart`): no VM of it can exist. Any other
+    BoxUnavailable is a command of an installed backend that failed, and says nothing about what exists."""
+
+
 class ConfirmationRequired(EngineError):
     """A step that gives setup secrets to a recipe nobody has built before needs a person's yes."""
 

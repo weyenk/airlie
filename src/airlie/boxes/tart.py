@@ -8,6 +8,7 @@ import contextlib
 import json
 import os
 import shlex
+import shutil
 import signal
 import socket
 import time
@@ -15,7 +16,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
-from airlie.boxes.protocol import OUTPUT_MAX, BoxUnavailable, ExecResult, Network
+from airlie.boxes.protocol import OUTPUT_MAX, BackendMissing, BoxUnavailable, ExecResult, Network
 from airlie.subproc import DRAIN_S, kill_group, started
 
 Runner = Callable[[Sequence[str], bytes | None, float, int], Awaitable[tuple[int | None, bytes, bytes]]]
@@ -27,11 +28,30 @@ INSTALL_HINT = (
     "Tart is not installed: brew install cirruslabs/cli/tart "
     "(airlie repository chats run in a Tart VM and never on the host)"
 )
+SOFTNET_HINT = (
+    "softnet is not installed, and boxes.network.after_setup (allow_list or off) needs it to filter the VM's "
+    "network: brew install cirruslabs/cli/softnet && sudo softnet install"
+)
 LOG_TAIL_CHARS = 2000
 STOP_WAIT_S = 60.0
+SYNC_S = 20.0
+"""How long `stop` gives the guest's `sync`: `tart stop` is a hard stop, so what the guest has not written to
+its disk is lost."""
+HOST_ENV = ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "TART_HOME")
+"""The host variables a `tart` process gets: what it needs to find itself and its VMs, and nothing of serve's
+own (keys, tokens)."""
 RESOLVER = "192.168.64.1/32"
 """The vmnet gateway, which is the guest's DNS resolver. Allowed in allow_list mode (the guest cannot look up
-the allowed hosts without it) and never when the network is off."""
+the allowed hosts without it) and never when the network is off. Softnet allows it on every port, not only
+DNS: a host service bound to 0.0.0.0 answers the guest there (README, Repository chats)."""
+
+
+def tart_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k in HOST_ENV}
+
+
+def softnet_installed() -> bool:
+    return shutil.which("softnet") is not None
 
 
 async def _pump(stream: asyncio.StreamReader | None, into: bytearray, limit: int = OUTPUT_MAX) -> None:
@@ -60,6 +80,7 @@ class RealRunner:
                 stdin=asyncio.subprocess.DEVNULL if stdin is None else asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=tart_env(),
                 start_new_session=True,  # its own process group: killpg reaches what it starts
             )
         )
@@ -127,6 +148,7 @@ async def real_spawn(argv: Sequence[str], log: Path) -> Spawned:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=out,
                 stderr=out,
+                env=tart_env(),
                 start_new_session=True,
             )
         )
@@ -178,7 +200,7 @@ class TartBox:
         try:
             return await self._run([self._tart, *args], stdin, timeout_s, limit)
         except FileNotFoundError as e:
-            raise BoxUnavailable(INSTALL_HINT) from e
+            raise BackendMissing(INSTALL_HINT) from e
 
     async def _checked(self, *args: str, timeout_s: float = 120.0, tolerate_missing: bool = False) -> None:
         """`tart <args>`, raising BoxUnavailable when it fails."""
@@ -245,9 +267,17 @@ class TartBox:
     async def boot(self, *, network: Network, timeout_s: float) -> None:
         argv = [self._tart, "run", "--no-graphics", *await self._network_flags(network), self.name]
         try:
-            self._proc = await self._spawn(argv, self._log)
+            proc = self._proc = await self._spawn(argv, self._log)
         except FileNotFoundError as e:
-            raise BoxUnavailable(INSTALL_HINT) from e
+            raise BackendMissing(INSTALL_HINT) from e
+        try:
+            await self._answering(proc, timeout_s)
+        except BaseException:  # failed, timed out or cancelled (a Stop): no `tart run` outlives its boot
+            self._proc = None
+            await proc.kill()
+            raise
+
+    async def _answering(self, proc: Spawned, timeout_s: float) -> None:
         deadline = self._now() + timeout_s
         while True:
             left = deadline - self._now()
@@ -256,14 +286,17 @@ class TartBox:
             )
             if rc == 0:
                 return
-            if self._proc.returncode is not None or self._now() >= deadline:
-                break  # tart run ended (nothing will ever answer), or the time is up
+            if proc.returncode is not None:  # tart run ended: nothing will ever answer
+                raise BoxUnavailable(
+                    f"tart run exited (rc {proc.returncode}) before {self.name} answered; "
+                    f"tart run log ({self._log}):\n{self._log_tail()}"
+                )
+            if self._now() >= deadline:
+                raise BoxUnavailable(
+                    f"{self.name} did not answer within {timeout_s:g}s; "
+                    f"tart run log ({self._log}):\n{self._log_tail()}"
+                )
             await self._sleep(self._poll_s)
-        await self._proc.kill()
-        raise BoxUnavailable(
-            f"{self.name} did not answer within {timeout_s:g}s; "
-            f"tart run log ({self._log}):\n{self._log_tail()}"
-        )
 
     def _exec_args(
         self, argv: Sequence[str], env: Mapping[str, str], cwd: str | None, *, stdin: bool
@@ -321,6 +354,9 @@ class TartBox:
         return rc, out if rc == 0 else err
 
     async def stop(self) -> None:
+        """`sync` in the guest first (best effort: a guest that does not answer is stopped anyway), as `tart
+        stop` loses what the guest has not written to its disk yet."""
+        await self._tart_run(*self._exec_args(["sync"], {}, None, stdin=False), timeout_s=SYNC_S)
         await self._checked("stop", self.name, timeout_s=STOP_WAIT_S + 30, tolerate_missing=True)
         proc, self._proc = self._proc, None
         if proc is not None:

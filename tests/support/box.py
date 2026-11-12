@@ -134,6 +134,18 @@ class FakeBox:
         for i in range(1, len(parts) + 1):
             self.dirs.add("/" + "/".join(parts[:i]))
 
+    def _move(self, src: str, dst: str | None) -> None:
+        """`src` and everything under it moves to `dst`, or goes when `dst` is None."""
+        src = src.rstrip("/")
+
+        def moved(path: str) -> str | None:
+            if path != src and not path.startswith(src + "/"):
+                return path
+            return None if dst is None else dst.rstrip("/") + path[len(src) :]
+
+        self.files = {m: v for p, v in self.files.items() if (m := moved(p)) is not None}
+        self.dirs = {m for p in self.dirs if (m := moved(p)) is not None}
+
     def _interpret(self, argv: Sequence[str], stdin: bytes | None) -> ExecResult:
         if not argv:
             return ExecResult(None, "empty command")
@@ -145,6 +157,15 @@ class FakeBox:
                 return ExecResult(0, self.files[path].decode())
             case ["cat", path]:
                 return ExecResult(1, f"cat: {path}: No such file or directory")
+            case ["sync"]:
+                return ExecResult(0, "")
+            case ["rm", "-f" | "-rf", *paths]:
+                for path in paths:
+                    self._move(path, None)
+                return ExecResult(0, "")
+            case ["mv", "-T", src, dst]:
+                self._move(src, dst)
+                return ExecResult(0, "")
             case ["mkdir", "-p", *paths]:
                 for path in paths:
                     self._mkdir(path)

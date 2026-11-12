@@ -11,7 +11,7 @@ from airlie.boxes.images import Images, SecretStore
 from airlie.boxes.protocol import BoxUnavailable, ConfirmationRequired, ExecResult, Network
 from airlie.boxes.recipe import Recipe, RecipeError
 from airlie.config.schema import BoxesSpec
-from tests.support.box import FakeBox, Handler
+from tests.support.box import Call, FakeBox, Handler
 
 SPEC = BoxesSpec(cpus=2, memory_gb=4, disk_gb=20, boot_timeout_s=30, setup_timeout_s=99)
 REPO = "acme/widgets"
@@ -107,12 +107,55 @@ def test_setup_builds_once_and_the_second_ensure_reuses_it(tmp_path: Path) -> No
     assert box.created == [("img:1", 2, 4, 20)]
     assert box.boots == [Network("open")]
     assert box.state == "stopped" and not box.deleted
-    assert [c.argv for c in box.calls] == [("sh", "-s")] * 2
-    assert [c.stdin for c in box.calls] == [b"apt-get update\n", b"uv sync\n"]
+    assert [c.argv for c in box.calls] == [("sh", "-s"), ("sh", "-s"), ("sync",)]
+    assert [c.stdin for c in box.calls[:2]] == [b"apt-get update\n", b"uv sync\n"]
     assert box.calls[0].env["CI"] == "1"  # the recipe's variables, on top of the box environment
     assert "PATH" in box.calls[0].env
     assert run(rig.images.ensure(recipe, REPO)) == name
-    assert len(box.calls) == 2 and len(box.created) == 1
+    assert len(box.calls) == 3 and len(box.created) == 1
+
+
+class StopRecordingBox(FakeBox):
+    """Records `stop` among the execs, so the order of the guest's sync and the stop shows."""
+
+    async def stop(self) -> None:
+        self.calls.append(Call(("<stop>",), {}, None, None))
+        await super().stop()
+
+
+def test_the_build_syncs_the_guest_before_it_stops_and_saves_the_image(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    boxes: list[FakeBox] = []
+
+    def box_for(name: str) -> FakeBox:
+        found = [b for b in boxes if b.name == name and b.state != "absent"]
+        if found:
+            return found[0]
+        boxes.append(StopRecordingBox(name, handlers={"sh": sh_ok}))
+        return boxes[-1]
+
+    images = Images(box_for, SPEC, secrets=SecretStore(tmp_path / "secrets"), confirm=rig.confirm)
+
+    run(images.ensure(Recipe(base="i", setup=("make",)), REPO))
+
+    assert [c.argv for c in boxes[-1].calls][-2:] == [("sync",), ("<stop>",)]
+
+
+def test_a_build_whose_sync_fails_is_not_saved(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    rig.sh = sh_ok
+    original = rig.box_for
+
+    def box_for(name: str) -> FakeBox:
+        box = original(name)
+        box.responses[("sync",)] = ExecResult(None, "error: command timed out after 20s")
+        return box
+
+    images = Images(box_for, SPEC, secrets=SecretStore(tmp_path / "secrets"), confirm=rig.confirm)
+
+    with pytest.raises(RecipeError, match="sync"):
+        run(images.ensure(Recipe(base="i", setup=("make",)), REPO))
+    assert rig.built() == []
 
 
 def test_an_image_is_built_under_a_temporary_name_and_renamed_when_done(tmp_path: Path) -> None:
@@ -144,7 +187,7 @@ def test_setup_secrets_reach_the_guest_on_stdin_only(tmp_path: Path) -> None:
     rig = Rig(tmp_path, secrets="# token\nNPM_TOKEN=s3cr3t value\n\nOTHER=a'b\n")
     run(rig.images.ensure(Recipe(base="i", setup=("npm ci",), env={"CI": "1"}), REPO))
     (box,) = rig.built()
-    (call,) = box.calls
+    call, _sync = box.calls
     assert call.stdin == b"export NPM_TOKEN='s3cr3t value'\nexport OTHER='a'\"'\"'b'\nnpm ci\n"
     seen = [*call.argv, *call.env.values(), *call.env, call.cwd or ""]
     assert not any("s3cr3t" in part or "a'b" in part for part in seen)

@@ -64,9 +64,9 @@ def test_the_key_is_twelve_hex_characters() -> None:
     int(key, 16)
 
 
-def test_the_key_changes_with_setup_and_not_with_env_values() -> None:
+def test_the_key_changes_with_setup_and_with_env_values() -> None:
     base = Recipe(setup=("uv sync",), env={"A": "1"})
-    assert base.key("img") == Recipe(setup=("uv sync",), env={"A": "2"}).key("img")
+    assert base.key("img") != Recipe(setup=("uv sync",), env={"A": "2"}).key("img")  # setup ran with it
     assert base.key("img") != Recipe(setup=("uv sync", "x"), env={"A": "1"}).key("img")
     assert base.key("img") != base.key("other")
     assert base.key("img") != Recipe(setup=("uv sync",), env={"B": "1"}).key("img")
@@ -78,4 +78,35 @@ def test_the_key_ignores_tests_and_workdir() -> None:
 
 
 def test_the_key_is_stable() -> None:
-    assert Recipe(setup=("a", "b"), env={"Z": "", "A": ""}).key("img") == "3747b48be710"
+    assert Recipe(setup=("a", "b"), env={"Z": "", "A": ""}).key("img") == "d9e4ff6c18a6"
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        "airlie-env-0123456789ab-89abcdef",  # another repository's image, built with its setup secrets
+        "airlie-chat-0123456789ab",  # another chat's disk
+        "ubuntu",  # a local VM by name
+        "-h",  # an option to `tart clone`
+        "ghcr.io/-x/ubuntu",
+        "cirruslabs/ubuntu:latest",  # no registry host
+        "ghcr.io/airlie-env-x/y",
+    ],
+)
+def test_a_base_that_is_not_a_registry_image_is_refused(base: str) -> None:
+    with pytest.raises(RecipeError, match="base"):
+        load_recipe(json.dumps({"base": base}), SPEC)
+
+
+@pytest.mark.parametrize(
+    "base",
+    ["ghcr.io/cirruslabs/debian:latest", "localhost:5000/team/img:1", "registry.example.com/a/b:2"],
+)
+def test_a_registry_image_is_a_base(base: str) -> None:
+    assert load_recipe(json.dumps({"base": base}), SPEC).base == base
+
+
+def test_the_configured_default_image_is_a_base_whatever_it_is() -> None:
+    spec = BoxesSpec(image="my-local-base")
+
+    assert load_recipe('{"base": "my-local-base"}', spec).base == "my-local-base"
