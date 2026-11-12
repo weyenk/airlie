@@ -35,6 +35,7 @@ from airlie.manager.client import InProcessHolder
 from airlie.manager.core import Manager
 from airlie.serve.bridge.clock import Clock, RealClock
 from airlie.serve.uploads import TooManyAttachments
+from airlie.skills.library import Skill
 from airlie.tools.protocol import Tool, ToolContext
 
 log = logging.getLogger("airlie.chat.api")
@@ -209,6 +210,7 @@ def chat_router(
     library: SuperpowersLibrary | None,
     hooks: Hooks,
     web: Mapping[str, Tool],
+    chat_skills: Mapping[str, Skill] | None = None,
     manager: Manager,
     attach: Attach,
     transport: httpx.AsyncBaseTransport | None = None,
@@ -302,7 +304,15 @@ def chat_router(
             role="chat",
         )
         try:
-            registry = registry_for(thread.kind, cfg, library=library, todos=todos, ctx=tool_ctx, web=web)
+            registry = registry_for(
+                thread.kind,
+                cfg,
+                library=library,
+                todos=todos,
+                ctx=tool_ctx,
+                web=web,
+                skills_extra=chat_skills,
+            )
         except KindUnavailable:
             return error("repository chats arrive with plan 4", 400)
         try:

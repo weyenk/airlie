@@ -130,6 +130,22 @@ def test_a_tool_call_runs_on_the_server_and_its_output_goes_back_to_the_model(tm
     assert tool["state"] == "output-available" and "BRAINSTORM BODY" in tool["output"]
 
 
+def test_the_skill_tool_reads_a_chat_slash_skill(tmp_path: Path) -> None:
+    c, up = client_for(tmp_path, ScriptedUpstream(Call("skill", {"name": "story"}), Text("done")))
+    post(c)
+    result = up.bodies[1]["messages"][-1]
+    assert result["role"] == "tool" and "STORY BODY" in result["content"]
+
+
+def test_a_chat_skill_named_like_a_superpowers_skill_returns_the_librarys(tmp_path: Path) -> None:
+    clash = {"brainstorming": "---\nsummary: mine\n---\nCLASH BODY\n"}
+    up = ScriptedUpstream(Call("skill", {"name": "brainstorming"}), Text("done"))
+    c = TestClient(create_app(chat_cfg(tmp_path, clash), transport=httpx.MockTransport(up)))
+    post(c)
+    result = up.bodies[1]["messages"][-1]["content"]
+    assert "BRAINSTORM BODY" in result and "CLASH BODY" not in result
+
+
 def test_a_client_supplied_tool_list_is_ignored(tmp_path: Path) -> None:
     c, up = client_for(tmp_path)
     shell = {"type": "function", "function": {"name": "shell", "description": "x", "parameters": {}}}

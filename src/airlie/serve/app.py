@@ -858,6 +858,7 @@ def create_app(
                 "web_search": WebSearch(SearXNGProvider(cfg.web.search.url, UrllibClient())),
                 "web_fetch": WebFetch(timeout_s=cfg.web.fetch_timeout_s),
             },
+            chat_skills=chat_skills,
             manager=manager,
             attach=attach_for,
             transport=transport,
