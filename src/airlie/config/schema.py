@@ -531,6 +531,12 @@ class BoxesSpec(Strict):
         description="the most MB of git bundle taken out of a box (a larger one is refused)",
     )
     network: BoxNetworkSpec = Field(default_factory=BoxNetworkSpec)
+    prewarm_max_per_person: int = Field(
+        default=2,
+        ge=0,
+        description="how many VMs a person's new repository chats start before their first message (and not "
+        "yet used); over it a new chat's VM starts with its first turn",
+    )
 
 
 class BridgeSpec(Strict):

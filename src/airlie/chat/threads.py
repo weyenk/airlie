@@ -95,6 +95,23 @@ def _valid_todos(raw: str) -> list[dict[str, Any]]:
     return [{"id": i.id, "text": i.text, "status": i.status} for i in TodoList.load(rows).items()]
 
 
+def mark_answered(parts: list[dict[str, Any]], answers: Mapping[str, bool]) -> bool:
+    """Mark the permission requests in `parts` named in `answers` (approval id: yes or no) as answered, in
+    place: the tool part becomes `approval-responded` with `approval.approved`, the `data-approval` part gains
+    `answer`. True when anything changed."""
+    changed = False
+    for part in parts:
+        approval = part.get("approval")
+        if isinstance(approval, dict) and approval.get("id") in answers:
+            approval["approved"] = answers[approval["id"]]
+            part["state"] = "approval-responded"
+            changed = True
+        elif part.get("type") == "data-approval" and part.get("id") in answers:
+            part["data"]["answer"] = "approved" if answers[part["id"]] else "denied"
+            changed = True
+    return changed
+
+
 class ThreadStore:
     def __init__(self, path: Path, *, now: Callable[[], float] = time.time) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -264,17 +281,7 @@ class ThreadStore:
         ).fetchall()
         for seq, raw in rows:
             parts = json.loads(raw)
-            changed = False
-            for part in parts:
-                approval = part.get("approval")
-                if isinstance(approval, dict) and approval.get("id") in answers:
-                    approval["approved"] = answers[approval["id"]]
-                    part["state"] = "approval-responded"
-                    changed = True
-                elif part.get("type") == "data-approval" and part.get("id") in answers:
-                    part["data"]["answer"] = "approved" if answers[part["id"]] else "denied"
-                    changed = True
-            if changed:
+            if mark_answered(parts, answers):
                 self.conn.execute("update messages set parts = ? where seq = ?", (json.dumps(parts), seq))
 
     def set_todos(self, thread_id: str, todos: list[dict[str, Any]]) -> None:

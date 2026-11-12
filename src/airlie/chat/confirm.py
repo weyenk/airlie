@@ -27,9 +27,9 @@ from airlie.tools.registry import ToolRegistry
 Answer = Literal["allowed", "pending", "denied"]
 MAX_PENDING_PER_SESSION = 50
 WAITING = "waiting for your approval: the person has been asked; do not retry until they have answered"
-APPROVED = "the person approved this call: make it again, with the same arguments, to run it"
-DENIED = "refused: the person said no to this call"
-"""What the model's history shows for a call whose request the person has answered, in place of WAITING."""
+ANSWERED = "the person answered this request: the call was made for them, or refused, right after"
+"""What the model's history shows for a call whose request the person has answered, in place of WAITING; the
+answered call itself follows it (the server runs it, or refuses it, on the turn the answer came with)."""
 
 
 class Approval(BaseModel):
@@ -133,6 +133,14 @@ class Confirmations:
                 applied.append(Answered(item.id, item.tool, a.approved))
         return applied
 
+    def reopen(self, session_id: str, answers: Sequence[Answered]) -> None:
+        """Put answers `approve` applied back to waiting: the turn they came with never started, so the
+        person can answer again."""
+        for a in answers:
+            item = self._items.get(a.id)
+            if item is not None and item.session == session_id:
+                item.state = "pending"
+
     def status(
         self, session_id: str, tool: str, args: Mapping[str, Any], kind: ChatKind = "repository"
     ) -> Answer:
@@ -203,7 +211,7 @@ def before_tool(confirmations: Confirmations) -> Any:
             confirmations.check(
                 ctx.thread_id, call.name, args, ctx.kind
             )  # the no is reported once, then spent
-            return Verdict("denied", f"refused: the person said no to this {call.name} call", None, args)
+            return Verdict("denied", f"denied by the person: {call.name} did not run", None, args)
         approval_id = confirmations.request(ctx.thread_id, call.id, call.name, args)
         return Verdict("pending", f"error: {WAITING}", approval_id, args)
 

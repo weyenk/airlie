@@ -30,9 +30,16 @@ from airlie.chat.repo_session import RepoSessions, session_branch, valid_repo
 from airlie.chat.repo_tools import RepoChat
 from airlie.chat.stream import DONE, STREAM_HEADERS, sse
 from airlie.chat.superpowers import SuperpowersLibrary
-from airlie.chat.threads import StoredMessage, Thread, ThreadNotFound, ThreadStore, ThreadSummary
+from airlie.chat.threads import (
+    StoredMessage,
+    Thread,
+    ThreadNotFound,
+    ThreadStore,
+    ThreadSummary,
+    mark_answered,
+)
 from airlie.chat.tools import TodoList
-from airlie.chat.turn import TurnHandle, TurnRequest, run_turn
+from airlie.chat.turn import TurnHandle, TurnRequest, answered_calls, run_turn
 from airlie.config import AirlieConfig
 from airlie.engine.protocol import Engine
 from airlie.engine.types import ContentPart, EngineError
@@ -289,10 +296,16 @@ def chat_router(
     repo_sessions: RepoSessions | None = None,
     confirmations: Confirmations | None = None,
     publish: Callable[[str, str | None], None] = lambda topic, key: None,
+    pinnable: Callable[[], Awaitable[list[str]]] | None = None,
+    background: set[asyncio.Task[None]] | None = None,
 ) -> APIRouter:
     """`publish` is the live feed's: each change to a thread (made, a turn's end, an answer, deleted) sends
-    the `chat` hint keyed by the thread's id; the hint carries no data, and the routes stay owner-scoped."""
+    the `chat` hint with no key (the feed reaches every signed-in client: it names no one's chat; each
+    refetches its own). `pinnable` lists the repositories a new chat's VM may be started for before its first
+    message; `background` keeps those starts (serve's shutdown and tests wait on them)."""
     router = APIRouter()
+    background = background if background is not None else set()
+    prewarmed: dict[str, list[str]] = {}  # per person: the chats whose VM was started before a message
     busy = busy if busy is not None else Busy()
     clock = clock or RealClock()
     confirmations = confirmations if confirmations is not None else Confirmations(cfg)
@@ -344,6 +357,7 @@ def chat_router(
         answered = confirmations.approve(thread.id, body.approvals)  # the person's own, never the model's
         engines: list[Engine] = []
         released = False
+        started = [False]
 
         async def cleanup() -> None:
             """Free the thread and the engine client, once: the body or the response, whichever ends first."""
@@ -351,24 +365,22 @@ def chat_router(
             if released:
                 return
             released = True
+            if not started[0]:  # the turn never began: its answers were never used, so they still wait
+                confirmations.reopen(thread.id, answered)
             confirmations.end_turn(thread.id)  # a yes lasts as long as the turn it came with
             try:
                 for engine in engines:
                     await engine.stop()
             finally:
                 busy.release(thread.id)
-                publish("chat", thread.id)
+                publish("chat", None)
 
         if body.resumes and not answered:  # answered already (another device, a second tap), or not ours
             await cleanup()
             return error("no permission request of this chat waits for that answer", 409)
-        threads.answer(thread.id, {a.id: a.approved for a in answered})  # a reload shows them answered
-        if answered:
-            thread = threads.get(thread.id, principal.user_id)
-            publish("chat", thread.id)
         try:
             response = await start_turn(
-                body, principal, thread, engine_name, engines, cleanup, turn, answered
+                body, principal, thread, engine_name, engines, cleanup, turn, answered, started
             )
         except BaseException:
             if fresh:
@@ -390,6 +402,7 @@ def chat_router(
         cleanup: Callable[[], Awaitable[None]],
         turn: Running,
         answered: list[Answered],
+        started: list[bool],
     ) -> Response:
         stored: StoredMessage | None = None
         parts: list[dict[str, Any]] = []
@@ -463,10 +476,17 @@ def chat_router(
         engine = _http_engine(cfg, engine_name, transport=transport, manager=manager)
         engines.append(engine)
         await engine.start()
-        started = [False]
+        answers = {a.id: a.approved for a in answered}
+        calls = answered_calls(thread, answers) if stored is None else {}
+        noted = [a for a in answered if a.id not in calls]  # no call to run: the model is told instead
 
         async def stream() -> AsyncIterator[str]:
             started[0] = True
+            if answers:  # the turn has begun: from here on the answers are spent, and a reload shows them
+                threads.answer(thread.id, answers)
+                for m in thread.messages:
+                    mark_answered(m.parts, answers)
+                publish("chat", None)
             try:
                 async for chunk in run_turn(
                     TurnRequest(
@@ -475,7 +495,8 @@ def chat_router(
                         ctx,
                         user_parts,
                         resumes=resumes,
-                        note=answered_note(answered) if stored is None else None,
+                        note=answered_note(noted) if stored is None and noted else None,
+                        answered_calls=tuple(calls.values()),
                     ),
                     engine=engine,
                     engine_name=engine_name,
@@ -505,6 +526,37 @@ def chat_router(
 
         return TurnStream(stream(), cleanup, started, media_type="text/event-stream", headers=STREAM_HEADERS)
 
+    async def may_prewarm(owner: str, repo: str) -> bool:
+        """A repository the person may pin, and fewer than `boxes.prewarm_max_per_person` of their chats
+        whose VM was started early and that have had no message yet."""
+        if repo_sessions is None or pinnable is None:
+            return False
+        unused = [
+            i
+            for i in prewarmed.get(owner, [])
+            if threads.exists(i) and not threads.get(i, owner).messages and i not in busy
+        ]
+        prewarmed[owner] = unused
+        if len(unused) >= cfg.boxes.prewarm_max_per_person:
+            return False
+        try:
+            known = await pinnable()
+        except Exception:
+            log.warning("could not list the repositories that may be pre-warmed", exc_info=True)
+            return False
+        return repo.lower() in {r.lower() for r in known}
+
+    async def prewarm(thread: Thread) -> None:
+        """Open the session and start its VM (the code goes in too), then let go: the first turn finds it
+        ready, or waits for it. A failure is only logged: the first turn meets it again and says why."""
+        assert repo_sessions is not None
+        try:
+            chat = await repo_sessions.open(thread)
+            async with repo_sessions.turn(chat, f"prewarm:{thread.id}"):
+                pass
+        except Exception:
+            log.warning("pre-warming the VM of chat %s failed", thread.id, exc_info=True)
+
     @router.get("/v1/airlie/chat/threads")
     async def list_threads(request: Request, kind: ChatKind | None = None) -> Any:
         principal = principal_of(request)
@@ -514,15 +566,21 @@ def chat_router(
 
     @router.post("/v1/airlie/chat/threads", status_code=201)
     async def create_thread(body: NewThread, request: Request) -> Any:
-        """A new chat, empty, with an id the server chose; its first turn names it. A repository chat's VM is
-        not started here: its first turn starts it, and the stream shows the VM's status while it does."""
+        """A new chat, empty, with an id the server chose; its first turn names it. A repository chat's VM
+        starts here in the background when `may_prewarm` allows it; otherwise its first turn starts it, and
+        the stream shows the VM's status while it does."""
         principal = principal_of(request)
         if principal is None:
             return error("not signed in", 401)
         if body.kind == "repository" and repo_sessions is None:
             return error("repository chats are not configured on this server", 503)
         t = threads.create(principal.user_id, body.kind, repo=body.repo, base_ref=body.base_ref)
-        publish("chat", t.id)
+        publish("chat", None)
+        if t.repo is not None and await may_prewarm(principal.user_id, t.repo):
+            prewarmed.setdefault(principal.user_id, []).append(t.id)
+            task = asyncio.create_task(prewarm(t))
+            background.add(task)
+            task.add_done_callback(background.discard)
         made = ThreadSummary(t.id, t.title, t.kind, t.updated, t.created, t.repo, t.base_ref)
         return JSONResponse(summary_json(made, False), status_code=201)
 
@@ -583,7 +641,7 @@ def chat_router(
             busy.release(thread_id)
         if not removed:
             return error("no such thread", 404)
-        publish("chat", thread_id)
+        publish("chat", None)
         return Response(status_code=204)
 
     return router

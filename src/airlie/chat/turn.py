@@ -21,7 +21,7 @@ from typing import Any
 
 import anyio
 
-from airlie.chat.confirm import APPROVED, DENIED, NeedsApproval
+from airlie.chat.confirm import ANSWERED, NeedsApproval
 from airlie.chat.hooks import Hooks, ToolEvent, TurnContext, TurnSummary, Verdict
 from airlie.chat.stream import StreamWriter
 from airlie.chat.task_tool import OBSERVER, TaskObserver
@@ -80,7 +80,25 @@ class TurnRequest:
     resumes: str | None = None
     """The stored assistant message a resumed turn goes on (the thread's last); its parts are extended."""
     note: str | None = None
-    """What the model is told, as the person, for this turn only: a resumed turn's answers."""
+    """What the model is told, as the person, for this turn only: a resumed turn's answers to requests that
+    are no tool call (the image build)."""
+    answered_calls: tuple[ToolCall, ...] = ()
+    """The calls a resumed turn's answers were for, run (or refused) by the server before the model's first
+    reply, with the arguments that were asked about; each result goes to the model as that call's result."""
+
+
+def answered_calls(thread: Thread, answers: Mapping[str, bool]) -> dict[str, ToolCall]:
+    """The stored tool calls whose permission requests `answers` names, by approval id, as calls to make
+    again: same tool, same arguments, a call id of their own. A request that is no tool call has none."""
+    out: dict[str, ToolCall] = {}
+    for m in thread.messages:
+        for part in m.parts:
+            approval = part.get("approval")
+            if not (isinstance(approval, dict) and approval.get("id") in answers and "input" in part):
+                continue
+            name = str(part["type"])[len(TOOL_PREFIX) :]
+            out[approval["id"]] = ToolCall(f"{part['toolCallId']}-answered", name, json.dumps(part["input"]))
+    return out
 
 
 def approval_part(approval_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -142,7 +160,7 @@ def history_messages(
                 state = part.get("state")
                 result = part.get("output") if state == "output-available" else part.get("errorText")
                 if state == "approval-responded":  # the person answered: no longer "waiting for approval"
-                    result = APPROVED if (part.get("approval") or {}).get("approved") else DENIED
+                    result = ANSWERED
                 out.append(Message(role="assistant", content=buffer, tool_calls=(call,)))
                 out.append(
                     Message(
@@ -430,6 +448,11 @@ class _Run:
         self.messages = self.messages_for_model()
         schemas = self.registry.schemas() or None
         role = self.role
+        for call in self.req.answered_calls:  # the person answered: the server makes the call (or refuses it)
+            self.messages.append(Message(role="assistant", content="", tool_calls=(call,)))
+            await self.run_tool(call)
+            self.emit(self.w.next_step())
+            self.parts.append({"type": "step-start"})
         for _ in range(self.max_steps):
             gen_req = GenRequest(
                 role="chat",

@@ -175,7 +175,7 @@ def test_a_denied_push_does_not_push(tmp_path: Path) -> None:
     second = rig.post(body("no", approvals=[{"id": approval_id(first), "approved": False}]))
 
     refused = next(c for c in chunks(second.text) if c["type"] == "tool-output-error")
-    assert "the person said no" in refused["errorText"]
+    assert refused["errorText"].startswith("denied by the person")
     assert rig.events == []
 
 
@@ -534,7 +534,7 @@ def test_serve_shutdown_stops_a_running_chat_vm_and_keeps_its_disk(tmp_path: Pat
 # --- a permission prompt kept in the thread, and answered with no new message -------------------------------
 
 
-def answer(approval: str, approved: bool = True, thread: str = "t1") -> dict[str, Any]:
+def answer(approval: str, approved: bool = True, thread: str = "t1", **extra: Any) -> dict[str, Any]:
     """The client's answer to a prompt: a turn that carries the yes or no and no new message of the person's
     (the AI SDK resends the thread's last message, the assistant's)."""
     last = {"id": "a1", "role": "assistant", "parts": [{"type": "text", "text": "asked"}]}
@@ -543,12 +543,21 @@ def answer(approval: str, approved: bool = True, thread: str = "t1") -> dict[str
         "kind": "repository",
         "messages": [last],
         "approvals": [{"id": approval, "approved": approved}],
+        **extra,
     }
 
 
 def stored_parts(rig: Rig) -> list[dict[str, Any]]:
     messages = rig.c.get("/v1/airlie/chat/threads/t1").json()["messages"]
     return [p for m in messages if m["role"] == "assistant" for p in m["parts"]]
+
+
+def asked_tool(rig: Rig) -> dict[str, Any]:
+    return next(p for p in stored_parts(rig) if p["type"] == "tool-push_branch")
+
+
+def shown_prompt(rig: Rig) -> dict[str, Any]:
+    return next(p for p in stored_parts(rig) if p["type"] == "data-approval")
 
 
 def test_a_permission_request_is_kept_in_the_thread_until_it_is_answered(tmp_path: Path) -> None:
@@ -560,17 +569,16 @@ def test_a_permission_request_is_kept_in_the_thread_until_it_is_answered(tmp_pat
     asked = approval_id(r)
     streamed = next(c for c in chunks(r.text) if c["type"] == "data-approval")
     assert streamed["id"] == asked  # the client keeps one prompt part per request, replaced in place
-    parts = stored_parts(rig)
-    tool = next(p for p in parts if p["type"] == "tool-push_branch")
+    tool = asked_tool(rig)
     assert tool["state"] == "approval-requested" and tool["approval"] == {"id": asked}
-    shown = next(p for p in parts if p["type"] == "data-approval")
+    shown = shown_prompt(rig)
     assert shown["id"] == asked
     assert (shown["data"]["id"], shown["data"]["tool"]) == (asked, "push_branch")
     assert "answer" not in shown["data"]
 
 
-def test_an_answer_alone_resumes_the_turn_and_pushes_once(tmp_path: Path) -> None:
-    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Call("push_branch", {}), Text("pushed"))
+def test_an_answer_alone_runs_the_approved_call_and_feeds_its_result_to_the_model(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("pushed"))
     rig.fakes.script_push()
     asked = approval_id(rig.post())
 
@@ -579,20 +587,22 @@ def test_an_answer_alone_resumes_the_turn_and_pushes_once(tmp_path: Path) -> Non
     assert r.status_code == 200
     done = next(c for c in chunks(r.text) if c["type"] == "tool-output-available")
     assert done["output"] == f"pushed {BRANCH} at {rig.fakes.base}."
-    assert rig.pushes() == 1
-    told = rig.up.bodies[2]["messages"][-1]
-    assert told["role"] == "user" and "approved" in told["content"] and "push_branch" in told["content"]
+    assert rig.pushes() == 1 and rig.up.calls == 3  # the server made the call; the model only replied
+    fed = rig.up.bodies[2]["messages"][-1]
+    assert fed["role"] == "tool" and fed["content"] == done["output"]
     t = rig.c.get("/v1/airlie/chat/threads/t1").json()
     assert [m["role"] for m in t["messages"]] == ["user", "assistant"]  # no new message of the person's
     parts = t["messages"][1]["parts"]
-    first = next(p for p in parts if p["type"] == "tool-push_branch")
-    assert first["state"] == "approval-responded" and first["approval"] == {"id": asked, "approved": True}
-    assert next(p for p in parts if p["type"] == "data-approval")["data"]["answer"] == "approved"
+    tools = [p for p in parts if p["type"] == "tool-push_branch"]
+    assert tools[0]["state"] == "approval-responded"
+    assert tools[0]["approval"] == {"id": asked, "approved": True}
+    assert tools[1]["state"] == "output-available" and tools[1]["output"] == done["output"]
+    assert shown_prompt(rig)["data"]["answer"] == "approved"
     assert parts[-1] == {"type": "text", "text": "pushed"}  # the resumed turn goes on the same message
 
 
 def test_an_answer_sent_twice_runs_once_and_the_second_is_409(tmp_path: Path) -> None:
-    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Call("push_branch", {}), Text("pushed"))
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("pushed"))
     rig.fakes.script_push()
     asked = approval_id(rig.post())
     rig.post(answer(asked))
@@ -605,22 +615,49 @@ def test_an_answer_sent_twice_runs_once_and_the_second_is_409(tmp_path: Path) ->
     assert rig.pushes() == 1 and rig.up.calls == calls
 
 
-def test_a_no_alone_resumes_the_turn_and_nothing_is_pushed(tmp_path: Path) -> None:
-    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Call("push_branch", {}), Text("not pushing"))
+def test_a_no_alone_feeds_denied_by_the_person_and_nothing_is_pushed(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("not pushing"))
     rig.fakes.script_push()
     asked = approval_id(rig.post())
 
     r = rig.post(answer(asked, approved=False))
 
     assert r.status_code == 200 and rig.events == []
-    told = rig.up.bodies[2]["messages"]
-    assert "said no" in told[-1]["content"]
-    assert any(m["role"] == "tool" and "said no" in m["content"] for m in told)  # the answered call's result
-    shown = next(p for p in stored_parts(rig) if p["type"] == "data-approval")
-    assert shown["data"]["answer"] == "denied"
+    fed = rig.up.bodies[2]["messages"][-1]
+    assert fed["role"] == "tool" and fed["content"].startswith("denied by the person")
+    assert shown_prompt(rig)["data"]["answer"] == "denied"
 
 
-def test_an_answer_alone_for_another_chats_request_is_409_and_one_for_no_chat_is_404(tmp_path: Path) -> None:
+def test_an_answer_alone_whose_turn_is_refused_leaves_the_prompt_waiting(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("pushed"))
+    rig.fakes.script_push()
+    asked = approval_id(rig.post())
+
+    refused = rig.post(answer(asked, skill="nope"))  # the turn is refused before it starts
+
+    assert refused.status_code == 404 and rig.pushes() == 0
+    assert asked_tool(rig)["state"] == "approval-requested"
+    assert "answer" not in shown_prompt(rig)["data"]
+    again = rig.post(answer(asked))  # still answerable
+    assert again.status_code == 200 and rig.pushes() == 1
+
+
+def test_an_answer_alone_while_a_turn_runs_is_409_and_the_prompt_still_waits(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("pushed"))
+    rig.fakes.script_push()
+    asked = approval_id(rig.post())
+    busy = rig.app.state.chat_busy
+    assert busy.take("t1") is not None  # a turn in flight on this chat
+
+    r = rig.post(answer(asked))
+
+    assert r.status_code == 409 and "turn running" in r.json()["error"]
+    busy.release("t1")
+    assert asked_tool(rig)["state"] == "approval-requested"
+    assert rig.post(answer(asked)).status_code == 200 and rig.pushes() == 1
+
+
+def test_an_answer_alone_for_another_chats_request_is_409_and_for_no_chat_404(tmp_path: Path) -> None:
     rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("hello"))
     rig.fakes.script_push()
     asked = approval_id(rig.post())
@@ -632,9 +669,94 @@ def test_an_answer_alone_for_another_chats_request_is_409_and_one_for_no_chat_is
     assert rig.pushes() == 0
 
 
+def test_an_answer_alone_on_another_persons_chat_is_404_and_applies_nothing(tmp_path: Path) -> None:
+    store = AuthStore(tmp_path / "auth.sqlite")
+    pat, sam = store.add_user("Pat", "member"), store.add_user("Sam", "member")
+    as_pat = {"Cookie": f"{SESSION_COOKIE}={store.make_session(pat.id, 30)}"}
+    as_sam = {"Cookie": f"{SESSION_COOKIE}={store.make_session(sam.id, 30)}"}
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("pushed"), auth_store=store)
+    rig.fakes.script_push()
+    c = TestClient(rig.app, client=ELSEWHERE)
+    asked = approval_id(c.post("/v1/airlie/chat/turn", json=body(), headers=as_pat))
+
+    r = c.post("/v1/airlie/chat/turn", json=answer(asked), headers=as_sam)
+
+    assert r.status_code == 404 and r.json() == {"error": "no such thread"}
+    assert rig.pushes() == 0
+    assert c.post("/v1/airlie/chat/turn", json=answer(asked), headers=as_pat).status_code == 200
+    assert rig.pushes() == 1
+
+
 def test_an_assistant_message_with_no_answer_is_still_422(tmp_path: Path) -> None:
     rig = Rig(tmp_path)
 
     r = rig.post({**answer("x"), "approvals": []})
 
     assert r.status_code == 422 and rig.up.calls == 0
+
+
+# --- POST threads pre-warms the VM of a repository chat -----------------------------------------------------
+
+
+async def pinnable_or() -> list[str]:
+    return ["O/R"]
+
+
+def made(c: TestClient, repo: str = "o/r") -> str:
+    r = c.post("/v1/airlie/chat/threads", json={"kind": "repository", "repo": repo})
+    assert r.status_code == 201
+    return str(r.json()["id"])
+
+
+def settle(c: TestClient) -> None:
+    """Wait for the pre-warms the app started in the background."""
+
+    async def done() -> None:
+        tasks = list(c.app.state.chat_prewarms)  # type: ignore[attr-defined]
+        for task in tasks:
+            await task
+
+    c.portal.call(done)  # type: ignore[union-attr]
+
+
+def test_a_new_repository_chat_starts_its_vm_in_the_background(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Text("hello"), pinnable=pinnable_or)
+    with TestClient(rig.app) as c:
+        chat = made(c)
+        settle(c)
+
+        assert rig.fakes.vm(chat).state == "running"
+        assert rig.fakes.mirror.refreshes == 1
+        r = c.post("/v1/airlie/chat/turn", json={**body(), "id": chat, "repo": None})
+        assert r.status_code == 200 and rig.fakes.mirror.refreshes == 1  # the turn found it ready
+
+
+def test_a_repository_airlie_does_not_know_is_not_pre_warmed(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, pinnable=pinnable_or)
+    with TestClient(rig.app) as c:
+        made(c, "x/y")
+        settle(c)
+
+        assert rig.fakes.boxes == {} and rig.fakes.mirror.refreshes == 0
+
+
+def test_a_person_has_at_most_two_pre_warmed_unused_vms(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, pinnable=pinnable_or)
+    with TestClient(rig.app) as c:
+        chats = [made(c) for _ in range(3)]
+        settle(c)
+
+        running = [chat for chat in chats if f"airlie-chat-{slug_of(chat)}" in rig.fakes.boxes]
+        assert running == chats[:2]  # the third starts with its first turn
+
+
+def test_a_pre_warm_that_fails_leaves_the_chat_and_its_first_turn_says_why(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, pinnable=pinnable_or)
+    rig.fakes.network_check = lambda network: (_ for _ in ()).throw(BoxUnavailable(SOFTNET_HINT))
+    with TestClient(rig.app) as c:
+        chat = made(c)
+        settle(c)
+
+        assert [t["id"] for t in c.get("/v1/airlie/chat/threads").json()] == [chat]
+        r = c.post("/v1/airlie/chat/turn", json={**body(), "id": chat, "repo": None})
+        assert r.status_code == 409 and r.json() == {"error": SOFTNET_HINT}

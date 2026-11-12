@@ -418,7 +418,7 @@ async def test_a_refusal_names_the_call_and_carries_what_was_asked_about(cfg: Ai
     refused = await hook(turn_ctx(), call)
 
     assert refused is not None and refused.kind == "denied"
-    assert refused.message == "refused: the person said no to this open_pr call"
+    assert refused.message == "denied by the person: open_pr did not run"
     assert refused.arguments == {"title": "t"}
 
 

@@ -510,6 +510,7 @@ def create_app(
     line_beat: LineFor | None = None,
     manager: Manager | None = None,
     repo_sessions: Callable[..., RepoSessions] | None = None,
+    pinnable: Callable[[], Awaitable[list[str]]] | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
@@ -524,7 +525,9 @@ def create_app(
     `manager` starts, holds and stops the engines (default: one over the config's mlx-vlm engines, inside
     the memory budget `memory.wired_limit_mb` less the OS reserve and `manager.margin_gb`).
     `repo_sessions` builds what runs repository chats in VMs, given `(cfg, manager, threads, confirmations)`
-    (default: Tart boxes, chat.repo_session.default_repo_sessions; tests give one over FakeBox)."""
+    (default: Tart boxes, chat.repo_session.default_repo_sessions; tests give one over FakeBox).
+    `pinnable` lists the repositories a person may pin and pre-warm (default: what `GET
+    /v1/airlie/repos/names` answers, read from the checkouts and the board's labels)."""
     app = FastAPI(title="airlie", version="0.1.0")
     started_commit = (
         build_commit()
@@ -880,6 +883,14 @@ def create_app(
     sweep_leftovers = _leftover_sweep(cfg, chat_threads) if repo_sessions is None else _no_sweep
     chat_threads.on_delete(repo_chats.delete)  # a chat's VM goes with it
     chat_busy = Busy()
+
+    async def repo_names_known() -> list[str]:
+        labels = [label for item in board.list() for label in item.labels]
+        return await asyncio.to_thread(repo_names, cfg, labels)
+
+    known_repos = pinnable or repo_names_known
+    chat_prewarms: set[asyncio.Task[None]] = set()
+    app.state.chat_prewarms = chat_prewarms  # the VMs new repository chats start in the background
     app.state.chat_busy = chat_busy  # `Server.shutdown` stops its turns before uvicorn waits for them
     app.include_router(
         chat_router(
@@ -900,9 +911,11 @@ def create_app(
             repo_sessions=repo_chats,
             confirmations=confirmations,
             publish=lambda topic, key: feed.publish(topic, key),
+            pinnable=known_repos,
+            background=chat_prewarms,
         )
     )
-    app.include_router(pins_router(store, lambda topic, key: feed.publish(topic, key)))
+    app.include_router(pins_router(store, lambda topic, key: feed.publish(topic, key), known_repos))
 
     @app.post("/v1/chat/completions")
     async def chat(body: dict[str, Any], request: Request) -> Any:
@@ -1460,8 +1473,7 @@ def create_app(
 
     @app.get("/v1/airlie/repos/names")
     async def repo_name_list() -> dict[str, Any]:
-        labels = [label for item in board.list() for label in item.labels]
-        return {"repos": await asyncio.to_thread(repo_names, cfg, labels)}
+        return {"repos": await known_repos()}
 
     @app.get("/v1/airlie/jobs/{job_id}")
     async def job_status(job_id: str, since: int = Query(0, ge=0), wait: float = 0.0) -> dict[str, Any]:

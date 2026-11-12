@@ -22,8 +22,17 @@ from tests.unit.serve_helpers import TestClient
 ELSEWHERE = ("10.0.0.5", 40000)
 
 
+KNOWN = ["weyenk/airlie", "o/r"] + [f"o/r{n}" for n in range(60)]
+"""The repositories a pin may name (GET /v1/airlie/repos/names, faked: the real one reads checkouts)."""
+
+
+async def known() -> list[str]:
+    return list(KNOWN)
+
+
 def client_for(tmp_path: Path, up: ScriptedUpstream | None = None, **kw: Any) -> TestClient:
     up = up or ScriptedUpstream()
+    kw.setdefault("pinnable", known)
     return TestClient(create_app(chat_cfg(tmp_path), transport=httpx.MockTransport(up), **kw))
 
 
@@ -34,7 +43,7 @@ def people(tmp_path: Path) -> tuple[TestClient, dict[str, str], dict[str, str]]:
     as_pat = {"Cookie": f"{SESSION_COOKIE}={store.make_session(pat.id, 30)}"}
     as_sam = {"Cookie": f"{SESSION_COOKIE}={store.make_session(sam.id, 30)}"}
     up = httpx.MockTransport(ScriptedUpstream())
-    app = create_app(chat_cfg(tmp_path), transport=up, auth_store=store)
+    app = create_app(chat_cfg(tmp_path), transport=up, auth_store=store, pinnable=known)
     return TestClient(app, client=ELSEWHERE), as_pat, as_sam
 
 
@@ -151,17 +160,18 @@ def test_get_threads_lists_only_the_callers_own_chats(tmp_path: Path) -> None:
 # --- the live feed's chat hint ------------------------------------------------------------------------------
 
 
-def test_making_running_and_deleting_a_chat_each_publish_its_chat_hint(tmp_path: Path) -> None:
+def test_making_running_and_deleting_a_chat_each_publish_a_chat_hint_with_no_id(tmp_path: Path) -> None:
+    """The feed goes to every signed-in client: the hint names no chat, and each refetches its own."""
     c = client_for(tmp_path, ScriptedUpstream(Text("hi")))
     seen = hints(c)
 
     made = c.post("/v1/airlie/chat/threads", json={"kind": "plain"}).json()["id"]
-    assert seen == [("chat", made)]
+    assert seen == [("chat", None)]
     c.post("/v1/airlie/chat/turn", json=turn(made))
-    assert seen[-1] == ("chat", made)
+    assert seen[-1] == ("chat", None)
     seen.clear()
     assert c.delete(f"/v1/airlie/chat/threads/{made}").status_code == 204
-    assert seen == [("chat", made)]
+    assert seen == [("chat", None)]
 
 
 # --- /v1/airlie/chat/pins -----------------------------------------------------------------------------------
@@ -190,11 +200,11 @@ def test_pins_are_each_persons_own(tmp_path: Path) -> None:
 
 def test_pins_outlast_a_restart_of_serve(tmp_path: Path) -> None:
     store = AuthStore(tmp_path / "auth.sqlite")
-    first = TestClient(create_app(chat_cfg(tmp_path), auth_store=store))
+    first = TestClient(create_app(chat_cfg(tmp_path), auth_store=store, pinnable=known))
     first.put("/v1/airlie/chat/pins/o/r")
 
     cfg = load_config(tmp_path / "airlie.yaml")  # chat_cfg writes its files once
-    again = TestClient(create_app(cfg, auth_store=AuthStore(tmp_path / "auth.sqlite")))
+    again = TestClient(create_app(cfg, auth_store=AuthStore(tmp_path / "auth.sqlite"), pinnable=known))
 
     assert again.get("/v1/airlie/chat/pins").json() == {"pins": ["o/r"]}
 
@@ -248,3 +258,36 @@ def test_pinning_and_unpinning_publish_the_chat_hint(tmp_path: Path) -> None:
     c.delete("/v1/airlie/chat/pins/o/r")
 
     assert seen == [("chat", None), ("chat", None)]
+
+
+def test_pinning_a_repository_airlie_does_not_know_is_422(tmp_path: Path) -> None:
+    c = client_for(tmp_path)
+
+    r = c.put("/v1/airlie/chat/pins/someone/else")
+
+    assert r.status_code == 422
+    assert r.json() == {"error": "someone/else is not a repository airlie knows (GET /v1/airlie/repos/names)"}
+    assert c.get("/v1/airlie/chat/pins").json() == {"pins": []}
+
+
+def test_a_person_pins_at_most_fifty_repositories(tmp_path: Path) -> None:
+    c = client_for(tmp_path)
+    for n in range(50):
+        assert c.put(f"/v1/airlie/chat/pins/o/r{n}").status_code == 204
+
+    over = c.put("/v1/airlie/chat/pins/o/r50")
+
+    assert over.status_code == 422 and over.json() == {
+        "error": "at most 50 pinned repositories: unpin one first"
+    }
+    assert c.put("/v1/airlie/chat/pins/o/r0").status_code == 204  # pinning one again is no new pin
+    assert len(c.get("/v1/airlie/chat/pins").json()["pins"]) == 50
+
+
+def test_a_path_trick_cannot_make_a_pin(tmp_path: Path) -> None:
+    c = client_for(tmp_path)
+
+    for path in ("a%2Fb/c", "o/%2E%2E", "../o/r"):
+        assert c.put(f"/v1/airlie/chat/pins/{path}").status_code in (404, 405, 422)
+
+    assert c.get("/v1/airlie/chat/pins").json() == {"pins": []}
