@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import anyio
 import pytest
 
 from airlie.auth.principal import Principal
@@ -15,7 +16,7 @@ from airlie.chat.hooks import Hooks, ToolEvent, TurnContext, TurnSummary
 from airlie.chat.stream import DONE
 from airlie.chat.threads import StoredMessage, ThreadStore
 from airlie.chat.tools import TodoList, TodoTool
-from airlie.chat.turn import TurnRequest, history_messages, run_turn
+from airlie.chat.turn import TurnHandle, TurnRequest, history_messages, run_turn
 from airlie.config import AirlieConfig, load_config
 from airlie.config.schema import RoleSpec
 from airlie.engine.types import (
@@ -128,8 +129,13 @@ class Echo:
 
     def __init__(self) -> None:
         self.ran: list[dict[str, Any]] = []
+        self.block: asyncio.Event | None = None  # when set, a run waits on it (never released: a hung tool)
+        self.started = asyncio.Event()
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        self.started.set()
+        if self.block is not None:
+            await self.block.wait()
         self.ran.append(args)
         return ToolResult(True, f"echoed {args['word']}")
 
@@ -170,7 +176,7 @@ class Rig:
             return []
         return self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
 
-    def turn(self, user_text: str = "hello") -> AsyncIterator[str]:
+    def turn(self, user_text: str = "hello", handle: TurnHandle | None = None) -> AsyncIterator[str]:
         user = StoredMessage("u-1", "user", [{"type": "text", "text": user_text}], 1.0)
         ctx = TurnContext("t1", "u1", "plain", USER, system_prompt="SYSTEM")
         return run_turn(
@@ -186,6 +192,7 @@ class Rig:
             max_steps=self.max_steps,
             clock=self.clock,
             status=self.status,
+            handle=handle,
         )
 
     def saved(self) -> list[StoredMessage]:
@@ -507,23 +514,33 @@ async def test_a_hold_that_fails_is_an_engine_error_chunk(tmp_path: Path, role: 
     assert rig.engine.requests == []
 
 
-async def test_cancelling_the_stream_cancels_generation_releases_the_hold_and_saves_the_partial(
+class Reader:
+    """Drains a turn's stream in a task of its own and says when `n` chunks have come."""
+
+    def __init__(self, stream: AsyncIterator[str], n: int) -> None:
+        self.got: list[str] = []
+        self.reached = asyncio.Event()
+        self._n = n
+        self._stream = stream
+
+    async def run(self) -> None:
+        async for e in self._stream:
+            self.got.append(e)
+            if len(self.got) >= self._n:
+                self.reached.set()
+
+
+async def test_stop_cancels_generation_releases_the_hold_and_saves_the_partial(
     tmp_path: Path, role: RoleSpec
 ) -> None:
-    gate = asyncio.Event()  # never set: the generation hangs after its first tokens
-    rig = Rig(tmp_path, role, [Step(tokens=words("so|far"), gate=gate)])
-    got: list[str] = []
+    rig = Rig(tmp_path, role, [Step(tokens=words("so|far"), gate=asyncio.Event())])  # hangs after its tokens
+    handle = TurnHandle()
+    reader = Reader(rig.turn(handle=handle), 5)
+    task = asyncio.create_task(reader.run())
+    await reader.reached.wait()
 
-    async def consume() -> None:
-        async for e in rig.turn():
-            got.append(e)
-
-    task = asyncio.create_task(consume())
-    while len(got) < 4:
-        await asyncio.sleep(0)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    handle.stop()
+    await task
 
     assert rig.engine.cancelled == [rig.engine.requests[0].request_id]
     assert rig.holder.events == [("hold", "chat-engine", "chat:t1"), ("release", "chat-engine", "chat:t1")]
@@ -531,33 +548,117 @@ async def test_cancelling_the_stream_cancels_generation_releases_the_hold_and_sa
     assert user.parts == [{"type": "text", "text": "hello"}]
     assert assistant.parts == [{"type": "text", "text": "sofar"}]
     assert assistant.interrupted
+    assert [c["type"] for c in parse(reader.got)][-3:] == ["text-end", "finish-step", "finish"]
+    assert reader.got[-1] == DONE
 
 
-async def test_on_finish_gets_the_final_text_and_an_interrupted_flag_on_cancel(
+async def test_on_finish_gets_the_final_text_and_an_interrupted_flag_on_stop(
     tmp_path: Path, role: RoleSpec
 ) -> None:
     rig = Rig(tmp_path, role, [Step(tokens=words("so|far"), gate=asyncio.Event())])
-    got: list[str] = []
+    handle = TurnHandle()
+    reader = Reader(rig.turn(handle=handle), 5)
+    task = asyncio.create_task(reader.run())
+    await reader.reached.wait()
 
-    async def consume() -> None:
-        async for e in rig.turn():
-            got.append(e)
-
-    task = asyncio.create_task(consume())
-    while len(got) < 5:
-        await asyncio.sleep(0)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    handle.stop()
+    await task
 
     [summary] = rig.finished
     assert (summary.text, summary.interrupted, summary.failed, summary.disconnected) == (
         "sofar",
         True,
         False,
-        True,
+        False,
     )
     assert (summary.thread_id, summary.owner, summary.kind, summary.title) == ("t1", "u1", "plain", "hello")
+
+
+async def test_a_stop_before_the_turn_begins_saves_the_message_interrupted(
+    tmp_path: Path, role: RoleSpec
+) -> None:
+    rig = Rig(tmp_path, role, [])
+    handle = TurnHandle()
+    handle.stop()
+
+    events = await collect(rig.turn(handle=handle))
+
+    assert events[-1] == DONE
+    assert [m.role for m in rig.saved()] == ["user"]
+    assert rig.finished[0].interrupted
+    assert rig.engine.requests == []
+
+
+async def test_a_stop_during_a_tool_keeps_the_call_with_an_error_result(
+    tmp_path: Path, role: RoleSpec
+) -> None:
+    rig = Rig(tmp_path, role, [Step(reply(calls=[call("echo", {"word": "slow"})]))])
+    rig.echo.block = asyncio.Event()
+    handle = TurnHandle()
+    reader = Reader(
+        rig.turn(handle=handle), 7
+    )  # start, start-step, tool-input-start/available ... the tool runs
+    task = asyncio.create_task(reader.run())
+    await rig.echo.started.wait()
+
+    handle.stop()
+    await task
+
+    assistant = rig.saved()[1]
+    assert assistant.interrupted
+    assert assistant.parts[0]["state"] == "output-error"
+    assert assistant.parts[0]["input"] == {"word": "slow"}
+    assert "stopped" in assistant.parts[0]["errorText"]
+    assert [m.role for m in history_messages(rig.saved())] == ["user", "assistant", "tool"]
+
+
+async def test_an_anyio_cancel_scope_on_the_client_is_a_disconnect_not_a_stop(
+    tmp_path: Path, role: RoleSpec
+) -> None:
+    """Starlette cancels the response task with an anyio scope when the client drops."""
+    gate = asyncio.Event()
+    rig = Rig(tmp_path, role, [Step(reply("the whole answer"), words("the |whole |answer"), gate=gate)])
+    reader = Reader(rig.turn(), 4)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(reader.run)
+        await reader.reached.wait()
+        gate.set()
+        tg.cancel_scope.cancel()
+
+    [summary] = rig.finished  # the stream's task is only done once the turn is
+    assert (summary.text, summary.interrupted, summary.failed, summary.disconnected) == (
+        "the whole answer",
+        False,
+        False,
+        True,
+    )
+    assert rig.engine.cancelled == []
+    assert rig.saved()[1].parts == [{"type": "text", "text": "the whole answer"}]
+    assert rig.holder.events[-1] == ("release", "chat-engine", "chat:t1")
+
+
+async def test_a_failure_that_is_not_an_engine_error_is_an_error_chunk_and_finish(
+    tmp_path: Path, role: RoleSpec
+) -> None:
+    items = [{"id": "1", "text": "plan", "status": "pending"}]
+    steps = [Step(reply(calls=[call("todo", {"items": items})]))]
+    rig = Rig(tmp_path, role, steps)
+
+    def broken(thread_id: str, todos: list[dict[str, Any]]) -> None:
+        raise RuntimeError("disk full")
+
+    rig.store.set_todos = broken  # type: ignore[method-assign]
+
+    events = await collect(rig.turn())
+
+    chunks = parse(events)
+    assert [c["type"] for c in chunks][-3:] == ["error", "finish-step", "finish"]
+    assert next(c for c in chunks if c["type"] == "error")["errorText"] == "RuntimeError: disk full"
+    assert events[-1] == DONE
+    assert rig.holder.events[-1] == ("release", "chat-engine", "chat:t1")
+    assert rig.finished[0].failed
+    assert [m.role for m in rig.saved()] == ["user", "assistant"]
 
 
 async def test_a_client_that_goes_away_does_not_stop_the_turn(tmp_path: Path, role: RoleSpec) -> None:

@@ -81,9 +81,11 @@ class Fail:
 
 @dataclass(frozen=True)
 class Hang:
-    """One text chunk, then nothing until the request is cancelled."""
+    """One text chunk, then nothing until the request is cancelled; or, with `then`, until it is set, after
+    which the reply ends with " done"."""
 
     text: str = "hi"
+    then: asyncio.Event | None = None
 
 
 def frame(delta: dict[str, Any], finish: str | None = None) -> bytes:
@@ -91,13 +93,22 @@ def frame(delta: dict[str, Any], finish: str | None = None) -> bytes:
     return b"data: " + json.dumps({"choices": [choice]}).encode() + b"\n\n"
 
 
+USAGE_FRAME = b'data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}\n\ndata: [DONE]\n\n'
+
+
 class HangStream(httpx.AsyncByteStream):
-    def __init__(self, first: bytes) -> None:
+    def __init__(self, first: bytes, then: asyncio.Event | None = None) -> None:
         self.first = first
+        self.then = then
 
     async def __aiter__(self) -> AsyncIterator[bytes]:
         yield self.first
-        await asyncio.Event().wait()
+        if self.then is None:
+            await asyncio.Event().wait()
+            return
+        await self.then.wait()
+        yield frame({"content": " done"}) + frame({}, "stop")
+        yield USAGE_FRAME
 
 
 class ScriptedUpstream:
@@ -122,8 +133,8 @@ class ScriptedUpstream:
         match reply:
             case Fail(status):
                 return httpx.Response(status, json={"error": "scripted failure"})
-            case Hang(text):
-                return httpx.Response(200, stream=HangStream(frame({"content": text})), headers=sse)
+            case Hang(text, then):
+                return httpx.Response(200, stream=HangStream(frame({"content": text}), then), headers=sse)
             case Call(name, args):
                 call = {"index": 0, "id": f"call_{self.calls}", "type": "function"}
                 call["function"] = {"name": name, "arguments": json.dumps(args)}

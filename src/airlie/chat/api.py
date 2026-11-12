@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+import anyio
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -25,7 +27,7 @@ from airlie.chat.stream import DONE, STREAM_HEADERS, sse
 from airlie.chat.superpowers import SuperpowersLibrary
 from airlie.chat.threads import StoredMessage, Thread, ThreadNotFound, ThreadStore
 from airlie.chat.tools import TodoList
-from airlie.chat.turn import TurnRequest, run_turn
+from airlie.chat.turn import TurnHandle, TurnRequest, run_turn
 from airlie.config import AirlieConfig
 from airlie.engine.protocol import Engine
 from airlie.engine.types import ContentPart
@@ -52,8 +54,32 @@ class UIMessage(BaseModel):
     parts: list[dict[str, Any]] = Field(default_factory=list)
 
 
+UPLOAD_URL = re.compile(r"^(?:/v1/airlie/uploads/|https?://[^/?#]+/v1/airlie/uploads/)([0-9a-f]{32})$")
+"""The url of an upload as a client gives it back: the AI SDK's `file` part carries the url it was handed."""
+
+
+def file_part_upload(part: dict[str, Any]) -> dict[str, Any] | None:
+    """An AI SDK `file` part naming one of airlie's uploads as the `airlie_upload` part it stands for; None
+    for any other url (a remote address or a data URL is not something the server will fetch or trust)."""
+    found = UPLOAD_URL.match(str(part.get("url") or ""))
+    if found is None:
+        return None
+    out: dict[str, Any] = {"type": "airlie_upload", "upload": found.group(1)}
+    if part.get("filename"):
+        out["name"] = str(part["filename"])
+    return out
+
+
 def kept_parts(message: UIMessage) -> list[dict[str, Any]]:
-    return [p for p in message.parts if p.get("type") in STORED_PART_TYPES]
+    out: list[dict[str, Any]] = []
+    for p in message.parts:
+        if p.get("type") == "file":
+            converted = file_part_upload(p)
+            if converted is not None:
+                out.append(converted)
+        elif p.get("type") in STORED_PART_TYPES:
+            out.append(p)
+    return out
 
 
 def last_user(messages: list[UIMessage]) -> UIMessage | None:
@@ -78,8 +104,12 @@ class TurnBody(BaseModel):
     @field_validator("messages")
     @classmethod
     def _a_user_message(cls, messages: list[UIMessage]) -> list[UIMessage]:
-        if last_user(messages) is None:
+        newest = last_user(messages)
+        if newest is None:
             raise ValueError("messages needs a user message with text or an attachment")
+        for p in newest.parts:
+            if p.get("type") == "file" and file_part_upload(p) is None:
+                raise ValueError("a file part must be one of airlie's uploads (/v1/airlie/uploads/<id>)")
         return messages
 
 
@@ -112,11 +142,9 @@ def error(message: str, status: int) -> JSONResponse:
 
 @dataclass
 class Running:
-    """One turn in flight: the task its body runs in (set when the body starts) and an event set once the
-    turn's cleanup has run."""
+    """One turn in flight: the handle that stops it and an event set once the turn's cleanup has run."""
 
-    task: asyncio.Task[Any] | None = None
-    stopped: bool = False
+    handle: TurnHandle = field(default_factory=TurnHandle)
     done: asyncio.Event = field(default_factory=asyncio.Event)
 
 
@@ -283,10 +311,7 @@ def chat_router(
 
         async def stream() -> AsyncIterator[str]:
             started[0] = True
-            turn.task = asyncio.current_task()
             try:
-                if turn.stopped:  # a Stop that came before the body began
-                    raise asyncio.CancelledError
                 async for chunk in run_turn(
                     TurnRequest(thread, stored, ctx, user_parts),
                     engine=engine,
@@ -300,6 +325,7 @@ def chat_router(
                     max_steps=cfg.chat.max_steps,
                     clock=clock,
                     status=manager.status,
+                    handle=turn.handle,
                 ):
                     yield chunk
             except Exception as e:  # after the first byte a failure is a chunk, not a status
@@ -307,7 +333,10 @@ def chat_router(
                 yield sse({"type": "error", "errorText": f"{type(e).__name__}: {e}"})
                 yield DONE
             finally:
-                await cleanup()
+                with anyio.CancelScope(
+                    shield=True
+                ):  # also when the response was cancelled as the client left
+                    await cleanup()
 
         return TurnStream(stream(), cleanup, started, media_type="text/event-stream", headers=STREAM_HEADERS)
 
@@ -351,9 +380,7 @@ def chat_router(
             return error("no such thread", 404)
         turn = busy.get(thread_id)
         if turn is not None:
-            turn.stopped = True
-            if turn.task is not None:
-                turn.task.cancel()
+            turn.handle.stop()
             with suppress(TimeoutError):  # a turn whose body never began is freed by its response
                 await asyncio.wait_for(turn.done.wait(), STOP_WAIT_S)
         return Response(status_code=204)

@@ -283,6 +283,32 @@ def test_a_text_attachment_reaches_the_model_and_is_kept_with_the_message(tmp_pa
     ]  # the reference, not the bytes
 
 
+def test_an_ai_sdk_file_part_with_an_upload_url_is_an_attachment(tmp_path: Path) -> None:
+    c, up = client_for(tmp_path)
+    up_id = c.post("/v1/airlie/uploads?name=notes.txt", content=b"the secret word is plover").json()["id"]
+    file_part = {
+        "type": "file",
+        "mediaType": "text/plain",
+        "url": f"/v1/airlie/uploads/{up_id}",
+        "filename": "notes.txt",
+    }
+    msg = {"id": "u1", "role": "user", "parts": [{"type": "text", "text": "read this"}, file_part]}
+    assert post(c, {**turn_body(), "messages": [msg]}).status_code == 200
+    assert "the secret word is plover" in json.dumps(up.bodies[0]["messages"][-1]["content"])
+    stored = c.get("/v1/airlie/chat/threads/t1").json()["messages"][0]
+    assert stored["parts"][1] == {"type": "airlie_upload", "upload": up_id, "name": "notes.txt"}
+
+
+@pytest.mark.parametrize(
+    "url", ["https://evil.example/x.png", "data:text/plain;base64,aGk=", "/v1/airlie/uploads/not-an-id"]
+)
+def test_a_file_part_that_is_not_an_airlie_upload_is_422(tmp_path: Path, url: str) -> None:
+    c, up = client_for(tmp_path)
+    msg = {"role": "user", "parts": [{"type": "text", "text": "hi"}, {"type": "file", "url": url}]}
+    assert post(c, {**turn_body(), "messages": [msg]}).status_code == 422
+    assert up.calls == 0
+
+
 def test_a_picture_is_sent_as_an_image_part_and_stays_in_the_history_of_the_next_turn(tmp_path: Path) -> None:
     cfg = chat_cfg(tmp_path)
     cfg.roles["chat"].vision = True
@@ -394,6 +420,17 @@ class ASGIClient:
     def disconnect(self) -> None:
         self.inbox.put_nowait({"type": "http.disconnect"})
 
+    def drain(self) -> None:
+        """Take in everything the app has sent since."""
+        while not self.sent.empty():
+            self.body += self.sent.get_nowait().get("body", b"")
+
+
+async def let_the_loop_run(turns: int = 20) -> None:
+    """Give every task that is ready its turn, as many times as `turns`: what the app does with a message
+    just handed to it (a disconnect) is done by the time this returns."""
+    await asyncio.gather(*(asyncio.sleep(0) for _ in range(turns)))
+
 
 def status(manager: Manager) -> Any:
     return manager.status()[0]
@@ -412,11 +449,8 @@ async def test_a_second_turn_on_a_busy_thread_is_409(tmp_path: Path) -> None:
         assert (await c.delete("/v1/airlie/chat/threads/t1")).status_code == 409  # not while it runs
         other = await c.post("/v1/airlie/chat/turn", json={**turn_body(), "id": "t2"})
         assert other.status_code == 200  # a different thread is free
-    first.disconnect()
-    await asyncio.wait_for(first.task, 5)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app, client=LOOPBACK), base_url="http://t"
-    ) as c:
+        await c.post("/v1/airlie/chat/threads/t1/stop")
+        await asyncio.wait_for(first.task, 5)
         assert (await c.post("/v1/airlie/chat/turn", json=turn_body("after"))).status_code == 200  # released
 
 
@@ -429,8 +463,10 @@ async def test_stop_cancels_the_turn_in_progress_and_saves_the_partial(tmp_path:
         transport=httpx.ASGITransport(app, client=LOOPBACK), base_url="http://t"
     ) as c:
         assert (await c.post("/v1/airlie/chat/threads/t1/stop")).status_code == 204
-        with contextlib.suppress(asyncio.CancelledError):  # for now Stop cancels the body task
-            await asyncio.wait_for(turn.task, 5)
+        await asyncio.wait_for(turn.task, 5)  # the stream ends by itself
+        turn.drain()
+        assert turn.body.rstrip().endswith(b"data: [DONE]")
+        assert b'"type":"finish"' in turn.body
         t = (await c.get("/v1/airlie/chat/threads/t1")).json()
         assistant = t["messages"][1]
         assert assistant["interrupted"] is True and assistant["parts"] == [
@@ -456,24 +492,36 @@ async def test_stop_with_no_turn_running_is_204_and_another_persons_thread_is_40
         assert (await c.post("/v1/airlie/chat/threads/t1/stop")).status_code == 401
 
 
-async def test_a_disconnect_cancels_generation_releases_the_hold_and_saves_the_partial(
-    tmp_path: Path,
-) -> None:
+async def test_a_disconnect_lets_the_turn_finish_save_and_free_the_thread(tmp_path: Path) -> None:
     manager, _ = managed(tmp_path)
-    app = app_for(tmp_path, ScriptedUpstream(Hang("partial")), manager=manager)
+    finished: list[Any] = []
+
+    async def on_finish(summary: Any) -> None:
+        finished.append(summary)
+
+    release = asyncio.Event()
+    app = app_for(tmp_path, ScriptedUpstream(Hang("partial", then=release)), manager=manager)
+    app.state.chat_hooks.on("on_finish", on_finish)
     turn = ASGIClient(app, "/v1/airlie/chat/turn", turn_body())
     await turn.until(b"partial")
     assert status(manager).holders == ("chat:t1",)
     turn.disconnect()  # the client's connection drops: an `http.disconnect`, not a closed generator
+    await let_the_loop_run()
+    release.set()
     with contextlib.suppress(asyncio.CancelledError):
         await asyncio.wait_for(turn.task, 5)
     assert status(manager).holders == ()
+    [summary] = finished
+    assert (summary.disconnected, summary.interrupted, summary.failed) == (True, False, False)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app, client=LOOPBACK), base_url="http://t"
     ) as c:
         t = (await c.get("/v1/airlie/chat/threads/t1")).json()
         assert [m["role"] for m in t["messages"]] == ["user", "assistant"]
-        assert t["messages"][1]["interrupted"] is True and t["messages"][1]["parts"][0]["text"] == "partial"
+        assert (
+            t["messages"][1]["interrupted"] is False
+            and t["messages"][1]["parts"][0]["text"] == "partial done"
+        )
         assert (
             await c.post("/v1/airlie/chat/turn", json=turn_body("again"))
         ).status_code == 200  # thread freed

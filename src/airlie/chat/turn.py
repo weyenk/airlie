@@ -19,6 +19,8 @@ from contextlib import AsyncExitStack, suppress
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
+import anyio
+
 from airlie.chat.hooks import Hooks, ToolEvent, TurnContext, TurnSummary
 from airlie.chat.stream import StreamWriter
 from airlie.chat.threads import StoredMessage, Thread, ThreadStore
@@ -37,7 +39,22 @@ log = logging.getLogger("airlie.chat.turn")
 
 STATUS_EVERY_S = 1.0
 INTERRUPTED_RESULT = "error: the turn ended before this call ran"
+STOPPED_RESULT = "error: the turn was stopped before this call finished"
 TOOL_PREFIX = "tool-"
+
+
+class TurnHandle:
+    """The way to Stop a turn: a client going away does not stop it, only this does. Made before the turn
+    starts; `stop()` may come at any time, also before the stream's first chunk."""
+
+    def __init__(self) -> None:
+        self.stopped = False
+        self._driver: asyncio.Task[None] | None = None
+
+    def stop(self) -> None:
+        self.stopped = True
+        if self._driver is not None:
+            self._driver.cancel()
 
 
 @dataclass
@@ -130,13 +147,16 @@ class _Run:
     step_text: str = ""
     usage: dict[str, Any] | None = None
     completion_tokens: int = 0
-    in_flight: str | None = None  # request id of the generation running
+    handle: TurnHandle | None = None
     w: StreamWriter = field(init=False)
 
     def __post_init__(self) -> None:
         self.w = StreamWriter(self.message_id)
 
     def emit(self, chunks: list[str]) -> None:
+        """Queue chunks for the client. The queue is unbounded on purpose: the turn is bounded (max_steps
+        replies of at most max_tokens) and the chunks are small, so a slow reader costs a little memory and
+        never holds the engine; once the client is gone nothing is queued."""
         if not self.gone:
             for c in chunks:
                 self.out.put_nowait(c)
@@ -206,7 +226,6 @@ class _Run:
     async def generate(self, gen_req: GenRequest) -> GenResult:
         """Run one generation, relaying its tokens as they arrive."""
         tokens: asyncio.Queue[TokenEvent | None] = asyncio.Queue()
-        self.in_flight = gen_req.request_id
         self.step_text = ""
         streamed = {"text": False, "reasoning": False}
         task = asyncio.create_task(self.engine.generate(gen_req, tokens.put_nowait))
@@ -230,7 +249,6 @@ class _Run:
                     await self.engine.cancel(gen_req.request_id)
                 except Exception:
                     log.exception("cancelling generation %s failed", gen_req.request_id)
-            self.in_flight = None
 
     def relay(self, ev: TokenEvent) -> None:
         if ev.reasoning:
@@ -255,20 +273,26 @@ class _Run:
         except ValueError:
             parsed = False
         self.close_part()
-        if parsed:
-            self.emit(self.w.tool_call(call.id, call.name, history_arguments(call.arguments)))
-        result = await self.registry.call(call)  # never runs a call whose arguments do not parse
         part: dict[str, Any] = {"type": f"{TOOL_PREFIX}{call.name}", "toolCallId": call.id}
         if parsed:
             part["input"] = json.loads(history_arguments(call.arguments))
+            self.emit(self.w.tool_call(call.id, call.name, history_arguments(call.arguments)))
+        else:
+            part["rawInput"] = call.arguments
+        try:
+            result = await self.registry.call(call)  # never runs a call whose arguments do not parse
+        except asyncio.CancelledError:  # stopped mid-call: history keeps the call the client saw
+            part.update(state="output-error", errorText=STOPPED_RESULT)
+            self.parts.append(part)
+            raise
+        if parsed:
             self.emit(self.w.tool_result(call.id, result.output, result.ok))
-            if result.ok:
-                part.update(state="output-available", output=result.output)
-            else:
-                part.update(state="output-error", errorText=result.output)
         else:
             self.emit(self.w.tool_input_error(call.id, call.name, call.arguments, result.output))
-            part.update(state="output-error", rawInput=call.arguments, errorText=result.output)
+        if result.ok:
+            part.update(state="output-available", output=result.output)
+        else:
+            part.update(state="output-error", errorText=result.output)
         self.parts.append(part)
         await self.hooks.run(
             "after_tool",
@@ -326,6 +350,8 @@ class _Run:
         interrupted = failed = False
         stack = AsyncExitStack()
         try:
+            if self.handle is not None and self.handle.stopped:  # a Stop that came before the turn began
+                raise asyncio.CancelledError
             self.emit(self.w.start())
             await self.enter_hold(stack)
             await self.loop()
@@ -334,12 +360,14 @@ class _Run:
             failed = True
             self.emit(self.w.error(str(e)))
             self.emit(self.w.finish(self.finish_usage()))
-        except asyncio.CancelledError:
+        except asyncio.CancelledError:  # Stop (or the loop shutting down): the client still gets an ending
             interrupted = True
-            raise
-        except BaseException:
+            self.emit(self.w.finish(self.finish_usage()))
+        except Exception as e:  # a bug or a failed save is a chunk, not a stream that just stops
+            log.exception("chat turn %s failed", self.req.thread.id)
             failed = True
-            raise
+            self.emit(self.w.error(f"{type(e).__name__}: {e}"))
+            self.emit(self.w.finish(self.finish_usage()))
         finally:
             try:
                 await self.persist(interrupted=interrupted, failed=failed)
@@ -393,6 +421,7 @@ async def run_turn(
     max_steps: int,
     clock: Clock,
     status: Callable[[], list[Status]],
+    handle: TurnHandle | None = None,
 ) -> AsyncIterator[str]:
     """The turn's SSE strings. `req.ctx` is already prepared (the route ran `session_start` and `before_turn`
     first, so a refusal is an HTTP error before the first byte)."""
@@ -400,21 +429,23 @@ async def run_turn(
     run = _Run(
         req, engine, engine_name, holder, registry, todos, store, hooks, role, max_steps, clock, status, out
     )
+    run.handle = handle
     driver = asyncio.create_task(run.drive())
+    if handle is not None:
+        handle._driver = driver
     try:
         while (chunk := await out.get()) is not None:
             yield chunk
         await driver
-    except GeneratorExit:
-        run.gone = True  # the client is gone: the turn still finishes and is saved
-        try:
-            await driver
-        except Exception:
-            log.exception("chat turn %s failed after the client went away", req.thread.id)
-        raise
-    except asyncio.CancelledError:
+    except (GeneratorExit, asyncio.CancelledError):
+        # The client is gone (a closed generator, or the server cancelling the response as the connection
+        # drops). The turn is not: it finishes and is saved, and `on_finish` hears `disconnected`. Only
+        # `handle.stop()` cancels it. The wait is shielded so that the caller's cleanup (releasing the
+        # thread, stopping the engine client) comes after the turn, not under it.
         run.gone = True
-        driver.cancel()
-        with suppress(asyncio.CancelledError, Exception):
-            await driver
+        with anyio.CancelScope(shield=True):
+            try:
+                await driver
+            except (asyncio.CancelledError, Exception):
+                log.exception("chat turn %s ended badly after the client went away", req.thread.id)
         raise
