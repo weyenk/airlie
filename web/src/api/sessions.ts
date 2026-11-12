@@ -103,9 +103,10 @@ export function stopSession(id: string): Promise<void> {
   return request<void>(`${THREADS}/${encodeURIComponent(id)}/stop`, { method: "POST" });
 }
 
-/** Keep the job a story card started on the card's message (a reload shows it started); answers the saved part. */
-export function saveStoryJob(id: string, story: string, job: StartedJob): Promise<JobPart> {
-  return request<JobPart>(`${THREADS}/${encodeURIComponent(id)}/stories/${encodeURIComponent(story)}/job`, { method: "POST", body: job });
+/** Start the story of a story card on the board, once (the server claims the card first: a second start is 409); answers
+ * the job part it kept on the card's message, so a reload shows it started. */
+export function startStoryCard(id: string, story: string, body: { text: string; repo: string }): Promise<JobPart> {
+  return request<JobPart>(`${THREADS}/${encodeURIComponent(id)}/stories/${encodeURIComponent(story)}/start`, { method: "POST", body });
 }
 
 export async function listPins(): Promise<string[]> {

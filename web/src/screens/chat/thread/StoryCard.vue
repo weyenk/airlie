@@ -1,18 +1,16 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { ApiError } from "@/api";
-import { saveStoryJob } from "@/api/sessions";
-import type { StartedJob } from "@/api/sessions";
-import { startStory } from "@/api/workflows";
+import { startStoryCard } from "@/api/sessions";
 import Typeahead from "@/components/Typeahead.vue";
 import { useRepoNames } from "@/composables/useRepoNames";
 import { cleanRepo, isRepo, REPO_RULE } from "@/screens/board/repo";
 import { useTurns } from "@/stores/turns";
-import JobCard from "../JobCard.vue";
 
 /**
- * A /story reply (its `data-story` part) as the request to edit and Start story on a repository. The started job is
- * kept on the message (`data-job`), so the thread shows the job card from then on, also after a reload.
+ * A /story reply (its `data-story` part) as the request to edit and Start story on a repository. The chat starts it on
+ * the board, once for this card, and keeps the job on the message (`data-job`), so the thread shows the job card from
+ * then on, also after a reload.
  */
 const REPO = "airlie.repo";
 const props = defineProps<{ sessionId: string; messageId: string; storyId: string; text: string }>();
@@ -37,8 +35,6 @@ const first = turns.rowOf(props.sessionId)?.repo ?? remembered();
 const repo = ref(first);
 const error = ref("");
 const busy = ref(false);
-/** Started, but the chat could not keep it: shown here, since the message has no job part. */
-const unkept = ref<StartedJob | null>(null);
 
 async function start(): Promise<void> {
   if (busy.value) return;
@@ -59,7 +55,7 @@ async function start(): Promise<void> {
   }
   busy.value = true;
   try {
-    const out = await startStory({ text: body, repo: chosen });
+    const part = await startStoryCard(props.sessionId, props.storyId, { text: body, repo: chosen });
     if (chosen !== first) {
       try {
         localStorage.setItem(REPO, chosen); // remembered only when the person chose it
@@ -67,13 +63,7 @@ async function start(): Promise<void> {
         // this page only
       }
     }
-    const job: StartedJob = { job_id: out.job_id, kind: out.kind, label: `${chosen.split("/").pop()} · story` };
-    try {
-      turns.addPart(props.sessionId, props.messageId, await saveStoryJob(props.sessionId, props.storyId, job));
-    } catch (e) {
-      unkept.value = job;
-      error.value = `The story started, but this chat could not keep it: ${e instanceof Error ? e.message : String(e)}`;
-    }
+    turns.addPart(props.sessionId, props.messageId, part);
   } catch (e) {
     error.value = e instanceof ApiError && e.status === 401 ? "Sign in again, then start the story." : e instanceof Error ? e.message : String(e);
   } finally {
@@ -83,11 +73,7 @@ async function start(): Promise<void> {
 </script>
 
 <template>
-  <div v-if="unkept" class="flex flex-col gap-1.5">
-    <JobCard :job="unkept" />
-    <span role="alert" class="text-[13px] text-danger-foreground">{{ error }}</span>
-  </div>
-  <div v-else data-story-card class="w-[560px] max-w-full min-w-0 rounded-xl border border-border bg-card">
+  <div data-story-card class="w-[560px] max-w-full min-w-0 rounded-xl border border-border bg-card">
     <div class="flex items-center gap-2 border-b border-border px-3.5 py-3">
       <span class="inline-flex items-center rounded-md bg-chip px-2 py-0.5 text-xs font-bold text-chip-foreground">story request</span>
       <span class="text-xs text-muted-foreground">ready to edit</span>

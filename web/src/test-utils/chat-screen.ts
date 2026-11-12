@@ -60,7 +60,6 @@ export function screenServer(init: Partial<ScreenServer> = {}): ScreenServer {
       }
       if (url === "/v1/airlie/chat/pins") return Response.json({ pins: server.pins });
       if (url === "/v1/airlie/repos/names") return Response.json({ repos: server.repos });
-      if (url === "/v1/airlie/stories" && method === "POST") return Response.json({ job_id: "story-AIR-38", kind: "story" });
       if (url.startsWith(`${prefix}/`)) {
         const rest = url.slice(prefix.length + 1);
         const [id, tail] = rest.split("/");
@@ -69,9 +68,10 @@ export function screenServer(init: Partial<ScreenServer> = {}): ScreenServer {
         if (tail === "status") return Response.json(server.status);
         if (tail === "stop") return new Response(null, { status: 204 });
         if (tail === "stories" && method === "POST") {
-          // a story card's started job, kept on the message whose `data-story` part it names
+          // Start story: the chat starts it and keeps the job on the message whose `data-story` part it names
           const story = decodeURIComponent(rest.split("/")[2]);
-          const part = { type: "data-job", id: `${story}-job`, data: { story, ...raw } };
+          const label = `${String(raw.repo).split("/").pop()} · story`;
+          const part = { type: "data-job", id: `${story}-job`, data: { story, job_id: "story-AIR-38", kind: "story", label } };
           const held = (server.messages[row.id] ?? []).find((m) => m.parts.some((p) => p.type === "data-story" && p.id === story));
           if (!held) return Response.json({ error: "no such story in this chat" }, { status: 404 });
           held.parts.push(part);

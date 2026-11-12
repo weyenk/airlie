@@ -57,12 +57,28 @@ test("approve and deny are buttons that send the answer", async () => {
   expect(denied.server.calls.find((c) => c.url === "/v1/airlie/chat/turn")?.body).toMatchObject({ approvals: [{ id: "ap1", approved: false }] });
 });
 
-test("both buttons are disabled after one is pressed", async () => {
+test("once one is pressed the prompt reads the answer and offers no second one", async () => {
   const { w, server } = await show();
   server.turn = () => new Promise<Response>(() => {});
   await button(w, "Approve").trigger("click");
-  expect(button(w, "Approve").attributes("disabled")).toBeDefined();
-  expect(button(w, "Deny").attributes("disabled")).toBeDefined();
+  expect(w.findAll("button")).toHaveLength(0);
+  expect(w.get("[role=status]").text()).toBe("Approved");
+});
+
+test("a build_image prompt reads Approved while its own approved reply streams", async () => {
+  const BUILD: ApprovalData = { id: "ap3", tool: "build_image", arguments: { key: "node-22" } };
+  const { w, server } = await show(BUILD);
+  const stream = openStream();
+  server.turn = () => stream.response;
+  await button(w, "Approve").trigger("click");
+  stream.push({ type: "start", messageId: "a1" }, { type: "start-step" }, ...textChunks("t1", "Building"));
+  await flushPromises();
+  expect(w.text()).not.toContain("Answer when the reply ends");
+  expect(w.get("[role=status]").text()).toBe("Approved");
+  stream.push({ type: "finish-step" }, { type: "finish", messageMetadata: {} });
+  stream.end();
+  await flushPromises();
+  expect(w.get("[role=status]").text()).toBe("Approved");
 });
 
 test("a pending prompt survives a reload and an answered one reads Approved or Denied", async () => {

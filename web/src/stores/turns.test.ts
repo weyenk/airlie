@@ -308,6 +308,43 @@ test("a refused answer's notice goes after a few seconds", async () => {
   }
 });
 
+test("an answer refused after a cut the server still runs keeps the cut line and the partial reply", async () => {
+  const stream = openStream();
+  let saved = detail(ROW);
+  let refuse = false;
+  serve({
+    history: () => saved,
+    turn: () =>
+      refuse ? Response.json({ error: "this thread has a turn running; wait for it to finish" }, { status: 409 }) : stream.response,
+  });
+  const turns = useTurns();
+  const chat = turns.chatFor(ROW);
+  const sent = turns.send(ROW.id, { text: "push it" });
+  stream.push(
+    { type: "start", messageId: "a1" },
+    { type: "start-step" },
+    ...textChunks("t1", "Part"),
+    { type: "data-approval", id: "ap1", data: { id: "ap1", tool: "build_image", arguments: { key: "node-22" } } },
+  );
+  await vi.waitFor(() => expect(textOf(chat.messages[1])).toBe("Part"));
+  saved = detail(ROW, [user("u1", "push it")], { running: true });
+  stream.drop();
+  await sent;
+  await vi.waitFor(() => expect(turns.running(ROW.id)).toBe(true));
+  expect(turns.cut(ROW.id)).toBe(true);
+  refuse = true;
+
+  await turns.answer(ROW.id, "ap1", true);
+
+  expect(turns.refused(ROW.id, "ap1")).toMatch(/turn running/);
+  expect(turns.cut(ROW.id)).toBe(true);
+  expect(turns.running(ROW.id)).toBe(true);
+  expect(textOf(chat.messages[1])).toBe("Part");
+  saved = detail(ROW, [user("u1", "push it"), assistant("a1", [{ type: "text", text: "Part, then the rest" }])]);
+  feed.opts?.onChange({ topic: "chat", key: null }); // it still settles: the rest comes without a reload
+  await vi.waitFor(() => expect(textOf(chat.messages[1])).toBe("Part, then the rest"));
+});
+
 test("an answer while the asking turn still streams sends nothing and leaves that stream alone", async () => {
   const stream = openStream();
   const server = serve({ history: () => detail(ROW), turn: () => stream.response });

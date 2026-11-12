@@ -51,7 +51,9 @@ const refused = computed(() => turns.refused(props.sessionId, props.approval.id)
 const streaming = computed(() => ["submitted", "streaming"].includes(turns.status(props.sessionId)));
 const answered = computed(() => {
   if (props.approval.answer) return props.approval.answer;
-  return pressed.value && !busy.value && turns.status(props.sessionId) !== "error" ? pressed.value : null;
+  // pressed here: the answer stands while it is sent and its reply streams (a prompt with no call, the image
+  // build, has no call part to say so), and gives the buttons back only if the server refused it
+  return pressed.value && turns.status(props.sessionId) !== "error" ? pressed.value : null;
 });
 
 async function answer(approved: boolean): Promise<void> {

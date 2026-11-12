@@ -305,16 +305,25 @@ export const useTurns = defineStore("turns", () => {
 
   /** Answer a permission prompt: no new message, the answer alone; the reply streams onto the asked message. While
    * the asking turn still streams there is nothing to answer yet (the server would refuse it): it does nothing, and
-   * that stream's state is left as it is. */
+   * that stream's state is left as it is. After a cut the server still runs, a refused answer leaves the thread as
+   * it was: the partial reply, the cut line, and the wait for the turn's end. */
   async function answer(id: string, approvalId: string, approved: boolean): Promise<void> {
     const { chat, s } = existing(id);
     if (busy(chat)) return;
+    const wasCut = s.cut;
+    const before = JSON.parse(JSON.stringify(chat.messages)) as AirlieUIMessage[]; // the SDK marks the call in place
     begin(s);
     delete s.refused[approvalId];
     await chat.addToolApprovalResponse({ id: approvalId, approved });
     await chat.sendMessage(undefined, { body: { approvals: [{ id: approvalId, approved }] satisfies Approval[] } });
     if (chat.status === "error" && chat.error instanceof ApiError && chat.error.status === 409) {
       refuse(id, s, approvalId, chat.error.message);
+      if (wasCut) {
+        chat.messages = before;
+        s.cut = true;
+        void settle(id);
+        return;
+      }
       await load(id).catch(() => undefined); // the saved thread says whether the prompt still waits
     }
   }

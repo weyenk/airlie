@@ -116,7 +116,8 @@ test("/story's reply is a story card; Start story starts it, and a reload shows 
   expect((w.get("input[aria-label=Repository]").element as HTMLInputElement).value).toBe("acme/api");
   await w.get("[data-start]").trigger("click");
   await flushPromises();
-  expect(server.calls.find((c) => c.url === "/v1/airlie/stories")?.body).toEqual({ text: STORY, repo: "acme/api" });
+  expect(server.calls.find((c) => c.url === "/v1/airlie/chat/threads/r1/stories/story-1/start")?.body).toEqual({ text: STORY, repo: "acme/api" });
+  expect(server.calls.some((c) => c.url === "/v1/airlie/stories")).toBe(false); // the chat starts it, once
   expect(w.find("[data-story-card]").exists()).toBe(false);
   expect(w.get("[data-card]").text()).toContain("api · story");
   w.unmount();
