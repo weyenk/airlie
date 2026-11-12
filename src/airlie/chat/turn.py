@@ -86,6 +86,9 @@ class TurnRequest:
     """By approval id, the calls a resumed turn's answers were for, run (or refused) by the server before the
     model's first reply, with the arguments that were asked about; each result goes to the model as that
     call's result."""
+    retries: str | None = None
+    """A retry: the id of the thread's newest user message, which this turn answers again; its earlier
+    reply (an interrupted partial, say) is replaced by this turn's once it has one."""
     answers: Mapping[str, bool] = field(default_factory=dict)
     """The person's answers this turn came with (approval id: yes or no)."""
     on_answers: Callable[[], None] | None = None
@@ -581,6 +584,8 @@ class _Run:
             if req.user_message is not None:
                 self.store.append(thread.id, req.user_message)
             replied = any(p.get("type") != "step-start" for p in parts)
+            if replied and req.retries is not None:
+                self.store.drop_after(thread.id, req.retries)
             if replied and req.resumes is not None:
                 step = [{"type": "step-start"}]  # the resumed part of the message is a step of its own
                 self.store.extend(thread.id, req.resumes, [*step, *parts], usage, interrupted)

@@ -429,8 +429,56 @@ def test_an_engine_failure_is_an_error_chunk_and_the_user_message_is_kept(tmp_pa
     t = c.get("/v1/airlie/chat/threads/t1").json()
     assert [m["role"] for m in t["messages"]] == ["user"] and t["title"] == "will fail"
     assert post(c, turn_body("will fail")).status_code == 200  # the thread is free; a retry may reuse the id
-    ids = [m["id"] for m in c.get("/v1/airlie/chat/threads/t1").json()["messages"]]
-    assert len(ids) == len(set(ids)) == 3  # the first message, the retry and its answer
+    saved = c.get("/v1/airlie/chat/threads/t1").json()["messages"]
+    assert [(m["id"], m["role"]) for m in saved][:1] == [("u1", "user")]
+    assert [m["role"] for m in saved] == ["user", "assistant"]  # the retry is not saved twice
+
+
+# --- Retry: the newest user message resent with its own id ------------------------------------------------
+
+
+def test_a_retry_replaces_the_saved_reply_and_saves_the_message_once(tmp_path: Path) -> None:
+    c, up = client_for(tmp_path, ScriptedUpstream(Text("cut short"), Text("second try")))
+    post(c, turn_body("what is up"))
+
+    r = post(c, turn_body("what is up"))  # Retry: the same message, its own id
+
+    assert r.status_code == 200
+    saved = c.get("/v1/airlie/chat/threads/t1").json()["messages"]
+    assert [(m["id"], m["role"]) for m in saved][0] == ("u1", "user")
+    assert [m["role"] for m in saved] == ["user", "assistant"]
+    assert saved[1]["parts"] == [{"type": "text", "text": "second try"}]
+    sent = [(m["role"], m["content"]) for m in up.bodies[1]["messages"]]
+    assert sent[1:] == [("user", "what is up")]  # the model sees the question once, not the cut reply
+
+
+def test_a_new_message_after_a_reply_is_saved_as_its_own(tmp_path: Path) -> None:
+    c, _ = client_for(tmp_path, ScriptedUpstream(Text("one"), Text("two")))
+    post(c, turn_body("first"))
+
+    second = {"id": "u2", "role": "user", "parts": [{"type": "text", "text": "second"}]}
+    post(c, {**turn_body(), "messages": [second]})
+
+    saved = c.get("/v1/airlie/chat/threads/t1").json()["messages"]
+    assert [(m["id"], m["role"]) for m in saved][::2] == [("u1", "user"), ("u2", "user")]
+    assert len(saved) == 4
+
+
+def test_a_retry_on_another_persons_thread_is_404_and_changes_nothing(tmp_path: Path) -> None:
+    store = AuthStore(tmp_path / "auth.sqlite")
+    pat, sam = store.add_user("Pat", "member"), store.add_user("Sam", "member")
+    as_pat = {"Cookie": f"{SESSION_COOKIE}={store.make_session(pat.id, 30)}"}
+    as_sam = {"Cookie": f"{SESSION_COOKIE}={store.make_session(sam.id, 30)}"}
+    app = app_for(tmp_path, ScriptedUpstream(Text("mine"), Text("theirs")), auth_store=store)
+    c = TestClient(app, client=ELSEWHERE)
+    post(c, headers=as_pat)
+
+    r = post(c, headers=as_sam)  # Sam resends Pat's message id on Pat's thread
+
+    assert r.status_code == 404 and r.json() == {"error": "no such thread"}
+    saved = c.get("/v1/airlie/chat/threads/t1", headers=as_pat).json()["messages"]
+    assert [m["role"] for m in saved] == ["user", "assistant"]
+    assert saved[1]["parts"] == [{"type": "text", "text": "mine"}]
 
 
 def managed(tmp_path: Path) -> tuple[Manager, FakeEngine]:

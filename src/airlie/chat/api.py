@@ -407,15 +407,22 @@ def chat_router(
         used: list[bool],
     ) -> Response:
         stored: StoredMessage | None = None
+        retries: str | None = None
         parts: list[dict[str, Any]] = []
         message = None if body.resumes else last_user(body.messages)
         if message is not None:
             parts = kept_parts(message)
-            taken = {m.id for m in thread.messages}  # a retry resends its message's id: keep ids unique
-            mid = message.id if message.id and message.id not in taken else f"msg-{uuid.uuid4().hex}"
-            stored = StoredMessage(mid, "user", parts, clock.wall())
+            newest = next((m for m in reversed(thread.messages) if m.role == "user"), None)
+            if message.id and newest is not None and message.id == newest.id:  # Retry: answer it again
+                retries = newest.id
+                cut = thread.messages.index(newest) + 1
+                thread.messages = thread.messages[:cut]  # the model does not see the reply it replaces
+            else:
+                taken = {m.id for m in thread.messages}  # keep ids unique
+                mid = message.id if message.id and message.id not in taken else f"msg-{uuid.uuid4().hex}"
+                stored = StoredMessage(mid, "user", parts, clock.wall())
         last = thread.messages[-1] if thread.messages else None
-        resumes = last.id if stored is None and last is not None and last.role == "assistant" else None
+        resumes = last.id if body.resumes and last is not None and last.role == "assistant" else None
         ctx = TurnContext(
             thread.id,
             thread.owner,
@@ -479,7 +486,7 @@ def chat_router(
         engines.append(engine)
         await engine.start()
         answers = {a.id: a.approved for a in answered}
-        calls = answered_calls(thread, answers) if stored is None else {}
+        calls = answered_calls(thread, answers) if body.resumes else {}
         noted = [a for a in answered if a.id not in calls]  # no call to run: the model is told instead
 
         def use_answers() -> None:
@@ -502,7 +509,8 @@ def chat_router(
                         ctx,
                         user_parts,
                         resumes=resumes,
-                        note=answered_note(noted) if stored is None and noted else None,
+                        retries=retries,
+                        note=answered_note(noted) if body.resumes and noted else None,
                         answered_calls=calls,
                         answers=answers,
                         on_answers=use_answers,

@@ -284,6 +284,14 @@ class ThreadStore:
             if mark_answered(parts, answers):
                 self.conn.execute("update messages set parts = ? where seq = ?", (json.dumps(parts), seq))
 
+    def drop_after(self, thread_id: str, message_id: str) -> None:
+        """Delete every message saved after `message_id` (a retried turn's earlier reply goes)."""
+        row = self.conn.execute(
+            "select seq from messages where thread_id = ? and id = ?", (thread_id, message_id)
+        ).fetchone()
+        if row is not None:
+            self.conn.execute("delete from messages where thread_id = ? and seq > ?", (thread_id, row[0]))
+
     def fail_answer(self, thread_id: str, approval_id: str, error: str) -> None:
         """The approved call of request `approval_id` ran and failed: its `data-approval` part reads
         `answer: "failed"` with the call's `error`, so the prompt does not read Approved."""
