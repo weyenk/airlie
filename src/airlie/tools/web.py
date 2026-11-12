@@ -8,6 +8,8 @@ link-local or private space is refused before it is fetched."""
 
 from __future__ import annotations
 
+import functools
+import http.client
 import ipaddress
 import json
 import socket
@@ -126,7 +128,10 @@ class WebResponse(Protocol):
 
 
 class WebClient(Protocol):
-    def request(self, url: str, timeout_s: float) -> WebResponse: ...
+    def request(self, url: str, timeout_s: float, pinned_ip: str | None = None) -> WebResponse:
+        """One request. With `pinned_ip` the connection goes to exactly that address (the Host header and the
+        TLS name stay the URL's), so the name is never resolved a second time."""
+        ...
 
 
 class Resolver(Protocol):
@@ -138,11 +143,57 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-class UrllibClient:
-    """The real WebClient: stdlib urllib with redirects disabled, so every hop is checked."""
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """Connects to a fixed address; the Host header is still the URL's."""
 
-    def request(self, url: str, timeout_s: float) -> WebResponse:
-        opener = urllib.request.build_opener(_NoRedirectHandler())
+    def __init__(self, *args: Any, pinned_ip: str, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._pinned_ip = pinned_ip
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Connects to a fixed address and runs TLS under the URL's name (SNI and certificate check)."""
+
+    def __init__(self, *args: Any, pinned_ip: str, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._pinned_ip = pinned_ip
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)  # type: ignore[attr-defined]
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, pinned_ip: str) -> None:
+        super().__init__()
+        self._pinned_ip = pinned_ip
+
+    def http_open(self, req: urllib.request.Request) -> Any:
+        return self.do_open(functools.partial(_PinnedHTTPConnection, pinned_ip=self._pinned_ip), req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, pinned_ip: str) -> None:
+        super().__init__()
+        self._pinned_ip = pinned_ip
+
+    def https_open(self, req: urllib.request.Request) -> Any:
+        connection = functools.partial(_PinnedHTTPSConnection, pinned_ip=self._pinned_ip)
+        return self.do_open(connection, req, context=self._context)  # type: ignore[attr-defined]
+
+
+class UrllibClient:
+    """The real WebClient: stdlib urllib with redirects disabled, so every hop is checked, and the connection
+    pinned to the address the caller vetted."""
+
+    def request(self, url: str, timeout_s: float, pinned_ip: str | None = None) -> WebResponse:
+        handlers: list[Any] = [_NoRedirectHandler()]
+        if pinned_ip is not None:
+            handlers += [_PinnedHTTPHandler(pinned_ip), _PinnedHTTPSHandler(pinned_ip)]
+        opener = urllib.request.build_opener(*handlers)
         req = urllib.request.Request(url, headers={"User-Agent": "airlie-web-fetch"})
         try:
             with opener.open(req, timeout=timeout_s) as resp:
@@ -290,12 +341,13 @@ class WebFetch:
             return ToolResult(False, "refused: only http and https")
         if not parts.hostname:
             return ToolResult(False, "error: no host in url")
-        if refused := self._check_host(parts.hostname):
+        pinned, refused = self._vet_host(parts.hostname)
+        if pinned is None:
             return ToolResult(False, refused)
 
         current = url
         for _ in range(MAX_REDIRECT_HOPS + 1):
-            resp = self._client.request(current, self._timeout_s)
+            resp = self._client.request(current, self._timeout_s, pinned)
             if 300 <= resp.status < 400:
                 location = resp.headers.get("location")
                 if not location:
@@ -306,7 +358,8 @@ class WebFetch:
                     return ToolResult(False, "refused: only http and https")
                 if not target.hostname:
                     return ToolResult(False, "error: no host in redirect target")
-                if refused := self._check_host(target.hostname):
+                pinned, refused = self._vet_host(target.hostname)
+                if pinned is None:
                     return ToolResult(False, refused)
                 current = location
                 continue
@@ -326,14 +379,16 @@ class WebFetch:
             out = out[: ctx.output_cap_chars] + f"\n… [truncated {len(out) - ctx.output_cap_chars} chars]"
         return ToolResult(True, out)
 
-    def _check_host(self, host: str) -> str | None:
+    def _vet_host(self, host: str) -> tuple[str | None, str]:
+        """Resolve `host` once and vet every address: (the address to connect to, "") or (None, why not).
+        The caller connects to that address, so the name is never resolved again."""
         try:
             addresses = self._resolver.resolve(host)
         except Exception:
-            return "error: could not resolve host"
+            return None, "error: could not resolve host"
         if not addresses:
-            return "error: could not resolve host"
+            return None, "error: could not resolve host"
         for ip in addresses:
             if refused := check_address(ip):
-                return refused
-        return None
+                return None, refused
+        return addresses[0], ""

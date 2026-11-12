@@ -44,6 +44,8 @@ from airlie.skills.library import Skill
 from airlie.tools.protocol import Tool, ToolContext
 
 log = logging.getLogger("airlie.chat.api")
+MISCONFIGURED = "chat is misconfigured; see the server log or run airlie doctor"
+"""What a client is told when chat cannot serve: the reason names server paths, so it goes to the log only."""
 
 STOP_WAIT_S = 30.0
 """The most a Stop waits for the cancelled turn to finish saving."""
@@ -275,11 +277,12 @@ def chat_router(
         if "chat" not in cfg.roles:
             return error("the chat role is not configured", 503)
         if library_error is not None:
-            return error(f"chat is misconfigured: {library_error}", 503)
+            return error(MISCONFIGURED, 503)  # the reason (it names a server path) is in the startup log
         try:
             engine_name = cfg.engine_for_role("chat")
         except Exception as e:  # no engine serves the chat role's model
-            return error(f"the chat role has no engine: {e}", 503)
+            log.error("the chat role has no engine: %s", e)
+            return error("the chat role has no engine; see the server log or run airlie doctor", 503)
         if body.kind == "repository":
             if repo_sessions is None:
                 return error("repository chats are not configured on this server", 503)
@@ -352,7 +355,8 @@ def chat_router(
             return error(e.message, e.status)
         if not ctx.system_prompt:  # never run a turn without its instructions
             reason = ctx.prompt_error or "the system prompt is empty"
-            return error(f"chat is misconfigured: {reason}", 503)
+            log.error("chat is misconfigured, this turn answers 503: %s", reason)
+            return error(MISCONFIGURED, 503)
         todos = TodoList.load(thread.todos)
         chat: RepoChat | None = None
         if thread.kind == "repository":

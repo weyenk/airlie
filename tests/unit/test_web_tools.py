@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import socket
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
 
-from airlie.tools.web import WebFetch, check_address
+from airlie.tools.web import UrllibClient, WebFetch, _PinnedHTTPSConnection, check_address
 from tests.support.tools import ctx
-from tests.support.web_tools import FakeClient, FakeResolver, FakeResponse
+from tests.support.web_tools import FakeClient, FakeResolver, FakeResponse, RebindingResolver
 
 
 def fetch(client: FakeClient, resolver: FakeResolver, timeout_s: float = 5.0) -> WebFetch:
@@ -166,3 +169,121 @@ async def test_a_redirect_to_a_host_that_resolves_to_loopback_is_refused(tmp_pat
     r = await fetch(client, resolver).run({"url": "http://a.example/"}, ctx(tmp_path))
     assert not r.ok and "refused: loopback address" in r.output
     assert client.requests == ["http://a.example/"]
+
+
+# ---- DNS rebinding: the connection goes to the address that was vetted ----
+
+
+async def test_the_request_is_pinned_to_the_vetted_address_not_resolved_again(tmp_path: Path) -> None:
+    client = FakeClient(
+        responses=[FakeResponse(200, {"content-type": "text/plain"}, b"ok", "http://a.example/")]
+    )
+    resolver = RebindingResolver()
+    r = await WebFetch(client=client, resolver=resolver).run({"url": "http://a.example/"}, ctx(tmp_path))
+    assert r.ok
+    assert client.pins == ["93.184.216.34"]  # the client never gets to ask DNS again
+    assert resolver.calls == ["a.example"]
+
+
+async def test_every_redirect_hop_is_vetted_and_pinned_to_its_own_address(tmp_path: Path) -> None:
+    client = FakeClient(
+        responses=[
+            FakeResponse(302, {"location": "http://b.example/x"}, b"", "http://a.example/"),
+            FakeResponse(200, {"content-type": "text/plain"}, b"ok", "http://b.example/x"),
+        ]
+    )
+    resolver = FakeResolver({"a.example": ["93.184.216.34"], "b.example": ["93.184.216.99"]})
+    r = await fetch(client, resolver).run({"url": "http://a.example/"}, ctx(tmp_path))
+    assert r.ok and client.pins == ["93.184.216.34", "93.184.216.99"]
+
+
+async def test_a_redirect_to_a_loopback_literal_is_refused(tmp_path: Path) -> None:
+    client = FakeClient(
+        responses=[FakeResponse(302, {"location": "http://127.0.0.1/"}, b"", "http://a.example/")]
+    )
+    resolver = FakeResolver({"a.example": ["93.184.216.34"], "127.0.0.1": ["127.0.0.1"]})
+    r = await fetch(client, resolver).run({"url": "http://a.example/"}, ctx(tmp_path))
+    assert not r.ok and "refused: loopback address" in r.output
+    assert client.requests == ["http://a.example/"]
+
+
+async def test_a_rebinding_redirect_target_is_pinned_where_it_first_resolved(tmp_path: Path) -> None:
+    client = FakeClient(
+        responses=[
+            FakeResponse(302, {"location": "http://a.example/next"}, b"", "http://a.example/"),
+            FakeResponse(200, {"content-type": "text/plain"}, b"ok", "http://a.example/next"),
+        ]
+    )
+    resolver = RebindingResolver()
+    r = await WebFetch(client=client, resolver=resolver).run({"url": "http://a.example/"}, ctx(tmp_path))
+    # second hop re-vets: the rebinder now answers loopback, so it is refused before any request
+    assert not r.ok and "refused: loopback address" in r.output
+    assert client.pins == ["93.184.216.34"]
+
+
+@pytest.mark.parametrize(
+    "ip",
+    [
+        "0.0.0.0",
+        "::",
+        "::1",
+        "::ffff:127.0.0.1",
+        "::ffff:7f00:1",
+        "::ffff:0.0.0.0",
+        "fe80::1",
+        "fc00::1",
+        "64:ff9b::7f00:1",
+    ],
+)
+def test_unspecified_loopback_and_mapped_forms_are_refused(ip: str) -> None:
+    assert check_address(ip) is not None
+
+
+def test_a_public_ipv6_address_is_allowed() -> None:
+    assert check_address("2606:4700:4700::1111") is None
+
+
+def _serve_once(seen: list[str]) -> tuple[HTTPServer, int]:
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            seen.append(self.headers.get("Host", ""))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"hi")
+
+        def log_message(self, *a: object) -> None: ...
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.handle_request, daemon=True).start()
+    return srv, srv.server_address[1]
+
+
+def test_the_real_client_connects_to_the_pinned_address_and_keeps_the_host_header() -> None:
+    seen: list[str] = []
+    srv, port = _serve_once(seen)
+    try:
+        # the name does not resolve anywhere: only the pin can reach the server
+        resp = UrllibClient().request(f"http://pinned.invalid:{port}/", 5.0, "127.0.0.1")
+    finally:
+        srv.server_close()
+    assert resp.status == 200 and resp.body == b"hi"
+    assert seen == [f"pinned.invalid:{port}"]
+
+
+def test_the_pinned_tls_connection_keeps_the_name_for_sni(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, object] = {}
+
+    class FakeCtx:
+        def wrap_socket(self, sock: object, server_hostname: str | None = None) -> object:
+            calls["sni"] = server_hostname
+            return sock
+
+    def fake_create(addr: tuple[str, int], timeout: object = None, *a: object, **k: object) -> object:
+        calls["addr"] = addr
+        return object()
+
+    monkeypatch.setattr(socket, "create_connection", fake_create)
+    conn = _PinnedHTTPSConnection("example.com", 443, pinned_ip="93.184.216.34", context=FakeCtx())  # type: ignore[arg-type]
+    conn.connect()
+    assert calls == {"addr": ("93.184.216.34", 443), "sni": "example.com"}

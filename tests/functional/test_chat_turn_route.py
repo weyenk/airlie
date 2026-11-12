@@ -241,6 +241,9 @@ def test_another_persons_thread_id_is_404(tmp_path: Path) -> None:
     assert post(c, other_kind, headers=as_pat).status_code == 404  # the owner's id of another kind: no such
 
 
+MISCONFIGURED = "chat is misconfigured; see the server log or run airlie doctor"
+
+
 def test_an_unknown_slash_skill_is_404_before_any_byte_streams(tmp_path: Path) -> None:
     c, up = client_for(tmp_path)
     r = post(c, turn_body(skill="nope"))
@@ -256,7 +259,7 @@ def test_a_slash_skill_adds_its_body_to_that_turns_prompt(tmp_path: Path) -> Non
     assert "STORY BODY" in up.bodies[0]["messages"][0]["content"]
 
 
-def test_a_damaged_superpowers_tree_makes_every_turn_503_with_the_reason(
+def test_a_damaged_superpowers_tree_makes_every_turn_503_without_the_server_path(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     cfg = chat_cfg(tmp_path)
@@ -266,23 +269,27 @@ def test_a_damaged_superpowers_tree_makes_every_turn_503_with_the_reason(
         c = TestClient(create_app(cfg, transport=httpx.MockTransport(up)))
     r = post(c)
     assert r.status_code == 503
-    assert (
-        "chat is misconfigured" in r.json()["error"] and "changed: skills/brainstorming" in r.json()["error"]
-    )
+    assert r.json()["error"] == MISCONFIGURED
+    assert str(tmp_path) not in r.text
     assert up.calls == 0
     assert c.get("/v1/airlie/chat/threads").json() == []
     assert "chat is misconfigured" in caplog.text
+    assert "changed: skills/brainstorming" in caplog.text and str(tmp_path) in caplog.text  # the log keeps it
 
 
-def test_a_system_prompt_that_cannot_be_built_is_503_never_an_empty_prompt(tmp_path: Path) -> None:
+def test_a_system_prompt_that_cannot_be_built_is_503_never_an_empty_prompt(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     cfg = chat_cfg(tmp_path)
     up = ScriptedUpstream()
     c = TestClient(create_app(cfg, transport=httpx.MockTransport(up)))  # sound at startup ...
     skill = cfg.chat.superpowers.path / "skills" / "brainstorming" / "SKILL.md"
     skill.write_text("---\nname: brainstorming\n---\nno description\n")  # ... broken before the turn
-    r = post(c)
-    assert r.status_code == 503 and "chat is misconfigured" in r.json()["error"]
-    assert "no description" in r.json()["error"]
+    with caplog.at_level("ERROR", logger="airlie.chat.api"):
+        r = post(c)
+    assert r.status_code == 503 and r.json()["error"] == MISCONFIGURED
+    assert "no description" not in r.text and str(tmp_path) not in r.text
+    assert "no description" in caplog.text  # the reason stays in the server log
     assert up.calls == 0
     assert c.get("/v1/airlie/chat/threads").json() == []
 
