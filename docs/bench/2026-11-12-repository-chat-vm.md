@@ -59,3 +59,21 @@ repository with a two-test pytest suite and a recipe (`setup`: apt install pytho
   build syncs before it saves the image (a failed sync fails the build). Rerun 6 without the workaround.
 - The early-exit message (3's note) is fixed: a `tart run` that ends before the guest answers says
   `tart run exited (rc N)` with its log tail, not "did not answer within 120s".
+
+## Rerun after the fix wave (2026-11-12, HEAD e7610a25, softnet still not installed)
+
+Same scripted driver (TartBox, `Images.ensure`, `seed`, `harvest`, `push_branch` with the head-bound flow), network
+`open` (the only mode that boots without softnet; `off` and `allow_list` both need it). The env image rebuilt
+under its new key (26.2 s). The VM and the env image were deleted afterwards.
+
+- 2: rerun after the fix wave: PASS. The recipe's test command ran in the VM (2 passed) and `tart list` showed
+  `airlie-chat-live4` running.
+- 4: rerun after the fix wave: PASS, local bare remote only. `harvest` returned 1 commit, `log`, `paths` and the
+  head SHA; `push_subject` carried that head. `push_branch` with a wrong head was refused ("is at 9d4c710 now,
+  not the 000... the person approved"); with the harvested head, `airlie/live4 9d4c710 add sub` landed in the
+  bare repository. Note: `paths` listed `__pycache__/*.pyc` (the repository has no .gitignore, so pytest's
+  bytecode was committed by `git add -A`); a property of this throwaway repository. The GitHub push and the
+  web approval card are still Noah's.
+- 6: rerun after the fix wave: PASS, three times, with no manual sync. Each trial wrote a file in the work dir,
+  stopped through `TartBox.stop`, booted again: the clone, history (`9d4c710 add sub`) and every earlier file
+  were intact each time. `delete` then removed the VM from `tart list`.
