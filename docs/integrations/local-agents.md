@@ -35,7 +35,7 @@ or OpenCode cannot start the server.
 
 The sample's default model is `airlie/generalist`, the chief's (see below). Pick `airlie/coder` for coding
 (Qwen3.8 with the coder persona; it writes the tests too), `airlie/architect` for a plan; every role runs on Qwen3.8,
-except the reviewer (Muse Glimmer).
+except the reviewer (Gemma 4).
 Each role's prompt is prepended to OpenCode's own system prompt by `task serve`. The `limit.context` values
 assume the studio profile (`max_kv_size: 131072`); under the single profile the engine caps at 65536. The thinking
 models have `limit.output` at their `max_tokens` in `airlie.yaml` (`architect` and `generalist` 24576, `research` 16384):

@@ -349,14 +349,15 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, unknown = project_memory_gb(studio, "main")
-    # 71.7 GB of weights (small, generalist and its MTP head, reviewer, decider-2b, gemma4: no MTP head since
-    # docs/bench/2026-11-12-gemma-qat-mtp.md, so 0.87 GB less than the 111.0 it was with one)
+    # 52.3 GB of weights (small, generalist and its MTP head, decider-2b, gemma4: no MTP head since
+    # docs/bench/2026-11-12-gemma-qat-mtp.md; no reviewer engine since 2026-11-12, the reviewer role runs on
+    # gemma4, so Muse's 19.4 GB are out: 110.1 - 25.1 = 85.0)
     # + the build lane's one sequence at the coder's 65.536k × 64 MB/1k + 4 asks at 8.192k, at main's 8-bit KV
-    # (8.5/16 of bf16) = 3.3 GB + one sequence on each other engine (reviewer 65.536k × 64 at 8-bit = 2.2,
-    # small 16.384k × 144 in bf16 = 2.3, gemma 262.144k × 22 at 8-bit = 3.0) + the caches the autostart
-    # mlx-vlm engines set aside (main 8, reviewer 3.5, small 1, gemma 4) + 12 GB reserve
+    # (8.5/16 of bf16) = 3.3 GB + one sequence on each other engine (small 16.384k × 144 in bf16 = 2.3,
+    # gemma 262.144k × 22 at 8-bit = 3.0) + the caches the autostart mlx-vlm engines set aside
+    # (main 8, small 1, gemma 4) + 12 GB reserve
     assert cache_memory_gb(studio.engines["main"]) == 8.0
-    assert (round(projected, 1), unknown) == (110.1, [])
+    assert (round(projected, 1), unknown) == (85.0, [])
     assert projected < studio.memory.wired_limit_mb / 1024  # 124 GB
     monkeypatch.setattr(
         "airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name
@@ -382,8 +383,8 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
     wider.line.fanout = 8
     assert live_kv_gb(wider, e) > live_kv_gb(studio, e)  # more asks, more KV
     assert (
-        "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 1 sequence on reviewer at 65536, "
-        "small at 16384, gemma at 262144 + 16 GB prefix cache" in projection_detail(studio, e)
+        "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 1 sequence on small at 16384, "
+        "gemma at 262144 + 13 GB prefix cache" in projection_detail(studio, e)
     )
     teams = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="teams")
     assert (
@@ -458,14 +459,14 @@ def test_an_mlx_vlm_engine_running_other_flags_than_the_config_is_a_mismatch_nam
     main = mlx_vlm_argv(cfg, "main")
     stale = list(main)
     stale[stale.index("--max-kv-size") + 1] = "65536"
-    other = mlx_vlm_argv(cfg, "reviewer")  # on 8082: ignored by main's check
+    other = mlx_vlm_argv(cfg, "small")  # on 8083: ignored by main's check
     ok = engine_matches_config(cfg, MlxVlmProcesses([other, main]), "main")
     assert (ok.name, ok.status) == ("engine:config[main]", "ok")
     bad = engine_matches_config(cfg, MlxVlmProcesses([other, stale]), "main")
     assert bad.status == "fail" and "--max-kv-size 65536 (config: 131072)" in bad.detail, bad.detail
     assert "--max-num-seqs" not in bad.detail and bad.detail.endswith("restart it: task restart")
-    # the stale argv is on 8080, not the reviewer's port
-    assert engine_matches_config(cfg, MlxVlmProcesses([other, stale]), "reviewer").status == "ok"
+    # the stale argv is on 8080, not small's port
+    assert engine_matches_config(cfg, MlxVlmProcesses([other, stale]), "small").status == "ok"
     bits = main.index("--kv-bits")
     no_bits = main[:bits] + main[bits + 2 :]
     assert (
@@ -478,8 +479,8 @@ def test_no_mlx_vlm_server_on_the_engines_port_is_a_warning(monkeypatch: pytest.
     from airlie.doctor import engine_matches_config
 
     cfg = committed_cfg(monkeypatch)
-    only_reviewer = MlxVlmProcesses([mlx_vlm_argv(cfg, "reviewer")])
-    found = engine_matches_config(cfg, only_reviewer, "main")
+    only_small = MlxVlmProcesses([mlx_vlm_argv(cfg, "small")])
+    found = engine_matches_config(cfg, only_small, "main")
     assert found.status == "warn" and "8080" in found.detail
     assert engine_matches_config(cfg, FakeProbe(), "main").status == "warn"  # ps unreadable: no processes
 
@@ -760,28 +761,26 @@ def test_a_keyed_engines_health_row_sends_its_key_and_blames_a_wrong_one(tmp_pat
 
 
 def test_the_pinned_floor_counts_on_demand_engines_separately() -> None:
-    """The committed studio keeps reviewer and small on demand: they are excluded from the pinned floor."""
+    """The committed studio keeps small on demand: it is excluded from the pinned floor (the reviewer runs on
+    the pinned gemma engine since 2026-11-12)."""
     from airlie.doctor import engine_footprint_gb
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
-    assert studio.engines["reviewer"].lifecycle == "on_demand"
+    assert "reviewer" not in studio.engines
     assert studio.engines["small"].lifecycle == "on_demand"
-    assert round(engine_footprint_gb(studio, "reviewer"), 1) == 25.1
     assert round(engine_footprint_gb(studio, "small"), 1) == 6.3
 
 
 def test_the_pinned_floor_is_the_projection_without_the_on_demand_engines() -> None:
-    """The floor is the 110.1 GB projection (111.0 less gemma4's 0.87 GB MTP head, now off) minus reviewer's
-    25.1 GB (19.4 weights + 2.2 KV + 3.5 cache) and small's 6.3 GB (3 + 2.3 + 1), yielding 78.7 GB."""
+    """The floor is the 85.0 GB projection (110.1 before the reviewer engine was dropped, 2026-11-12) minus
+    small's 6.3 GB (3 + 2.3 + 1), yielding 78.7 GB."""
     from airlie.doctor import engine_footprint_gb, pinned_floor_gb, project_memory_gb
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, _ = project_memory_gb(studio, "main")
     floor = pinned_floor_gb(studio)
     assert round(floor, 1) == 78.7
-    assert floor == pytest.approx(
-        projected - engine_footprint_gb(studio, "reviewer") - engine_footprint_gb(studio, "small")
-    )
+    assert floor == pytest.approx(projected - engine_footprint_gb(studio, "small"))
 
 
 def test_pinned_floor_within_limit_is_ok_row() -> None:

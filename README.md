@@ -162,7 +162,7 @@ Run `task` to list them. The ones that exist today:
 | `task searxng:up` / `:status` / `:down` / `:destroy` | SearXNG for the web roles' `web_search`, in a Tart Linux VM reached at `127.0.0.1:8888` (the first `up` downloads a few GB and installs it); `docs/integrations/web-tools.md` |
 | `task web:e2e [-- --roles chief,ux]` | asks every web-enabled role (chief, research, ux, design, reviewer) about something after its training data and checks it searched and cited what it found |
 | `task models:list` / `task models:pull [-- name…]` | show the catalog with pinned revisions / download exactly those revisions (the same downloader an engine's first start uses: progress line, disk check, one download per snapshot) |
-| `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop the pinned engines in `airlie.yaml` (`main`, `gemma`, `decision`: decider-2b on `/v1/decisions`, and any other without `lifecycle: on_demand`); the on-demand ones (`reviewer`, `small`) start when a call needs them, see *Engines on demand*; `airlie engine up <name>` starts any engine by hand; status shows pid and per-model readiness |
+| `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop the pinned engines in `airlie.yaml` (`main`, `gemma`, `decision`: decider-2b on `/v1/decisions`, and any other without `lifecycle: on_demand`); the on-demand one (`small`) start when a call needs them, see *Engines on demand*; `airlie engine up <name>` starts any engine by hand; status shows pid and per-model readiness |
 | `task gpu:limit` | set `iogpu.wired_limit_mb` to `memory.wired_limit_mb` now and at every boot (a LaunchDaemon; asks for your password) |
 | `task run -- "goal" --repo PATH [--topology fork] [--k 3] [--test-cmd "pytest -q"]` | run a topology on a goal (default `topology.kind: single`; `single` / `teams` / `fork` are experimental — use `task studio` or `--topology studio` for the supported path); every team/branch works in its own git worktree under the run directory and the report lists each one's outcome, branch and trace |
 | `task eval -- lang_detect [--topology fork] [--k 1]` | materialize a graded task from `evals/tasks/`, run it, grade every worktree with the hidden tests (same topology note as `task run`) |
@@ -268,12 +268,12 @@ open draft PRs:** run `task serve -- --api-key SECRET` (or set `AIRLIE_SERVE_API
 vision model) scopes the request into a JSON plan of subtasks; the router (the decision model on mlx-vlm, or the chief's
 own hint with `router.kind: chief`) assigns each subtask a specialist role from the roles whose prompts carry a
 `summary:` line, and for roles with a skill library (`skills/qa/*.md`, folded into the coder's test brief) picks
-the guideline to inject; specialists are prompts over the catalog (generalist for most seats, Muse Glimmer for
+the guideline to inject; specialists are prompts over the catalog (generalist for most seats, Gemma for
 the `reviewer`) and run as single agents on one worktree, writers one at a time, readers in parallel; after a
-code subtask the reviewer (a different model family, on purpose: judges favour their own family's text) returns
+code subtask the reviewer (Gemma, a different lab than the coder's Qwen, on purpose: judges favour their own family's text) returns
 a JSON verdict and blocking findings give the coder one fix round; the chief synthesises. Run it with
 `task studio -- "goal" --repo . [--image shot.png]` after `task restart` (the committed engines are the studio's:
-one mlx-vlm server each for the generalist, the reviewer and the small model; mlx-vlm parses the tool calls,
+one mlx-vlm server each for the generalist, Gemma (the reviewer's) and the small model; mlx-vlm parses the tool calls,
 the parser named per model in the catalog). Every routing decision is logged
 (`runs/<id>/routing.jsonl`) and scorable with `task route:eval`.
 
@@ -321,7 +321,7 @@ profile across every managed engine. Profiles carry no engine flags: the engines
 ## Engines on demand
 
 Each engine in `airlie.yaml` has a `lifecycle`. `pinned` (the default): `task up` starts it and it stays up (`main`, `decision` and
-`gemma`, which sets no `lifecycle`). `on_demand` (`reviewer`, `small`): nothing starts it until a call needs it, and it is stopped once it has
+`gemma`, which sets no `lifecycle`). `on_demand` (`small`; the reviewer runs on the pinned `gemma`, so a review never waits for a cold start): nothing starts it until a call needs it, and it is stopped once it has
 been unused and unheld for `idle_unload_s` (default 600). Every role call holds its engine for its duration, so a
 busy engine is never stopped; when memory is short the manager stops idle on-demand engines to make room, and a
 caller that must wait gets the reason (shown in the chat strip and the Admin Engines table).

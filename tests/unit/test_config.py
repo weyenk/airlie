@@ -185,7 +185,7 @@ def test_committed_default_config_is_valid() -> None:
     assert cfg.engines["main"].kind == "mlx_vlm"
     for name, m in cfg.models.items():
         assert m.revision, f"models.{name} must pin a revision"
-    assert cfg.engine_for_role("coder") == "main" and cfg.engine_for_role("reviewer") == "reviewer"
+    assert cfg.engine_for_role("coder") == "main" and cfg.engine_for_role("reviewer") == "gemma"
 
 
 # ---- a thinking role has room to answer (HDS-3, 2026-10-15) ----
@@ -335,18 +335,17 @@ def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_w
     assert (coder.model, coder.thinking, coder.max_tokens) == ("generalist", False, 10240)  # no thinking
 
 
-def test_committed_config_declares_five_autostart_engines_and_the_bench_engines() -> None:
+def test_committed_config_declares_four_autostart_engines_and_the_bench_engines() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     kinds = {n: e.kind for n, e in cfg.engines.items()}
     assert kinds == {
         "main": "mlx_vlm",
-        "reviewer": "mlx_vlm",
         "small": "mlx_vlm",
         "decision": "mlx_vlm",
         "gemma": "mlx_vlm",
     }
     autostart = [n for n, e in cfg.engines.items() if e.autostart]
-    assert autostart == ["main", "reviewer", "small", "decision", "gemma"]
+    assert autostart == ["main", "small", "decision", "gemma"]
     assert cfg.engines["main"].models == ["generalist"] and cfg.engines["main"].port == 8080
     assert [n for n, e in cfg.engines.items() if e.decision] == ["decision"]
     assert cfg.engines["decision"].port == 8081 and cfg.router.model == "decider_2b"  # the 4b gate's pick
@@ -1124,7 +1123,7 @@ def test_the_committed_coder_has_a_write_schedule_and_a_schedule_must_put_tests_
 def test_the_tester_is_a_read_only_critic_on_the_generalist() -> None:
     """P2 (2026-10-24): the tester no longer writes tests; it is the third amigo and the package critic, with
     the QA guidelines and read tools. On the generalist since 2026-10-26 (Noah): on the reviewer's model
-    (Muse) it lost the meeting's thread on airlie-sandbox; the layer's reviewer stays on Muse."""
+    (Muse) it lost the meeting's thread on airlie-sandbox; the layer's reviewer moved to Gemma 2026-11-12."""
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     tester = cfg.roles["tester"]
     assert tester.model == "generalist" != cfg.roles["reviewer"].model and not tester.thinking
@@ -1584,7 +1583,6 @@ def test_the_committed_lifecycles() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     assert {n: e.lifecycle for n, e in cfg.engines.items()} == {
         "main": "pinned",
-        "reviewer": "on_demand",
         "small": "on_demand",
         "decision": "pinned",
         "gemma": "pinned",
@@ -1755,3 +1753,12 @@ def test_a_repository_chat_cannot_drop_a_confirmation_of_push_pr_or_build(
     listed = [n for n in ("push_branch", "open_pr", "build_image") if n != missing]
     with pytest.raises(ConfigError, match=f"chat.kinds.repository.ask_first must keep {missing}"):
         load_config(_chat(tmp_path, {"kinds": {"repository": {"tools": ["skill"], "ask_first": listed}}}))
+
+
+def test_the_reviewer_is_a_different_lab_than_the_coder_and_runs_on_a_served_engine() -> None:
+    """Noah 2026-11-12: the reviewer (and the supervisor) run on gemma4 (Google), the coder on the generalist
+    (Qwen): a different lab on purpose, with no second model in memory; the Muse catalog entry stays."""
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert cfg.roles["reviewer"].model == cfg.roles["supervisor"].model == "gemma4"
+    assert "Qwen" in cfg.models["generalist"].repo and "gemma" in cfg.models["gemma4"].repo.lower()
+    assert "reviewer" not in cfg.engines and "reviewer" in cfg.models

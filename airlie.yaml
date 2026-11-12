@@ -26,16 +26,6 @@ engines:
     cache_memory_gb: 8
     cache_checkpoints: 8
     max_image_px: 1536
-  reviewer:                        # the adversarial reviewer: any model from a different lab than the coder's
-    kind: mlx_vlm
-    port: 8082
-    model: reviewer
-    lifecycle: on_demand
-    max_num_seqs: 4
-    max_kv_size: 65536
-    kv_bits: 8
-    prefix_cache: true
-    cache_memory_gb: 3.5
   small:
     kind: mlx_vlm
     port: 8083

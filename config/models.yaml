@@ -34,7 +34,7 @@ models:
     kv_mb_per_1k_tokens: 22
     tool_call_parser: gemma4
     tags: [modern, vision, chat]
-  reviewer:                        # Muse Glimmer 30B (Meta, Apache 2.0): the cross-family adversarial reviewer
+  reviewer:                        # Muse Glimmer 30B (Meta, Apache 2.0): not served by default since 2026-11-12; the reviewer role is on gemma4
     repo: mlx-community/Muse-Glimmer-30B-4bit
     revision: 3e7677d7a40d348a3daba263a2b1c0aa41910710   # 2026-08-10
     estimated_memory_gb: 19.4
