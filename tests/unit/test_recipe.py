@@ -91,6 +91,19 @@ def test_the_key_is_stable() -> None:
         "ghcr.io/-x/ubuntu",
         "cirruslabs/ubuntu:latest",  # no registry host
         "ghcr.io/airlie-env-x/y",
+        "sonoma-14.5/../AIRLIE-ENV-0123456789ab-89abcdef",  # `..` makes tart open a local path
+        "localhost/../AIRLIE-CHAT-x",
+        "ghcr.io/..",
+        "ghcr.io/./x",
+        "ghcr.io/a//b",
+        "ghcr.io/cirruslabs/ubuntu/",  # trailing slash
+        "ghcr.io/Cirruslabs/ubuntu:latest",  # upper case
+        "ghcr.io/cirruslabs/AIRLIE-env-x:1",  # a mixed-case airlie-env name
+        "oci://ghcr.io/cirruslabs/ubuntu",
+        "ghcr.io/_x/y",
+        "ghcr.io/x-/y",
+        "ghcr.io/x/y:",
+        "ghcr.io/x/y@sha256:abc",
     ],
 )
 def test_a_base_that_is_not_a_registry_image_is_refused(base: str) -> None:
@@ -100,7 +113,14 @@ def test_a_base_that_is_not_a_registry_image_is_refused(base: str) -> None:
 
 @pytest.mark.parametrize(
     "base",
-    ["ghcr.io/cirruslabs/debian:latest", "localhost:5000/team/img:1", "registry.example.com/a/b:2"],
+    [
+        "ghcr.io/cirruslabs/debian:latest",
+        "ghcr.io/cirruslabs/ubuntu:latest",
+        "localhost:5000/team/img:1",
+        "registry.example.com/a/b:2",
+        "ghcr.io/cirruslabs/macos-sonoma-base@sha256:" + "0123456789abcdef" * 4,
+        "ghcr.io/a.b/c_d/e-f",
+    ],
 )
 def test_a_registry_image_is_a_base(base: str) -> None:
     assert load_recipe(json.dumps({"base": base}), SPEC).base == base

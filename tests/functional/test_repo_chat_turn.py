@@ -82,7 +82,7 @@ def test_a_push_call_streams_a_permission_request_and_does_not_push(tmp_path: Pa
     rig = Rig(tmp_path, Call("push_branch", {}), Text("waiting for you"))
     rig.fakes.script_push()
     rig.fakes.runner.answers["log"] = "b2b2b2b fix the parser\nb1b1b1b add a test\n"
-    rig.fakes.runner.answers["diff"] = ".github/workflows/ci.yml\0src/parse.py\0"
+    rig.fakes.runner.answers["diff"] = "M\0.github/workflows/ci.yml\0A\0src/parse.py\0"
 
     r = rig.post()
 
@@ -516,7 +516,7 @@ def test_softnet_missing_is_a_409_with_its_install_hint(tmp_path: Path) -> None:
     r = rig.post()
 
     assert r.status_code == 409 and r.json() == {"error": SOFTNET_HINT}
-    assert "sudo softnet install" in SOFTNET_HINT
+    assert "brew install openai/tools/softnet" in SOFTNET_HINT and "chmod u+s" in SOFTNET_HINT
     assert rig.up.calls == 0
     assert rig.c.get("/v1/airlie/chat/threads").json() == []
 

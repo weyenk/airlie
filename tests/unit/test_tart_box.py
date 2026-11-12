@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from airlie.boxes.protocol import BoxUnavailable, Network
-from airlie.boxes.tart import RealRunner, TartBox
+from airlie.boxes.tart import RealRunner, TartBox, tart_env
 from tests.support.tart import Clock, FakeProc, FakeRunner, FakeSpawner, info
 
 
@@ -550,6 +550,22 @@ def test_the_real_runner_gives_tart_a_minimal_environment(monkeypatch: pytest.Mo
     names = {line.split("=", 1)[0] for line in out.decode().splitlines()}
     assert "AIRLIE_SERVE_SECRET" not in names
     assert {"PATH", "HOME", "TART_HOME"} <= names
+
+
+def test_tart_env_keeps_the_registry_credentials_and_home_but_not_serves_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TART_REGISTRY_USERNAME", "u")
+    monkeypatch.setenv("TART_REGISTRY_PASSWORD", "p")
+    monkeypatch.setenv("TART_HOME", "/tmp/tart-home")
+    monkeypatch.setenv("AIRLIE_SERVE_SECRET", "s3cret")
+
+    env = tart_env()
+
+    assert env["TART_REGISTRY_USERNAME"] == "u"
+    assert env["TART_REGISTRY_PASSWORD"] == "p"
+    assert env["TART_HOME"] == "/tmp/tart-home"
+    assert "AIRLIE_SERVE_SECRET" not in env
 
 
 async def test_the_real_spawn_gives_tart_a_minimal_environment(

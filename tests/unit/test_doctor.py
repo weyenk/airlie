@@ -876,7 +876,9 @@ def test_the_softnet_row_warns_with_its_install_line_when_a_filtered_network_nee
     probe = FakeProbe(snapshots={"org/model@r1"}, tools={**TOOLS_OK, "softnet": None})
     r = by_name(run_checks(managed(tmp_path), probe))["softnet"]
     assert r.status == "warn"
-    assert "brew install cirruslabs/cli/softnet && sudo softnet install" in r.detail
+    assert "brew install openai/tools/softnet" in r.detail
+    assert "chmod u+s" in r.detail
+    assert "sudo softnet install" not in r.detail
 
 
 def test_the_softnet_row_is_ok_when_softnet_is_installed(tmp_path: Path) -> None:

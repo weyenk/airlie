@@ -31,7 +31,7 @@ repository with a two-test pytest suite and a recipe (`setup`: apt install pytho
    setuid install needs sudo, which a scripted run has not). `boot` with `allow_list` fails with `Error:
    InitializationFailed(why: "softnet not found in PATH")` from `tart run` (seen in the log), the same for
    `off`. So the allow list, the gateway block, DNS behaviour and CDN rotation are unchecked: Noah to
-   `brew trust cirruslabs/cli`, install softnet, run `sudo softnet install`, then rerun (the two flag sets are in
+   `brew install openai/tools/softnet`, give it a SUID bit (`sudo chown root:wheel` and `sudo chmod u+s` on `$(brew --prefix)/bin/softnet`; there is no `softnet install`; macOS 26+), then rerun (the two flag sets are in
    `TartBox._network_flags`). The failure surfaced after 0.1-1.0 s (the spawn died, so no 120 s wait), but its
    message says "did not answer within 120s", which misleads (tart.py:264).
 4. PASS, local remote only. `harvest` returned 1 commit from the VM; `push_branch` pushed `airlie/live4` to a

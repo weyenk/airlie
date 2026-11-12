@@ -30,7 +30,9 @@ INSTALL_HINT = (
 )
 SOFTNET_HINT = (
     "softnet is not installed, and boxes.network.after_setup (allow_list or off) needs it to filter the VM's "
-    "network: brew install cirruslabs/cli/softnet && sudo softnet install"
+    'network: brew install openai/tools/softnet && sudo chown root:wheel "$(brew --prefix)/bin/softnet" '
+    '&& sudo chmod u+s "$(brew --prefix)/bin/softnet" (softnet needs a SUID bit or passwordless sudo, and '
+    "macOS 26 or later)"
 )
 LOG_TAIL_CHARS = 2000
 STOP_WAIT_S = 60.0
@@ -39,7 +41,7 @@ SYNC_S = 20.0
 its disk is lost."""
 HOST_ENV = ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "TART_HOME")
 """The host variables a `tart` process gets: what it needs to find itself and its VMs, and nothing of serve's
-own (keys, tokens)."""
+own (keys, tokens). The `TART_REGISTRY_*` ones (a private registry's credentials) go with them."""
 RESOLVER = "192.168.64.1/32"
 """The vmnet gateway, which is the guest's DNS resolver. Allowed in allow_list mode (the guest cannot look up
 the allowed hosts without it) and never when the network is off. Softnet allows it on every port, not only
@@ -47,7 +49,7 @@ DNS: a host service bound to 0.0.0.0 answers the guest there (README, Repository
 
 
 def tart_env() -> dict[str, str]:
-    return {k: v for k, v in os.environ.items() if k in HOST_ENV}
+    return {k: v for k, v in os.environ.items() if k in HOST_ENV or k.startswith("TART_REGISTRY_")}
 
 
 def softnet_installed() -> bool:

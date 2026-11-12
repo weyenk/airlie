@@ -13,7 +13,12 @@ from airlie.config.schema import BoxesSpec, Strict
 from airlie.engine.types import EngineError
 
 RECIPE_PATH = ".airlie/environment.json"
-_REGISTRY_HOST = re.compile(r"localhost(:\d+)?|[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d+)?")
+_COMPONENT = r"[a-z0-9]+(?:[._-][a-z0-9]+)*"
+_REGISTRY_IMAGE = re.compile(
+    rf"({_COMPONENT})(?::\d+)?"  # the host[:port]
+    rf"(?:/{_COMPONENT})+"  # at least one path component
+    r"(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})?"  # a tag or a digest
+)
 
 
 class RecipeError(EngineError):
@@ -41,13 +46,15 @@ class Recipe(Strict):
 
 
 def registry_image(base: str) -> bool:
-    """An image `tart clone` pulls from a registry (`host/path[:tag]`), never a local VM: a recipe that could
-    name one could start from another repository's image, built with its setup secrets, or another chat's
-    disk. No part may start with "-" (an option to tart) or "airlie-" (airlie's own VMs)."""
-    host, sep, path = base.partition("/")
-    if not sep or not path or not _REGISTRY_HOST.fullmatch(host):
+    """An image `tart clone` pulls from a registry (`host[:port]/path[/path...][:tag|@sha256:<64 hex>]`),
+    never a local VM: a recipe that could name one could start from another repository's image, built with
+    its setup secrets, or another chat's disk. Every component is lowercase `[a-z0-9]+([._-][a-z0-9]+)*`,
+    which is also what makes tart parse the name as remote: a name its grammar rejects (`..`, an empty or
+    upper-case part) it opens as a path under ~/.tart/vms, case-insensitively on APFS."""
+    found = _REGISTRY_IMAGE.fullmatch(base)
+    if found is None or not ("." in found[1] or found[1] == "localhost"):
         return False
-    return not any(not p or p.startswith(("-", "airlie-")) for p in path.split("/"))
+    return not any(p.startswith("airlie-") for p in base.split("/")[1:])
 
 
 def load_recipe(text: str | None, defaults: BoxesSpec) -> Recipe:

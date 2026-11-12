@@ -155,8 +155,7 @@ async def harvest(
     sha = (await mirror.git("rev-parse", "--verify", ref)).strip()
     commits = int((await mirror.git("rev-list", "--count", f"{base_sha}..{sha}")).strip())
     log = await mirror.git("log", "--no-show-signature", "--format=%h %s", f"{base_sha}..{sha}")
-    names = await mirror.git("diff", "-z", "--name-only", base_sha, sha)
-    paths = tuple(p.strip("\n") for p in names.split("\0") if p.strip())
+    paths = await _changed_paths(mirror, base_sha, sha)
     return HarvestResult(
         commits,
         sha,
@@ -164,6 +163,21 @@ async def harvest(
         tuple(line for line in log.splitlines() if line.strip()),
         paths,
     )
+
+
+async def _changed_paths(mirror: Mirror, base_sha: str, sha: str) -> tuple[str, ...]:
+    """Every path the range touches: both sides of a rename in the net diff, and any path any commit of the
+    range touched (a workflow added and removed in the range is in no net diff)."""
+    status = (await mirror.git("diff", "-z", "--name-status", "-M", base_sha, sha)).split("\0")
+    paths: dict[str, None] = {}
+    i = 0
+    while i < len(status) and status[i].strip():
+        width = 3 if status[i][0] in "RC" else 2
+        paths.update(dict.fromkeys(p for p in status[i + 1 : i + width] if p))
+        i += width
+    names = await mirror.git("log", "-z", "--name-only", "--no-renames", "--format=", f"{base_sha}..{sha}")
+    paths.update(dict.fromkeys(p.strip("\n") for p in names.split("\0") if p.strip()))
+    return tuple(paths)
 
 
 async def push_branch(mirror: Mirror, publisher: Publisher, *, branch: str, head: str) -> None:

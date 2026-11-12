@@ -345,7 +345,9 @@ A repository chat works on a checkout inside its own Tart VM, one VM per chat. T
 missing or the VM cannot start, the chat says so and stops. Install Tart with
 `brew install cirruslabs/cli/tart`, and softnet, which filters the VM's network after setup (`allow_list` and
 `off` both need it; without it a repository chat is refused with this line, and `task doctor` has a `softnet`
-row): `brew install cirruslabs/cli/softnet && sudo softnet install` (the second step needs your password).
+row): `brew install openai/tools/softnet`, then `sudo chown root:wheel "$(brew --prefix)/bin/softnet"` and `sudo chmod u+s
+"$(brew --prefix)/bin/softnet"` (softnet's README asks for a SUID bit on the binary or passwordless sudo, and gives no
+command; it needs macOS 26 or later; there is no `softnet install`).
 
 - **Image.** `boxes.image` (default `ghcr.io/cirruslabs/ubuntu:latest`; `tart pull` it once, or a chat's first
   start downloads it, several GB, with no progress shown). A repository with a recipe that has `setup` is built

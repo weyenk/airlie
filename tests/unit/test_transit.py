@@ -42,7 +42,12 @@ class FakeRunner:
 
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], Path, dict[str, str]]] = []
-        self.answers: dict[str, str] = {"rev-parse": TIP + "\n", "rev-list": "2\n", "diff": ""}
+        self.answers: dict[str, str] = {
+            "rev-parse": TIP + "\n",
+            "rev-list": "2\n",
+            "diff": "",
+            "log-names": "",
+        }
         self.failures: dict[str, str] = {}
         self.bundle_bytes = b"BUNDLE-FROM-HOST"
 
@@ -60,6 +65,8 @@ class FakeRunner:
             Path(args[args.index("create") + 1]).write_bytes(self.bundle_bytes)
         if verb == "bundle":
             verb = f"bundle {args[args.index('bundle') + 1]}"
+        if verb == "log" and "--name-only" in args:
+            verb = "log-names"
         if verb in self.failures:
             raise PublishError(self.failures[verb])
         return self.answers.get(verb, "")
@@ -260,7 +267,7 @@ async def test_harvest_reads_the_bundle_the_vm_made(tmp_path: Path) -> None:
 
 async def test_harvest_says_when_the_commits_touch_workflows(tmp_path: Path) -> None:
     runner = runner_with_heads(f"refs/heads/{BRANCH}")
-    runner.answers["diff"] = ".github/workflows/ci.yml\n"
+    runner.answers["diff"] = "M\0.github/workflows/ci.yml\0"
     result = await harvest(
         vm_with_commits(),
         mirror_of(tmp_path, runner, FakePublisher()),
@@ -270,6 +277,39 @@ async def test_harvest_says_when_the_commits_touch_workflows(tmp_path: Path) -> 
         max_bytes=CAP,
     )
     assert result.changes_workflows is True
+
+
+async def harvested(tmp_path: Path, runner: FakeRunner) -> HarvestResult:
+    return await harvest(
+        vm_with_commits(),
+        mirror_of(tmp_path, runner, FakePublisher()),
+        base_sha=BASE,
+        branch=BRANCH,
+        workdir=WORKDIR,
+        max_bytes=CAP,
+    )
+
+
+async def test_harvest_sees_a_rename_out_of_the_workflows_directory(tmp_path: Path) -> None:
+    runner = runner_with_heads(f"refs/heads/{BRANCH}")
+    runner.answers["diff"] = "R100\0.github/workflows/ci.yml\0docs/ci.yml\0"
+
+    result = await harvested(tmp_path, runner)
+
+    assert result.changes_workflows is True
+    assert set(result.paths) == {".github/workflows/ci.yml", "docs/ci.yml"}
+    diff = next(a for a, _, _ in runner.calls if FakeRunner.verb(a) == "diff")
+    assert {"--name-status", "-M"} <= set(diff)
+
+
+async def test_harvest_sees_a_workflow_added_and_removed_inside_the_range(tmp_path: Path) -> None:
+    runner = runner_with_heads(f"refs/heads/{BRANCH}")
+    runner.answers["log-names"] = "\0.github/workflows/tmp.yml\0\0.github/workflows/tmp.yml\0src/a.py\0"
+
+    result = await harvested(tmp_path, runner)
+
+    assert result.changes_workflows is True
+    assert ".github/workflows/tmp.yml" in result.paths
 
 
 async def test_harvest_rejects_a_bundle_that_does_not_verify(tmp_path: Path) -> None:
@@ -325,7 +365,7 @@ async def test_harvest_reports_a_failed_bundle_in_the_vm(tmp_path: Path) -> None
 async def test_harvest_lists_the_new_commits_and_every_changed_path(tmp_path: Path) -> None:
     runner = runner_with_heads(f"refs/heads/{BRANCH}")
     runner.answers["log"] = "b2b2b2b add the parser\nb1b1b1b start\n"
-    runner.answers["diff"] = "src/parse.py\0README.md\0"
+    runner.answers["diff"] = "M\0src/parse.py\0A\0README.md\0"
 
     result = await harvest(
         vm_with_commits(),
