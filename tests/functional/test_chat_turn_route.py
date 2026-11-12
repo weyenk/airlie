@@ -743,3 +743,15 @@ def test_chat_completions_still_works_unchanged(tmp_path: Path) -> None:
     assert r.status_code == 200 and r.json()["choices"][0]["message"]["content"] == "hi"
     sent = json.loads(up.requests[0].content)
     assert sent["messages"][0]["content"].startswith("CHAT PROMPT") and "BOOTSTRAP" not in json.dumps(sent)
+
+
+def test_a_retry_counts_the_attachments_of_the_saved_message_not_the_clients(tmp_path: Path) -> None:
+    c, up = client_for(tmp_path, ScriptedUpstream(Text("one"), Text("two")))
+    post(c, turn_body("look"))
+    limit = c.get("/v1/airlie/chat/attachments").json()["max_per_message"]
+    many = [{"type": "text", "text": "look"}] + [{"type": "airlie_upload", "upload": "0" * 32}] * (limit + 1)
+
+    r = post(c, {**turn_body(), "messages": [{"id": "u1", "role": "user", "parts": many}]})
+
+    assert r.status_code == 200  # the saved message is what is retried: it has no attachments
+    assert up.calls == 2

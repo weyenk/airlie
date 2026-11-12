@@ -133,6 +133,18 @@ class Confirmations:
                 applied.append(Answered(item.id, item.tool, a.approved))
         return applied
 
+    def waiting(self, session_id: str, approval_id: str) -> bool:
+        """The request is this session's and still waits for an answer (a restart forgets every one)."""
+        item = self._items.get(approval_id)
+        return item is not None and item.session == session_id and item.state == "pending"
+
+    def drop(self, session_id: str, approval_ids: Sequence[str]) -> None:
+        """Forget these requests of the session: the reply that asked them is gone (a retry replaced it)."""
+        for approval_id in approval_ids:
+            item = self._items.get(approval_id)
+            if item is not None and item.session == session_id:
+                del self._items[approval_id]
+
     def reopen(self, session_id: str, answers: Sequence[Answered]) -> None:
         """Put answers `approve` applied back to waiting: the turn they came with never started, so the
         person can answer again."""

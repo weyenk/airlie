@@ -19,6 +19,7 @@ from airlie.auth.store import AuthStore
 from airlie.boxes.protocol import BackendMissing, BoxUnavailable
 from airlie.boxes.tart import INSTALL_HINT, SOFTNET_HINT
 from airlie.chat.repo_session import slug_of
+from airlie.config import load_config
 from airlie.manager.core import Manager
 from airlie.serve.app import create_app
 from tests.support.box import FakeBox
@@ -41,7 +42,12 @@ def kinds(raw: str) -> list[str]:
 
 
 def body(text: str = "push it", **extra: Any) -> dict[str, Any]:
-    msg = {"id": "u1", "role": "user", "parts": [{"type": "text", "text": text}]}
+    """A turn of the person's; each text is its own message (the same text again is a Retry of it)."""
+    msg = {
+        "id": "u1" if text == "push it" else f"u-{text}",
+        "role": "user",
+        "parts": [{"type": "text", "text": text}],
+    }
     return {"id": "t1", "kind": "repository", "repo": "o/r", "messages": [msg], **extra}
 
 
@@ -910,3 +916,54 @@ def test_a_first_turn_during_its_pre_warm_waits_on_the_same_start(tmp_path: Path
 
         assert done and done[0].status_code == 200
         assert rig.fakes.mirror.refreshes == 1 and len(rig.fakes.vm(chat).boots) == 1
+
+
+# --- a prompt the server no longer holds reads expired ------------------------------------------------------
+
+
+def test_a_prompt_from_before_a_restart_reads_expired(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("pushed"))
+    rig.fakes.script_push()
+    asked = approval_id(rig.post())
+    assert "expired" not in shown_prompt(rig)["data"]  # live and pending: Approve and Deny stand
+
+    restarted = create_app(  # serve again over the same state: its Confirmations hold nothing
+        load_config(tmp_path / "airlie.yaml"),
+        transport=httpx.MockTransport(ScriptedUpstream()),
+        manager=Manager([FakeEngine("main")], budget_gb=100.0, clock=StuckClock()),
+        repo_sessions=RepoFakes(tmp_path).build,
+    )
+    parts = TestClient(restarted).get("/v1/airlie/chat/threads/t1").json()["messages"][1]["parts"]
+
+    assert next(p for p in parts if p["type"] == "data-approval")["data"]["expired"] is True
+    rig.post(answer(asked))
+    shown = shown_prompt(rig)["data"]
+    assert shown["answer"] == "approved" and "expired" not in shown  # an answered prompt keeps its answer
+
+
+def test_a_pre_warm_that_fails_gives_its_slot_back_at_once(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, pinnable=pinnable_or)
+    rig.fakes.network_check = lambda network: (_ for _ in ()).throw(BoxUnavailable(SOFTNET_HINT))
+    with TestClient(rig.app) as c:
+        failed = made(c)
+        settle(c)
+        rig.fakes.network_check = lambda network: None
+
+        later = [made(c), made(c)]  # the failed chat no longer counts against the two
+        settle(c)
+
+        running = [n for n, b in rig.fakes.boxes.items() if b.state == "running"]
+        assert sorted(running) == sorted(f"airlie-chat-{slug_of(i)}" for i in later)
+        assert f"airlie-chat-{slug_of(failed)}" not in running
+
+
+def test_a_retry_that_replaces_a_reply_with_a_prompt_drops_that_request(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Call("push_branch", {}), Text("asked"), Text("answered again"), Text("never"))
+    rig.fakes.script_push()
+    asked = approval_id(rig.post())
+
+    assert rig.post(body()).status_code == 200  # Retry: the same message, its own id
+
+    r = rig.post(answer(asked))  # the replaced reply's prompt
+    assert r.status_code == 409 and rig.pushes() == 0
+    assert not any(p["type"] == "data-approval" for p in stored_parts(rig))

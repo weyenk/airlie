@@ -415,8 +415,14 @@ def chat_router(
             newest = next((m for m in reversed(thread.messages) if m.role == "user"), None)
             if message.id and newest is not None and message.id == newest.id:  # Retry: answer it again
                 retries = newest.id
+                parts = list(newest.parts)  # what is retried is the saved message, not the client's copy
                 cut = thread.messages.index(newest) + 1
+                replaced = thread.messages[cut:]
                 thread.messages = thread.messages[:cut]  # the model does not see the reply it replaces
+                asked = [
+                    str(p.get("id")) for m in replaced for p in m.parts if p.get("type") == "data-approval"
+                ]
+                confirmations.drop(thread.id, asked)  # the replaced reply's prompts cannot be answered
             else:
                 taken = {m.id for m in thread.messages}  # keep ids unique
                 mid = message.id if message.id and message.id not in taken else f"msg-{uuid.uuid4().hex}"
@@ -579,6 +585,8 @@ def chat_router(
                 pass
         except Exception:
             log.warning("pre-warming the VM of chat %s failed", thread.id, exc_info=True)
+            mine = prewarmed.get(thread.owner, [])  # its slot goes back at once: nothing runs for it
+            prewarmed[thread.owner] = [i for i in mine if i != thread.id]
 
     @router.get("/v1/airlie/chat/threads")
     async def list_threads(request: Request, kind: ChatKind | None = None) -> Any:
@@ -606,6 +614,21 @@ def chat_router(
         made = ThreadSummary(t.id, t.title, t.kind, t.updated, t.created, t.repo, t.base_ref)
         return JSONResponse(summary_json(made, False), status_code=201)
 
+    def shown_message(thread_id: str, message: StoredMessage) -> dict[str, Any]:
+        """A stored message as GET gives it: a prompt nobody answered that the server no longer waits on
+        (serve restarted, or the turn it came with is over) reads `data.expired`, so no client offers
+        Approve and Deny that the turn route would refuse with 409."""
+        out = asdict(message)
+        out["parts"] = [
+            {**p, "data": {**p["data"], "expired": True}}
+            if p.get("type") == "data-approval"
+            and "answer" not in (p.get("data") or {})
+            and not confirmations.waiting(thread_id, str(p.get("id")))
+            else p
+            for p in out["parts"]
+        ]
+        return out
+
     @router.get("/v1/airlie/chat/threads/{thread_id}")
     async def get_thread(thread_id: str, request: Request) -> Any:
         principal = principal_of(request)
@@ -626,7 +649,7 @@ def chat_router(
             "created": t.created,
             "updated": t.updated,
             "todos": t.todos,
-            "messages": [asdict(m) for m in t.messages],
+            "messages": [shown_message(t.id, m) for m in t.messages],
         }
 
     @router.post("/v1/airlie/chat/threads/{thread_id}/stop")
