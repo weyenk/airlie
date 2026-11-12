@@ -143,3 +143,20 @@ def test_each_event_ends_with_a_blank_line() -> None:
 
 def test_sse_is_compact_json() -> None:
     assert sse({"a": 1, "b": [1, 2]}) == 'data: {"a":1,"b":[1,2]}\n\n'
+
+
+def test_unparseable_tool_arguments_are_an_input_error_chunk() -> None:
+    w = StreamWriter("m")
+    w.text("a")
+
+    assert chunks(w.tool_input_error("c1", "todo", '{"items": [', "arguments are not JSON")) == [
+        {"type": "text-end", "id": "m-text-1"},
+        {"type": "tool-input-start", "toolCallId": "c1", "toolName": "todo"},
+        {
+            "type": "tool-input-error",
+            "toolCallId": "c1",
+            "toolName": "todo",
+            "input": '{"items": [',
+            "errorText": "arguments are not JSON",
+        },
+    ]

@@ -1,0 +1,407 @@
+"""One chat turn as a stream: the server-side tool loop on the `chat` role, written out as AI SDK UI message
+chunks while it runs. The loop is `tools/loop.py`'s shape (one tool call per reply, a bounded number of
+calls, then one last reply with no tools offered) but it streams and reports each step, which that loop
+cannot.
+
+The turn runs in a task of its own and the generator only relays what it puts on a queue. A client that goes
+away (the generator is closed) does not stop the turn: it finishes, is saved, and `on_finish` hears
+`disconnected`. A turn that is cancelled is stopped: generation cancelled, the partial reply saved
+`interrupted`. Either way the engine hold is released and the user's message is saved."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import uuid
+from collections.abc import AsyncIterator, Callable
+from contextlib import AsyncExitStack, suppress
+from dataclasses import asdict, dataclass, field, replace
+from typing import Any
+
+from airlie.chat.hooks import Hooks, ToolEvent, TurnContext, TurnSummary
+from airlie.chat.stream import StreamWriter
+from airlie.chat.threads import StoredMessage, Thread, ThreadStore
+from airlie.chat.tools import TodoList
+from airlie.config.schema import RoleSpec
+from airlie.engine.protocol import Engine
+from airlie.engine.types import EngineError, GenRequest, GenResult, Message, TokenEvent, ToolCall
+from airlie.manager.client import Holder
+from airlie.manager.core import Status
+from airlie.prompts import text
+from airlie.serve.bridge.clock import Clock
+from airlie.tools.jsonargs import history_arguments, parse_tool_args
+from airlie.tools.registry import ToolRegistry
+
+log = logging.getLogger("airlie.chat.turn")
+
+STATUS_EVERY_S = 1.0
+INTERRUPTED_RESULT = "error: the turn ended before this call ran"
+TOOL_PREFIX = "tool-"
+
+
+@dataclass
+class TurnRequest:
+    thread: Thread
+    user_message: StoredMessage
+    ctx: TurnContext
+
+
+def _user_text(message: StoredMessage) -> str:
+    return "\n".join(str(p.get("text") or "") for p in message.parts if p.get("type") == "text")
+
+
+def _tool_part_call(part: dict[str, Any]) -> ToolCall:
+    raw = part.get("input") if "input" in part else part.get("rawInput")
+    arguments = raw if isinstance(raw, str) else json.dumps(raw if raw is not None else {})
+    return ToolCall(
+        str(part["toolCallId"]), str(part["type"])[len(TOOL_PREFIX) :], history_arguments(arguments)
+    )
+
+
+def history_messages(messages: list[StoredMessage]) -> list[Message]:
+    """Stored messages as the model's history: a user message's text; an assistant message's text and its
+    tool calls (each with its result, or a note that it never ran). Reasoning and data parts stay behind."""
+    out: list[Message] = []
+    for m in messages:
+        if m.role == "user":
+            if body := _user_text(m):
+                out.append(Message(role="user", content=body))
+            continue
+        buffer = ""
+        for part in m.parts:
+            kind = str(part.get("type") or "")
+            if kind == "text":
+                buffer += str(part.get("text") or "")
+            elif kind.startswith(TOOL_PREFIX) and "toolCallId" in part:
+                call = _tool_part_call(part)
+                result = (
+                    part.get("output") if part.get("state") == "output-available" else part.get("errorText")
+                )
+                out.append(Message(role="assistant", content=buffer, tool_calls=(call,)))
+                out.append(
+                    Message(
+                        role="tool",
+                        content=INTERRUPTED_RESULT if result is None else str(result),
+                        tool_call_id=call.id,
+                        name=call.name,
+                    )
+                )
+                buffer = ""
+        if buffer.strip():
+            out.append(Message(role="assistant", content=buffer))
+    return out
+
+
+@dataclass
+class _Run:
+    """What one turn works with and has so far."""
+
+    req: TurnRequest
+    engine: Engine
+    engine_name: str
+    holder: Holder
+    registry: ToolRegistry
+    todos: TodoList
+    store: ThreadStore
+    hooks: Hooks
+    role: RoleSpec
+    max_steps: int
+    clock: Clock
+    status: Callable[[], list[Status]]
+    out: asyncio.Queue[str | None]
+    message_id: str = field(default_factory=lambda: f"msg-{uuid.uuid4().hex}")
+    gone: bool = False  # the client closed the stream; keep going, stop writing
+    parts: list[dict[str, Any]] = field(default_factory=list)
+    messages: list[Message] = field(default_factory=list)  # what the model sees, grown by each step
+    step_text: str = ""
+    usage: dict[str, Any] | None = None
+    completion_tokens: int = 0
+    in_flight: str | None = None  # request id of the generation running
+    w: StreamWriter = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.w = StreamWriter(self.message_id)
+
+    def emit(self, chunks: list[str]) -> None:
+        if not self.gone:
+            for c in chunks:
+                self.out.put_nowait(c)
+
+    def add_delta(self, kind: str, delta: str) -> None:
+        if self.parts and self.parts[-1].get("type") == kind and self.parts[-1].get("open"):
+            self.parts[-1]["text"] += delta
+        else:
+            self.close_part()
+            self.parts.append({"type": kind, "text": delta, "open": True})
+
+    def close_part(self) -> None:
+        if self.parts and self.parts[-1].get("open"):
+            del self.parts[-1]["open"]
+
+    def stored_parts(self) -> list[dict[str, Any]]:
+        return [{k: v for k, v in p.items() if k != "open"} for p in self.parts]
+
+    def finish_usage(self) -> dict[str, Any]:
+        last = self.usage or {}
+        return {
+            "prompt_tokens": last.get("prompt_tokens", 0),
+            "completion_tokens": self.completion_tokens,
+            "cached_tokens": last.get("cached_tokens", 0),
+            "max_context": self.role.max_context,
+        }
+
+    def messages_for_model(self) -> list[Message]:
+        thread, user = self.req.thread, self.req.user_message
+        return [
+            Message(role="system", content=self.req.ctx.system_prompt),
+            *history_messages(thread.messages),
+            Message(role="user", content=_user_text(user)),
+        ]
+
+    # --- the hold -------------------------------------------------------------------------------------------
+
+    async def enter_hold(self, stack: AsyncExitStack) -> None:
+        """Take the engine as `chat:{thread}`; while it is not ready, relay the manager's status."""
+        owner = f"chat:{self.req.thread.id}"
+        enter = asyncio.create_task(stack.enter_async_context(self.holder.hold(self.engine_name, owner)))
+        seen: tuple[str, str] | None = None
+        try:
+            await asyncio.sleep(0)  # an engine already up is held at once: no status to show
+            while not enter.done():
+                mine = [s for s in self.status() if s.name == self.engine_name]
+                if mine and (mine[0].state, mine[0].detail) != seen:
+                    s = mine[0]
+                    seen = (s.state, s.detail)
+                    progress = None if s.progress is None else asdict(s.progress)
+                    payload = {"engine": s.name, "state": s.state, "detail": s.detail, "progress": progress}
+                    self.emit(self.w.data("engine", payload, transient=True))
+                sleeper = asyncio.create_task(self.clock.sleep(STATUS_EVERY_S))
+                try:
+                    await asyncio.wait({enter, sleeper}, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    sleeper.cancel()
+            await enter  # a failed hold raises here
+        finally:
+            if not enter.done():
+                enter.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await enter
+
+    # --- one generation -------------------------------------------------------------------------------------
+
+    async def generate(self, gen_req: GenRequest) -> GenResult:
+        """Run one generation, relaying its tokens as they arrive."""
+        tokens: asyncio.Queue[TokenEvent | None] = asyncio.Queue()
+        self.in_flight = gen_req.request_id
+        self.step_text = ""
+        streamed = {"text": False, "reasoning": False}
+        task = asyncio.create_task(self.engine.generate(gen_req, tokens.put_nowait))
+        task.add_done_callback(lambda _t: tokens.put_nowait(None))
+        try:
+            while (ev := await tokens.get()) is not None:
+                self.relay(ev)
+                streamed["reasoning" if ev.reasoning else "text"] = True
+            res = task.result()
+            if res.reasoning and not streamed["reasoning"]:
+                self.relay(TokenEvent(res.reasoning, reasoning=True))
+            if res.text and not streamed["text"]:
+                self.relay(TokenEvent(res.text))
+            return res
+        finally:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
+                try:
+                    await self.engine.cancel(gen_req.request_id)
+                except Exception:
+                    log.exception("cancelling generation %s failed", gen_req.request_id)
+            self.in_flight = None
+
+    def relay(self, ev: TokenEvent) -> None:
+        if ev.reasoning:
+            self.add_delta("reasoning", ev.text)
+            self.emit(self.w.reasoning(ev.text))
+        else:
+            self.add_delta("text", ev.text)
+            self.step_text += ev.text
+            self.emit(self.w.text(ev.text))
+
+    def note_result(self, res: GenResult) -> None:
+        self.completion_tokens += res.completion_tokens
+        self.usage = {"prompt_tokens": res.prompt_tokens, "cached_tokens": res.cached_tokens or 0}
+
+    # --- one tool call --------------------------------------------------------------------------------------
+
+    async def run_tool(self, call: ToolCall) -> None:
+        owner = self.req.thread.owner
+        try:
+            parse_tool_args(call.arguments)
+            parsed = True
+        except ValueError:
+            parsed = False
+        self.close_part()
+        if parsed:
+            self.emit(self.w.tool_call(call.id, call.name, history_arguments(call.arguments)))
+        result = await self.registry.call(call)  # never runs a call whose arguments do not parse
+        part: dict[str, Any] = {"type": f"{TOOL_PREFIX}{call.name}", "toolCallId": call.id}
+        if parsed:
+            part["input"] = json.loads(history_arguments(call.arguments))
+            self.emit(self.w.tool_result(call.id, result.output, result.ok))
+            if result.ok:
+                part.update(state="output-available", output=result.output)
+            else:
+                part.update(state="output-error", errorText=result.output)
+        else:
+            self.emit(self.w.tool_input_error(call.id, call.name, call.arguments, result.output))
+            part.update(state="output-error", rawInput=call.arguments, errorText=result.output)
+        self.parts.append(part)
+        await self.hooks.run(
+            "after_tool",
+            self.req.ctx,
+            ToolEvent(call.id, call.name, call.arguments, result.output, result.ok),
+        )
+        if call.name == "todo" and result.ok:
+            items = [asdict(i) for i in self.todos.items()]
+            self.emit(self.w.data("todos", items))
+            self.store.get(self.req.thread.id, owner)
+            self.store.set_todos(self.req.thread.id, items)
+        self.messages.append(
+            Message(role="tool", content=result.output, tool_call_id=call.id, name=call.name)
+        )
+
+    # --- the loop -------------------------------------------------------------------------------------------
+
+    async def loop(self) -> None:
+        self.messages = self.messages_for_model()
+        schemas = self.registry.schemas() or None
+        role = self.role
+        for _ in range(self.max_steps):
+            gen_req = GenRequest(
+                role="chat",
+                messages=list(self.messages),
+                sampling=role.sampling,
+                max_tokens=role.max_tokens,
+                thinking=role.thinking,
+                tools=schemas,
+            )
+            res = await self.generate(gen_req)
+            self.note_result(res)
+            if not res.tool_calls or schemas is None:
+                return
+            call = res.tool_calls[0]  # one action per reply, as the team loop does
+            replay = replace(call, arguments=history_arguments(call.arguments))
+            self.messages.append(Message(role="assistant", content=res.text, tool_calls=(replay,)))
+            await self.run_tool(call)
+            self.emit(self.w.next_step())
+            self.parts.append({"type": "step-start"})
+        self.messages.append(Message(role="user", content=text("no-more-tools")))
+        last = GenRequest(
+            role="chat",
+            messages=list(self.messages),
+            sampling=role.sampling,
+            max_tokens=role.max_tokens,
+            thinking=role.thinking,
+            tools=None,
+        )
+        self.note_result(await self.generate(last))
+
+    # --- the turn -------------------------------------------------------------------------------------------
+
+    async def drive(self) -> None:
+        interrupted = failed = False
+        stack = AsyncExitStack()
+        try:
+            self.emit(self.w.start())
+            await self.enter_hold(stack)
+            await self.loop()
+            self.emit(self.w.finish(self.finish_usage()))
+        except EngineError as e:
+            failed = True
+            self.emit(self.w.error(str(e)))
+            self.emit(self.w.finish(self.finish_usage()))
+        except asyncio.CancelledError:
+            interrupted = True
+            raise
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            try:
+                await self.persist(interrupted=interrupted, failed=failed)
+            finally:
+                await stack.aclose()
+                self.out.put_nowait(None)
+
+    async def persist(self, *, interrupted: bool, failed: bool) -> None:
+        req = self.req
+        thread, owner = req.thread, req.thread.owner
+        self.close_part()
+        parts = self.stored_parts()
+        usage = None if self.usage is None else self.finish_usage()
+        title = thread.title
+        try:
+            self.store.get(thread.id, owner)
+            self.store.append(thread.id, req.user_message)
+            if any(p.get("type") != "step-start" for p in parts):
+                created = self.clock.wall()
+                assistant = StoredMessage(self.message_id, "assistant", parts, created, usage, interrupted)
+                self.store.append(thread.id, assistant)
+            title = self.store.get(thread.id, owner).title
+        except Exception:
+            log.exception("saving chat thread %s failed", thread.id)
+            failed = True
+        summary = TurnSummary(
+            thread_id=thread.id,
+            owner=owner,
+            kind=thread.kind,
+            title=title,
+            text=self.step_text,
+            usage=self.finish_usage(),
+            interrupted=interrupted,
+            failed=failed,
+            disconnected=self.gone,
+        )
+        await self.hooks.run("on_finish", summary)
+
+
+async def run_turn(
+    req: TurnRequest,
+    *,
+    engine: Engine,
+    engine_name: str,
+    holder: Holder,
+    registry: ToolRegistry,
+    todos: TodoList,
+    store: ThreadStore,
+    hooks: Hooks,
+    role: RoleSpec,
+    max_steps: int,
+    clock: Clock,
+    status: Callable[[], list[Status]],
+) -> AsyncIterator[str]:
+    """The turn's SSE strings. `req.ctx` is already prepared (the route ran `session_start` and `before_turn`
+    first, so a refusal is an HTTP error before the first byte)."""
+    out: asyncio.Queue[str | None] = asyncio.Queue()
+    run = _Run(
+        req, engine, engine_name, holder, registry, todos, store, hooks, role, max_steps, clock, status, out
+    )
+    driver = asyncio.create_task(run.drive())
+    try:
+        while (chunk := await out.get()) is not None:
+            yield chunk
+        await driver
+    except GeneratorExit:
+        run.gone = True  # the client is gone: the turn still finishes and is saved
+        try:
+            await driver
+        except Exception:
+            log.exception("chat turn %s failed after the client went away", req.thread.id)
+        raise
+    except asyncio.CancelledError:
+        run.gone = True
+        driver.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await driver
+        raise

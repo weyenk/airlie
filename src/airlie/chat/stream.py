@@ -48,6 +48,22 @@ class StreamWriter:
             sse({"type": "tool-input-available", "toolCallId": call_id, "toolName": name, "input": parsed}),
         ]
 
+    def tool_input_error(self, call_id: str, name: str, raw: str, error: str) -> list[str]:
+        """A call whose arguments did not parse: the tool never runs, and the SDK shows the error on it."""
+        return [
+            *self._close(),
+            sse({"type": "tool-input-start", "toolCallId": call_id, "toolName": name}),
+            sse(
+                {
+                    "type": "tool-input-error",
+                    "toolCallId": call_id,
+                    "toolName": name,
+                    "input": raw,
+                    "errorText": error,
+                }
+            ),
+        ]
+
     def tool_result(self, call_id: str, output: str, ok: bool) -> list[str]:
         if ok:
             return [sse({"type": "tool-output-available", "toolCallId": call_id, "output": output})]
