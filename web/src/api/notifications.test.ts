@@ -29,6 +29,15 @@ test("enablePush asks permission, subscribes with the key as bytes and posts the
   expect(call.body).toEqual({ endpoint: "https://push.example/abc", keys: { p256dh: "P", auth: "A" } });
 });
 
+test("enablePush decodes a base64url key (with - and _) to its exact bytes", async () => {
+  permission("granted");
+  stubJson({}, { status: 204 });
+  const { reg, subscribe } = fakeRegistration();
+  await enablePush(reg, "-_8APg"); // bytes 251, 255, 0, 62
+  const options = (subscribe.mock.calls[0] as unknown as [{ applicationServerKey: Uint8Array }])[0];
+  expect(options.applicationServerKey).toEqual(new Uint8Array([251, 255, 0, 62]));
+});
+
 test("a denied permission throws and posts nothing", async () => {
   permission("denied");
   const f = stubJson({}, { status: 204 });

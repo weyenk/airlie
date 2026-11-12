@@ -178,6 +178,7 @@ test("tapping a notification focuses an open window and sends it to the page", a
   w.dispatch("notificationclick", e);
   await e.done();
   expect(e.notification.close).toHaveBeenCalled();
+  expect(w.self.clients.matchAll).toHaveBeenCalledWith({ type: "window", includeUncontrolled: true });
   expect(win.focus).toHaveBeenCalled();
   expect(win.navigate).toHaveBeenCalledWith("/board/AIR-9");
   expect(w.self.clients.openWindow).not.toHaveBeenCalled();

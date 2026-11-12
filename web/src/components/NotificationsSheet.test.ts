@@ -111,3 +111,70 @@ test("a failing load shows the error", async () => {
   await open();
   expect(document.body.querySelector("[role=alert]")?.textContent).toContain("HTTP 500");
 });
+
+test("unticking a checked kind sends it as false", async () => {
+  await open();
+  const box = document.body.querySelectorAll<HTMLInputElement>("input[type=checkbox]")[0];
+  box.checked = false;
+  box.dispatchEvent(new Event("change"));
+  await flushPromises();
+  expect(api.setKinds).toHaveBeenCalledWith({ chat_reply: false });
+});
+
+test("a device already subscribed shows Turn off on this device on load", async () => {
+  vi.mocked(api.thisDeviceSubscribed).mockResolvedValueOnce(true);
+  await open();
+  expect(buttonNamed("Turn off on this device")).toBeDefined();
+  expect(buttonNamed("Turn on notifications")).toBeUndefined();
+});
+
+test("turning off calls disablePush and the button goes back to Turn on notifications", async () => {
+  vi.mocked(api.thisDeviceSubscribed).mockResolvedValueOnce(true);
+  await open();
+  buttonNamed("Turn off on this device")!.click();
+  await flushPromises();
+  expect(api.disablePush).toHaveBeenCalledWith({ id: "reg" });
+  expect(buttonNamed("Turn on notifications")).toBeDefined();
+  expect(buttonNamed("Turn off on this device")).toBeUndefined();
+});
+
+test.each([
+  [0, "No device is subscribed yet."],
+  [1, "Sent to 1 device."],
+  [2, "Sent to 2 devices."],
+])("Send a test with %i sent says %s", async (sent, text) => {
+  vi.mocked(api.sendTest).mockResolvedValueOnce(sent);
+  await open();
+  buttonNamed("Send a test")!.click();
+  await flushPromises();
+  expect(document.body.querySelector("[role=status]")?.textContent).toBe(text);
+});
+
+test("on iOS, navigator.standalone alone counts as installed", async () => {
+  agent("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)", true);
+  await open();
+  expect(buttonNamed("Turn on notifications")).toBeDefined();
+  expect(document.body.textContent).not.toContain("Add airlie to your Home Screen");
+});
+
+test("on iOS, the display-mode standalone media query alone counts as installed", async () => {
+  agent("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)", false);
+  vi.stubGlobal("matchMedia", (q: string) => ({ matches: q === "(display-mode: standalone)" }));
+  await open();
+  vi.unstubAllGlobals();
+  expect(buttonNamed("Turn on notifications")).toBeDefined();
+  expect(document.body.textContent).not.toContain("Add airlie to your Home Screen");
+});
+
+test("the state is fetched each time the sheet is opened, not only on mount", async () => {
+  const w = mount(NotificationsSheet, { props: { open: false }, attachTo: document.body });
+  await flushPromises();
+  expect(api.notificationState).not.toHaveBeenCalled();
+  await w.setProps({ open: true });
+  await flushPromises();
+  expect(api.notificationState).toHaveBeenCalledTimes(1);
+  await w.setProps({ open: false });
+  await w.setProps({ open: true });
+  await flushPromises();
+  expect(api.notificationState).toHaveBeenCalledTimes(2);
+});
