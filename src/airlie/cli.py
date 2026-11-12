@@ -1017,6 +1017,22 @@ def bench_story_compare(a: Path, b: Path) -> None:
         print(line)
 
 
+@bench_app.command("trace-diff")
+def bench_trace_diff(
+    a: Path,
+    b: Path,
+    no_prompts: Annotated[bool, typer.Option("--no-prompts", help="Leave the studio prompts out")] = False,
+) -> None:
+    """What differs between two story runs' state dirs (events, prompts, ledger rows); exits 1 if any."""
+    from airlie.bench.trace_diff import diff_story_runs
+
+    diff = diff_story_runs(a, b, prompts=not no_prompts)
+    for line in diff.lines():
+        print(line)
+    if not diff.clean:
+        raise typer.Exit(1)
+
+
 @bench_app.command("models")
 def bench_models(
     config: ConfigOpt = None,

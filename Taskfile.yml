@@ -496,6 +496,11 @@ tasks:
     cmds:
       - '{{.RUN}} airlie bench story-compare {{.CLI_ARGS}}'
 
+  bench:trace-diff:
+    desc: "What differs between two story runs' state dirs: events, studio prompts, ledger rows (task bench:trace-diff -- a-state-dir b-state-dir [--no-prompts]); exits 1 if any"
+    cmds:
+      - '{{.RUN}} airlie bench trace-diff {{.CLI_ARGS}}'
+
   bench:compare:
     desc: "Per-cell deltas between two saved bench JSON files (task bench:compare -- a.json b.json)"
     cmds:

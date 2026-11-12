@@ -12,11 +12,11 @@ in a gate's tail."""
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from airlie.bench.trace_diff import TIMING, VOLATILE, same
 from airlie.engine import FakeEngine, FakeReply
 from airlie.story.board import text_card
 from airlie.supervisor.ledger import Row
@@ -51,29 +51,12 @@ SCRIPT_LAYER: dict[str, list[FakeReply]] = {
     "supervisor": [answer("Put add back as it was.")],
 }
 
-VOLATILE = frozenset({"ts", "build", "run_id", "studio_run", "ms", "elapsed_s", "wall_s", "wall_ms"})
-"""Times, ids and the build's commit: different on every run."""
-
-TIMING = frozenset(
-    {"prompt_tokens", "completion_tokens", "prefill_ms", "gen_ms", "tool_ms", "span_id", "parent_id"}
-)
-"""A studio run's step and reply events also carry the engine's measured tokens and times, and trace ids."""
-
-
 SHA = "0" * 40  # the shas are spelled <sha> by `same`; `neutral` wants one to replace
 
 
 def layer_engine() -> FakeEngine:
     """A fresh engine on SCRIPT_LAYER (an engine's script is consumed as it is read)."""
     return FakeEngine({role: list(replies) for role, replies in SCRIPT_LAYER.items()})
-
-
-def same(text: str) -> str:
-    """`text` with what a re-run changes spelled one way: run ids, commits, pytest's clock and colours."""
-    text = re.sub(r"\\u001b\[[0-9;]*m|\x1b\[[0-9;]*m", "", text)
-    text = re.sub(r"\b\d{8}-\d{6}-[0-9a-f]{4}\b", "<run>", text)
-    text = re.sub(r" in \d+\.\d+s\b", " in <s>", text)
-    return re.sub(r"\b[0-9a-f]{40}\b", "<sha>", text)
 
 
 def clean(
