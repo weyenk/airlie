@@ -84,6 +84,9 @@ test("new under chats makes a plain chat and opens it", async () => {
 test("a chat that could not be made shows why", async () => {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (url === "/v1/events") return new Promise<Response>(() => {});
+    if (url.startsWith("/v1/airlie/chat/repositories")) {
+      return Response.json({ sources: [{ name: "github_app", title: "GitHub", linked: false, login: null, repositories: [], error: null, listed_at: null }], extras: [], extra_candidates: [] });
+    }
     if (init?.method === "POST") return Response.json({ detail: "no VM is free" }, { status: 409 });
     return Response.json(url.endsWith("pins") ? { pins: [] } : url.endsWith("names") ? { repos: [] } : []);
   }));
@@ -122,7 +125,7 @@ test("chats of an unpinned repository stay listed under other repositories", asy
 test("with no pins and no chats it says pin a repository to start a chat in a VM", async () => {
   panelServer();
   const { w } = await open();
-  expect(w.text()).toContain("Pin a repository to start a chat in a VM");
+  expect(w.text()).toContain("Connect GitHub");
   expect(w.find('section[aria-label="Other repositories"]').exists()).toBe(false);
 });
 
@@ -232,4 +235,174 @@ test("the close button asks to close", async () => {
   const { w } = await open();
   await button(w, "Close the panel").trigger("click");
   expect(w.emitted("close")).toHaveLength(1);
+});
+
+test("an unlinked person sees connect github and their extras", async () => {
+  panelServer({ repos: ["local/only"], pins: ["local/only"] });
+  const { w } = await open();
+  expect(w.text()).toContain("Connect GitHub");
+  expect(w.find('section[aria-label="local/only"]').exists()).toBe(true);
+});
+
+test("connect shows the code and the link then the repositories once approved", async () => {
+  vi.useFakeTimers();
+  const server = panelServer({ link: { pollsBeforeLinked: 1, interval: 5 } });
+  const { w } = await open();
+  await w.findAll("button").find((b) => b.text() === "Connect GitHub")!.trigger("click");
+  await flushPromises();
+  expect(w.get('[data-test="link-code"]').text()).toBe("WXYZ-0000");
+  expect(w.text()).toContain("https://github.com/login/device");
+  await vi.advanceTimersByTimeAsync(5000);
+  await flushPromises();
+  await vi.advanceTimersByTimeAsync(5000);
+  await flushPromises();
+  expect(w.find('section[aria-label="weyenk/airlie"]').exists()).toBe(true);
+  const polls = server.calls.filter((c) => c.method === "POST" && c.url.includes("/link/link-1"));
+  expect(polls).toHaveLength(2);
+  vi.useRealTimers();
+});
+
+test("a slow_down waits the new interval", async () => {
+  vi.useFakeTimers();
+  panelServer({ link: { pollsBeforeLinked: 3, interval: 5, slowAfter: 1, slowInterval: 10 } });
+  const { w } = await open();
+  await w.findAll("button").find((b) => b.text() === "Connect GitHub")!.trigger("click");
+  await flushPromises();
+  await vi.runAllTimersAsync();
+  await flushPromises();
+  expect(w.find('section[aria-label="weyenk/airlie"]').exists()).toBe(true);
+  vi.useRealTimers();
+});
+
+test("a declined code says so and offers start again", async () => {
+  vi.useFakeTimers();
+  const server = panelServer({ link: { decline: true } });
+  const { w } = await open();
+  await w.findAll("button").find((b) => b.text() === "Connect GitHub")!.trigger("click");
+  await flushPromises();
+  await vi.advanceTimersByTimeAsync(5000);
+  await flushPromises();
+  expect(w.text()).toContain("you declined on GitHub");
+  expect(w.text()).toContain("Start again");
+  expect(server.link.decline).toBe(true);
+  vi.useRealTimers();
+});
+
+test("an expired code offers start again", async () => {
+  vi.useFakeTimers();
+  panelServer({ link: { expire: true } });
+  const { w } = await open();
+  await w.findAll("button").find((b) => b.text() === "Connect GitHub")!.trigger("click");
+  await flushPromises();
+  await vi.advanceTimersByTimeAsync(5000);
+  await flushPromises();
+  expect(w.text()).toContain("the code expired: start again");
+  expect(w.text()).toContain("Start again");
+  vi.useRealTimers();
+});
+
+test("a link lost to a restart offers start again", async () => {
+  vi.useFakeTimers();
+  panelServer({ link: { gone: true } });
+  const { w } = await open();
+  await w.findAll("button").find((b) => b.text() === "Connect GitHub")!.trigger("click");
+  await flushPromises();
+  await vi.advanceTimersByTimeAsync(5000);
+  await flushPromises();
+  expect(w.text()).toContain("The code is gone: start again");
+  expect(w.find('[role="alert"]').exists()).toBe(false);
+  vi.useRealTimers();
+});
+
+test("coming back to the page polls at once", async () => {
+  vi.useFakeTimers();
+  const server = panelServer({ link: { pollsBeforeLinked: 2, interval: 60 } });
+  const { w } = await open();
+  await w.findAll("button").find((b) => b.text() === "Connect GitHub")!.trigger("click");
+  await flushPromises();
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+  document.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(1000);
+  const pollsBefore = server.calls.filter((c) => c.url.includes("/link/link-1")).length;
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+  document.dispatchEvent(new Event("visibilitychange"));
+  await flushPromises();
+  const pollsAfter = server.calls.filter((c) => c.url.includes("/link/link-1")).length;
+  expect(pollsAfter).toBeGreaterThan(pollsBefore);
+  vi.useRealTimers();
+});
+
+test("refresh repositories asks with refresh true", async () => {
+  const server = panelServer({ linked: true, login: "weyenk", githubRepos: [{ repo: "weyenk/airlie", private: true, push: true, url: "" }] });
+  const { w } = await open();
+  await w.get('[data-test="refresh-repos"]').trigger("click");
+  await flushPromises();
+  expect(server.calls.some((c) => c.url === "/v1/airlie/chat/repositories?refresh=true")).toBe(true);
+});
+
+test("a source error shows its line and keeps the last list", async () => {
+  panelServer({
+    linked: true,
+    login: "weyenk",
+    githubRepos: [{ repo: "weyenk/airlie", private: true, push: true, url: "" }],
+    sourceError: "GitHub is slow right now",
+  });
+  const { w } = await open();
+  expect(w.text()).toContain("GitHub is slow right now");
+  expect(w.find('section[aria-label="weyenk/airlie"]').exists()).toBe(true);
+});
+
+test("disconnect github returns to connect", async () => {
+  const server = panelServer({
+    linked: true,
+    login: "weyenk",
+    githubRepos: [{ repo: "weyenk/airlie", private: true, push: true, url: "" }],
+  });
+  const { w } = await open();
+  await w.findAll("button").find((b) => b.text().includes("Disconnect GitHub"))!.trigger("click");
+  await flushPromises();
+  expect(server.calls.some((c) => c.method === "DELETE" && c.url.includes("/link"))).toBe(true);
+  expect(w.text()).toContain("Connect GitHub");
+});
+
+test("github repositories cannot be unpinned but extras can", async () => {
+  panelServer({
+    linked: true,
+    login: "weyenk",
+    githubRepos: [{ repo: "weyenk/airlie", private: true, push: true, url: "" }],
+    pins: ["local/only"],
+    repos: ["local/only"],
+    threads: [REPO("r1", "weyenk/airlie", 1, "gh"), REPO("r2", "local/only", 2, "local")],
+  });
+  const { w } = await open();
+  expect(w.find('[aria-label="Unpin weyenk/airlie"]').exists()).toBe(false);
+  await button(w, "Unpin local/only").trigger("click");
+  await flushPromises();
+  expect(w.text()).not.toContain("Unpin local/only");
+});
+
+test("the pin picker offers only local checkouts", async () => {
+  panelServer({
+    linked: true,
+    login: "weyenk",
+    githubRepos: [{ repo: "weyenk/airlie", private: true, push: true, url: "" }],
+    repos: ["local/only"],
+  });
+  const { w } = await open();
+  expect(w.text()).toContain("Pin a local checkout");
+  await w.get('[role="combobox"]').setValue("l");
+  expect(w.findAll('[role="option"]').map((o) => o.text())).toEqual([expect.stringContaining("local/only")]);
+});
+
+test("chats of a repository no longer listed stay under other repositories", async () => {
+  panelServer({
+    linked: true,
+    login: "weyenk",
+    githubRepos: [{ repo: "weyenk/airlie", private: true, push: true, url: "" }],
+    threads: [REPO("g", "gone/repo", 10, "orphan chat")],
+  });
+  const { w } = await open();
+  const other = w.get('section[aria-label="Other repositories"]');
+  expect(other.text()).toContain("gone/repo");
+  expect(other.text()).toContain("orphan chat");
 });
