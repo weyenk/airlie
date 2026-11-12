@@ -105,12 +105,14 @@ notifications:
 
 Restart `task serve`; `task doctor` reports `notifications` as `push on` once it is set. Then, in the installed app,
 open the account menu, choose Notifications, tap Turn on notifications and allow the prompt (iOS asks only in the
-installed app). Tick the kinds you want: a chat reply, a model or VM ready, something needing your OK, a story
-blocked, a story published, mockups to pick (`notifications.default_kinds` sets what is on until you choose). Send a
-test checks the device. The Studio POSTs each push to the phone's push service, so it needs outbound internet;
+installed app). Tick the kinds you want (`notifications.default_kinds` sets what is on until you choose). Today the
+Studio sends a push when a story, epic or initiative is blocked, when a story is published for review, when mockups
+are ready to pick, and for Send a test; a chat reply, a model or VM ready and something needing your OK are marked
+"coming soon" (chat replies come with the chat turn route, model/VM ready and confirmations later). Notifications
+belong to a signed-in person, so an API key cannot set them up. The Studio POSTs each push to the phone's push service, so it needs outbound internet;
 `notifications.push_hosts` lists the services a browser may subscribe through (Apple, Google, Mozilla, Windows by
-default). The VAPID key is made on first use in `observability.state_dir/vapid.pem` (`notifications.vapid_key` moves
-it).
+default). The VAPID key is made when serve starts with `notifications.contact` set, in
+`observability.state_dir/vapid.pem` (`notifications.vapid_key` moves it).
 
 ## Tasks
 
