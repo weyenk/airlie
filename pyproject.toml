@@ -160,6 +160,7 @@ enrolled = [
     "src/airlie/chat/superpowers.py",
     "src/airlie/chat/kinds.py",
     "src/airlie/chat/tools.py",
+    "src/airlie/chat/stream.py",
 ]
 # Mutants no test can catch, listed so they stop gating: each entry has the `mutant` name, the mutated `line`
 # (the `+` line of `mutmut show`) and the `reason` it changes nothing a caller can see. An entry whose mutant
