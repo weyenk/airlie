@@ -132,3 +132,21 @@ written as root with `sudo -n`, the block on stdin). A name that does not resolv
 host. IPv4 only. A CDN that rotates addresses mid-session needs a VM restart. Not rerun live yet: boot with
 `Network("allow_list", ("pypi.org", "files.pythonhosted.org"))`, then `pip download --no-deps six` and
 `curl -m 10 https://example.com` (must fail), and check `/etc/hosts` has one block.
+
+## Rerun after 28ecf455: check 3 PASSES
+
+Real `TartBox` and `Images.ensure` (env image with `python3-pip`, `curl`), allow list `pypi.org`,
+`files.pythonhosted.org`, one VM (2 cpus, 2 GB) booted three times: `allow_list`, `allow_list` again, then `off`.
+Serve and engines untouched.
+
+- `allow_list`: `/etc/hosts` has the `# BEGIN/END airlie allow_list` block with the four Fastly addresses
+  (151.101.{0,64,128,192}.223) for each name. `pip download --no-deps six` fetched
+  `six-1.17.0-py2.py3-none-any.whl`; `curl https://pypi.org` gave 200; `curl -m 10 https://example.com` failed
+  ("Resolving timed out"). On the gateway (`ip route` default: 172.31.139.89, then 10.247.24.33) ports 22, 53 and
+  8090 all timed out.
+- Reboot of the same VM in `allow_list`: exactly one block (`grep -c BEGIN` = 1), same results, new gateway.
+- `off`: `pip download` timed out (120 s exec limit), `curl pypi.org` failed ("Connection timed out"),
+  example.com failed, gateway 22, 53, 8090 silent. Note: the previous boot's `/etc/hosts` block is still in the
+  guest in `off` (the file persists in the disk; harmless since nothing is reachable, but it is not removed).
+- Timings: boot 6.5 s, 6.2 s, 5.9 s; host resolve of both names is instant (cached).
+- Cleaned up: the VM and the env image were deleted; `tart list` shows `airlie-searxng` and the ubuntu images.
