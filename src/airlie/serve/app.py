@@ -31,6 +31,7 @@ from airlie.auth.store import AuthStore
 from airlie.board import BoardStore
 from airlie.board.api import board_router
 from airlie.board.model import WorkflowDraft
+from airlie.chat.hooks import UnknownSkill, slash_section
 from airlie.config import AirlieConfig
 from airlie.engine.dialect import (
     dialect_for,
@@ -766,16 +767,11 @@ def create_app(
 
     def chat_prompt(prompt: str, skill: Any) -> str:
         """The chat role's prompt with the list of skills it can suggest, and the one run for this request."""
-        if chat_skills:
-            listing = "\n".join(f"- /{s.name}: {s.summary}" for s in chat_skills.values())
-            prompt = f"{prompt.rstrip()}\n\n## Slash commands\n\n{listing}\n"
-        if skill is None:
-            return prompt
-        found = chat_skills.get(str(skill))
-        if found is None:
-            known = ", ".join(chat_skills) or "none"
-            raise HTTPException(404, f"unknown skill '{skill}'; skills: {known}")
-        return f"{prompt.rstrip()}\n\n## Skill: /{found.name}\n\n{found.text.strip()}\n"
+        try:
+            section = slash_section(chat_skills, None if skill is None else str(skill))
+        except UnknownSkill as e:
+            raise HTTPException(404, str(e)) from None
+        return f"{prompt.rstrip()}\n\n{section}" if section else prompt
 
     @app.get("/v1/airlie/chat/attachments")
     async def attachment_limits() -> dict[str, Any]:

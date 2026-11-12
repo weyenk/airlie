@@ -9,6 +9,7 @@ from typing import Literal
 from airlie.chat.superpowers import SuperpowersLibrary
 from airlie.chat.tools import SkillTool, TodoList, TodoTool
 from airlie.config.schema import CHAT_TOOLS, PLAIN_CHAT_FORBIDDEN, AirlieConfig
+from airlie.skills.library import Skill
 from airlie.tools.protocol import Tool, ToolContext
 from airlie.tools.registry import ToolRegistry
 
@@ -37,6 +38,7 @@ def registry_for(
     todos: TodoList,
     ctx: ToolContext,
     web: Mapping[str, Tool],
+    skills_extra: Mapping[str, Skill] | None = None,
 ) -> ToolRegistry:
     if kind != "plain":
         raise KindUnavailable(kind)
@@ -47,7 +49,7 @@ def registry_for(
                 tools.append(web[name])
         elif name == "skill":
             if cfg.chat.superpowers.enabled and library is not None:
-                tools.append(SkillTool(library))
+                tools.append(SkillTool(library, skills_extra))
         elif name == "todo":
             tools.append(TodoTool(todos))
     return ToolRegistry(tools, ctx)
