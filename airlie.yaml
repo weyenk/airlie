@@ -111,6 +111,7 @@ chat:
     roles: [coder, reviewer, tester, architect]
     max_steps: 30
     max_depth: 1
+  sources: [github_app]            # the panel's repositories come from each person's linked GitHub account (device flow)
 
 # ---- Learning to Share --------------------------------------------------------------------------------------------
 lts:

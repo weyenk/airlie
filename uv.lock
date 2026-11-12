@@ -85,6 +85,7 @@ source = { editable = "." }
 dependencies = [
     { name = "autogen-agentchat" },
     { name = "autogen-ext", extra = ["openai"] },
+    { name = "cryptography" },
     { name = "duckdb" },
     { name = "fastapi" },
     { name = "http-ece" },
@@ -131,6 +132,7 @@ dev = [
 requires-dist = [
     { name = "autogen-agentchat", specifier = ">=0.7" },
     { name = "autogen-ext", extras = ["openai"], specifier = ">=0.7" },
+    { name = "cryptography", specifier = ">=50.0.2" },
     { name = "duckdb", specifier = ">=1.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "http-ece", specifier = ">=1.2.1" },

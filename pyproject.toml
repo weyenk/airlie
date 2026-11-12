@@ -39,6 +39,7 @@ dependencies = [
     "huggingface-hub>=2.2",
     "py-vapid>=1.9.6",
     "http-ece>=1.2.1",
+    "cryptography>=50.0.2",
 ]
 
 [project.scripts]

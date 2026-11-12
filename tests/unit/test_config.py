@@ -1762,3 +1762,25 @@ def test_the_reviewer_is_a_different_lab_than_the_coder_and_runs_on_a_served_eng
     assert cfg.roles["reviewer"].model == cfg.roles["supervisor"].model == "gemma4"
     assert "Qwen" in cfg.models["generalist"].repo and "gemma" in cfg.models["gemma4"].repo.lower()
     assert "reviewer" not in cfg.engines and "reviewer" in cfg.models
+
+
+def test_github_app_source_needs_an_app_id(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"story\.github_app\.app_id"):
+        load_config(_chat(tmp_path, {"sources": ["github_app"]}))
+    spec = {"github_app": {"app_id": 7}}
+    ok = load_config(write(tmp_path, {**MINIMAL, "story": spec, "chat": {"sources": ["github_app"]}}))
+    assert ok.chat.sources == ["github_app"]
+
+
+def test_client_id_is_optional_and_oauth_url_defaults_to_github(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, MINIMAL))
+    app = cfg.story.github_app
+    assert (app.client_id, app.client_secret_file, app.oauth_url) == (None, None, "https://github.com")
+    assert app.token_key_file == Path("~/.config/airlie/github-user-tokens.key")
+    assert (cfg.chat.sources, cfg.chat.repo_list_cache_s) == ([], 300.0)
+    with pytest.raises(ConfigError, match=r"chat\.repo_list_cache_s"):
+        load_config(_chat(tmp_path, {"repo_list_cache_s": 0}))
+
+
+def test_the_committed_config_lists_github_app_as_the_chat_source() -> None:
+    assert load_config(ROOT / "airlie.yaml", NO_LOCAL).chat.sources == ["github_app"]
