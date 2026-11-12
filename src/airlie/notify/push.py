@@ -15,6 +15,7 @@ from py_vapid import Vapid02
 from airlie.auth.store import PushSubscription
 
 _TTL_SECONDS = 86400
+_MAX_BODY = 4096  # a push service accepts at least this much; the header and tag are inside it
 _VAPID_LIFETIME_SECONDS = 12 * 3600
 
 
@@ -31,6 +32,8 @@ def encrypt_payload(payload: bytes, p256dh: str, auth: str) -> bytes:
         auth_secret=_b64url_decode(auth),
         version="aes128gcm",
     )
+    if len(body) > _MAX_BODY:
+        raise ValueError(f"push payload encrypts to {len(body)} bytes; a push message holds {_MAX_BODY}")
     return body
 
 

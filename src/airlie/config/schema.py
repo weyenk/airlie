@@ -523,7 +523,7 @@ class NotificationsSpec(Strict):
 
     contact: str | None = Field(
         default=None,
-        pattern=r"^(mailto:|https://)\S+$",
+        pattern=r"^(mailto:[^@\s]+@[\w%-]+(\.[\w%-]+)+|https://[\w-]+(\.[\w-]+)+(:\d+)?(/\S*)?)$",
         description="who a push service may reach about this server: mailto:... or https://... (VAPID sub)",
     )
     vapid_key: Path | None = Field(

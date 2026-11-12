@@ -1043,6 +1043,34 @@ def test_notifications_defaults_name_every_kind_and_no_contact_or_key(tmp_path: 
     ]
 
 
+@pytest.mark.parametrize(
+    "contact", ["mailto:noah@example.com", "https://example.com/contact", "https://push.example.com:8443"]
+)
+def test_notifications_accepts_a_mailto_or_https_contact_a_push_service_will_sign(
+    tmp_path: Path, contact: str
+) -> None:
+    cfg = load_config(write(tmp_path, {**MINIMAL, "notifications": {"contact": contact}}))
+    assert cfg.notifications.contact == contact
+
+
+@pytest.mark.parametrize(
+    "contact",
+    [
+        "noah@example.com",
+        "http://example.com",
+        "mailto:noah",
+        "mailto:@example.com",
+        "https://localhost x",
+        "https://nodot",
+    ],
+)
+def test_notifications_refuses_a_contact_py_vapid_would_refuse_at_send_time(
+    tmp_path: Path, contact: str
+) -> None:
+    with pytest.raises(ConfigError, match="notifications.contact"):
+        load_config(write(tmp_path, {**MINIMAL, "notifications": {"contact": contact}}))
+
+
 def test_notifications_refuses_an_unknown_default_kind(tmp_path: Path) -> None:
     data = {**MINIMAL, "notifications": {"default_kinds": ["weather"]}}
     with pytest.raises(ConfigError, match="notifications.default_kinds"):

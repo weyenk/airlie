@@ -18,7 +18,10 @@ def load_or_create_vapid(path: Path) -> Vapid02:
     path.parent.mkdir(parents=True, exist_ok=True)
     vapid = Vapid02()
     vapid.generate_keys()
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:  # another process made the key between our look and our create: use theirs
+        return Vapid02.from_file(str(path))
     with os.fdopen(fd, "wb") as f:
         f.write(vapid.private_pem())
     return vapid
