@@ -88,6 +88,30 @@ task doctor
 task models:pull
 ```
 
+## Phone
+
+airlie is an installable web app. On an iPhone, open the Studio's tailnet URL in Safari, tap Share, then Add to Home
+Screen; it opens full-screen with the dark status bar. Sign in with your passkey once: a sign-in lasts
+`auth.session_days` (30 by default) idle, and each visit past half of that renews it, so a phone you use stays signed
+in. With the Studio unreachable the app opens its cached shell, or says it can't reach the Studio (the API and live
+feed are never cached). When a new version is ready the app offers a Reload.
+
+Notifications (Web Push) need a contact for the push services, in `airlie.local.yaml`:
+
+```yaml
+notifications:
+  contact: "mailto:you@example.com"   # or https://your.host; a mailto needs a dotted domain
+```
+
+Restart `task serve`; `task doctor` reports `notifications` as `push on` once it is set. Then, in the installed app,
+open the account menu, choose Notifications, tap Turn on notifications and allow the prompt (iOS asks only in the
+installed app). Tick the kinds you want: a chat reply, a model or VM ready, something needing your OK, a story
+blocked, a story published, mockups to pick (`notifications.default_kinds` sets what is on until you choose). Send a
+test checks the device. The Studio POSTs each push to the phone's push service, so it needs outbound internet;
+`notifications.push_hosts` lists the services a browser may subscribe through (Apple, Google, Mozilla, Windows by
+default). The VAPID key is made on first use in `observability.state_dir/vapid.pem` (`notifications.vapid_key` moves
+it).
+
 ## Tasks
 
 Run `task` to list them. The ones that exist today:

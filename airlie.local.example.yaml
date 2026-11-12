@@ -5,6 +5,11 @@
 #     kind: openai_http
 #     base_url: http://127.0.0.1:8080/v1
 
+# Push notifications to the installed phone app (README, Phone): who a push service may reach about this server,
+# mailto:... (a dotted domain) or https://... ; without it push is off and `task doctor` warns.
+# notifications:
+#   contact: "mailto:you@example.com"
+
 # Job Bus bridge (`task bridge`): hub URL + allowlisted repos here; put BRIDGE_WORKER_SECRET in
 # ~/.config/airlie/bridge.env (chmod 600). Not the ATLASSIAN ~/.config/airlie/.env file.
 # bridge:
