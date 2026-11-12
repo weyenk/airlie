@@ -1,5 +1,5 @@
 """The model manager's engines on screen: Admin lists each engine with its state, and says why one waits and
-how far a download has come; Chat's status strip says the same while the chat's engine is not ready. Each
+how far a download has come; Chat's header chip says the same while the chat's engine is not ready. Each
 check leaves its screenshot in test-results/e2e/evidence/ (conftest.Evidence)."""
 
 from __future__ import annotations
@@ -83,11 +83,9 @@ def test_a_download_shows_its_progress_in_admin_and_in_chat(
             row.get_by_role("status"), "the figure says how much of the model has come"
         ).to_have_text("Downloading main: 2.5 of 10.0 GB, 3 min left")
         app_page.goto(f"{server.url}/")
-        strip = app_page.locator("[data-test=status-strip]")
+        chip = app_page.locator("[data-test=chat-header] [data-status-chip]")
         evidence.expect(
-            strip.get_by_role("status"), "Chat's status strip says the same while the model comes"
+            chip.get_by_role("status"), "Chat's header chip says the same while the model comes"
         ).to_have_text(re.compile(r"Downloading main: 2\.5 of 10\.0 GB"))
         engine.gate.set()
-        evidence.expect(strip.get_by_role("status"), "the line goes once the engine is ready").to_have_count(
-            0
-        )
+        evidence.expect(chip.get_by_role("status"), "the line goes once the engine is ready").to_have_count(0)

@@ -690,11 +690,13 @@ def chat_router(
             }
         engine_name = cfg.engine_for_role("chat")
         engine = rows.get(engine_name)
+        model = cfg.models[cfg.roles["chat"].model]
         return {
             "vm": vm,
             "engine": {
                 "name": engine_name,
                 "model": cfg.roles["chat"].model,
+                "label": model.label or model.repo.rsplit("/", 1)[-1],
                 "state": engine.state if engine is not None else "stopped",
                 "footprint_gb": manager.footprint_gb(engine_name) if engine is not None else 0.0,
             },
@@ -704,6 +706,11 @@ def chat_router(
                 "waiting": manager.waiting(),
             },
             "branch": branch,
+            "ask_first": list(
+                cfg.chat.kinds.repository.ask_first
+                if t.kind == "repository"
+                else cfg.chat.kinds.plain.ask_first
+            ),
         }
 
     @router.post("/v1/airlie/chat/threads/{thread_id}/stop")

@@ -66,6 +66,10 @@ class ModelSpec(Strict):
     """A model in the catalog. `repo` + `revision` pin exactly which weights are used."""
 
     repo: str
+    label: str | None = Field(
+        default=None,
+        description='the name people see for this model ("Gemma 4"); unset, the last part of `repo`',
+    )
     revision: str = Field(min_length=1, description="HF commit sha; `task models:pull` fetches exactly this")
     path: Path | None = Field(default=None, description="local directory instead of the HF cache")
     mtp: ModelRef | None = Field(

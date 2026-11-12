@@ -34,6 +34,7 @@ from airlie.serve.bridge.clock import RealClock
 from airlie.serve.server import Server as AirlieServer
 from airlie.topology.studio import PlanOutcome
 from airlie.topology.studio_plan import Plan, Subtask
+from tests.support.serve_chat import superpowers_tree
 
 CHAT_SKILLS = Path(__file__).resolve().parents[2] / "skills" / "chat"
 """The chat skills airlie ships: the / menu is tested on the real /story."""
@@ -100,7 +101,12 @@ def _config(root: Path, *, workflows: bool = False) -> AirlieConfig:
             **{r: {"prompt": f"{r}.md", "model": "base"} for r in roles},
             "chat": {"prompt": "chat.md", "model": "base", "skills": str(CHAT_SKILLS), "vision": True},
         },
-        "chat": {"attachments": {"max_file_mb": 1}},  # small, so a too-large file is quick to make
+        "chat": {
+            "attachments": {"max_file_mb": 1},  # small, so a too-large file is quick to make
+            "superpowers": {
+                "path": str(superpowers_tree(root / "superpowers"))
+            },  # the turn route needs its library
+        },
         "observability": {"state_dir": str(root / "state")},
     }
     data["roles"]["coder"]["summary"] = "writes the code"  # a role the studio may route a subtask to
@@ -596,8 +602,16 @@ def engine_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[Se
 
 
 def _serve(
-    root: Path, api_key: str | None = KEY, *, workflows: bool = False, manager: Manager | None = None
+    root: Path,
+    api_key: str | None = KEY,
+    *,
+    workflows: bool = False,
+    manager: Manager | None = None,
+    upstream: Callable[[httpx.Request], httpx.Response] | None = None,
+    **app_kw: Any,
 ) -> Iterator[Server]:
+    """`upstream` replaces the engine stub (`Server.upstream` then stays an idle `Upstream`); `app_kw` goes to
+    create_app (a test's `repo_sessions`, `pinnable`)."""
     config = _config(root, workflows=workflows)
     state = config.observability.state_dir.expanduser()
     state.mkdir(parents=True, exist_ok=True)
@@ -606,13 +620,14 @@ def _serve(
     _seed_topology(state)
     _seed_topologies(state)
     (root / "repo" / ".git").mkdir(parents=True)  # a repository a plan may name
-    upstream = Upstream()
+    stub = Upstream()
     app = create_app(
         config,
-        transport=httpx.MockTransport(upstream),
+        transport=httpx.MockTransport(upstream or stub),
         orchestrator_factory=lambda cfg, k, topology=None: _FakeStudio(state),
         api_key=api_key,
         manager=manager,
+        **app_kw,
     )
     port = _free_port()
     # airlie's own Server, as `airlie serve` runs: shutdown ends the live feed first, so a page that holds
@@ -625,7 +640,7 @@ def _serve(
         if time.monotonic() > deadline or not thread.is_alive():
             raise RuntimeError("the test server did not start")
         time.sleep(0.05)
-    yield Server(f"http://127.0.0.1:{port}", state, upstream)
+    yield Server(f"http://127.0.0.1:{port}", state, stub)
     srv.should_exit = True
     thread.join(timeout=10)
 

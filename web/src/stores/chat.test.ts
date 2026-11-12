@@ -1,15 +1,12 @@
 import { createPinia, setActivePinia } from "pinia";
 import { ApiError } from "@/api";
-import { StreamCut } from "@/api/chat";
-import { HISTORY, useChatStore } from "./chat";
+import { useChatStore } from "./chat";
 
-const api = vi.hoisted(() => ({ stream: vi.fn() }));
-vi.mock("@/api/chat", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/chat")>()), ...api }));
 const wf = vi.hoisted(() => ({ storyDiagnosis: vi.fn() }));
 vi.mock("@/api/workflows", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/workflows")>()), ...wf }));
 
-/** A thread exactly as today's app writes it (the retired vanilla-JS app's chat screen). */
-const TODAYS = [
+/** A thread exactly as the earlier app wrote it (the retired chat screen). */
+const EARLIER = [
   { role: "user", text: "/story add a button", sent: "add a button" },
   { role: "chat", text: "Add a button\n\nDone when it clicks.", streaming: false, thinking: true, action: "story", storyText: "Edited" },
   { role: "chat", text: "", streaming: false, thinking: false, action: "", started: { job_id: "story-1", kind: "story", label: "airlie · story" } },
@@ -24,18 +21,13 @@ function fresh() {
 
 beforeEach(() => {
   sessionStorage.clear();
-  api.stream.mockReset().mockImplementation(async (_p: string, _b: unknown, onDelta: (t: string) => void) => {
-    onDelta("Hel");
-    onDelta("lo");
-    return "Hello";
-  });
 });
 
-test("a thread written by today's app loads, fields and all", () => {
-  sessionStorage.setItem("airlie.chat", JSON.stringify(TODAYS));
+test("a thread written by the earlier app loads, fields and all", () => {
+  sessionStorage.setItem("airlie.chat", JSON.stringify(EARLIER));
   sessionStorage.setItem("airlie.chat.draft", JSON.stringify("half a thought"));
   const chat = fresh();
-  expect(chat.thread).toEqual(TODAYS);
+  expect(chat.thread).toEqual(EARLIER);
   expect(chat.draft).toBe("half a thought");
 });
 
@@ -52,197 +44,37 @@ test("a thread that is not a list, or is not JSON, is an empty thread", () => {
   expect(fresh().thread).toEqual([]);
 });
 
-test("sending streams the reply into the thread and saves it in today's format", async () => {
+test("the draft is kept under airlie.chat.draft", () => {
   const chat = fresh();
-  await chat.send({ text: "hi there" });
-  expect(chat.thread).toEqual([
-    { role: "user", text: "hi there", sent: "hi there" },
-    { role: "chat", text: "Hello", streaming: false, thinking: false, action: "" },
-  ]);
-  expect(JSON.parse(sessionStorage.getItem("airlie.chat")!)).toEqual(chat.thread);
-  const [path, body] = api.stream.mock.calls[0];
-  expect(path).toBe("/v1/chat/completions");
-  expect(body).toEqual({ model: "chat", messages: [{ role: "user", content: "hi there" }], stream: true });
-  expect(chat.busy).toBeNull();
+  chat.setDraft("half");
+  expect(JSON.parse(sessionStorage.getItem("airlie.chat.draft")!)).toBe("half");
+  expect(chat.draft).toBe("half");
 });
 
-test("the reply shows the words that have arrived while it streams", async () => {
+test("removing the legacy thread empties it and its storage", () => {
+  sessionStorage.setItem("airlie.chat", JSON.stringify(EARLIER));
   const chat = fresh();
-  let release!: () => void;
-  api.stream.mockImplementation(async (_p: string, _b: unknown, onDelta: (t: string) => void) => {
-    onDelta("par");
-    await new Promise<void>((r) => (release = r));
-    return "par";
-  });
-  const sending = chat.send({ text: "q" });
-  await Promise.resolve();
-  expect(chat.thread[1]).toMatchObject({ text: "par", streaming: true });
-  expect(chat.busy).not.toBeNull();
-  release();
-  await sending;
-  expect(chat.thread[1].streaming).toBe(false);
-});
-
-test("a reasoning delta marks the reply as thinking", async () => {
-  const chat = fresh();
-  api.stream.mockImplementation(async (_p: string, _b: unknown, _d: unknown, opts: { onReasoning: (t: string) => void }) => {
-    opts.onReasoning("hm");
-    return "";
-  });
-  await chat.send({ text: "q" });
-  expect(chat.thread[1].thinking).toBe(true);
-});
-
-test("a cut stream keeps what arrived and says so", async () => {
-  const chat = fresh();
-  api.stream.mockImplementation(async (_p: string, _b: unknown, onDelta: (t: string) => void) => {
-    onDelta("half an ans");
-    throw new StreamCut("half an ans");
-  });
-  await chat.send({ text: "q" });
-  expect(chat.thread[1]).toMatchObject({ text: "half an ans", cut: true, streaming: false });
-  expect(JSON.parse(sessionStorage.getItem("airlie.chat")!)[1]).toMatchObject({ text: "half an ans", cut: true });
-});
-
-test("a failed request is an error on the reply, not an exception", async () => {
-  const chat = fresh();
-  api.stream.mockRejectedValue(new ApiError(502, "engine down"));
-  await chat.send({ text: "q" });
-  expect(chat.thread[1]).toMatchObject({ error: "Can't reach airlie: engine down", streaming: false });
-  expect(chat.thread[1].cut).toBeUndefined();
-});
-
-test("a 401 takes the turn back and puts what was typed into the draft", async () => {
-  const chat = fresh();
-  api.stream.mockRejectedValue(new ApiError(401, "no"));
-  await chat.send({ text: "keep me" });
+  chat.clearLegacy();
   expect(chat.thread).toEqual([]);
-  expect(chat.draft).toBe("keep me");
-  expect(JSON.parse(sessionStorage.getItem("airlie.chat.draft")!)).toBe("keep me");
-});
-
-test("a skill sends its name and only its request to the model; the thread keeps what was typed", async () => {
-  const chat = fresh();
-  await chat.send({ text: "/story a button", sent: "a button", skill: { name: "story", action: "story" } });
-  expect(api.stream.mock.calls[0][1]).toEqual({ model: "chat", messages: [{ role: "user", content: "a button" }], stream: true, skill: "story" });
-  expect(chat.thread[0]).toEqual({ role: "user", text: "/story a button", sent: "a button" });
-  expect(chat.thread[1]).toMatchObject({ action: "story" });
+  expect(sessionStorage.getItem("airlie.chat")).toBeNull();
 });
 
 test("/why puts the line's diagnosis of the named story before the question, as data", async () => {
   wf.storyDiagnosis.mockResolvedValue({ markdown: "# AIR-9 blocked: process / hold_trap" });
-  const chat = fresh();
-  await chat.send({ text: "/why AIR-9", sent: "AIR-9", skill: { name: "why", action: "why" } });
+  const sent = await fresh().withDiagnosis("AIR-9");
   expect(wf.storyDiagnosis).toHaveBeenCalledWith("AIR-9");
-  const sent = api.stream.mock.calls[0][1].messages[0].content as string;
   expect(sent).toBe("--- diagnosis (data) ---\n# AIR-9 blocked: process / hold_trap\n--- end diagnosis ---\n\nAIR-9");
-  expect(api.stream.mock.calls[0][1].skill).toBe("why");
 });
 
 test("/why says so when the story has no diagnosis, or the question names no story", async () => {
   wf.storyDiagnosis.mockReset().mockRejectedValue(new ApiError(404, "AIR-9 has no diagnosis"));
   const chat = fresh();
-  await chat.send({ text: "/why AIR-9", sent: "AIR-9", skill: { name: "why", action: "why" } });
-  expect(api.stream.mock.calls[0][1].messages[0].content).toContain("(AIR-9 has no diagnosis)");
-  await chat.send({ text: "/why it", sent: "it", skill: { name: "why", action: "why" } });
-  expect(api.stream.mock.calls[1][1].messages.at(-1).content).toContain("(no story key in the message)");
+  expect(await chat.withDiagnosis("AIR-9")).toContain("(AIR-9 has no diagnosis)");
+  expect(await chat.withDiagnosis("it")).toContain("(no story key in the message)");
   expect(wf.storyDiagnosis).toHaveBeenCalledTimes(1);
 });
 
-test("attachments go as airlie_upload parts after the text", async () => {
-  const chat = fresh();
-  const a = { id: "u1", name: "shot.png", size: 3, kind: "image" };
-  await chat.send({ text: "look", attachments: [a] });
-  expect(api.stream.mock.calls[0][1].messages).toEqual([
-    { role: "user", content: [{ type: "text", text: "look" }, { type: "airlie_upload", upload: "u1", name: "shot.png" }] },
-  ]);
-});
-
-test("only the last 20 turns that have text are sent back", async () => {
-  const chat = fresh();
-  for (let i = 0; i < 15; i++) await chat.send({ text: `q${i}` });
-  const messages = api.stream.mock.calls.at(-1)![1].messages;
-  expect(messages).toHaveLength(HISTORY);
-  expect(messages.at(-1)).toEqual({ role: "user", content: "q14" });
-});
-
-test("clear empties the thread and the draft without asking the model", async () => {
-  const chat = fresh();
-  await chat.send({ text: "q" });
-  chat.setDraft("half");
-  api.stream.mockClear();
-  chat.clear();
-  expect(chat.thread).toEqual([]);
-  expect(chat.draft).toBe("");
-  expect(JSON.parse(sessionStorage.getItem("airlie.chat")!)).toEqual([]);
-  expect(api.stream).not.toHaveBeenCalled();
-});
-
-test("a second message while a reply streams is ignored", async () => {
-  const chat = fresh();
-  let release!: () => void;
-  api.stream.mockImplementation(async () => {
-    await new Promise<void>((r) => (release = r));
-    return "";
-  });
-  const first = chat.send({ text: "one" });
-  await chat.send({ text: "two" });
-  expect(chat.thread.map((m) => m.text)).toEqual(["one", ""]);
-  release();
-  await first;
-});
-
-test("late deltas after a mid-stream clear never reach the new thread", async () => {
-  const chat = fresh();
-  let late!: (t: string) => void;
-  let release!: () => void;
-  api.stream.mockImplementation(async (_p: string, _b: unknown, onDelta: (t: string) => void) => {
-    late = onDelta;
-    await new Promise<void>((r) => (release = r));
-    throw Object.assign(new Error("aborted"), { name: "AbortError" });
-  });
-  const sending = chat.send({ text: "q" });
-  await Promise.resolve();
-  chat.clear();
-  late("stale words");
-  release();
-  await sending;
-  expect(chat.thread).toEqual([]);
-  expect(JSON.parse(sessionStorage.getItem("airlie.chat")!)).toEqual([]);
-  expect(chat.busy).toBeNull();
-  api.stream.mockResolvedValue("");
-  await chat.send({ text: "again" }); // a new question is not refused as busy
-  expect(chat.thread).toHaveLength(2);
-});
-
-test("a 401 for a reply whose thread was cleared meanwhile throws nothing and takes nothing back", async () => {
-  const chat = fresh();
-  let release!: () => void;
-  api.stream.mockImplementation(async () => {
-    await new Promise<void>((r) => (release = r));
-    throw new ApiError(401, "no");
-  });
-  const sending = chat.send({ text: "q" });
-  await Promise.resolve();
-  chat.clear();
-  chat.push({ role: "user", text: "kept", sent: "kept" });
-  release();
-  await sending;
-  expect(chat.thread.map((m) => m.text)).toEqual(["kept"]);
-  expect(chat.draft).toBe(""); // the cleared message does not come back into the box
-  expect(JSON.parse(sessionStorage.getItem("airlie.chat.draft")!)).toBe("");
-});
-
-test("a stopped reply keeps what arrived and is cut, never an empty bubble", async () => {
-  const chat = fresh();
-  api.stream.mockImplementation(async (_p: string, _b: unknown, onDelta: (t: string) => void, opts: { signal: AbortSignal }) => {
-    onDelta("some");
-    await new Promise<void>((_, rej) => opts.signal.addEventListener("abort", () => rej(Object.assign(new Error("a"), { name: "AbortError" }))));
-    return "";
-  });
-  const sending = chat.send({ text: "q" });
-  await Promise.resolve();
-  chat.stop();
-  await sending;
-  expect(chat.thread[1]).toMatchObject({ text: "some", cut: true, streaming: false });
+test("/why with the person signed out is an error for the caller to take the turn back", async () => {
+  wf.storyDiagnosis.mockReset().mockRejectedValue(new ApiError(401, "no"));
+  await expect(fresh().withDiagnosis("AIR-9")).rejects.toMatchObject({ status: 401 });
 });

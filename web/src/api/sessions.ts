@@ -60,9 +60,12 @@ export type AirlieUIMessage = UIMessage<ChatMeta, ChatData>;
  * when the session has not opened or the host's mirror cannot say. */
 export type SessionStatusData = {
   vm: { name: string; state: EngineStatus["state"]; detail: string; since: number; memory_gb: number } | null;
-  engine: { name: string; model: string; state: EngineStatus["state"]; footprint_gb: number };
+  /** `model` is the role's model key; `label` the name people see ("Gemma 4"). */
+  engine: { name: string; model: string; label: string; state: EngineStatus["state"]; footprint_gb: number };
   memory: { used_gb: number; budget_gb: number; waiting: string | null };
   branch: { name: string; base: string; ahead: number | null; pushed: boolean | null } | null;
+  /** The tools this kind of chat asks the person about before it uses them (config `chat.kinds.<kind>.ask_first`). */
+  ask_first: string[];
 };
 
 const THREADS = "/v1/airlie/chat/threads";

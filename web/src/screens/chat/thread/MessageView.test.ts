@@ -45,6 +45,18 @@ test("a message is its parts in order: reasoning, tool, text", async () => {
   expect(text.indexOf("read_file")).toBeLessThan(text.indexOf("All read."));
 });
 
+test("a tool call the stream updates in place shows its new state", async () => {
+  startThread();
+  await openChat();
+  // the AI SDK mutates the open message's parts in place and hands the screen a shallow copy of the message
+  const raw = { id: "m1", role: "assistant", parts: [{ type: "tool-read_file", toolCallId: "c1", state: "input-available", input: { path: "a.py" } }] };
+  const w = view(raw as unknown as AirlieUIMessage);
+  expect(w.get("[data-tool]").attributes("data-phase")).toBe("running");
+  Object.assign(raw.parts[0], { state: "output-available", output: "x" });
+  await w.setProps({ message: { ...raw } as unknown as AirlieUIMessage });
+  expect(w.get("[data-tool]").attributes("data-phase")).toBe("done");
+});
+
 test("only the newest todos part renders", async () => {
   startThread();
   await openChat();

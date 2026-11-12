@@ -21,9 +21,10 @@ export const vmRow = (over: Partial<EngineStatus> = {}): EngineStatus =>
 
 export const STATUS: SessionStatusData = {
   vm: { name: "vm:chat-1", state: "ready", detail: "", since: 0, memory_gb: 8 },
-  engine: { name: "gemma", model: "gemma-4-27b-it-8bit", state: "ready", footprint_gb: 29.6 },
+  engine: { name: "gemma", model: "gemma4", label: "Gemma 4", state: "ready", footprint_gb: 29.6 },
   memory: { used_gb: 41, budget_gb: 64, waiting: null },
   branch: { name: "airlie/chat-abc", base: "main", ahead: 3, pushed: false },
+  ask_first: ["push_branch", "open_pr", "build_image"],
 };
 
 export type StatusServer = {

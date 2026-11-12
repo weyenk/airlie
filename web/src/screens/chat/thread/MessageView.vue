@@ -22,7 +22,9 @@ const props = defineProps<{ message: AirlieUIMessage; sessionId: string; last: b
 const turns = useTurns();
 
 type Loose = { type: string; [field: string]: unknown };
-const parts = computed(() => props.message.parts as unknown as Loose[]);
+// A copy of each part: the AI SDK changes the open message's parts in place (a call's state, a plan's data) and hands
+// the screen a new message object over the same parts, so a part passed on as it is would not look changed to its component.
+const parts = computed(() => (props.message.parts as unknown as Loose[]).map((p) => ({ ...p })));
 const interrupted = computed(() => props.message.metadata?.interrupted === true);
 
 /** Only the newest plan shows: each `data-todos` part is the whole plan as it then was. */
@@ -67,7 +69,7 @@ const cut = computed(() => props.last && !busy.value && !waiting.value && (turns
 </script>
 
 <template>
-  <div class="flex min-w-0 flex-col gap-2" :data-msg="message.role">
+  <div class="flex min-w-0 flex-col gap-2" :data-message="message.role">
     <Bubble v-if="message.role === 'user'" :item="mine" />
     <template v-else>
       <template v-for="(p, i) in parts" :key="i">

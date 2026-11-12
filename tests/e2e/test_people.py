@@ -70,7 +70,7 @@ def test_sign_in_never_follows_next_off_the_site(
     page.get_by_label("Admin key").fill(KEY)
     page.get_by_role("button", name="Sign in with the key").click()
     evidence.expect(page, "it lands on the chat page of this site").to_have_url(
-        re.compile(rf"^{re.escape(server.url)}/$")
+        re.compile(rf"^{re.escape(server.url)}/(chat/[^/]+)?$")
     )
 
 
@@ -136,7 +136,7 @@ def test_a_used_invite_is_expired_the_second_time(
     _virtual_authenticator(context, page)
     page.goto(f"{host}/join/{token}")
     page.get_by_role("button", name="Create passkey").click()
-    evidence.expect(page, "the passkey signs the person in").to_have_url(re.compile(r"/$"))
+    evidence.expect(page, "the passkey signs the person in").to_have_url(re.compile(r"/(chat/[^/]+)?$"))
     page.goto(f"{host}/join/{token}")
     evidence.expect(page.get_by_role("heading"), "the same link is gone").to_have_text(
         "This link has expired"
@@ -175,7 +175,7 @@ def test_a_passkey_made_from_an_invite_signs_in_again(
     evidence.expect(page.get_by_role("heading"), "the invite page").to_have_text("You're invited")
     evidence.expect(page.get_by_text("Ann", exact=True), "names who it is for").to_be_visible()
     page.get_by_role("button", name="Create passkey").click()
-    evidence.expect(page, "creating the passkey lands in the app").to_have_url(re.compile(r"/$"))
+    evidence.expect(page, "creating the passkey lands in the app").to_have_url(re.compile(r"/(chat/[^/]+)?$"))
     me = page.evaluate("fetch('/v1/auth/me').then(r => r.json())")
     assert me["name"] == "Ann", me
 

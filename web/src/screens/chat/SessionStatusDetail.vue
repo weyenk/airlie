@@ -50,7 +50,7 @@ const engine = computed(() => {
   const state = liveEngine.value?.state ?? row.state;
   const name = liveEngine.value?.name ?? row.name;
   const title = state === "ready" ? `${name} loaded` : state === "stopped" ? `${name} not loaded` : `${name} ${WORDS[state] ?? state}`;
-  return { title, sub: `${row.model}, ${gb(row.footprint_gb)} GB`, state };
+  return { title, sub: `${row.label}, ${gb(row.footprint_gb)} GB`, state };
 });
 
 const branch = computed(() => {

@@ -8,6 +8,8 @@ import { useTurns } from "./turns";
 export type RepoGroup = { repo: string; sessions: ThreadRow[] };
 
 export const LAST_CHAT = "airlie.chat.last";
+/** The address of the thread an earlier version of the app kept in the tab (shown read-only). */
+export const LEGACY = "legacy";
 
 /** The chat this browser had open last (a convenience: never required, storage may be blocked). */
 export function lastChat(): string | null {

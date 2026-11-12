@@ -300,7 +300,9 @@ def test_a_path_trick_cannot_make_a_pin(tmp_path: Path) -> None:
 # --- GET /v1/airlie/chat/threads/{id}/status ----------------------------------------------------------------
 
 
-def status_rig(tmp_path: Path, *, unpushed: bool = False) -> tuple[TestClient, RepoFakes, Manager]:
+def status_rig(
+    tmp_path: Path, *, unpushed: bool = False, label: str | None = None
+) -> tuple[TestClient, RepoFakes, Manager]:
     """The real app over a manager with one fake engine (`main`, 10 GB of a 100 GB budget) and the fakes a
     repository chat runs on (a FakeBox VM, a host mirror over a recording runner)."""
     fakes = RepoFakes(tmp_path)
@@ -314,8 +316,11 @@ def status_rig(tmp_path: Path, *, unpushed: bool = False) -> tuple[TestClient, R
 
         fakes.mirror.run = refuse_the_remote  # type: ignore[assignment]
     manager = Manager([FakeEngine("main")], budget_gb=100.0, clock=StuckClock())
+    cfg = chat_cfg(tmp_path)
+    if label is not None:
+        cfg.models["base"] = cfg.models["base"].model_copy(update={"label": label})
     app = create_app(
-        chat_cfg(tmp_path),
+        cfg,
         transport=httpx.MockTransport(ScriptedUpstream(Text("hi"))),
         manager=manager,
         repo_sessions=fakes.build,
@@ -362,10 +367,25 @@ def test_a_plain_chats_status_has_no_vm_and_no_branch_but_the_engine_and_memory(
     assert r.status_code == 200
     assert r.json() == {
         "vm": None,
-        "engine": {"name": "main", "model": "base", "state": "stopped", "footprint_gb": 10.0},
+        "engine": {"name": "main", "model": "base", "label": "m", "state": "stopped", "footprint_gb": 10.0},
         "memory": {"used_gb": 0.0, "budget_gb": 100.0, "waiting": None},
         "branch": None,
+        "ask_first": [],
     }
+
+
+def test_status_names_the_model_by_its_label_and_a_repository_chat_what_it_asks_first(tmp_path: Path) -> None:
+    c, _, _ = status_rig(tmp_path, label="Gemma 4")
+    plain = c.post("/v1/airlie/chat/threads", json={"kind": "plain"}).json()["id"]
+    c.post("/v1/airlie/chat/turn", json=repo_turn())
+
+    first = c.get(f"/v1/airlie/chat/threads/{plain}/status").json()
+    second = c.get("/v1/airlie/chat/threads/t1/status").json()
+
+    assert first["engine"]["label"] == second["engine"]["label"] == "Gemma 4"
+    assert first["engine"]["model"] == "base"  # the key stays, for whoever wants it
+    assert first["ask_first"] == []
+    assert second["ask_first"] == ["push_branch", "open_pr", "build_image"]
 
 
 def test_a_repository_chats_status_names_its_vm_the_loaded_engine_and_its_commits_ahead(

@@ -34,7 +34,8 @@ test("a repository chat shows its repository, branch, model, context and status"
   expect(w.get("h1").text()).toBe("hi");
   expect(w.text()).toContain("acme/api");
   expect(w.text()).toContain("airlie/chat-abc");
-  expect(w.text()).toContain("gemma");
+  expect(w.text()).toContain("Gemma 4");
+  expect(w.text()).not.toContain("gemma4"); // the model's name, not its key
   expect(w.text()).toContain("118k / 262k");
   expect(w.find("[data-status-chip]").exists()).toBe(true);
 });
@@ -45,7 +46,8 @@ test("a plain chat shows no repository or branch", async () => {
   expect(w.get("h1").text()).toBe("Explain the sweep");
   expect(w.find("[data-repo]").exists()).toBe(false);
   expect(w.find("[data-branch]").exists()).toBe(false);
-  expect(w.text()).toContain("gemma");
+  expect(w.text()).toContain("Gemma 4");
+  expect(w.text()).not.toContain("gemma4"); // the model's name, not its key
 });
 
 test("a chat with no messages is called New chat", async () => {
@@ -57,10 +59,11 @@ test("a chat with no messages is called New chat", async () => {
 test("the panel button toggles the panel and says so", async () => {
   statusServer();
   const w = await show(ROW);
-  const button = w.get('button[aria-label="Chats"]');
+  const button = w.get('button[aria-label="Hide chats"]');
   expect(button.attributes("aria-expanded")).toBe("true"); // a desktop's panel starts open
   await button.trigger("click");
   expect(useChatPanel().desktopOpen).toBe(false);
+  expect(button.attributes("aria-label")).toBe("Show chats");
   expect(button.attributes("aria-expanded")).toBe("false");
 });
 
@@ -72,7 +75,7 @@ test("on a phone the row keeps the title and the chip", async () => {
   expect(w.find("[data-status-chip]").exists()).toBe(true);
   expect(w.find("[data-repo]").exists()).toBe(false);
   expect(w.find("[data-branch]").exists()).toBe(false);
-  expect(w.text()).not.toContain("gemma");
-  await w.get('button[aria-label="Chats"]').trigger("click");
+  expect(w.text()).not.toContain("Gemma");
+  await w.get('button[aria-label="Show chats"]').trigger("click");
   expect(useChatPanel().phoneOpen).toBe(true);
 });

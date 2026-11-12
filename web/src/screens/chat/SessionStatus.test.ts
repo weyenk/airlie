@@ -85,7 +85,8 @@ test("the chip opens the popover with vm, engine, context, memory and branch", a
   expect(text).toContain("VM ready");
   expect(text).toContain("vm:chat-1, up 14 min");
   expect(text).toContain("gemma loaded");
-  expect(text).toContain("gemma-4-27b-it-8bit, 29.6 GB");
+  expect(text).toContain("Gemma 4, 29.6 GB");
+  expect(text).not.toContain("gemma4"); // the model's name, not its key
   expect(text).toContain("118k of 262k tokens");
   expect(text).toContain("41 of 64 GB in use");
   expect(text).toContain("airlie/chat-abc");

@@ -10,7 +10,8 @@ import ErrorBanner from "@/components/ErrorBanner.vue";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/composables/useConfirm";
 import { usePins } from "@/stores/pins";
-import { useSessions } from "@/stores/sessions";
+import { useChatStore } from "@/stores/chat";
+import { LEGACY, useSessions } from "@/stores/sessions";
 
 const props = defineProps<{ currentId: string | null }>();
 const emit = defineEmits<{ pick: [id: string]; close: [] }>();
@@ -18,6 +19,7 @@ const emit = defineEmits<{ pick: [id: string]; close: [] }>();
 const router = useRouter();
 const sessions = useSessions();
 const pins = usePins();
+const chat = useChatStore();
 const failed = ref<Error | undefined>();
 
 const groups = computed(() => sessions.grouped(pins.pinned));
@@ -117,6 +119,16 @@ function retry(): void {
           <Button variant="ghost" size="icon-xs" aria-label="New chat" @click="create('plain')"><Plus /></Button>
         </div>
         <PanelChatRow v-for="s in groups.plain" :key="s.id" :session="s" :current="s.id === currentId" @pick="pick(s.id)" @remove="remove(s.id)" />
+        <button
+          v-if="chat.thread.length"
+          type="button"
+          data-test="legacy-row"
+          :aria-current="currentId === LEGACY ? 'page' : undefined"
+          :class="['rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-muted', currentId === LEGACY ? 'bg-muted font-semibold' : '']"
+          @click="pick(LEGACY)"
+        >
+          Legacy chat
+        </button>
       </section>
     </template>
   </aside>
