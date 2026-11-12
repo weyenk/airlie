@@ -32,6 +32,8 @@ type SessionState = {
   /** The skill of the newest send: a retry resends it. */
   skill: string | undefined;
   cut: boolean;
+  /** Whether the server still runs the turn, as the last history read said. */
+  running: boolean;
   engine: EngineStatus | null;
   /** How much the Chat held when the engine row came: the line goes once more arrives. */
   engineAt: number;
@@ -108,6 +110,7 @@ export const useTurns = defineStore("turns", () => {
     if (!chat || !s) return undefined;
     const mark = s.requests;
     const detail = await getSession(id);
+    if (s.requests === mark) s.running = detail.running;
     // `keepPartial`: the server still runs the turn this client lost, so the saved thread has not got its reply yet
     if (s.requests !== mark || busy(chat) || (keepPartial && detail.running)) return detail;
     chat.messages = detail.messages.map(toUIMessage);
@@ -193,6 +196,7 @@ export const useTurns = defineStore("turns", () => {
       stopping: false,
       skill: undefined,
       cut: false,
+      running: false,
       engine: null,
       engineAt: 0,
       todos: [],
@@ -330,6 +334,10 @@ export const useTurns = defineStore("turns", () => {
     usage,
     /** The turn's last cut: the stream ended without `finish` and not by Stop. */
     cut: (id: string): boolean => sessions[id]?.cut ?? false,
+    /** The server still runs the turn (the last history read said so). */
+    running: (id: string): boolean => sessions[id]?.running ?? false,
+    /** After a cut: read the saved thread, and while the server still runs the turn wait for it and read again. */
+    reconnect: settle,
     /** The answer to an answer that the server refused (409), shown on the prompt. */
     refused: (id: string, approvalId: string): string | null => sessions[id]?.refused[approvalId] ?? null,
     todos: (id: string): TodoItem[] => sessions[id]?.todos ?? [],

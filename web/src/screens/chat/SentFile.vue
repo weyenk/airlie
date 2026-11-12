@@ -25,6 +25,6 @@ onMounted(async () => {
   <img v-if="a.kind === 'image' && url" data-attachment :src="url" :alt="a.name" class="max-h-[240px] max-w-full rounded-[10px] object-contain" />
   <video v-else-if="a.kind === 'video' && url" data-attachment :src="url" controls playsinline preload="metadata" :aria-label="a.name" class="max-h-[240px] max-w-full rounded-[10px]" />
   <span v-else data-attachment data-file class="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-    <Play v-if="a.kind === 'video'" class="size-4" /><FileText v-else class="size-4" />{{ a.name }} · {{ sizeText(a.size) }}<template v-if="gone"> (no longer available)</template>
+    <Play v-if="a.kind === 'video'" class="size-4" /><FileText v-else class="size-4" />{{ a.name }}<template v-if="a.size > 0"> · {{ sizeText(a.size) }}</template><template v-if="gone"> (no longer available)</template>
   </span>
 </template>

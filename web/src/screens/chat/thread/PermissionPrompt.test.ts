@@ -1,0 +1,99 @@
+import { flushPromises, mount } from "@vue/test-utils";
+import type { ApprovalData } from "@/api/sessions";
+import { openChat, message, ROW, startThread } from "@/test-utils/thread";
+import { streamResponse, textChunks, turnChunks } from "@/test-utils/ui-stream";
+import PermissionPrompt from "./PermissionPrompt.vue";
+
+const PUSH: ApprovalData = {
+  id: "ap1",
+  tool: "push_branch",
+  arguments: { branch: "airlie/chat-ab12", commits: ["a1b2c3 Add the title route", "d4e5f6 Test it"] },
+};
+const asked = [
+  message("u1", "user", [{ type: "text", text: "push it" }]),
+  message("a1", "assistant", [
+    { type: "tool-push_branch", toolCallId: "c1", state: "approval-requested", input: {}, approval: { id: "ap1" } },
+    { type: "data-approval", id: "ap1", data: PUSH },
+  ]),
+];
+
+async function show(approval: ApprovalData = PUSH) {
+  const server = startThread(asked);
+  await openChat();
+  return { server, w: mount(PermissionPrompt, { props: { sessionId: ROW.id, approval } }) };
+}
+const button = (w: Awaited<ReturnType<typeof show>>["w"], name: string) => w.findAll("button").find((b) => b.text() === name)!;
+
+afterEach(() => vi.unstubAllGlobals());
+
+test("push_branch asks its question with the branch and its commits", async () => {
+  const { w } = await show();
+  expect(w.text()).toContain("Push session branch to origin?");
+  expect(w.text()).toContain("airlie/chat-ab12");
+  expect(w.text()).toContain("a1b2c3 Add the title route");
+  expect(button(w, "Approve")).toBeDefined();
+  expect(button(w, "Deny")).toBeDefined();
+});
+
+test("open_pr and build_image ask from their arguments", async () => {
+  const pr = await show({ id: "ap2", tool: "open_pr", arguments: { title: "Title route", branch: "airlie/chat-ab12", base: "main" } });
+  expect(pr.w.text()).toContain("Open a pull request?");
+  expect(pr.w.text()).toContain("Title route");
+  const image = await show({ id: "ap3", tool: "build_image", arguments: { key: "node-22" } });
+  expect(image.w.text()).toContain("Build the image?");
+  expect(image.w.text()).toContain("node-22");
+});
+
+test("approve and deny are buttons that send the answer", async () => {
+  const { w, server } = await show();
+  server.turn = () => streamResponse(turnChunks("a1", textChunks("t1", "Pushed.")));
+  await button(w, "Approve").trigger("click");
+  await flushPromises();
+  expect(server.calls.find((c) => c.url === "/v1/airlie/chat/turn")?.body).toMatchObject({ approvals: [{ id: "ap1", approved: true }], messages: [] });
+  const denied = await show();
+  denied.server.turn = () => streamResponse(turnChunks("a1", textChunks("t1", "Fine.")));
+  await button(denied.w, "Deny").trigger("click");
+  await flushPromises();
+  expect(denied.server.calls.find((c) => c.url === "/v1/airlie/chat/turn")?.body).toMatchObject({ approvals: [{ id: "ap1", approved: false }] });
+});
+
+test("both buttons are disabled after one is pressed", async () => {
+  const { w, server } = await show();
+  server.turn = () => new Promise<Response>(() => {});
+  await button(w, "Approve").trigger("click");
+  expect(button(w, "Approve").attributes("disabled")).toBeDefined();
+  expect(button(w, "Deny").attributes("disabled")).toBeDefined();
+});
+
+test("a pending prompt survives a reload and an answered one reads Approved or Denied", async () => {
+  const { w } = await show();
+  expect(button(w, "Approve").attributes("disabled")).toBeUndefined();
+  const approved = mount(PermissionPrompt, { props: { sessionId: ROW.id, approval: { ...PUSH, answer: "approved" } } });
+  expect(approved.text()).toContain("Approved");
+  expect(approved.findAll("button")).toHaveLength(0);
+  const denied = mount(PermissionPrompt, { props: { sessionId: ROW.id, approval: { ...PUSH, answer: "denied" } } });
+  expect(denied.text()).toContain("Denied");
+});
+
+test("an approved call that failed reads failed with its error", async () => {
+  const { w } = await show({ ...PUSH, answer: "failed", error: "error: remote rejected the push" });
+  expect(w.text()).toContain("failed");
+  expect(w.text()).toContain("remote rejected the push");
+  expect(w.text()).not.toContain("Approved");
+  expect(w.findAll("button")).toHaveLength(0);
+});
+
+test("a refused answer shows the servers reason", async () => {
+  const { w, server } = await show();
+  server.turn = () => Response.json({ error: "no permission request of this chat waits for that answer" }, { status: 409 });
+  await button(w, "Approve").trigger("click");
+  await flushPromises();
+  expect(w.text()).toContain("no permission request of this chat waits for that answer");
+  expect(w.findAll("button")).toHaveLength(0);
+});
+
+test("an expired request shows no buttons", async () => {
+  const { w } = await show({ ...PUSH, expired: true });
+  expect(w.text()).toContain("This request expired; ask again");
+  expect(w.findAll("button")).toHaveLength(0);
+});

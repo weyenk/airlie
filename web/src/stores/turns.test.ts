@@ -418,3 +418,16 @@ test("a tool call whose arguments did not parse shows its error on the tool part
   expect(tool).toMatchObject({ state: "output-error", errorText: "arguments are not JSON" });
 });
 
+
+test("running says whether the server still runs the turn, as the last history read said", async () => {
+  let running = true;
+  serve({ history: () => detail(ROW, [user("u1", "hi")], { running }) });
+  const turns = useTurns();
+  turns.chatFor(ROW);
+  expect(turns.running(ROW.id)).toBe(false);
+  await turns.reload(ROW.id);
+  expect(turns.running(ROW.id)).toBe(true);
+  running = false;
+  await turns.reload(ROW.id);
+  expect(turns.running(ROW.id)).toBe(false);
+});

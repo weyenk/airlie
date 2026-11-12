@@ -29,8 +29,11 @@ export type ApprovalData = {
   id: string;
   tool: string;
   arguments: Record<string, unknown>;
-  /** Only in a stored part, once answered. */
-  answer?: "approved" | "denied";
+  /** Only in a stored part, once answered; "failed": approved, and the call it ran failed (`error` says how). */
+  answer?: "approved" | "denied" | "failed";
+  error?: string;
+  /** The server no longer waits on this request (serve restarted since it was asked). */
+  expired?: boolean;
 };
 
 /** A part as the server stores it: the AI SDK's UI parts, plus `airlie_upload` (`{upload, name?}`) on a user message. */
