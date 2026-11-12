@@ -164,7 +164,7 @@ def test_check_library_names_a_changed_file(tree: Path) -> None:
 
 def test_check_library_reports_a_missing_manifest(tree: Path) -> None:
     reason = check_library(tree)
-    assert reason is not None and "cannot be read" in reason and MANIFEST in reason
+    assert reason is not None and "cannot be read: FileNotFoundError: " in reason and MANIFEST in reason
 
 
 def test_check_library_reports_a_skill_that_does_not_parse(tmp_path: Path) -> None:
@@ -172,4 +172,15 @@ def test_check_library_reports_a_skill_that_does_not_parse(tmp_path: Path) -> No
     (tmp_path / "airlie-tools.md").write_text("x\n")
     _manifest(tmp_path)
     reason = check_library(tmp_path)
-    assert reason is not None and "no description" in reason
+    assert reason is not None and "cannot be read: ValueError: " in reason and "no description" in reason
+
+
+def test_check_library_names_the_first_five_problems_one_after_the_other(tree: Path) -> None:
+    _manifest(tree)
+    for n in range(6):
+        (tree / f"extra{n}.md").write_text("x\n")  # six files the manifest does not list
+
+    reason = check_library(tree)
+
+    assert reason is not None
+    assert reason.endswith(": " + "; ".join(f"not in the manifest: extra{n}.md" for n in range(5)))

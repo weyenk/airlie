@@ -206,7 +206,7 @@ equivalent = [
     { mutant = "airlie.chat.threads.xǁThreadStoreǁopen__mutmut_17", line = "\"VALUES (?, ?, ?, '', '[]', ?, ?)\",", reason = "SQLite keywords, identifiers and pragma names are case-insensitive: the upper-case statement does the same" },
     { mutant = "airlie.chat.threads.xǁThreadStoreǁopen__mutmut_7", line = "exists = self.conn.execute(\"SELECT 1 FROM THREADS WHERE ID = ?\", (thread_id,)).fetchone()", reason = "SQLite keywords, identifiers and pragma names are case-insensitive: the upper-case statement does the same" },
     { mutant = "airlie.chat.threads.xǁThreadStoreǁset_todos__mutmut_6", line = "\"UPDATE THREADS SET TODOS = ?, UPDATED = ? WHERE ID = ?\",", reason = "SQLite keywords, identifiers and pragma names are case-insensitive: the upper-case statement does the same" },
-    { mutant = "airlie.chat.tools.x_parse_item__mutmut_28", line = "return TodoItem(str(r.get(\"id\") or n), text, cast(None, status))", reason = "typing.cast returns its value unchanged at run time; only the type checker reads its first argument" },
+    { mutant = "airlie.chat.tools.x_parse_item__mutmut_29", line = "return TodoItem(str(r.get(\"id\") or n), text, cast(None, status))", reason = "typing.cast returns its value unchanged at run time; only the type checker reads its first argument" },
 ]
 # Functions whose code runs only on macOS (module:function, or module:Class.method): their mutants are run on
 # the mac job (scripts/mutate_changed.py --mac-only), as a file that imports mlx is. On Linux no

@@ -275,7 +275,8 @@ async def test_a_failing_session_start_leaves_the_prompt_empty_and_says_why(
     await hooks.run("session_start", c)
 
     assert c.system_prompt == ""
-    assert c.prompt_error is not None and "using-superpowers" in c.prompt_error
+    assert c.prompt_error is not None and c.prompt_error.startswith("KeyError: ")
+    assert "using-superpowers" in c.prompt_error
 
 
 async def test_before_turn_refuses_too_many_attachments(
