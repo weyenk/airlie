@@ -108,32 +108,33 @@ Task 5 is therefore the chat panel (was: the left nav and its drawer), Task 7 ga
 | Need | Before this task | Now |
 |---|---|---|
 | List sessions | `GET /v1/airlie/chat/threads` gave `id, title, kind, updated` | adds `repo, base_ref, branch, created, running` |
-| Create a session | none: a thread was made by its first turn, with a client id | `POST /v1/airlie/chat/threads` (server id; a refused first turn no longer drops it) |
+| Create a session | none: a thread was made by its first turn, with a client id | `POST /v1/airlie/chat/threads` (server id; a refused first turn no longer drops it); a repository chat's VM starts in the background (pre-warm, bounded) |
 | Delete a session | `DELETE /v1/airlie/chat/threads/{id}` (VM deleted with it) | unchanged, plus the feed hint |
-| Pins per person | none | `GET /v1/airlie/chat/pins`, `PUT` / `DELETE /v1/airlie/chat/pins/{owner}/{name}`, in the user store (`auth.sqlite`, table `chat_pins`) |
+| Pins per person | none | `GET /v1/airlie/chat/pins`, `PUT` / `DELETE /v1/airlie/chat/pins/{owner}/{name}`, in the user store (`auth.sqlite`, table `chat_pins`); at most 50, each one `/v1/airlie/repos/names` lists |
 | Repositories that can be pinned | `GET /v1/airlie/repos/names` (origins of `story.repo` and the checkouts under `story.repos_root`, and board `repo:` labels) | reused as is |
 | Message history | `GET /v1/airlie/chat/threads/{id}` (stored parts, usage, interrupted, todos) | adds `branch`, `running`; a permission request is now kept in the parts |
-| Answer a permission prompt | the next turn's `approvals` field, only with a new user message; the request was not kept in the thread | the one way stays `approvals` in the turn body; a turn may now carry `approvals` and no new user message (it resumes the last assistant message), and the request and its answer are kept in the thread |
+| Answer a permission prompt | the next turn's `approvals` field, only with a new user message; the request was not kept in the thread | the one way stays `approvals` in the turn body; a turn may now carry `approvals` and no new user message: it resumes the last assistant message and the server runs (or refuses) the answered call itself; the request and its answer are kept in the thread, the answer only once that turn has started |
 | Usage in `finish` | `finish.messageMetadata.usage` = `{prompt_tokens, completion_tokens, cached_tokens, max_context}`; the stored assistant message keeps it | unchanged |
 | Engine and VM status | `GET /v1/airlie/engines` (engines and VMs; feed topic `engines`); transient `data-engine` chunks while a turn waits | unchanged |
-| Live updates of the chat list | none | feed topic `chat` |
+| Live updates of the chat list | none | feed topic `chat`, no key |
+| Per-chat status (VM uptime, engine model and size, memory, commits ahead) | none | **Task 7** adds `GET /v1/airlie/chat/threads/{id}/status` |
 
-**Step 2 (done 2026-11-12):** the routes above, in `src/airlie/chat/api.py`, `src/airlie/chat/pins.py`, `src/airlie/chat/threads.py`, `src/airlie/chat/turn.py`, `src/airlie/auth/store.py`; tests in `tests/functional/test_chat_sessions.py`, `tests/functional/test_repo_chat_turn.py` (the prompt kept and answered alone), `tests/functional/test_chat_turn_route.py` (`running`). Commit `chat: session routes for the redesign: …`.
+**Step 2 (done 2026-11-12):** the routes above, in `src/airlie/chat/api.py`, `src/airlie/chat/pins.py`, `src/airlie/chat/threads.py`, `src/airlie/chat/turn.py`, `src/airlie/auth/store.py`; tests in `tests/functional/test_chat_sessions.py`, `tests/functional/test_repo_chat_turn.py` (the prompt kept and answered alone), `tests/functional/test_chat_turn_route.py` (`running`). Commits `chat: session routes for the redesign: …` and, after review round 1, `chat: answered calls run on the resume turn; bounded pre-warm; …`.
 
 **The contract `web/src/api/sessions.ts` codes against** (every route answers 401 `{"error": "not signed in"}` without a principal; another person's chat is 404 `{"error": "no such thread"}`, the same as one that is not there):
 
 | Route | Body | Answer |
 |---|---|---|
 | `GET /v1/airlie/chat/threads?kind=plain\|repository` | | 200 `ThreadRow[]`, newest `updated` first |
-| `POST /v1/airlie/chat/threads` | `{kind, repo?, base_ref?}` (`repo` is owner/name and required for `repository`, forbidden for `plain`) | 201 `ThreadRow`; 422 bad body; 503 repository chats not configured |
+| `POST /v1/airlie/chat/threads` | `{kind, repo?, base_ref?}` (`repo` is owner/name and required for `repository`, forbidden for `plain`) | 201 `ThreadRow`; 422 bad body; 503 repository chats not configured. A repository chat's VM starts in the background when the repository is one `/v1/airlie/repos/names` lists and the person has fewer than `boxes.prewarm_max_per_person` (default 2) chats whose VM was started early and that have no message yet; otherwise, or if the pre-warm fails (only logged), its first turn starts the VM and says why it cannot |
 | `GET /v1/airlie/chat/threads/{id}` | | 200 `ThreadRow & {todos: TodoItem[], messages: StoredMessage[]}`; 404 |
 | `DELETE /v1/airlie/chat/threads/{id}` | | 204; 404; 409 a turn is running, or its VM could not be deleted (`error` says which) |
 | `POST /v1/airlie/chat/threads/{id}/stop` | | 204 (also when nothing runs); 404 |
 | `POST /v1/airlie/chat/turn` | `{id, kind, messages, skill?, repo?, base_ref?, approvals?: {id, approved}[]}`: only the newest message is read; `repo`/`base_ref` only on a thread's first turn | 200 SSE (below); 404 no such thread; 409 a turn is running, or (an answer alone) no request of this chat waits for that answer, or the VM is unavailable (Tart or softnet missing, with the install hint); 422 bad body or unreadable repository; 400 too many attachments; 503 chat misconfigured |
 | `GET /v1/airlie/chat/pins` | | 200 `{pins: string[]}` in the order pinned |
-| `PUT /v1/airlie/chat/pins/{owner}/{name}` | | 204 (pinning again, in any case, keeps the first); 422 not owner/name |
+| `PUT /v1/airlie/chat/pins/{owner}/{name}` | | 204 (pinning again, in any case, keeps the first); 422 not owner/name, not a repository `/v1/airlie/repos/names` lists, or a 51st pin |
 | `DELETE /v1/airlie/chat/pins/{owner}/{name}` | | 204; 404 `{"error": "<repo> is not pinned"}`. Unpinning keeps the repository's chats |
-| `GET /v1/airlie/repos/names` | | 200 `{repos: string[]}`: what the pin picker offers |
+| `GET /v1/airlie/repos/names` | | 200 `{repos: string[]}`: what the pin picker offers, and the only names a pin or a pre-warm accepts |
 | `GET /v1/airlie/engines` | | 200 `EngineStatus[]` (`web/src/api/engines.ts`); a chat's VM is the row named `vm:<thread id>`, `kind: "vm"`, its `detail` "building image", "cloning <image> (its first use downloads it)", "starting VM" while `starting` |
 
 ```ts
@@ -148,30 +149,32 @@ type ApprovalData = { id: string; tool: string; arguments: Record<string, unknow
   answer?: "approved" | "denied" /* only in the stored part, once answered */ };
 ```
 
-Stored parts (`StoredPart`): user `text` and `airlie_upload` (`{upload, name?}`); assistant `text`, `reasoning`, `step-start`, `tool-<name>` (`toolCallId`, `input` or `rawInput`, `state` one of `output-available | output-error | approval-requested | approval-responded`, `output` or `errorText`, and `approval: {id, approved?}` on a call that asked), and `data-approval` (`{type, id, data: ApprovalData}`, right after its tool part; also alone for a request that is no tool call, the image build). Not stored: `data-engine` (transient) and `data-todos` (the thread's `todos` hold the latest list).
+Stored parts (`StoredPart`): user `text` and `airlie_upload` (`{upload, name?}`); assistant `text`, `reasoning`, `step-start`, `tool-<name>` (`toolCallId`, `input` or `rawInput`, `state` one of `output-available | output-error | approval-requested | approval-responded`, `output` or `errorText`, and `approval: {id, approved?}` on a call that asked; the call the server made on the person's answer follows as its own part, `toolCallId` `<asked id>-answered`), and `data-approval` (`{type, id, data: ApprovalData}`, right after its tool part; also alone for a request that is no tool call, the image build). Not stored: `data-engine` (transient) and `data-todos` (the thread's `todos` hold the latest list).
 
 The stream (header `x-vercel-ai-ui-message-stream: v1`): `start {messageId}`, `start-step`, `text-start|delta|end`, `reasoning-start|delta|end`, `tool-input-start`, `tool-input-available`, `tool-input-error`, `tool-output-available`, `tool-output-error`, `tool-approval-request {approvalId, toolCallId}`, `data-approval {id, data: ApprovalData}`, `data-engine {data: {engine, state, detail, progress}, transient: true}` (the engine's or the VM's row, `engine` = its name; only while the turn waits for it), `data-todos {data: TodoItem[]}`, `finish-step`, `error {errorText}`, `finish {messageMetadata: {usage: Usage}}`, `[DONE]`.
 
-Answering a prompt: the client sends a turn with `approvals: [{id, approved}]` and, as its newest message, the assistant's (or none). The server marks the stored request answered (`approval-responded` / `data.answer`), tells the model the answer, and the turn goes on the same assistant message (its `start` names that message's id, so `Chat` continues it). A second answer to the same request, from another device or a second tap, is 409 and runs nothing. An answer sent with a new user message works as before.
+Answering a prompt: the client sends a turn with `approvals: [{id, approved}]` and, as its newest message, the assistant's (or none). The turn goes on the same assistant message (its `start` names that message's id, so `Chat` continues it). Before the model's first reply the server makes the answered call itself, with the arguments the person was asked about (`confirm.py` checks them against the yes and spends it; a `push_branch` re-reads its subject, so a moved head is refused): an approved call runs and its result is the model's tool result; a denied one is refused with `denied by the person: <tool> did not run`. Both stream as a new tool part. A request that is no tool call (the image build) is told to the model as a note, and the turn's VM start uses the yes. The answer is applied and saved (`approval-responded` / `data.answer`, the `chat` hint) only once the turn's stream has started: a turn refused before it (a bad skill, the VM unavailable, a turn already running: 404 / 409 / 422) leaves the prompt waiting and answerable. A second answer to an answered request, from another device or a second tap, is 409 and runs nothing; an answer on another person's chat is 404. An answer sent with a new user message works as before (the model makes the call again).
 
-Live: the feed topic `chat`, key = the thread id when a thread is made, a turn ends (whatever its end), its prompt is answered, or it is deleted; key `null` when the person's pins change. A hint carries no data: the panel refetches `GET /v1/airlie/chat/threads` and the pins, the open chat refetches its thread when it is not streaming.
+Live: the feed topic `chat`, always with key `null` (the feed reaches every signed-in client, so a hint names no one's chat): sent when a thread is made, a turn ends (whatever its end), a prompt's answer is applied, a thread is deleted, or the person's pins change. A hint carries no data: the panel refetches `GET /v1/airlie/chat/threads` and the pins; the open chat refetches its thread when it is not streaming (a client waiting on a cut turn compares the row's `running` and `updated`).
 
 Context readout: `used = usage.prompt_tokens` of the newest `finish` (or of the last stored assistant message after a reload): what the model last read; `limit = usage.max_context` (262144 for Gemma's chat role).
 
-**Scope against the mockup, for Noah (not built; the screen shows what the API has):**
+**Against the mockup, for Noah** (the controller's rulings of 2026-11-12, in progress.md, settle 1, 2 and 4-6):
 
-1. The popover's memory row ("41 of 64 GB in use") has no route: the manager's used and budget GB are not served. Built as: the row shows the manager's waiting reason when a resource waits for memory, else is left out. A `GET /v1/airlie/memory` (or the figures on `/v1/airlie/engines`) is a follow-up.
-2. VM uptime ("up 14 min"), the engine's model id and size, and "3 commits ahead of main, not pushed" are not served either: the VM row shows its state, the engine row its name and state, the branch row the session branch and its base.
-3. The session branch is `airlie/chat-<12 hex>`, not the mockup's `chat/ab12`.
-4. New does not start the VM: the first turn does (the stream shows the VM's status while it starts), so an abandoned New costs nothing.
-5. A prompt answered after serve restarted is 409 (the server keeps waiting requests in memory): the prompt shows the server's message and the person asks again.
-6. Retry after a cut resends the user message; the server keeps it as a second user message in the thread, as it does today.
+1. The popover's memory row ("41 of 64 GB in use"), VM uptime ("up 14 min"), the engine's model id and size, and "3 commits ahead of main, not pushed" come from a per-chat status route Task 7 adds (`GET /v1/airlie/chat/threads/{id}/status`).
+2. The session branch is `airlie/chat-<12 hex>`, not the mockup's `chat/ab12`.
+3. New under a pinned repository starts the VM in the background (bounded as in the contract); the first turn waits on it as before.
+4. Approve means the call happens: the server makes the approved call on the resume turn, and a refused start leaves the prompt answerable.
+5. A prompt answered after serve restarted is 409 (the server keeps waiting requests in memory); Task 6 marks such a prompt expired (below).
+6. Retry no longer saves the user message twice: Task 4 fixes it.
 
 ### Task 4: `api/sessions.ts`, the transport and the turns store on `@ai-sdk/vue`
 
 **Files:**
 - Create: `web/src/api/sessions.ts`, `web/src/api/sessions.test.ts`, `web/src/stores/turns.ts`, `web/src/stores/turns.test.ts`, `web/src/test-utils/ui-stream.ts` (a fake UI message stream body for the fetch stub)
-- Modify: `web/package.json` and `package-lock.json` (`ai` 7.x and `@ai-sdk/vue` 4.x, exact versions)
+- Modify: `web/package.json` and `package-lock.json` (`ai` 7.x and `@ai-sdk/vue` 4.x, exact versions); `src/airlie/chat/api.py` and `tests/functional/test_chat_turn_route.py` (Retry's single save, below)
+
+Test names in Tasks 4-8 are written `test_snake_case` for reading; in vitest each is `it("<the same words with spaces>")` (`test_a_cut_stream_keeps…` is `it("a cut stream keeps…")`).
 
 **Interfaces:**
 - Consumes: Task 3's contract.
@@ -219,7 +222,9 @@ export const useTurns: () => {
 };
 ```
 
-`DefaultChatTransport({ api: "/v1/airlie/chat/turn", prepareSendMessagesRequest })` sends `{id, kind, repo, base_ref, skill, approvals, messages: [newest]}` (repo and base_ref from the session row; `approvals` only from `answer`), with the key header from `authHeaders()`; a 401 calls `signalUnauthorized()`. `answer` sends through the same `Chat` with no new user message, so the reply streams onto the asked message. `onData` keeps the newest `data-engine` row per session for `waiting`. On a cut the store calls `reload`: while the row says `running` it waits for the `chat` hint with that id and reloads again; Retry is offered only when the saved thread ends in an interrupted or missing reply.
+`DefaultChatTransport({ api: "/v1/airlie/chat/turn", prepareSendMessagesRequest })` sends `{id, kind, repo, base_ref, skill, approvals, messages: [newest]}` (repo and base_ref from the session row; `approvals` only from `answer`), with the key header from `authHeaders()`; a 401 calls `signalUnauthorized()`. `answer` sends through the same `Chat` with no new user message, so the reply streams onto the asked message. `onData` keeps the newest `data-engine` row per session for `waiting`. On a cut the store calls `reload`: while the row says `running` it waits for the next `chat` hint (they carry no key) and reloads again until the row is no longer running; Retry is offered only when the saved thread ends in an interrupted or missing reply.
+
+Retry saves the user message once (controller ruling): `retry` resends the newest user message with its own id, and the turn route, which today stores a resent id as a new message, stores nothing for a user message whose id is the thread's newest user message with no saved reply after it (`src/airlie/chat/api.py`, `start_turn`); the model gets the thread as it is. Functional test first in `tests/functional/test_chat_turn_route.py`: `test_a_retry_of_a_message_with_no_reply_is_not_saved_twice` (and the existing `test_an_engine_failure_is_an_error_chunk_and_the_user_message_is_kept` changes to two messages, the question and its answer).
 
 - [ ] **Step 1: Write the failing tests** (`sessions.test.ts`: each function's method, URL and body through `stubJson`; `toUIMessage` keeps the parts and moves usage to metadata. `turns.test.ts`, a fake UI message stream body through the fetch stub):
   - `test_a_text_stream_becomes_one_assistant_message_with_its_text`
@@ -228,7 +233,8 @@ export const useTurns: () => {
   - `test_a_401_from_the_turn_reaches_the_sign_in_redirect`
   - `test_a_cut_stream_keeps_the_partial_reply_and_offers_retry` (Review Focus 2: the partial text stays, `cut` is true, the open tool part reads as interrupted, no prompt stays live)
   - `test_a_cut_while_the_server_still_runs_waits_for_the_chat_hint_then_shows_the_saved_reply`
-  - `test_answer_sends_the_approval_with_no_new_message_and_the_reply_continues_the_asked_message`
+  - `test_retry_resends_the_message_and_the_thread_holds_it_once`
+  - `test_answer_sends_the_approval_with_no_new_message_and_the_reply_continues_the_asked_message` (the server's run of the call arrives as a new tool part)
   - `test_an_answer_the_server_refuses_shows_its_reason_on_the_prompt` (409)
   - `test_a_data_engine_chunk_is_the_waiting_line_until_text_arrives`
   - `test_stop_posts_the_stop_route_and_ends_the_stream`
@@ -272,13 +278,13 @@ Components (props / emits):
 - `ChatPanel` `{ currentId: string | null }`, emits `pick(id)`, `close()`. Header: "Chats" and the close X (desktop) ; then one `PanelRepository` per pinned repository, a "Pin a repository" control (`PinPicker`), "Other repositories" when any chat's repository is not pinned, and the "Chats" group with its New.
 - `PanelRepository` `{ group: RepoGroup; currentId: string | null; pinned: boolean }`, emits `new(repo)`, `pick(id)`, `unpin(repo)`.
 - `PanelChatRow` `{ session: ThreadRow; current: boolean }`: the title ("New chat" while empty), a second line "repo, branch" for a repository chat, a quiet dot while `running`; `aria-current="page"` when current.
-- `PinPicker` emits `pin(repo)`: a `Typeahead` over `listRepositories()` that also takes any owner/name typed.
+- `PinPicker` emits `pin(repo)`: a `Typeahead` over `listRepositories()`; only a listed name can be pinned (the server refuses others with 422), and the server's 422 for a 51st pin shows under it.
 - `PanelSlideOver` `{ open: boolean }` (v-model): `ChatPanel` inside a left sheet between the top bar and the tab bar; focus is trapped, Escape, the scrim and a pick close it.
 
 - [ ] **Step 1: Write the failing tests, one per state:**
   - `ChatPanel`: `test_each_pinned_repository_lists_its_chats_newest_first`; `test_new_under_a_repository_makes_a_repository_chat_and_opens_it` (POST body `{kind: "repository", repo}`, then the route is `/chat/<id>`); `test_new_under_chats_makes_a_plain_chat_and_opens_it`; `test_pinning_and_unpinning_move_a_repository_between_its_group_and_other_repositories`; `test_chats_of_an_unpinned_repository_stay_listed` (Review Focus 5: under "Other repositories", never gone); `test_with_no_pins_and_no_chats_it_says_pin_a_repository_to_start_a_chat_in_a_vm`; `test_a_failed_load_shows_the_error_with_retry`; `test_while_loading_it_shows_no_stale_rows`; `test_the_current_chat_is_marked_current`; `test_a_chat_hint_refetches_the_list`; `test_close_hides_the_panel_and_the_chat_rows_button_brings_it_back`.
   - `PanelChatRow`: `test_a_new_chat_reads_new_chat`; `test_a_repository_chat_shows_its_repository_and_branch`; `test_a_running_chat_shows_its_running_dot`.
-  - `PinPicker`: `test_it_offers_the_repositories_airlie_knows_and_pins_the_one_picked`; `test_a_typed_name_that_is_not_owner_name_cannot_be_pinned`; `test_a_failed_lookup_still_takes_a_typed_name`.
+  - `PinPicker`: `test_it_offers_the_repositories_airlie_knows_and_pins_the_one_picked`; `test_a_name_airlie_does_not_list_cannot_be_pinned`; `test_a_refused_pin_shows_the_servers_reason`; `test_a_failed_lookup_says_so_and_offers_retry`.
   - `PanelSlideOver` (window 375 px): `test_on_a_phone_the_panel_is_closed_until_the_chat_rows_button_opens_it`; `test_focus_stays_inside_the_open_slide_over`; `test_escape_the_scrim_and_a_pick_close_it`.
   - `router.test.ts`: `test_chat_session_routes_light_the_chat_tab`; `test_slash_opens_the_last_chat_of_this_browser_or_a_fresh_one`.
 - [ ] **Step 2: Run them to see them fail.**
@@ -302,10 +308,11 @@ Components (props / emits):
   - `DiffBlock` `{ path: string; old?: string; new: string }`: `edit_file` (`old` to `new`) and `write_file` (all `new`), lines marked by a `+`/`-` gutter and text, never by colour alone, rendered as text.
   - `TodoList` `{ items: TodoItem[] }`: each of `pending`, `in_progress`, `done`, and "2 of 4 done".
   - `PermissionPrompt` `{ sessionId: string; approval: ApprovalData }`: the question for the tool (`push_branch`: "Push session branch to origin?", with the branch and its commits from `arguments`; `open_pr` and `build_image` from their arguments), Approve and Deny buttons; both disabled once one is pressed or once `answer` is set ("Approved" / "Denied"); the server's 409 reason in place of the buttons.
-  - `WaitingLine` `{ status: EngineStatus }`: `EngineStatusLine` inline in the thread under the turn that waits.
-  - `CutLine` `{ sessionId: string }`: "Cut off" with Retry.
+  - `WaitingLine` `{ status: EngineStatus; sessionId: string }`: `EngineStatusLine` inline in the thread under the turn that waits, with b2.html's States strip actions: waiting for memory has **Wait** (closes the line, the turn keeps waiting) and **Cancel** (`useTurns().stop`); a failed engine has **Retry** (`useTurns().retry`) and **Open log** (the Admin tab's engine row, `/admin`).
+  - `CutLine` `{ sessionId: string; running: boolean }`: as b2.html's cut stream: while the server still runs the turn, "Stream cut. The turn kept running on the server and is saved" with **Reconnect** (`reload`, then wait as Task 4 says) and **Stop turn** (`stop`); once it is not running and the reply is interrupted or missing, "Cut off" with **Retry**.
+  - A prompt whose request the server no longer waits on (serve restarted) reads expired: `GET /v1/airlie/chat/threads/{id}` marks such a stored `data-approval` part `data.expired: true` (a request id that `Confirmations` does not hold as pending; `src/airlie/chat/api.py`, functional test `test_a_prompt_from_before_a_restart_reads_expired` first), and `PermissionPrompt` shows "This request expired; ask again" in place of the buttons.
 
-- [ ] **Step 1: Write the failing tests, one per state:** a text part renders safe markdown; `test_reasoning_is_a_closed_disclosure_that_opens_on_click`; `ToolBlock`: `test_a_tool_row_is_collapsed_and_opens_to_its_input_and_output`, `test_a_call_with_input_and_no_output_reads_running`, `test_an_output_error_shows_the_error`, `test_an_open_call_after_a_cut_reads_interrupted`, `test_a_long_output_is_collapsed_with_its_line_count` (Review Focus 4: also no sideways scroll at 375 px), `test_hovering_a_row_on_desktop_shows_its_detail_card`, `test_tapping_a_row_on_a_phone_opens_its_detail_sheet`; `DiffBlock`: `test_an_edit_shows_removed_and_added_lines_with_a_gutter`, `test_a_diff_with_markup_renders_as_text`; `TodoList`: `test_each_status_renders_and_the_count_reads_two_of_four_done`, `test_a_newer_todos_part_replaces_the_older_in_place`; `PermissionPrompt`: `test_approve_and_deny_are_buttons_that_send_the_answer`, `test_both_buttons_are_disabled_after_one_is_pressed`, `test_a_pending_prompt_survives_a_reload` (Review Focus 3: from `getSession` parts, live; answered parts read "Approved" or "Denied"), `test_a_refused_answer_shows_the_servers_reason`; `test_a_waiting_turn_shows_the_engine_line_inline` (Review Focus 1); `test_a_cut_reply_shows_cut_off_with_retry`; `test_an_unknown_part_renders_nothing`.
+- [ ] **Step 1: Write the failing tests, one per state:** a text part renders safe markdown; `test_reasoning_is_a_closed_disclosure_that_opens_on_click`; `ToolBlock`: `test_a_tool_row_is_collapsed_and_opens_to_its_input_and_output`, `test_a_call_with_input_and_no_output_reads_running`, `test_an_output_error_shows_the_error`, `test_an_open_call_after_a_cut_reads_interrupted`, `test_a_long_output_is_collapsed_with_its_line_count` (Review Focus 4: also no sideways scroll at 375 px), `test_hovering_a_row_on_desktop_shows_its_detail_card`, `test_tapping_a_row_on_a_phone_opens_its_detail_sheet`; `DiffBlock`: `test_an_edit_shows_removed_and_added_lines_with_a_gutter`, `test_a_diff_with_markup_renders_as_text`; `TodoList`: `test_each_status_renders_and_the_count_reads_two_of_four_done`, `test_a_newer_todos_part_replaces_the_older_in_place`; `PermissionPrompt`: `test_approve_and_deny_are_buttons_that_send_the_answer`, `test_both_buttons_are_disabled_after_one_is_pressed`, `test_a_pending_prompt_survives_a_reload` (Review Focus 3: from `getSession` parts, live; answered parts read "Approved" or "Denied"), `test_a_refused_answer_shows_the_servers_reason`, `test_an_expired_request_shows_no_buttons`; `test_a_waiting_turn_shows_the_engine_line_inline` (Review Focus 1), `test_waiting_for_memory_offers_wait_and_cancel`, `test_a_failed_engine_offers_retry_and_open_log`; `test_a_cut_turn_the_server_still_runs_offers_reconnect_and_stop_turn`, `test_a_cut_reply_shows_cut_off_with_retry`; `test_an_unknown_part_renders_nothing`.
 - [ ] **Step 2: Run them to see them fail.**
 - [ ] **Step 3: Implement** one component per part type.
 - [ ] **Step 4: Run the tests and the gate** → PASS.
@@ -314,31 +321,33 @@ Components (props / emits):
 ### Task 7: The chat row, the status chip and its popover, and the context readout
 
 **Files:**
-- Create: `web/src/screens/chat/ChatHeader.vue`, `SessionStatus.vue` (the chip and its popover or sheet), `ContextMeter.vue`, a test beside each
+- Create: `web/src/screens/chat/ChatHeader.vue`, `SessionStatus.vue` (the chip and its popover or sheet), `ContextMeter.vue`, a test beside each; `web/src/api/sessions.ts` gains `sessionStatus(id)`
+- Create (backend, functional tests first): `GET /v1/airlie/chat/threads/{id}/status` in `src/airlie/chat/api.py`, tests in `tests/functional/test_chat_sessions.py` (owner-scoped: 401, 404 for another person's or no chat; a plain chat answers `vm: null, branch: null`)
 - Modify: `web/src/screens/chat/StatusStrip.vue` (removed once its content is in the chat row: the engine line and the memory wait move to `SessionStatus` and `WaitingLine`), `web/src/components/EngineStatusLine.vue` (an optional `label` prop: the name it says, so a VM reads "Starting a VM for airlie…" with its detail rather than its resource name)
 
 **Interfaces:**
-- Consumes: `useEngines().forRole("chat")` and `useEngines().byName("vm:" + session.id)`; `useTurns().usage(id)`; the `ThreadRow`; `useChatPanel().toggle`.
+- Consumes: `useEngines().forRole("chat")` and `useEngines().byName("vm:" + session.id)` (live); the status route, refetched on the `engines` and `chat` hints while the popover is open; `useTurns().usage(id)`; the `ThreadRow`; `useChatPanel().toggle`.
+- The status route answers `{vm: {name, state, detail, since, memory_gb} | null, engine: {name, model, state, footprint_gb}, memory: {used_gb, budget_gb, waiting: string | null}, branch: {name, base, ahead: number | null, pushed: boolean | null} | null}`: the VM's manager row and its `since` (uptime), the chat engine's model id and footprint, the manager's used and budget GB, and `git rev-list --count <base>..<branch>` in the host mirror (null before the session opened, or when the mirror cannot say; never run in the VM).
 - Produces:
   - `ChatHeader` `{ session: ThreadRow | null }`: the panel button (`aria-label="Chats"`, `aria-expanded`), title ("New chat" while empty), and for a repository chat its repository and branch; the model (the chat engine's name); `ContextMeter`; `SessionStatus`. On a phone: the panel button, the title and the chip; repository, branch and model move into the sheet.
   - `ContextMeter` `{ used: number | null; limit: number | null }`: "118k / 262k", `role="progressbar"` with `aria-valuenow`/`aria-valuemax`; warning at 90 % of the limit; nothing before the first `finish`.
-  - `SessionStatus` `{ session: ThreadRow }`: a chip (a dot and a word: nothing but the dot when everything is ready; the `EngineStatusLine` text while the engine or the VM starts, downloads or waits; the failure while one failed); a click opens a popover (desktop) or a bottom sheet (phone) with rows VM (repository chat only: its state and `detail`), engine (name and state, the download progress), context (used of limit), memory (the waiting reason while one waits), branch (the session branch and its base).
+  - `SessionStatus` `{ session: ThreadRow }`: a chip (a dot and a word: nothing but the dot when everything is ready; the `EngineStatusLine` text while the engine or the VM starts, downloads or waits; the failure while one failed); a click opens a popover (desktop) or a bottom sheet (phone) with rows VM (repository chat only: its name, state and uptime, or its `detail` while it starts), engine (model id and size, its state, the download progress), context (used of limit), memory ("41 of 64 GB in use", or the waiting reason while one waits), branch (the session branch, "3 commits ahead of main, not pushed").
 
-- [ ] **Step 1: Write the failing tests:** `ChatHeader`: `test_a_repository_chat_shows_its_repository_branch_model_context_and_status`, `test_a_plain_chat_shows_no_repository_or_branch`, `test_the_panel_button_toggles_the_panel_and_says_so`, `test_on_a_phone_the_row_keeps_the_title_and_the_chip`; `ContextMeter`: `test_it_reads_used_of_limit_as_a_progressbar`, `test_it_warns_at_ninety_percent`, `test_before_any_finish_it_shows_nothing`; `SessionStatus`: `test_ready_shows_only_the_dot`, `test_a_starting_engine_and_a_downloading_one_show_the_engine_line`, `test_a_starting_vm_says_starting_a_vm_for_the_repository_and_its_step`, `test_a_failed_engine_shows_its_reason`, `test_the_chip_opens_the_popover_with_vm_engine_context_memory_and_branch`, `test_a_plain_chats_popover_has_no_vm_or_branch_row`, `test_on_a_phone_the_chip_opens_a_bottom_sheet`.
+- [ ] **Step 1: Write the failing tests:** `ChatHeader`: `test_a_repository_chat_shows_its_repository_branch_model_context_and_status`, `test_a_plain_chat_shows_no_repository_or_branch`, `test_the_panel_button_toggles_the_panel_and_says_so`, `test_on_a_phone_the_row_keeps_the_title_and_the_chip`; `ContextMeter`: `test_it_reads_used_of_limit_as_a_progressbar`, `test_it_warns_at_ninety_percent`, `test_before_any_finish_it_shows_nothing`; `SessionStatus`: `test_ready_shows_only_the_dot`, `test_a_starting_engine_and_a_downloading_one_show_the_engine_line`, `test_a_starting_vm_says_starting_a_vm_for_the_repository_and_its_step`, `test_a_failed_engine_shows_its_reason`, `test_the_chip_opens_the_popover_with_vm_engine_context_memory_and_branch`, `test_a_failed_status_load_keeps_the_chip_and_says_the_detail_is_unavailable`, `test_a_plain_chats_popover_has_no_vm_or_branch_row`, `test_on_a_phone_the_chip_opens_a_bottom_sheet`.
 - [ ] **Step 2: Run them to see them fail.** **Step 3: Implement.** **Step 4: Tests and gate** → PASS.
 - [ ] **Step 5: Commit** (`web: chat row with repository, branch, model, context and the status popover`).
 
 ### Task 8: Assemble the screen, keep every other screen reachable, one e2e
 
 **Files:**
-- Modify: `web/src/screens/ChatScreen.vue` (under `AppShell`: `ChatPanel` or `PanelSlideOver`, then `ChatHeader`, the thread and `Composer`; the composer, slash menu and attachments keep their behaviour), `web/src/screens/ChatScreen.test.ts`, `web/src/router.test.ts`, `web/src/stores/chat.ts` (its send path goes; the slash and attachment helpers stay; the old `airlie.chat` sessionStorage thread is shown once, read-only, as "Legacy chat" in the panel's Chats group)
+- Modify: `web/src/screens/ChatScreen.vue` (under `AppShell`: `ChatPanel` or `PanelSlideOver`, then `ChatHeader`, the thread and `Composer`; the composer, slash menu and attachments keep their behaviour; b2.html's composer footer is added: the model's name and, for a repository chat, an "Ask before pushing" chip that says what `chat.kinds.repository.ask_first` holds, as a label, not a switch (the list is config, and push and PR are always asked)), `web/src/screens/chat/Composer.vue`, `web/src/screens/ChatScreen.test.ts`, `web/src/router.test.ts`, `web/src/stores/chat.ts` (its send path goes; the slash and attachment helpers stay; the old `airlie.chat` sessionStorage thread is shown once, read-only, as "Legacy chat" in the panel's Chats group)
 - Create: `tests/e2e/test_chat_redesign.py`; delete or rewrite the checks in `tests/e2e/test_chat.py` the redesign makes stale (a screenshot per check stays)
 
 **Interfaces:**
 - Consumes: Tasks 4-7.
 - Produces: the finished screen at `/` and `/chat/:session`.
 
-- [ ] **Step 1: Write the failing tests:** component: `test_slash_opens_the_last_session`, `test_a_new_profile_opens_a_fresh_plain_chat_with_the_greeting`, `test_the_top_bar_tabs_and_the_phone_tab_bar_reach_board_workflows_metrics_and_admin_from_a_chat` (the chat tab is current on `/chat/<id>`), `test_an_old_airlie_chat_thread_appears_as_legacy_chat_read_only`, `test_opening_another_chat_keeps_the_first_ones_stream_running`. E2E (the one critical journey; fake turn route behind the server's test seam): open a pinned repository's chat from the panel, send a message, see the tool block and the permission prompt, approve it, see the reply; the same at 375 px through the slide-over.
+- [ ] **Step 1: Write the failing tests:** component: `test_slash_opens_the_last_session`, `test_a_new_profile_opens_a_fresh_plain_chat_with_the_greeting`, `test_the_top_bar_tabs_and_the_phone_tab_bar_reach_board_workflows_metrics_and_admin_from_a_chat` (the chat tab is current on `/chat/<id>`), `test_an_old_airlie_chat_thread_appears_as_legacy_chat_read_only`, `test_opening_another_chat_keeps_the_first_ones_stream_running`, `test_the_composer_footer_shows_the_model_and_ask_before_pushing_in_a_repository_chat`. E2E (the one critical journey; fake turn route behind the server's test seam): open a pinned repository's chat from the panel, send a message, see the tool block and the permission prompt, approve it, see the reply; the same at 375 px through the slide-over.
 - [ ] **Step 2: Run them to see them fail** (`task test:e2e -- -k chat_redesign`, or the e2e task `task --list` names).
 - [ ] **Step 3: Implement** the assembly and remove the dead code (the old send path in `chat.ts`, replaced bubbles, `StatusStrip.vue`) in the same commit.
 - [ ] **Step 4: Run the tests and the full gate** → PASS.
