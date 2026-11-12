@@ -528,7 +528,9 @@ class AuthSpec(Strict):
     origins: list[str] = Field(
         default_factory=list, description="WebAuthn origins (default: https://<rp_id> and http localhost)"
     )
-    session_days: int = Field(default=30, ge=1, description="how long a sign-in cookie lasts")
+    session_days: int = Field(
+        default=30, ge=1, description="how long a sign-in lasts idle; one used past half this is renewed"
+    )
     invite_hours: int = Field(default=24, ge=1, description="how long an invite link may be used")
 
 

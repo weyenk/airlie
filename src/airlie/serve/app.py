@@ -25,8 +25,8 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from airlie.auth.api import PUBLIC_PATHS, auth_router
-from airlie.auth.principal import NotInvited, Principal, Resolver
+from airlie.auth.api import PUBLIC_PATHS, auth_router, set_session_cookie
+from airlie.auth.principal import SESSION_COOKIE, NotInvited, Principal, Resolver
 from airlie.auth.store import AuthStore
 from airlie.board import BoardStore
 from airlie.board.api import board_router
@@ -568,6 +568,7 @@ def create_app(
 
     @app.middleware("http")
     async def _require_principal(request: Request, call_next: Callable[..., Any]) -> Any:
+        principal: Principal | None = None
         if request.url.path.startswith("/v1") and request.url.path not in PUBLIC_PATHS:
             try:
                 principal = await resolver.resolve(request)
@@ -582,7 +583,21 @@ def create_app(
                 )
                 return JSONResponse({"error": error}, status_code=401)
             request.state.principal = principal
-        return await call_next(request)
+        response = await call_next(request)
+        if principal is not None and principal.via == "session":
+            _renew_session(request, response)
+        return response
+
+    def _renew_session(request: Request, response: Response) -> None:
+        """A sign-in with under half its days left is extended on use (same token, so a request in flight
+        with the old cookie keeps working); an idle one runs out."""
+        token = request.cookies.get(SESSION_COOKIE)
+        if token is None:
+            return
+        left = store.session_expires_at(token)
+        if left is not None and left - now() < cfg.auth.session_days * 86400 / 2:
+            store.extend_session(token, cfg.auth.session_days)
+            set_session_cookie(response, request, token, cfg.auth.session_days)
 
     app.include_router(auth_router(store, resolver, cfg.auth, now=now))
 

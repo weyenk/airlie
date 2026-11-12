@@ -43,6 +43,12 @@ class Studio:
         )
         self.phone = TestClient(self.app, base_url=ORIGIN, headers={"Origin": ORIGIN}, client=ELSEWHERE)
 
+    def signed_in(self) -> str:
+        return self.store.make_session(self.noah.id, 30)
+
+    def get(self, path: str, token: str) -> Any:
+        return self.phone.get(path, headers={"Cookie": f"airlie_session={token}"})
+
     def invite(self, name: str = "Pat", **body: Any) -> str:
         r = self.admin.post("/v1/auth/invites", json={"name": name, **body})
         assert r.status_code == 201, r.text
@@ -369,3 +375,41 @@ def test_an_invite_link_is_a_clean_path(studio: Studio) -> None:
     assert r.status_code == 201, r.text
     url = r.json()["url"]
     assert url.startswith("/join/") and "#" not in url and len(url) > len("/join/")
+
+
+def test_a_session_past_half_its_life_is_renewed_on_use(tmp_path: Path) -> None:
+    s = Studio(tmp_path)
+    token = s.signed_in()
+    s.clock.t += 16 * 86400
+    r = s.get("/v1/auth/me", token)
+    assert r.status_code == 200
+    cookie = r.headers["set-cookie"]
+    assert f"airlie_session={token}" in cookie and "Max-Age=2592000" in cookie
+    s.clock.t += 29 * 86400
+    assert s.get("/v1/auth/me", token).status_code == 200  # day 45: renewed at day 16
+    s.store.close()
+
+
+def test_a_young_session_is_not_renewed(tmp_path: Path) -> None:
+    s = Studio(tmp_path)
+    token = s.signed_in()
+    s.clock.t += 10 * 86400
+    assert "set-cookie" not in s.get("/v1/auth/me", token).headers
+    s.store.close()
+
+
+def test_an_idle_session_still_ends(tmp_path: Path) -> None:
+    s = Studio(tmp_path)
+    token = s.signed_in()
+    s.clock.t += 31 * 86400
+    assert s.get("/v1/auth/me", token).status_code == 401
+    s.store.close()
+
+
+def test_renewal_keeps_the_same_token(tmp_path: Path) -> None:
+    s = Studio(tmp_path)
+    token = s.signed_in()
+    s.clock.t += 16 * 86400
+    s.get("/v1/auth/me", token)
+    assert s.get("/v1/auth/users", token).status_code == 200  # the old cookie, still in flight elsewhere
+    s.store.close()

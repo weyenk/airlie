@@ -109,6 +109,16 @@ def test_sessions_resolve_to_their_user_until_ended_or_expired(store: AuthStore,
     assert store.session_user(token) is None
 
 
+def test_extending_a_session_moves_its_expiry_and_keeps_its_token(store: AuthStore, clock: Clock) -> None:
+    u = store.add_user("Pat", "member")
+    token = store.make_session(u.id, days=30)
+    clock.t += 20 * 86400
+    store.extend_session(token, 30)
+    assert store.session_expires_at(token) == clock.t + 30 * 86400
+    assert store.session_user(token) == u
+    assert store.session_expires_at("bogus") is None
+
+
 def test_deleting_a_user_cascades_to_credentials_sessions_and_invites(store: AuthStore, clock: Clock) -> None:
     u = store.add_user("Pat", "member")
     store.add_credential(Credential(b"c", u.id, b"pk", 0, (), clock.t))

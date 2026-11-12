@@ -177,6 +177,19 @@ class AuthStore:
             return None
         return self.user(row[0])
 
+    def session_expires_at(self, token: str) -> float | None:
+        row = self.conn.execute(
+            "select expires_at from sessions where digest = ?", (_digest(token),)
+        ).fetchone()
+        return None if row is None else float(row[0])
+
+    def extend_session(self, token: str, days: int) -> None:
+        """Push this session's expiry to `days` from now; the token stays the same."""
+        self.conn.execute(
+            "update sessions set expires_at = ? where digest = ?",
+            (self._now() + days * 86400, _digest(token)),
+        )
+
     def end_session(self, token: str) -> None:
         """Sign this one device out; the user's other sessions stay."""
         self.conn.execute("delete from sessions where digest = ?", (_digest(token),))
