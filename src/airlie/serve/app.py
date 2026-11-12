@@ -12,7 +12,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, ExitStack
 from functools import partial
 from pathlib import Path
@@ -33,6 +33,7 @@ from airlie.board.api import board_router
 from airlie.board.model import WorkflowDraft
 from airlie.chat.confirm import Confirmations
 from airlie.chat.hooks import UnknownSkill, default_hooks, slash_section
+from airlie.chat.sources_api import sources_router
 from airlie.chat.superpowers import SuperpowersLibrary, check_library
 from airlie.chat.threads import ThreadStore
 from airlie.config import AirlieConfig
@@ -75,6 +76,10 @@ from airlie.serve.uploads import (
 from airlie.serve.watch import Watcher
 from airlie.serve.workflows_api import workflows_router
 from airlie.skills import Skill, load_chat_skills, prompt_text
+from airlie.sources.access import RepoAccess
+from airlie.sources.github import GitHubSource
+from airlie.sources.protocol import RepoSource
+from airlie.sources.vault import TokenVault
 from airlie.story.board import BoardError
 from airlie.story.diagnosis import diagnosis_json, latest, read_diagnosis
 from airlie.story.epic import REPOSITORY
@@ -511,6 +516,7 @@ def create_app(
     manager: Manager | None = None,
     repo_sessions: Callable[..., RepoSessions] | None = None,
     pinnable: Callable[[], Awaitable[list[str]]] | None = None,
+    repo_sources: Mapping[str, RepoSource] | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
@@ -527,7 +533,9 @@ def create_app(
     `repo_sessions` builds what runs repository chats in VMs, given `(cfg, manager, threads, confirmations)`
     (default: Tart boxes, chat.repo_session.default_repo_sessions; tests give one over FakeBox).
     `pinnable` lists the repositories a person may pin and pre-warm (default: what `GET
-    /v1/airlie/repos/names` answers, read from the checkouts and the board's labels)."""
+    /v1/airlie/repos/names` answers, read from the checkouts and the board's labels).
+    `repo_sources` are the accounts a person may link to list their repositories from (default: GitHub, for
+    each of `chat.sources` the config gives a client id; tests give one over a mock transport)."""
     app = FastAPI(title="airlie", version="0.1.0")
     started_commit = (
         build_commit()
@@ -916,7 +924,39 @@ def create_app(
             start_story=lambda text, repo: begin_story(None, text, repo),
         )
     )
-    app.include_router(pins_router(store, lambda topic, key: feed.publish(topic, key), known_repos))
+    sources: dict[str, RepoSource] = (
+        {
+            name: GitHubSource(cfg.story.github_app, cfg.story.remote)
+            for name in cfg.chat.sources
+            if name == "github_app" and cfg.story.github_app.client_id is not None
+        }
+        if repo_sources is None
+        else dict(repo_sources)
+    )
+    repo_access = RepoAccess(
+        store,
+        TokenVault(
+            cfg.story.github_app.token_key_file,
+            keep_out=(cfg.observability.state_dir.expanduser(), cfg.story.repos_root.expanduser()),
+        ),
+        sources,
+        known_repos,
+        cache_s=cfg.chat.repo_list_cache_s,
+        clock=now,
+    )
+    app.state.repo_access = repo_access
+    app.include_router(
+        pins_router(store, lambda topic, key: feed.publish(topic, key), repo_access, known_repos)
+    )
+    app.include_router(
+        sources_router(
+            repo_access,
+            sources,
+            lambda topic, key: feed.publish(topic, key),
+            configured=cfg.chat.sources,
+            clock=now,
+        )
+    )
 
     @app.post("/v1/chat/completions")
     async def chat(body: dict[str, Any], request: Request) -> Any:
