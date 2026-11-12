@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
+import { buildOutDir, stampBuildId } from "./swBuild";
 
 // sw.js names its cache after the build: the hash of the built index.html, which names every hashed asset.
 function swBuildId(): Plugin {
@@ -12,12 +13,12 @@ function swBuildId(): Plugin {
     name: "airlie-sw-build-id",
     apply: "build",
     configResolved(config) {
-      outDir = new URL(config.build.outDir + "/", `file://${config.root}/`).pathname;
+      outDir = buildOutDir(config.root, config.build.outDir);
     },
     closeBundle() {
       const id = createHash("sha256").update(readFileSync(outDir + "index.html")).digest("hex").slice(0, 12);
       const sw = outDir + "sw.js";
-      writeFileSync(sw, readFileSync(sw, "utf8").replace("__AIRLIE_BUILD__", id));
+      writeFileSync(sw, stampBuildId(readFileSync(sw, "utf8"), id));
     },
   };
 }
