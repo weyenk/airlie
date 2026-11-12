@@ -211,7 +211,7 @@ test("a cut while the server still runs waits for the chat hint then shows the s
 });
 
 test("retry resends the message and the thread holds it once", async () => {
-  let history = detail(ROW, [user("u1", "do it"), assistant("a1", [{ type: "text", text: "Par" }], { interrupted: true })]);
+  const history = detail(ROW, [user("u1", "do it"), assistant("a1", [{ type: "text", text: "Par" }], { interrupted: true })]);
   const server = serve({ history: () => history, turn: () => streamResponse(turnChunks("a2", textChunks("t1", "Done"))) });
   const turns = useTurns();
   const chat = turns.chatFor(ROW);
@@ -225,7 +225,6 @@ test("retry resends the message and the thread holds it once", async () => {
     ["u1", "user", "do it"],
     ["a2", "assistant", "Done"],
   ]);
-  history = detail(ROW, []);
 });
 
 test("answer sends the approval with no new message and the reply continues the asked message", async () => {
@@ -357,5 +356,65 @@ test("a turn's error chunk is an error, not a cut", async () => {
   expect(turns.status(ROW.id)).toBe("error");
   expect(turns.cut(ROW.id)).toBe(false);
   expect(turns.error(ROW.id)?.message).toBe("the engine failed");
+});
+
+test("retry keeps the skill of the turn it resends", async () => {
+  const server = serve({ history: () => detail(ROW), turn: () => streamResponse(turnChunks("a1", textChunks("t1", "ok"))) });
+  const turns = useTurns();
+  turns.chatFor(ROW);
+  await turns.send(ROW.id, { text: "/story x", sent: "x", skill: { name: "story", action: "story" } });
+  await turns.retry(ROW.id);
+  expect(server.turns()[1].body).toMatchObject({ skill: "story" });
+});
+
+test("forget drops the session's chat so the next one starts from the server", async () => {
+  serve({ history: () => detail(ROW, [user("u1", "hi")]) });
+  const turns = useTurns();
+  const chat = turns.chatFor(ROW);
+  turns.forget(ROW.id);
+  expect(turns.status(ROW.id)).toBe("ready");
+  expect(turns.cut(ROW.id)).toBe(false);
+  expect(turns.chatFor(ROW)).not.toBe(chat);
+});
+
+test("a server reasoning part is kept in the message before its text", async () => {
+  serve({
+    history: () => detail(ROW),
+    turn: () =>
+      streamResponse(
+        turnChunks("a1", [
+          { type: "reasoning-start", id: "r1" },
+          { type: "reasoning-delta", id: "r1", delta: "thinking it over" },
+          { type: "reasoning-end", id: "r1" },
+          ...textChunks("t1", "Answer"),
+        ]),
+      ),
+  });
+  const turns = useTurns();
+  const chat = turns.chatFor(ROW);
+  await turns.send(ROW.id, { text: "hi" });
+  const parts = chat.messages[1].parts as { type: string; text?: string }[];
+  expect(parts.filter((p) => p.type !== "step-start").map((p) => [p.type, p.text])).toEqual([
+    ["reasoning", "thinking it over"],
+    ["text", "Answer"],
+  ]);
+});
+
+test("a tool call whose arguments did not parse shows its error on the tool part", async () => {
+  serve({
+    history: () => detail(ROW),
+    turn: () =>
+      streamResponse(
+        turnChunks("a1", [
+          { type: "tool-input-start", toolCallId: "c1", toolName: "shell" },
+          { type: "tool-input-error", toolCallId: "c1", toolName: "shell", input: "{oops", errorText: "arguments are not JSON" },
+        ]),
+      ),
+  });
+  const turns = useTurns();
+  const chat = turns.chatFor(ROW);
+  await turns.send(ROW.id, { text: "hi" });
+  const tool = chat.messages[1].parts.find((p) => p.type === "tool-shell") as { state: string; errorText: string };
+  expect(tool).toMatchObject({ state: "output-error", errorText: "arguments are not JSON" });
 });
 

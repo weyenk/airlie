@@ -4,6 +4,7 @@ import { ApiError, onUnauthorized, request } from "@/api";
 import { removeThisDevice } from "@/api/notifications";
 import { activeRouter } from "@/router";
 import { useFeedStore } from "./feed";
+import { useTurns } from "./turns";
 
 export type Me = { user_id?: string; name: string; role: "admin" | "member"; via: string };
 
@@ -28,6 +29,7 @@ export const useSessionStore = defineStore("session", () => {
   function signedOut(): void {
     me.value = null;
     useFeedStore().stop();
+    useTurns().reset();
     const router = activeRouter();
     const here = router?.currentRoute.value;
     if (!router || !here || here.meta.public) return;

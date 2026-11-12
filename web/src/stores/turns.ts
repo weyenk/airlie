@@ -29,6 +29,8 @@ type SessionState = {
   /** Whether the newest stream ended with `[DONE]` (the server finished it, by finish or by an error chunk); undefined: no stream. */
   scan: Promise<boolean> | undefined;
   stopping: boolean;
+  /** The skill of the newest send: a retry resends it. */
+  skill: string | undefined;
   cut: boolean;
   engine: EngineStatus | null;
   /** How much the Chat held when the engine row came: the line goes once more arrives. */
@@ -160,7 +162,8 @@ export const useTurns = defineStore("turns", () => {
         return new Response(passed, { status: response.status, headers: response.headers });
       },
       prepareSendMessagesRequest: ({ id, messages, body }) => {
-        const { approvals, skill } = (body ?? {}) as { approvals?: Approval[]; skill?: string };
+        const { approvals } = (body ?? {}) as { approvals?: Approval[] };
+        const skill = approvals?.length ? undefined : s.skill;
         return {
           body: {
             id,
@@ -188,6 +191,7 @@ export const useTurns = defineStore("turns", () => {
       loadError: null,
       scan: undefined,
       stopping: false,
+      skill: undefined,
       cut: false,
       engine: null,
       engineAt: 0,
@@ -232,13 +236,14 @@ export const useTurns = defineStore("turns", () => {
     const { chat, s } = existing(id);
     await s.loading;
     begin(s);
+    s.skill = opts.skill?.name;
     const files = (opts.attachments ?? []).map((a) => ({
       type: "file" as const,
       mediaType: a.mime || "application/octet-stream",
       filename: a.name,
       url: `/v1/airlie/uploads/${a.id}`,
     }));
-    await chat.sendMessage({ text: opts.sent ?? opts.text, files }, opts.skill ? { body: { skill: opts.skill.name } } : undefined);
+    await chat.sendMessage({ text: opts.sent ?? opts.text, files });
   }
 
   /** Stop the turn: the server cancels it and saves what it had; then the Chat stops reading. */
@@ -274,6 +279,14 @@ export const useTurns = defineStore("turns", () => {
     }
   }
 
+  /** Drop a session's Chat and state (it was deleted, or the person signed out). */
+  function forget(id: string): void {
+    const chat = chats.get(id);
+    chats.delete(id);
+    delete sessions[id];
+    if (chat) void chat.dispose().catch(() => undefined);
+  }
+
   const status = (id: string): "ready" | "submitted" | "streaming" | "error" => chats.get(id)?.status ?? "ready";
 
   /** The saved thread ends in a missing or an interrupted reply: a Retry has something to resend. */
@@ -301,6 +314,11 @@ export const useTurns = defineStore("turns", () => {
 
   return {
     chatFor,
+    forget,
+    /** Forget every session (sign-out: nothing of one person stays for the next). */
+    reset: (): void => {
+      for (const id of [...chats.keys()]) forget(id);
+    },
     reload,
     send,
     stop,
