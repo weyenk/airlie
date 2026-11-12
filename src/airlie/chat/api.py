@@ -167,6 +167,12 @@ class Busy:
     def get(self, thread_id: str) -> Running | None:
         return self._turns.get(thread_id)
 
+    def stop_all(self) -> None:
+        """Stop every turn in flight (the server is going down): each saves its partial reply as interrupted
+        and frees its thread, so a hung engine cannot hold the shutdown."""
+        for turn in list(self._turns.values()):
+            turn.handle.stop()
+
     def release(self, thread_id: str) -> None:
         turn = self._turns.pop(thread_id, None)
         if turn is not None:
@@ -207,9 +213,10 @@ def chat_router(
     attach: Attach,
     transport: httpx.AsyncBaseTransport | None = None,
     clock: Clock | None = None,
+    busy: Busy | None = None,
 ) -> APIRouter:
     router = APIRouter()
-    busy = Busy()
+    busy = busy if busy is not None else Busy()
     clock = clock or RealClock()
 
     def principal_of(request: Request) -> Principal | None:

@@ -3,7 +3,8 @@
 uvicorn stops accepting connections, then waits for every open one to finish, and only then runs the app's
 shutdown hook. A `/v1/events` stream never finishes on its own, so without this a Ctrl-C or SIGTERM would wait
 for the browser to leave (launchd would end it with SIGKILL after its exit timeout, skipping the hooks that
-close the databases). Other requests, a chat or a story in flight, still drain as before."""
+close the databases). Chat turns in flight are stopped (each saves its partial reply as interrupted); other
+requests, a story in flight, still drain as before."""
 
 from __future__ import annotations
 
@@ -24,9 +25,11 @@ class Server(uvicorn.Server):
     def __init__(self, app: FastAPI, **options: Any) -> None:
         super().__init__(uvicorn.Config(app, **options))
         self.feed = app.state.feed
+        self.chat_busy = app.state.chat_busy
 
     async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
         self.feed.close()  # every open stream ends, before uvicorn starts waiting for connections
+        self.chat_busy.stop_all()  # a hung engine must not hold the wait for open connections (max_steps x 600 s)
         await super().shutdown(sockets)
 
 

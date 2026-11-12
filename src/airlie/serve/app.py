@@ -521,7 +521,7 @@ def create_app(
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
     # imported here: the manager's clock lives under airlie.serve, whose package imports this module (and the
     # chat routes import the manager)
-    from airlie.chat.api import chat_router
+    from airlie.chat.api import Busy, chat_router
     from airlie.manager.api import Leases, UnknownLease
     from airlie.manager.core import Manager as ManagerImpl
     from airlie.manager.engines import engine_resources
@@ -846,6 +846,8 @@ def create_app(
     )
     app.state.chat_threads = chat_threads
     app.state.chat_hooks = chat_hooks
+    chat_busy = Busy()
+    app.state.chat_busy = chat_busy  # `Server.shutdown` stops its turns before uvicorn waits for them
     app.include_router(
         chat_router(
             cfg,
@@ -859,6 +861,7 @@ def create_app(
             manager=manager,
             attach=attach_for,
             transport=transport,
+            busy=chat_busy,
         )
     )
 
