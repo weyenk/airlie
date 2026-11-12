@@ -380,11 +380,12 @@ async def test_the_loop_survives_a_poll_that_fails_and_says_so(
     class Flaky(Watcher):
         broken = False
 
-        def poll(self) -> list[tuple[str, str | None]]:
+        def _poll(self) -> tuple[list[tuple[str, str | None]], list[tuple[str, str]]]:
+            # the loop polls through tick(), which calls _poll: poll() is only the public wrapper
             if self.broken:
                 self.broken = False
                 raise RuntimeError("disk on fire")
-            return super().poll()
+            return super()._poll()
 
     feed = Feed()
     append_run_log(state, "r1")
@@ -409,11 +410,11 @@ async def test_a_first_poll_that_fails_is_logged_and_the_loop_starts_and_takes_t
     class FirstFails(Watcher):
         polls = 0
 
-        def poll(self) -> list[tuple[str, str | None]]:
+        def _poll(self) -> tuple[list[tuple[str, str | None]], list[tuple[str, str]]]:
             self.polls += 1
             if self.polls == 1:
                 raise PermissionError("state dir unreadable")
-            return super().poll()
+            return super()._poll()
 
     feed = Feed()
     append_run_log(state, "r1")
