@@ -6,7 +6,7 @@ ever in a plain chat's registry."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,6 +19,10 @@ from airlie.tools.protocol import Tool, ToolContext, ToolResult
 from airlie.tools.registry import BOXED, ToolRegistry
 
 TITLE_MAX = 200
+
+
+async def _no_refusal() -> str | None:
+    return None
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,9 @@ class RepoChat:
     mirror: Mirror
     """The repository's own mirror, with its own publisher (Mirror.publisher)."""
     max_bytes: int
+    may_publish: Callable[[], Awaitable[str | None]] = _no_refusal
+    """The refusal, or None when the person may have airlie push this repository for them: asked live each
+    time (RepoAccess.may_push), when the prompt is made and again when a yes is carried out."""
 
     @property
     def vm_name(self) -> str:
@@ -69,6 +76,9 @@ class PushBranch:
 
     async def subject(self, args: dict[str, Any]) -> dict[str, Any]:
         chat = self._chat
+        refusal = await chat.may_publish()
+        if refusal is not None:
+            raise TransitError(refusal)
         if not chat.mirror.can_push:
             raise TransitError("set story.github_app to push from chat")
         result = await harvest(
@@ -87,6 +97,9 @@ class PushBranch:
         self, args: dict[str, Any], subject: dict[str, Any], ctx: ToolContext
     ) -> ToolResult:
         chat = self._chat
+        refusal = await chat.may_publish()  # the person's access may have gone since the prompt
+        if refusal is not None:
+            return ToolResult(False, f"error: {refusal}")
         try:
             await push_branch(
                 chat.mirror, chat.mirror.publisher, branch=chat.branch, head=str(subject["head"])
@@ -120,6 +133,9 @@ class OpenPr:
 
     async def subject(self, args: dict[str, Any]) -> dict[str, Any]:
         chat = self._chat
+        refusal = await chat.may_publish()
+        if refusal is not None:
+            raise TransitError(refusal)
         title = str(args.get("title") or "").strip()
         if not title or len(title) > TITLE_MAX:
             raise TransitError(f"title must be 1 to {TITLE_MAX} characters")
@@ -130,6 +146,9 @@ class OpenPr:
         self, args: dict[str, Any], subject: dict[str, Any], ctx: ToolContext
     ) -> ToolResult:
         chat = self._chat
+        refusal = await chat.may_publish()
+        if refusal is not None:
+            return ToolResult(False, f"error: {refusal}")
         try:
             number, url = await open_pr(
                 chat.mirror,

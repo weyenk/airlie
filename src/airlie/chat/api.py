@@ -26,7 +26,7 @@ from airlie.boxes.protocol import BoxUnavailable
 from airlie.chat.confirm import Answered, Approval, Confirmations, answered_note, before_tool, guard
 from airlie.chat.hooks import Hooks, TurnContext, TurnRefused
 from airlie.chat.kinds import ChatKind, KindUnavailable, registry_for
-from airlie.chat.repo_session import RepoSessions, session_branch, valid_repo
+from airlie.chat.repo_session import NoAccess, RepoSessions, session_branch, valid_repo
 from airlie.chat.repo_tools import RepoChat
 from airlie.chat.stream import DONE, STREAM_HEADERS, sse
 from airlie.chat.superpowers import SuperpowersLibrary
@@ -48,6 +48,7 @@ from airlie.manager.core import Manager
 from airlie.serve.bridge.clock import Clock, RealClock
 from airlie.serve.uploads import TooManyAttachments
 from airlie.skills.library import Skill
+from airlie.sources.access import RepoAccess
 from airlie.tools.protocol import Tool, ToolContext
 
 log = logging.getLogger("airlie.chat.api")
@@ -319,15 +320,16 @@ def chat_router(
     repo_sessions: RepoSessions | None = None,
     confirmations: Confirmations | None = None,
     publish: Callable[[str, str | None], None] = lambda topic, key: None,
-    pinnable: Callable[[], Awaitable[list[str]]] | None = None,
+    access: RepoAccess | None = None,
     background: set[asyncio.Task[None]] | None = None,
     start_story: StartStoryJob | None = None,
 ) -> APIRouter:
     """`publish` is the live feed's: each change to a thread (made, a turn's end, an answer, deleted) sends
     the `chat` hint with no key (the feed reaches every signed-in client: it names no one's chat; each
-    refetches its own). `pinnable` lists the repositories a new chat's VM may be started for before its first
-    message; `background` keeps those starts (serve's shutdown and tests wait on them). `start_story` starts
-    a story card's story on the board."""
+    refetches its own). `access` is the server-side rule for repository chats: making one, each turn and the
+    pre-warm ask it (a person's own repositories, nothing else: 403); without one every repository is
+    allowed and none is pre-warmed. `background` keeps those starts (serve's shutdown and tests wait on
+    them). `start_story` starts a story card's story on the board."""
     router = APIRouter()
     background = background if background is not None else set()
     prewarmed: dict[str, list[str]] = {}  # per person: the chats whose VM was started before a message
@@ -349,6 +351,19 @@ def chat_router(
 
     def principal_of(request: Request) -> Principal | None:
         return getattr(request.state, "principal", None)
+
+    async def denial(user_id: str, repo: str | None) -> JSONResponse | None:
+        """The 403 for a repository the person may not use. The rule is `access` (never a listing); a
+        source's own reason (GitHub ended airlie's access) is the answer when it has one."""
+        if access is None or repo is None or await access.access(user_id, repo) is not None:
+            return None
+        found = await access.view(user_id)
+        if not found.sources:
+            return error(f"{repo} is not a repository airlie knows", 403)
+        why = next((v.error for v in found.sources if v.error), None)
+        return error(
+            f"you have no access to {repo}: {why or 'connect GitHub, or ask for access to it on GitHub'}", 403
+        )
 
     @router.post("/v1/airlie/chat/turn")
     async def chat_turn(body: TurnBody, request: Request) -> Any:
@@ -378,6 +393,12 @@ def chat_router(
             )
         except ThreadNotFound:
             return error("no such thread", 404)
+        if thread.kind == "repository":
+            refused = await denial(principal.user_id, thread.repo)
+            if refused is not None:  # access lost since: the chat stays listed, its turn does not run
+                if fresh:
+                    await drop_empty(thread, principal)
+                return refused
         turn = busy.take(thread.id)
         if turn is None:
             return error("this thread has a turn running; wait for it to finish", 409)
@@ -481,6 +502,8 @@ def chat_router(
                 chat = await repo_sessions.open(thread)
             except BoxUnavailable as e:
                 return error(str(e), 409)
+            except NoAccess as e:  # lost between the check above and the open
+                return error(str(e), 403)
             except EngineError as e:  # the repository or its recipe cannot be read
                 return error(str(e), 422)
             tool_ctx = repo_sessions.tool_context(chat)
@@ -583,7 +606,7 @@ def chat_router(
         whose VM was started early and that have had no message yet. The slot is taken before the await
         (the check and the take have no await between them), and given back when the repository is not one
         airlie knows: concurrent requests cannot all pass the count."""
-        if repo_sessions is None or pinnable is None:
+        if repo_sessions is None or access is None:
             return False
         unused = [
             i
@@ -595,11 +618,11 @@ def chat_router(
             return False
         prewarmed[owner] = [*unused, thread_id]
         try:
-            known = {r.lower() for r in await pinnable()}
+            allowed = await access.access(owner, repo) is not None
         except Exception:
-            log.warning("could not list the repositories that may be pre-warmed", exc_info=True)
-            known = set()
-        if repo.lower() in known:
+            log.warning("could not check who may use %s before pre-warming it", repo, exc_info=True)
+            allowed = False
+        if allowed:
             return True
         prewarmed[owner] = [i for i in prewarmed.get(owner, []) if i != thread_id]
         return False
@@ -638,6 +661,10 @@ def chat_router(
             return error("not signed in", 401)
         if body.kind == "repository" and repo_sessions is None:
             return error("repository chats are not configured on this server", 503)
+        if body.kind == "repository":
+            refused = await denial(principal.user_id, body.repo)
+            if refused is not None:
+                return refused
         if threads.count_empty(principal.user_id) >= EMPTY_CHATS_MAX:
             return error(f"you have {EMPTY_CHATS_MAX} chats with no message yet; use one or delete some", 429)
         t = threads.create(principal.user_id, body.kind, repo=body.repo, base_ref=body.base_ref)

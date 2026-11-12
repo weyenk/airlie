@@ -314,7 +314,7 @@ def test_a_path_trick_cannot_make_a_pin(tmp_path: Path) -> None:
 
 
 def status_rig(
-    tmp_path: Path, *, unpushed: bool = False, label: str | None = None
+    tmp_path: Path, *, unpushed: bool = False, label: str | None = None, prewarm: int | None = None
 ) -> tuple[TestClient, RepoFakes, Manager]:
     """The real app over a manager with one fake engine (`main`, 10 GB of a 100 GB budget) and the fakes a
     repository chat runs on (a FakeBox VM, a host mirror over a recording runner)."""
@@ -330,6 +330,8 @@ def status_rig(
         fakes.mirror.run = refuse_the_remote  # type: ignore[assignment]
     manager = Manager([FakeEngine("main")], budget_gb=100.0, clock=StuckClock())
     cfg = chat_cfg(tmp_path)
+    if prewarm is not None:
+        cfg.boxes.prewarm_max_per_person = prewarm
     if label is not None:
         cfg.models["base"] = cfg.models["base"].model_copy(update={"label": label})
     app = create_app(
@@ -451,12 +453,12 @@ def test_a_branch_the_remote_does_not_have_is_not_pushed(tmp_path: Path) -> None
 def test_a_chat_whose_session_has_not_opened_has_no_vm_row_and_no_commit_count(
     tmp_path: Path,
 ) -> None:
-    c, fakes, _ = status_rig(tmp_path)
-    made = c.post("/v1/airlie/chat/threads", json={"kind": "repository", "repo": "x/y"}).json()["id"]
+    c, fakes, _ = status_rig(tmp_path, prewarm=0)
+    made = c.post("/v1/airlie/chat/threads", json={"kind": "repository", "repo": "o/r"}).json()["id"]
 
     got = c.get(f"/v1/airlie/chat/threads/{made}/status").json()
 
-    assert got["vm"] is None  # (an unknown repository is not pre-warmed)
+    assert got["vm"] is None  # (no pre-warm slot: the first turn starts it)
     assert got["branch"] == {
         "name": f"airlie/chat-{slug_of(made)}",
         "base": "main",
