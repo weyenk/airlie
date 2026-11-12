@@ -7,6 +7,7 @@ import {
   listRepositories,
   listSessions,
   pinRepository,
+  sessionStatus,
   stopSession,
   toUIMessage,
   unpinRepository,
@@ -87,4 +88,11 @@ test("toUIMessage keeps the parts and moves usage and interrupted to metadata", 
     metadata: { created: 5, usage: stored.usage, interrupted: true },
   });
   expect(toUIMessage({ ...stored, usage: null, interrupted: false }).metadata).toEqual({ created: 5 });
+});
+
+test("sessionStatus reads the chat's status route", async () => {
+  const status = { vm: null, engine: { name: "main", model: "base", state: "ready", footprint_gb: 10 }, memory: { used_gb: 10, budget_gb: 64, waiting: null }, branch: null };
+  const fetchMock = stubJson(status);
+  expect(await sessionStatus("chat 1")).toEqual(status);
+  expect(callOf(fetchMock)).toMatchObject({ url: "/v1/airlie/chat/threads/chat%201/status", method: "GET" });
 });

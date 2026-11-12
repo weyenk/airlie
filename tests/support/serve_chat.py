@@ -92,6 +92,15 @@ class Hang:
     then: asyncio.Event | None = None
 
 
+@dataclass(frozen=True)
+class Slow:
+    """A text reply streamed word by word, `pause_s` apart (on the real clock: an e2e test watches a reply
+    while it is still streaming)."""
+
+    text: str
+    pause_s: float = 0.5
+
+
 def frame(delta: dict[str, Any], finish: str | None = None) -> bytes:
     choice = {"index": 0, "delta": delta, "finish_reason": finish}
     return b"data: " + json.dumps({"choices": [choice]}).encode() + b"\n\n"
@@ -115,12 +124,27 @@ class HangStream(httpx.AsyncByteStream):
         yield USAGE_FRAME
 
 
+class SlowStream(httpx.AsyncByteStream):
+    def __init__(self, text: str, pause_s: float) -> None:
+        self.words = text.split(" ")
+        self.pause_s = pause_s
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for i, word in enumerate(self.words):
+            if i:
+                await asyncio.sleep(self.pause_s)
+            yield frame({"content": word if i == 0 else f" {word}"})
+        yield frame({}, "stop") + USAGE_FRAME
+
+
 class ScriptedUpstream:
     """The engine's streamed chat/completions, one scripted reply per request (then "hi"), the way mlx-vlm
     streams it: content deltas, a tool call in one delta, a usage frame. `bodies` are the requests; `observe`
     is called as each arrives."""
 
-    def __init__(self, *replies: Text | Call | Fail | Hang, observe: Callable[[], Any] | None = None) -> None:
+    def __init__(
+        self, *replies: Text | Call | Fail | Hang | Slow, observe: Callable[[], Any] | None = None
+    ) -> None:
         self.replies = list(replies)
         self.bodies: list[dict[str, Any]] = []
         self.observe = observe
@@ -139,6 +163,8 @@ class ScriptedUpstream:
                 return httpx.Response(status, json={"error": "scripted failure"})
             case Hang(text, then):
                 return httpx.Response(200, stream=HangStream(frame({"content": text}), then), headers=sse)
+            case Slow(text, pause_s):
+                return httpx.Response(200, stream=SlowStream(text, pause_s), headers=sse)
             case Call(name, args):
                 call = {"index": 0, "id": f"call_{self.calls}", "type": "function"}
                 call["function"] = {"name": name, "arguments": json.dumps(args)}

@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import io
 import json
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -755,3 +756,190 @@ def test_a_retry_counts_the_attachments_of_the_saved_message_not_the_clients(tmp
 
     assert r.status_code == 200  # the saved message is what is retried: it has no attachments
     assert up.calls == 2
+
+
+# --- /story: the reply is a story card the person starts, kept with the message ---------------------------
+
+STORY = "Add a New chat button\n\nDone when a click empties the thread."
+
+
+def story_part(c: TestClient, headers: dict[str, str] | None = None) -> tuple[str, dict[str, Any]]:
+    """The saved reply of the thread's /story turn: its id and its `data-story` part."""
+    reply = c.get("/v1/airlie/chat/threads/t1", headers=headers).json()["messages"][-1]
+    return reply["id"], next(p for p in reply["parts"] if p["type"] == "data-story")
+
+
+def start_url(story_id: str) -> str:
+    return f"/v1/airlie/chat/threads/t1/stories/{story_id}/start"
+
+
+class Board:
+    """The story job factory `POST /v1/airlie/stories` and the chat's Start story both use: it counts the
+    stories it started, may refuse the first, and may wait on `gate` once `entered` (a start in flight)."""
+
+    def __init__(self, tmp_path: Path, *, refuse: str | None = None) -> None:
+        self.events = tmp_path / "story-events.jsonl"
+        self.started: list[dict[str, Any]] = []
+        self.refuse = refuse
+        self.gate: asyncio.Event | None = None
+        self.entered = asyncio.Event()
+
+    async def __call__(self, cfg: Any, *, card: Any, text: Any, repo: Any, running: Any) -> Any:
+        from airlie.story.model import StorySetupError
+
+        self.entered.set()
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.refuse is not None:
+            reason, self.refuse = self.refuse, None
+            raise StorySetupError(reason)
+        self.started.append({"card": card, "text": text, "repo": repo})
+
+        async def work() -> dict[str, Any]:
+            return {}
+
+        return f"story-AIR-{len(self.started)}", self.events, work()
+
+
+def story_client(tmp_path: Path, board: Board, **kw: Any) -> TestClient:
+    return TestClient(
+        app_for(tmp_path, ScriptedUpstream(Text(STORY)), story_job=board, **kw),
+        **({"client": ELSEWHERE} if "auth_store" in kw else {}),
+    )
+
+
+def test_a_story_turn_ends_with_a_story_part_that_streams_and_is_saved(tmp_path: Path) -> None:
+    c, _ = client_for(tmp_path, ScriptedUpstream(Text(STORY)))
+
+    r = post(c, turn_body("a new chat button", skill="story"))
+
+    live = [ch for ch in chunks(r.text) if ch["type"] == "data-story"]
+    assert len(live) == 1 and live[0]["data"] == {"text": STORY}
+    assert kinds(r.text).index("data-story") < kinds(r.text).index("finish")
+    _, saved = story_part(c)
+    assert saved == {"type": "data-story", "id": live[0]["id"], "data": {"text": STORY}}
+
+
+def test_a_story_part_holds_only_the_last_reply_after_a_tool_call(tmp_path: Path) -> None:
+    c, _ = client_for(tmp_path, ScriptedUpstream(Call("todo", {"items": []}), Text(STORY)))
+
+    post(c, turn_body("a new chat button", skill="story"))
+
+    assert story_part(c)[1]["data"] == {"text": STORY}
+
+
+@pytest.mark.parametrize("skill", [None, "why"])
+def test_a_turn_of_another_skill_has_no_story_part(tmp_path: Path, skill: str | None) -> None:
+    skills = {
+        "story": "---\nsummary: Make a story\naction: story\n---\nSTORY BODY\n",
+        "why": "---\nsummary: Why\naction: why\n---\nWHY BODY\n",
+    }
+    up = httpx.MockTransport(ScriptedUpstream(Text(STORY)))
+    c = TestClient(create_app(chat_cfg(tmp_path, skills), transport=up))
+
+    r = post(c, turn_body(skill=skill) if skill else turn_body())
+
+    assert r.status_code == 200 and "data-story" not in kinds(r.text)
+    parts = c.get("/v1/airlie/chat/threads/t1").json()["messages"][-1]["parts"]
+    assert not [p for p in parts if p["type"] == "data-story"]
+
+
+def test_a_story_turn_that_fails_has_no_story_part(tmp_path: Path) -> None:
+    c, _ = client_for(tmp_path, ScriptedUpstream(Fail(500)))
+
+    r = post(c, turn_body(skill="story"))
+
+    assert r.status_code == 200 and "data-story" not in kinds(r.text)
+
+
+def test_start_story_starts_the_board_story_and_keeps_its_job_on_the_message(tmp_path: Path) -> None:
+    board = Board(tmp_path)
+    with story_client(tmp_path, board) as c:
+        post(c, turn_body(skill="story"))
+        message_id, story = story_part(c)
+
+        r = c.post(start_url(story["id"]), json={"text": f"{STORY}\nEdited.", "repo": "weyenk/airlie"})
+
+        assert r.status_code == 201
+        assert board.started == [{"card": None, "text": f"{STORY}\nEdited.", "repo": "weyenk/airlie"}]
+        data = {"story": story["id"], "job_id": "story-AIR-1", "kind": "story", "label": "airlie · story"}
+        part = {"type": "data-job", "id": f"{story['id']}-job", "data": data}
+        assert r.json() == part
+        reply = c.get("/v1/airlie/chat/threads/t1").json()["messages"][-1]
+        assert reply["id"] == message_id and reply["parts"][-1] == part  # a reload shows it started
+
+
+def test_a_story_is_started_once(tmp_path: Path) -> None:
+    board = Board(tmp_path)
+    with story_client(tmp_path, board) as c:
+        post(c, turn_body(skill="story"))
+        _, story = story_part(c)
+        assert c.post(start_url(story["id"]), json={"text": STORY, "repo": "o/r"}).status_code == 201
+
+        r = c.post(start_url(story["id"]), json={"text": STORY, "repo": "o/r"})
+
+        assert r.status_code == 409 and len(board.started) == 1
+
+
+def test_two_starts_at_once_start_one_story(tmp_path: Path) -> None:
+    board = Board(tmp_path)
+    board.gate = gate = asyncio.Event()
+    with story_client(tmp_path, board) as c:
+        post(c, turn_body(skill="story"))
+        _, story = story_part(c)
+        first: list[httpx.Response] = []
+        racing = threading.Thread(
+            target=lambda: first.append(c.post(start_url(story["id"]), json={"text": STORY, "repo": "o/r"}))
+        )
+        racing.start()
+        c.portal.call(board.entered.wait)  # type: ignore[union-attr]  # the first start is in flight
+
+        second = c.post(start_url(story["id"]), json={"text": STORY, "repo": "o/r"})
+
+        c.portal.call(gate.set)  # type: ignore[union-attr]
+        racing.join(10)
+        assert second.status_code == 409
+        assert first and first[0].status_code == 201 and len(board.started) == 1
+
+
+def test_a_start_the_board_refuses_releases_the_card_to_try_again(tmp_path: Path) -> None:
+    board = Board(tmp_path, refuse="no repository named o/x")
+    with story_client(tmp_path, board) as c:
+        post(c, turn_body(skill="story"))
+        _, story = story_part(c)
+
+        r = c.post(start_url(story["id"]), json={"text": STORY, "repo": "o/x"})
+
+        assert r.status_code == 400 and r.json() == {"error": "no repository named o/x"}
+        parts = c.get("/v1/airlie/chat/threads/t1").json()["messages"][-1]["parts"]
+        assert not [p for p in parts if p["type"] == "data-job"]
+        assert c.post(start_url(story["id"]), json={"text": STORY, "repo": "o/r"}).status_code == 201
+
+
+@pytest.mark.parametrize(
+    "body", [{"text": "  ", "repo": "o/r"}, {"text": STORY}, {"text": STORY, "repo": ""}]
+)
+def test_a_start_with_no_request_or_no_repository_is_422(tmp_path: Path, body: dict[str, Any]) -> None:
+    board = Board(tmp_path)
+    with story_client(tmp_path, board) as c:
+        post(c, turn_body(skill="story"))
+        _, story = story_part(c)
+
+        assert c.post(start_url(story["id"]), json=body).status_code == 422 and board.started == []
+
+
+def test_a_start_for_a_story_that_is_not_there_or_not_yours_is_404(tmp_path: Path) -> None:
+    store = AuthStore(tmp_path / "auth.sqlite")
+    pat, sam = store.add_user("Pat", "member"), store.add_user("Sam", "member")
+    as_pat = {"Cookie": f"{SESSION_COOKIE}={store.make_session(pat.id, 30)}"}
+    as_sam = {"Cookie": f"{SESSION_COOKIE}={store.make_session(sam.id, 30)}"}
+    board = Board(tmp_path)
+    with story_client(tmp_path, board, auth_store=store) as c:
+        post(c, turn_body(skill="story"), headers=as_pat)
+        _, story = story_part(c, as_pat)
+        body = {"text": STORY, "repo": "o/r"}
+
+        assert c.post(start_url(story["id"]), json=body, headers=as_sam).status_code == 404
+        assert c.post(start_url("story-nope"), json=body, headers=as_pat).status_code == 404
+        assert c.post(start_url(story["id"]), json=body).status_code == 401
+        assert board.started == []

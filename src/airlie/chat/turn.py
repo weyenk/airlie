@@ -94,6 +94,9 @@ class TurnRequest:
     on_answers: Callable[[], None] | None = None
     """Called once the turn holds what it waits for (the VM, the engine) and is about to use the answers:
     from then on they are spent and shown answered. A turn that ends before it leaves them waiting."""
+    action: str = ""
+    """The action of the slash skill this turn runs (its file's `action:`). For `story` the reply that
+    finishes well ends with a `data-story` part: the client's story card, which starts it on the board."""
 
 
 def answered_calls(thread: Thread, answers: Mapping[str, bool]) -> dict[str, ToolCall]:
@@ -108,6 +111,9 @@ def answered_calls(thread: Thread, answers: Mapping[str, bool]) -> dict[str, Too
             name = str(part["type"])[len(TOOL_PREFIX) :]
             out[approval["id"]] = ToolCall(f"{part['toolCallId']}-answered", name, json.dumps(part["input"]))
     return out
+
+
+STORY_ACTION = "story"
 
 
 def approval_part(approval_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -523,6 +529,18 @@ class _Run:
         )
         self.note_result(await self.generate(last))
 
+    def add_story(self) -> None:
+        """A /story turn's reply, the last generation's text, as the story card's part: sent, and saved with
+        the message, so a reload shows the card (and, once started, its job: the chat route adds that)."""
+        story = self.step_text.strip()
+        if self.req.action != STORY_ACTION or not story:
+            return
+        part_id = f"story-{uuid.uuid4().hex[:12]}"
+        data = {"text": story}
+        self.close_part()
+        self.emit(self.w.data("story", data, part_id=part_id))
+        self.parts.append({"type": "data-story", "id": part_id, "data": data})
+
     # --- the turn -------------------------------------------------------------------------------------------
 
     def settle(self) -> None:
@@ -542,6 +560,7 @@ class _Run:
                 await self.enter_relayed(stack, self.around(), self.around_status, quiet_ready=True)
             await self.enter_hold(stack)
             await self.loop()
+            self.add_story()
             self.settle()
             self.emit(self.w.finish(self.finish_usage()))
         except NeedsApproval as e:  # a step that is no tool call (the image build) waits for a yes

@@ -15,6 +15,12 @@ const engine = (over: Partial<EngineStatus>): EngineStatus => ({
 });
 const show = (over: Partial<EngineStatus>) => mount(EngineStatusLine, { props: { status: engine(over) } });
 
+test("a label is said in place of the resource name", () => {
+  const w = mount(EngineStatusLine, { props: { status: engine({ name: "vm:chat-1", state: "starting" }), label: "a VM for acme/api" } });
+
+  expect(w.text()).toBe("Starting a VM for acme/api…");
+});
+
 test("a download says how much has arrived and how long is left, with a progress bar", () => {
   const w = show({
     state: "downloading",

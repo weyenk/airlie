@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, watch } from "vue";
 import type { ThreadRow } from "@/api/sessions";
 import type { ChatItem } from "@/stores/chat";
 import { useTurns } from "@/stores/turns";
@@ -11,7 +11,10 @@ const WELCOME =
 /** The thread of a chat session (`session`: its messages, one `MessageView` each), or today's items (`items`). */
 const props = defineProps<{ items?: ChatItem[]; session?: ThreadRow }>();
 const turns = useTurns();
-const messages = computed(() => (props.session ? turns.chatFor(props.session).messages : []));
+// the session's Chat is made once its row is known; the computeds only read it
+watch(() => props.session, (s) => s && turns.chatFor(s), { immediate: true });
+const messages = computed(() => (props.session ? turns.messagesOf(props.session.id) : []));
+const streaming = computed(() => !!props.session && ["submitted", "streaming"].includes(turns.status(props.session.id)));
 const empty = computed(() => (props.session ? !messages.value.length : !props.items?.length));
 const emit = defineEmits<{ quick: [text: string] }>();
 
@@ -19,7 +22,7 @@ const QUICK = ["What can you do?", "What's running right now?", "/story"];
 </script>
 
 <template>
-  <div role="log" aria-label="Conversation" class="mx-auto flex max-w-[780px] flex-col gap-4 px-5 pt-3.5 pb-6 max-[640px]:px-3">
+  <div role="log" aria-label="Conversation" :aria-busy="streaming" class="mx-auto flex max-w-[780px] flex-col gap-4 px-5 pt-3.5 pb-6 max-[640px]:px-3">
     <div v-if="empty">
       <div data-msg="chat" class="flex items-start gap-2.5">
         <span aria-hidden="true" class="inline-flex size-7 flex-none items-center justify-center rounded-lg bg-primary text-sm font-extrabold text-primary-foreground">a</span>

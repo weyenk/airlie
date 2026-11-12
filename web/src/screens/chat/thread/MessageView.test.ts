@@ -5,6 +5,8 @@ import { message, openChat, ROW, startThread } from "@/test-utils/thread";
 import { openStream, textChunks } from "@/test-utils/ui-stream";
 import MessageView from "./MessageView.vue";
 
+vi.mock("@/stores/workflows", () => ({ useWorkflowsStore: () => ({ running: [] }) }));
+
 const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/:rest(.*)*", component: { template: "<i/>" } }] });
 const view = (m: AirlieUIMessage, last = false) =>
   mount(MessageView, { props: { message: m, sessionId: ROW.id, last }, global: { plugins: [router] } });
@@ -43,6 +45,18 @@ test("a message is its parts in order: reasoning, tool, text", async () => {
   const text = w.text();
   expect(text.indexOf("Reasoning")).toBeLessThan(text.indexOf("read_file"));
   expect(text.indexOf("read_file")).toBeLessThan(text.indexOf("All read."));
+});
+
+test("a tool call the stream updates in place shows its new state", async () => {
+  startThread();
+  await openChat();
+  // the AI SDK mutates the open message's parts in place and hands the screen a shallow copy of the message
+  const raw = { id: "m1", role: "assistant", parts: [{ type: "tool-read_file", toolCallId: "c1", state: "input-available", input: { path: "a.py" } }] };
+  const w = view(raw as unknown as AirlieUIMessage);
+  expect(w.get("[data-tool]").attributes("data-phase")).toBe("running");
+  Object.assign(raw.parts[0], { state: "output-available", output: "x" });
+  await w.setProps({ message: { ...raw } as unknown as AirlieUIMessage });
+  expect(w.get("[data-tool]").attributes("data-phase")).toBe("done");
 });
 
 test("only the newest todos part renders", async () => {
@@ -109,6 +123,40 @@ test("a waiting turn shows the engine line inline under the turn that waits", as
   expect(view(turns.chatFor(ROW).messages[0], false).find("[role=status]").exists()).toBe(false);
   stream.end();
   await flushPromises();
+});
+
+const STORY = "Add a New chat button\n\nDone when a click empties it.";
+
+test("a /story reply is its story card: the request to edit with Start story, not the text a second time", async () => {
+  startThread();
+  await openChat();
+  const w = view(
+    ui([
+      { type: "tool-read_file", toolCallId: "c1", state: "output-available", input: { path: "a.py" }, output: "x" },
+      { type: "step-start" },
+      { type: "text", text: STORY },
+      { type: "data-story", id: "story-1", data: { text: STORY } },
+    ]),
+  );
+  expect(w.find("[data-tool]").exists()).toBe(true);
+  expect((w.get("textarea[aria-label='Story request']").element as HTMLTextAreaElement).value).toBe(STORY);
+  expect(w.text()).toContain("Start story");
+  expect(w.text()).not.toContain("Done when a click empties it.");
+});
+
+test("a story whose job was kept shows the job card instead of the story card", async () => {
+  startThread();
+  await openChat();
+  const w = view(
+    ui([
+      { type: "text", text: STORY },
+      { type: "data-story", id: "story-1", data: { text: STORY } },
+      { type: "data-job", id: "story-1-job", data: { story: "story-1", job_id: "story-AIR-38", kind: "story", label: "api · story" } },
+    ]),
+  );
+  expect(w.find("[data-story-card]").exists()).toBe(false);
+  expect(w.get("[data-card]").text()).toContain("api · story");
+  expect(w.get("[data-card] a").attributes("href")).toBe("/workflows/AIR-38");
 });
 
 test("a cut turn the server still runs says the stream was cut", async () => {

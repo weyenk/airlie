@@ -4,7 +4,7 @@ import type { StoredMessage, ThreadDetail, ThreadRow } from "@/api/sessions";
 import { openStream, streamResponse, textChunks, turnChunks } from "@/test-utils/ui-stream";
 import type { Change, FeedState } from "../feed";
 import { useFeedStore } from "./feed";
-import { useTurns } from "./turns";
+import { REFUSED_MS, useTurns } from "./turns";
 
 // The page's feed is the one seam faked here (the test is the server and sends the `chat` hints itself).
 const feed = vi.hoisted(() => ({ opts: undefined as { onChange(c: Change): void; onState(s: FeedState): void } | undefined }));
@@ -283,6 +283,134 @@ test("an answer the server refuses shows its reason on the prompt", async () => 
   await vi.waitFor(() =>
     expect(chat.messages[1].parts.some((p) => (p as { state?: string }).state === "approval-requested")).toBe(true),
   ); // the saved thread's state is what shows
+});
+
+test("a refused answer's notice goes after a few seconds", async () => {
+  const asked = assistant("a1", [
+    { type: "tool-git_push", toolCallId: "c1", state: "approval-requested", input: {}, approval: { id: "ap1" } },
+    { type: "data-approval", id: "ap1", data: { id: "ap1", tool: "git_push", arguments: {} } },
+  ]);
+  serve({
+    history: () => detail(ROW, [user("u1", "push it"), asked]),
+    turn: () => Response.json({ error: "this thread has a turn running; wait for it to finish" }, { status: 409 }),
+  });
+  const turns = useTurns();
+  turns.chatFor(ROW);
+  await turns.reload(ROW.id);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    await turns.answer(ROW.id, "ap1", true);
+    expect(turns.refused(ROW.id, "ap1")).toMatch(/turn running/);
+    vi.advanceTimersByTime(REFUSED_MS);
+    expect(turns.refused(ROW.id, "ap1")).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("an answer refused after a cut the server still runs keeps the cut line and the partial reply", async () => {
+  const stream = openStream();
+  let saved = detail(ROW);
+  let refuse = false;
+  serve({
+    history: () => saved,
+    turn: () =>
+      refuse ? Response.json({ error: "this thread has a turn running; wait for it to finish" }, { status: 409 }) : stream.response,
+  });
+  const turns = useTurns();
+  const chat = turns.chatFor(ROW);
+  const sent = turns.send(ROW.id, { text: "push it" });
+  stream.push(
+    { type: "start", messageId: "a1" },
+    { type: "start-step" },
+    ...textChunks("t1", "Part"),
+    { type: "data-approval", id: "ap1", data: { id: "ap1", tool: "build_image", arguments: { key: "node-22" } } },
+  );
+  await vi.waitFor(() => expect(textOf(chat.messages[1])).toBe("Part"));
+  saved = detail(ROW, [user("u1", "push it")], { running: true });
+  stream.drop();
+  await sent;
+  await vi.waitFor(() => expect(turns.running(ROW.id)).toBe(true));
+  expect(turns.cut(ROW.id)).toBe(true);
+  refuse = true;
+
+  await turns.answer(ROW.id, "ap1", true);
+
+  expect(turns.refused(ROW.id, "ap1")).toMatch(/turn running/);
+  expect(turns.cut(ROW.id)).toBe(true);
+  expect(turns.running(ROW.id)).toBe(true);
+  expect(textOf(chat.messages[1])).toBe("Part");
+  saved = detail(ROW, [user("u1", "push it"), assistant("a1", [{ type: "text", text: "Part, then the rest" }])]);
+  feed.opts?.onChange({ topic: "chat", key: null }); // it still settles: the rest comes without a reload
+  await vi.waitFor(() => expect(textOf(chat.messages[1])).toBe("Part, then the rest"));
+});
+
+test("an answer while the asking turn still streams sends nothing and leaves that stream alone", async () => {
+  const stream = openStream();
+  const server = serve({ history: () => detail(ROW), turn: () => stream.response });
+  const turns = useTurns();
+  turns.chatFor(ROW);
+  const sent = turns.send(ROW.id, { text: "push it" });
+  stream.push(
+    { type: "start", messageId: "a1" },
+    { type: "start-step" },
+    { type: "tool-input-start", toolCallId: "c1", toolName: "git_push" },
+    { type: "tool-input-available", toolCallId: "c1", toolName: "git_push", input: {} },
+    { type: "tool-approval-request", approvalId: "ap1", toolCallId: "c1" },
+    { type: "data-approval", id: "ap1", data: { id: "ap1", tool: "git_push", arguments: {} } },
+    ...textChunks("t1", "I need your OK"),
+  );
+  await vi.waitFor(() => expect(turns.status(ROW.id)).toBe("streaming"));
+
+  await turns.answer(ROW.id, "ap1", true);
+
+  expect(server.turns()).toHaveLength(1);
+  expect(turns.refused(ROW.id, "ap1")).toBeNull();
+  expect(turns.status(ROW.id)).toBe("streaming");
+  stream.end({ done: false }); // the first stream's cut is still seen: its scan was not reset
+  await sent;
+  await vi.waitFor(() => expect(turns.cut(ROW.id)).toBe(true));
+});
+
+test("reconnect while it settles starts no second wait", async () => {
+  let saved = detail(ROW, [user("u1", "do it")], { running: true });
+  const server = serve({ history: () => saved });
+  const turns = useTurns();
+  turns.chatFor(ROW);
+  await turns.reload(ROW.id);
+  const reads = () => server.calls.filter((c) => c.method === "GET").length;
+  const before = reads();
+  const first = turns.reconnect(ROW.id);
+  const second = turns.reconnect(ROW.id);
+  await vi.waitFor(() => expect(turns.settling(ROW.id)).toBe(true));
+  await vi.waitFor(() => expect(reads()).toBe(before + 1));
+  saved = detail(ROW, [user("u1", "do it"), assistant("a1", [{ type: "text", text: "done" }])]);
+  await vi.waitFor(() => {
+    feed.opts?.onChange({ topic: "chat", key: null }); // until the loop waits on it
+    expect(turns.settling(ROW.id)).toBe(false);
+  });
+  await Promise.all([first, second]);
+  expect(reads()).toBe(before + 2);
+  expect(turns.settling(ROW.id)).toBe(false);
+});
+
+test("messagesOf reads a chat without making one, and follows the chat once made", async () => {
+  serve({ history: () => detail(ROW, [user("u1", "hi")]) });
+  const turns = useTurns();
+  expect(turns.messagesOf(ROW.id)).toEqual([]);
+  expect(turns.status(ROW.id)).toBe("ready");
+  turns.chatFor(ROW);
+  await turns.reload(ROW.id);
+  expect(turns.messagesOf(ROW.id).map((m) => m.id)).toEqual(["u1"]);
+});
+
+test("addPart puts a saved part on its message", async () => {
+  serve({ history: () => detail(ROW, [user("u1", "hi"), assistant("a1", [{ type: "text", text: "story" }])]) });
+  const turns = useTurns();
+  const chat = turns.chatFor(ROW);
+  await turns.reload(ROW.id);
+  turns.addPart(ROW.id, "a1", { type: "data-job", id: "s1-job", data: { story: "s1", job_id: "story-AIR-1", kind: "story" } });
+  expect(chat.messages[1].parts.map((p) => p.type)).toEqual(["text", "data-job"]);
 });
 
 test("a data engine chunk is the waiting line until text arrives", async () => {

@@ -1,19 +1,23 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { ApiError } from "@/api";
-import { startStory } from "@/api/workflows";
+import { startStoryCard } from "@/api/sessions";
 import Typeahead from "@/components/Typeahead.vue";
 import { useRepoNames } from "@/composables/useRepoNames";
 import { cleanRepo, isRepo, REPO_RULE } from "@/screens/board/repo";
-import { useChatStore } from "@/stores/chat";
-import type { ChatItem } from "@/stores/chat";
+import { useTurns } from "@/stores/turns";
 
+/**
+ * A /story reply (its `data-story` part) as the request to edit and Start story on a repository. The chat starts it on
+ * the board, once for this card, and keeps the job on the message (`data-job`), so the thread shows the job card from
+ * then on, also after a reload.
+ */
 const REPO = "airlie.repo";
-const props = defineProps<{ item: ChatItem }>();
-const chat = useChatStore();
+const props = defineProps<{ sessionId: string; messageId: string; storyId: string; text: string }>();
+const turns = useTurns();
 const names = useRepoNames();
 
-/** A repository is owner/name, or an absolute checkout path (today's app kept a path under `airlie.repo`). */
+/** A repository is owner/name, or an absolute checkout path (the earlier app kept a path under `airlie.repo`). */
 const usable = (v: string): boolean => isRepo(v) || /^(\/|~\/)\S/.test(v);
 
 function remembered(): string {
@@ -25,16 +29,12 @@ function remembered(): string {
   }
 }
 
-const text = ref(props.item.storyText ?? props.item.text ?? "");
-const first = remembered();
+const text = ref(props.text);
+// a repository chat's story is for its repository; a plain chat's for the one last used here
+const first = turns.rowOf(props.sessionId)?.repo ?? remembered();
 const repo = ref(first);
 const error = ref("");
 const busy = ref(false);
-
-function edit(value: string | number): void {
-  text.value = String(value);
-  chat.editStory(props.item, text.value);
-}
 
 async function start(): Promise<void> {
   if (busy.value) return;
@@ -55,16 +55,15 @@ async function start(): Promise<void> {
   }
   busy.value = true;
   try {
-    const out = await startStory({ text: body, repo: chosen });
+    const part = await startStoryCard(props.sessionId, props.storyId, { text: body, repo: chosen });
     if (chosen !== first) {
-      // remembered only when the person chose it: a stored path is not overwritten by the default
       try {
-        localStorage.setItem(REPO, chosen);
+        localStorage.setItem(REPO, chosen); // remembered only when the person chose it
       } catch {
         // this page only
       }
     }
-    chat.markStarted(props.item, { job_id: out.job_id, kind: out.kind, label: `${chosen.split("/").pop()} · story` });
+    turns.addPart(props.sessionId, props.messageId, part);
   } catch (e) {
     error.value = e instanceof ApiError && e.status === 401 ? "Sign in again, then start the story." : e instanceof Error ? e.message : String(e);
   } finally {
@@ -81,11 +80,10 @@ async function start(): Promise<void> {
     </div>
     <div class="flex flex-col gap-2.5 px-3.5 py-3">
       <textarea
-        :value="text"
+        v-model="text"
         rows="6"
         aria-label="Story request"
         class="w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 leading-normal outline-none focus:border-ring"
-        @input="edit(($event.target as HTMLTextAreaElement).value)"
       />
       <div class="flex items-center gap-2 max-[640px]:flex-wrap">
         <span class="text-xs text-muted-foreground">in</span>

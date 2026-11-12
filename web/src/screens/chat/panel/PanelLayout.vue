@@ -1,27 +1,29 @@
 <script setup lang="ts">
-import { computed, watch } from "vue";
+import { watch } from "vue";
 import { useRoute } from "vue-router";
 import { useMediaQuery } from "@vueuse/core";
-import { PanelLeft } from "lucide-vue-next";
 import ChatPanel from "./ChatPanel.vue";
 import PanelSlideOver from "./PanelSlideOver.vue";
-import { Button } from "@/components/ui/button";
-import { PHONE_QUERY, useChatPanel } from "@/stores/chatPanel";
-import { rememberChat, useSessions } from "@/stores/sessions";
+import type { ThreadRow } from "@/api/sessions";
+import ChatHeader from "@/screens/chat/ChatHeader.vue";
+import { PHONE_QUERY } from "@/lib/breakpoints";
+import { useChatPanel } from "@/stores/chatPanel";
+import { LEGACY, rememberChat, useSessions } from "@/stores/sessions";
 
 /** The chat screen's frame under the top bar: the panel at the left on a desktop, a slide-over on a phone, and the
- * chat row (its button shows or hides the panel) above the thread in the slot. */
+ * chat row (`ChatHeader`: its button shows or hides the panel) above the thread in the slot. `session` is the open chat
+ * (null for none, or the legacy thread); `title` names what is open when there is no session. */
+defineProps<{ session: ThreadRow | null; title?: string }>();
 const route = useRoute();
 const sessions = useSessions();
 const panel = useChatPanel();
 const phone = useMediaQuery(PHONE_QUERY);
-const shown = computed(() => (phone.value ? panel.phoneOpen : panel.desktopOpen));
 
 watch(
   () => route.params.session,
   (id) => {
     sessions.currentId = typeof id === "string" && id ? id : null;
-    rememberChat(sessions.currentId);
+    rememberChat(sessions.currentId === LEGACY ? null : sessions.currentId);
   },
   { immediate: true },
 );
@@ -33,10 +35,8 @@ watch(
       <ChatPanel :current-id="sessions.currentId" @close="panel.toggleDesktop()" />
     </div>
     <div class="flex min-w-0 grow flex-col">
-      <div class="flex items-center border-b border-border px-3 py-1.5">
-        <Button variant="ghost" size="icon-sm" :aria-label="shown ? 'Hide chats' : 'Show chats'" :aria-expanded="shown" @click="phone ? panel.togglePhone() : panel.toggleDesktop()"><PanelLeft /></Button>
-      </div>
-      <div class="min-h-0 grow"><slot /></div>
+      <ChatHeader :session="session" :title="title" />
+      <div class="flex min-h-0 grow flex-col"><slot /></div>
     </div>
     <PanelSlideOver v-if="phone" v-model:open="panel.phoneOpen" />
   </div>

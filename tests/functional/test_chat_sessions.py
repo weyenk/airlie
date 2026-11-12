@@ -15,7 +15,11 @@ from airlie.auth.principal import SESSION_COOKIE
 from airlie.auth.store import AuthStore
 from airlie.chat.repo_session import slug_of
 from airlie.config import load_config
+from airlie.manager.core import Manager
 from airlie.serve.app import create_app
+from airlie.story.publish import PublishError
+from tests.support.repo_chat import RepoFakes
+from tests.support.serve import FakeEngine, StuckClock
 from tests.support.serve_chat import ScriptedUpstream, Text, chat_cfg
 from tests.unit.serve_helpers import TestClient
 
@@ -131,6 +135,19 @@ def test_a_made_chat_stays_listed_when_its_first_turn_is_refused(tmp_path: Path)
 
     assert r.status_code == 404
     assert [t["id"] for t in c.get("/v1/airlie/chat/threads").json()] == [made["id"]]
+
+
+def test_a_person_has_at_most_twenty_chats_with_no_message_yet(tmp_path: Path) -> None:
+    c = client_for(tmp_path, ScriptedUpstream(Text("hi")))
+    made = [c.post("/v1/airlie/chat/threads", json={"kind": "plain"}) for _ in range(20)]
+    assert {r.status_code for r in made} == {201}
+
+    r = c.post("/v1/airlie/chat/threads", json={"kind": "plain"})
+
+    assert r.status_code == 429 and "20 chats with no message" in r.json()["error"]
+    assert len(c.get("/v1/airlie/chat/threads").json()) == 20
+    c.post("/v1/airlie/chat/turn", json=turn(made[0].json()["id"]))  # one is used: it no longer counts
+    assert c.post("/v1/airlie/chat/threads", json={"kind": "plain"}).status_code == 201
 
 
 def test_the_first_turn_of_a_made_chat_runs_on_it_and_titles_it(tmp_path: Path) -> None:
@@ -291,3 +308,182 @@ def test_a_path_trick_cannot_make_a_pin(tmp_path: Path) -> None:
         assert c.put(f"/v1/airlie/chat/pins/{path}").status_code in (404, 405, 422)
 
     assert c.get("/v1/airlie/chat/pins").json() == {"pins": []}
+
+
+# --- GET /v1/airlie/chat/threads/{id}/status ----------------------------------------------------------------
+
+
+def status_rig(
+    tmp_path: Path, *, unpushed: bool = False, label: str | None = None
+) -> tuple[TestClient, RepoFakes, Manager]:
+    """The real app over a manager with one fake engine (`main`, 10 GB of a 100 GB budget) and the fakes a
+    repository chat runs on (a FakeBox VM, a host mirror over a recording runner)."""
+    fakes = RepoFakes(tmp_path)
+    if unpushed:
+        answer = fakes.runner.__call__
+
+        async def refuse_the_remote(args: list[str], cwd: Path, env: Any) -> str:
+            if "refs/remotes/origin/" + f"airlie/chat-{slug_of('t1')}" in args:
+                raise PublishError("not a valid ref")
+            return await answer(args, cwd, env)
+
+        fakes.mirror.run = refuse_the_remote  # type: ignore[assignment]
+    manager = Manager([FakeEngine("main")], budget_gb=100.0, clock=StuckClock())
+    cfg = chat_cfg(tmp_path)
+    if label is not None:
+        cfg.models["base"] = cfg.models["base"].model_copy(update={"label": label})
+    app = create_app(
+        cfg,
+        transport=httpx.MockTransport(ScriptedUpstream(Text("hi"))),
+        manager=manager,
+        repo_sessions=fakes.build,
+        pinnable=known,
+    )
+    return TestClient(app), fakes, manager
+
+
+def repo_turn(thread_id: str = "t1") -> dict[str, Any]:
+    msg = {"id": "u1", "role": "user", "parts": [{"type": "text", "text": "hello"}]}
+    return {"id": thread_id, "kind": "repository", "repo": "o/r", "messages": [msg]}
+
+
+def test_status_without_a_session_is_401(tmp_path: Path) -> None:
+    c = TestClient(client_for(tmp_path, api_key="k").app, client=ELSEWHERE)
+
+    r = c.get("/v1/airlie/chat/threads/t1/status")
+
+    assert r.status_code == 401 and r.json() == {"error": "not signed in"}
+
+
+def test_status_of_a_chat_that_is_not_there_is_404(tmp_path: Path) -> None:
+    c = client_for(tmp_path)
+
+    r = c.get("/v1/airlie/chat/threads/nope/status")
+
+    assert r.status_code == 404 and r.json() == {"error": "no such thread"}
+
+
+def test_status_of_another_persons_chat_is_404(tmp_path: Path) -> None:
+    c, as_pat, as_sam = people(tmp_path)
+    made = c.post("/v1/airlie/chat/threads", json={"kind": "plain"}, headers=as_pat).json()["id"]
+
+    assert c.get(f"/v1/airlie/chat/threads/{made}/status", headers=as_pat).status_code == 200
+    assert c.get(f"/v1/airlie/chat/threads/{made}/status", headers=as_sam).status_code == 404
+
+
+def test_status_when_no_engine_serves_the_chat_role_is_503(tmp_path: Path) -> None:
+    cfg = chat_cfg(tmp_path)
+    cfg.models["other"] = cfg.models["base"]
+    cfg.roles["chat"] = cfg.roles["chat"].model_copy(update={"model": "other"})
+    c = TestClient(create_app(cfg, transport=httpx.MockTransport(ScriptedUpstream()), pinnable=known))
+    made = c.post("/v1/airlie/chat/threads", json={"kind": "plain"}).json()["id"]
+
+    r = c.get(f"/v1/airlie/chat/threads/{made}/status")
+
+    assert r.status_code == 503
+    assert r.json() == {"error": "the chat role has no engine; see the server log or run airlie doctor"}
+
+
+def test_a_plain_chats_status_has_no_vm_and_no_branch_but_the_engine_and_memory(tmp_path: Path) -> None:
+    c, _, _ = status_rig(tmp_path)
+    made = c.post("/v1/airlie/chat/threads", json={"kind": "plain"}).json()["id"]
+
+    r = c.get(f"/v1/airlie/chat/threads/{made}/status")
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "vm": None,
+        "engine": {"name": "main", "model": "base", "label": "m", "state": "stopped", "footprint_gb": 10.0},
+        "memory": {"used_gb": 0.0, "budget_gb": 100.0, "waiting": None},
+        "branch": None,
+        "ask_first": [],
+    }
+
+
+def test_status_names_the_model_by_its_label_and_a_repository_chat_what_it_asks_first(tmp_path: Path) -> None:
+    c, _, _ = status_rig(tmp_path, label="Gemma 4")
+    plain = c.post("/v1/airlie/chat/threads", json={"kind": "plain"}).json()["id"]
+    c.post("/v1/airlie/chat/turn", json=repo_turn())
+
+    first = c.get(f"/v1/airlie/chat/threads/{plain}/status").json()
+    second = c.get("/v1/airlie/chat/threads/t1/status").json()
+
+    assert first["engine"]["label"] == second["engine"]["label"] == "Gemma 4"
+    assert first["engine"]["model"] == "base"  # the key stays, for whoever wants it
+    assert first["ask_first"] == []
+    assert second["ask_first"] == ["push_branch", "open_pr", "build_image"]
+
+
+def test_a_repository_chats_status_names_its_vm_the_loaded_engine_and_its_commits_ahead(
+    tmp_path: Path,
+) -> None:
+    c, _, _ = status_rig(tmp_path)
+    assert c.post("/v1/airlie/chat/turn", json=repo_turn()).status_code == 200
+
+    got = c.get("/v1/airlie/chat/threads/t1/status").json()
+
+    assert got["vm"] == {
+        "name": "vm:t1",
+        "state": "ready",
+        "detail": "",
+        "since": got["vm"]["since"],
+        "memory_gb": 8.0,
+    }
+    assert got["engine"]["state"] == "ready"
+    assert got["memory"] == {"used_gb": 18.0, "budget_gb": 100.0, "waiting": None}
+    assert got["branch"] == {
+        "name": f"airlie/chat-{slug_of('t1')}",
+        "base": "main",
+        "ahead": 2,
+        "pushed": True,
+    }
+
+
+def test_a_branch_the_remote_does_not_have_is_not_pushed(tmp_path: Path) -> None:
+    c, _, _ = status_rig(tmp_path, unpushed=True)
+    assert c.post("/v1/airlie/chat/turn", json=repo_turn()).status_code == 200
+
+    got = c.get("/v1/airlie/chat/threads/t1/status").json()
+
+    assert got["branch"]["ahead"] == 2 and got["branch"]["pushed"] is False
+
+
+def test_a_chat_whose_session_has_not_opened_has_no_vm_row_and_no_commit_count(
+    tmp_path: Path,
+) -> None:
+    c, fakes, _ = status_rig(tmp_path)
+    made = c.post("/v1/airlie/chat/threads", json={"kind": "repository", "repo": "x/y"}).json()["id"]
+
+    got = c.get(f"/v1/airlie/chat/threads/{made}/status").json()
+
+    assert got["vm"] is None  # (an unknown repository is not pre-warmed)
+    assert got["branch"] == {
+        "name": f"airlie/chat-{slug_of(made)}",
+        "base": "main",
+        "ahead": None,
+        "pushed": None,
+    }
+    assert fakes.runner.calls == []  # the mirror was not asked
+
+
+def test_a_mirror_that_cannot_say_leaves_the_count_unknown_and_the_status_whole(tmp_path: Path) -> None:
+    c, fakes, _ = status_rig(tmp_path)
+    assert c.post("/v1/airlie/chat/turn", json=repo_turn()).status_code == 200
+    fakes.runner.failures["rev-list"] = "fatal: bad revision"
+
+    r = c.get("/v1/airlie/chat/threads/t1/status")
+
+    assert r.status_code == 200
+    assert r.json()["branch"]["ahead"] is None and r.json()["vm"]["state"] == "ready"
+
+
+def test_status_names_what_a_waiting_engine_waits_for(tmp_path: Path) -> None:
+    c, _, manager = status_rig(tmp_path)
+    made = c.post("/v1/airlie/chat/threads", json={"kind": "plain"}).json()["id"]
+    slot = manager._slots["main"]
+    slot.state, slot.detail = "waiting", "waiting for memory: held by reviewer"
+
+    got = c.get(f"/v1/airlie/chat/threads/{made}/status").json()
+
+    assert got["engine"]["state"] == "waiting"
+    assert got["memory"]["waiting"] == "waiting for memory: held by reviewer"

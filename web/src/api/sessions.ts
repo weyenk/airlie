@@ -53,8 +53,27 @@ export type ThreadDetail = ThreadRow & { todos: TodoItem[]; messages: StoredMess
 export type ChatMeta = { usage?: Usage; interrupted?: boolean; created?: number };
 /** The `data-engine` payload: the manager's row for the engine or VM the turn waits for (`engine` is its name). */
 export type EngineData = { engine: string; state: EngineStatus["state"]; detail: string; progress: EngineStatus["progress"] };
-export type ChatData = { approval: ApprovalData; engine: EngineData; todos: TodoItem[] };
+/** The `data-story` payload: a /story reply as the story card's request. */
+export type StoryData = { text: string };
+/** A job a story card started (`/v1/airlie/stories` answered `job_id` and `kind`). */
+export type StartedJob = { job_id: string; kind: string; label?: string };
+/** The `data-job` payload: the job the story card `story` started, kept on its message. */
+export type JobData = StartedJob & { story: string };
+export type JobPart = { type: "data-job"; id: string; data: JobData };
+export type ChatData = { approval: ApprovalData; engine: EngineData; todos: TodoItem[]; story: StoryData; job: JobData };
 export type AirlieUIMessage = UIMessage<ChatMeta, ChatData>;
+
+/** What the chat row's status popover shows (`GET .../status`); `since` is epoch seconds, `ahead` and `pushed` are null
+ * when the session has not opened or the host's mirror cannot say. */
+export type SessionStatusData = {
+  vm: { name: string; state: EngineStatus["state"]; detail: string; since: number; memory_gb: number } | null;
+  /** `model` is the role's model key; `label` the name people see ("Gemma 4"). */
+  engine: { name: string; model: string; label: string; state: EngineStatus["state"]; footprint_gb: number };
+  memory: { used_gb: number; budget_gb: number; waiting: string | null };
+  branch: { name: string; base: string; ahead: number | null; pushed: boolean | null } | null;
+  /** The tools this kind of chat asks the person about before it uses them (config `chat.kinds.<kind>.ask_first`). */
+  ask_first: string[];
+};
 
 const THREADS = "/v1/airlie/chat/threads";
 
@@ -72,12 +91,22 @@ export function getSession(id: string): Promise<ThreadDetail> {
   return request<ThreadDetail>(`${THREADS}/${encodeURIComponent(id)}`);
 }
 
+export function sessionStatus(id: string): Promise<SessionStatusData> {
+  return request<SessionStatusData>(`${THREADS}/${encodeURIComponent(id)}/status`);
+}
+
 export function deleteSession(id: string): Promise<void> {
   return request<void>(`${THREADS}/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export function stopSession(id: string): Promise<void> {
   return request<void>(`${THREADS}/${encodeURIComponent(id)}/stop`, { method: "POST" });
+}
+
+/** Start the story of a story card on the board, once (the server claims the card first: a second start is 409); answers
+ * the job part it kept on the card's message, so a reload shows it started. */
+export function startStoryCard(id: string, story: string, body: { text: string; repo: string }): Promise<JobPart> {
+  return request<JobPart>(`${THREADS}/${encodeURIComponent(id)}/stories/${encodeURIComponent(story)}/start`, { method: "POST", body });
 }
 
 export async function listPins(): Promise<string[]> {
