@@ -520,6 +520,11 @@ tasks:
     cmds:
       - '{{.RUN}} pytest -n auto --maxprocesses 8 {{.CLI_ARGS}}'
 
+  superpowers:verify:
+    desc: "Check the vendored superpowers tree against vendor/superpowers/MANIFEST.sha256 (exit 1 and list the problems)"
+    cmds:
+      - '{{.RUN}} python -m airlie.chat.superpowers vendor/superpowers'
+
   test:quarantine:
     desc: "Only the unit tests quarantined in tests/unit/quarantine.toml (over 500 ms, or on the real clock): they must still pass"
     cmds:

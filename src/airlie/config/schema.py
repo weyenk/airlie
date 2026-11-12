@@ -302,8 +302,71 @@ class AttachmentsSpec(Strict):
     history_videos: int = Field(default=1, ge=0, description="videos sent as video per request, newest first")
 
 
+CHAT_TOOLS = frozenset(
+    {
+        "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git", "compute",
+        "skill", "todo", "task", "web_search", "web_fetch",
+    }
+)  # fmt: skip
+# What a plain chat (no repository) may never hold, whatever the config says.
+PLAIN_CHAT_FORBIDDEN = frozenset(
+    {
+        "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git", "compute",
+        "task",
+    }
+)  # fmt: skip
+
+
+class SuperpowersSpec(Strict):
+    enabled: bool = True
+    path: Path = Field(
+        default=Path("vendor/superpowers"), description="vendored superpowers (skills/ and airlie-tools.md)"
+    )
+
+
+class ChatKindSpec(Strict):
+    tools: list[str]
+    ask_first: list[str] = Field(
+        default_factory=list, description="tools the chat asks the human before using"
+    )
+
+
+class ChatKindsSpec(Strict):
+    plain: ChatKindSpec = Field(
+        default_factory=lambda: ChatKindSpec(tools=["web_search", "web_fetch", "skill", "todo"])
+    )
+    repository: ChatKindSpec = Field(
+        default_factory=lambda: ChatKindSpec(
+            tools=[
+                "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git",
+                "compute", "skill", "todo", "task", "web_search", "web_fetch",
+            ]
+        )
+    )  # fmt: skip
+
+    @model_validator(mode="after")
+    def _check_tools(self) -> ChatKindsSpec:
+        for kind, spec in (("plain", self.plain), ("repository", self.repository)):
+            for field, names in (("tools", spec.tools), ("ask_first", spec.ask_first)):
+                unknown = sorted(set(names) - CHAT_TOOLS)
+                if unknown:
+                    known = ", ".join(sorted(CHAT_TOOLS))
+                    raise ValueError(
+                        f"chat.kinds.{kind}.{field} names {', '.join(unknown)}; the chat tools are {known}"
+                    )
+        held = sorted((set(self.plain.tools) | set(self.plain.ask_first)) & PLAIN_CHAT_FORBIDDEN)
+        if held:
+            raise ValueError(
+                f"chat.kinds.plain cannot hold {', '.join(held)}: a plain chat has no repository"
+            )
+        return self
+
+
 class ChatSpec(Strict):
     attachments: AttachmentsSpec = Field(default_factory=AttachmentsSpec)
+    superpowers: SuperpowersSpec = Field(default_factory=SuperpowersSpec)
+    kinds: ChatKindsSpec = Field(default_factory=ChatKindsSpec)
+    max_steps: int = Field(default=12, ge=1, description="model turns a chat message may take (tool rounds)")
 
 
 class LhrSpec(Strict):

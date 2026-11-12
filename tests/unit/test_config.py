@@ -1617,3 +1617,77 @@ def test_notifications_push_hosts_can_be_replaced_and_rejects_non_hosts(tmp_path
     assert cfg.notifications.push_hosts == ["push.example.com"]
     with pytest.raises(ConfigError, match="notifications.push_hosts"):
         load_config(write(tmp_path, {**MINIMAL, "notifications": {"push_hosts": ["https://x.com/y"]}}))
+
+
+# ---- chat kinds and superpowers ----
+
+_REPO_TOOLS = [
+    "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git",
+    "compute", "skill", "todo", "task", "web_search", "web_fetch",
+]  # fmt: skip
+
+
+def _chat(tmp_path: Path, chat: dict) -> Path:
+    return write(tmp_path, {**MINIMAL, "chat": chat})
+
+
+def test_chat_kind_defaults(tmp_path: Path) -> None:
+    kinds = load_config(write(tmp_path, MINIMAL)).chat.kinds
+    assert kinds.plain.tools == ["web_search", "web_fetch", "skill", "todo"]
+    assert kinds.repository.tools == _REPO_TOOLS
+    assert kinds.plain.ask_first == [] and kinds.repository.ask_first == []
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "grep",
+        "shell",
+        "run_tests",
+        "git",
+        "compute",
+        "task",
+    ],
+)
+def test_plain_chat_refuses_a_file_or_shell_tool_in_config(tmp_path: Path, tool: str) -> None:
+    with pytest.raises(ConfigError, match=f"chat.kinds.plain cannot hold {tool}"):
+        load_config(_chat(tmp_path, {"kinds": {"plain": {"tools": ["skill", tool]}}}))
+    with pytest.raises(ConfigError, match=f"chat.kinds.plain cannot hold {tool}"):
+        load_config(_chat(tmp_path, {"kinds": {"plain": {"tools": ["skill"], "ask_first": [tool]}}}))
+
+
+def test_a_chat_tool_outside_the_known_names_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="chat.kinds.repository.tools names nope"):
+        load_config(_chat(tmp_path, {"kinds": {"repository": {"tools": ["nope", "skill"]}}}))
+    with pytest.raises(ConfigError, match="chat.kinds.plain.ask_first names bogus"):
+        load_config(_chat(tmp_path, {"kinds": {"plain": {"tools": ["skill"], "ask_first": ["bogus"]}}}))
+
+
+def test_a_repository_chat_may_ask_first_before_a_tool(tmp_path: Path) -> None:
+    cfg = load_config(
+        _chat(tmp_path, {"kinds": {"repository": {"tools": ["shell", "skill"], "ask_first": ["shell"]}}})
+    )
+    assert cfg.chat.kinds.repository.tools == ["shell", "skill"]
+    assert cfg.chat.kinds.repository.ask_first == ["shell"]
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_chat_max_steps_must_be_positive(tmp_path: Path, bad: int) -> None:
+    with pytest.raises(ConfigError, match="max_steps"):
+        load_config(_chat(tmp_path, {"max_steps": bad}))
+    assert load_config(_chat(tmp_path, {"max_steps": 1})).chat.max_steps == 1
+    assert load_config(write(tmp_path, MINIMAL)).chat.max_steps == 12
+
+
+def test_superpowers_defaults(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, MINIMAL))
+    assert cfg.chat.superpowers.enabled is True
+    assert (
+        cfg.chat.superpowers.path == (tmp_path / "vendor" / "superpowers").resolve()
+    )  # of the config's directory
+    off = load_config(_chat(tmp_path, {"superpowers": {"enabled": False, "path": "sp"}}))
+    assert off.chat.superpowers.enabled is False and off.chat.superpowers.path == (tmp_path / "sp").resolve()

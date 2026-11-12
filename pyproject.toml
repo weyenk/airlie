@@ -75,7 +75,7 @@ markers = [
 addopts = "-m 'not live and not e2e'"
 
 [tool.ruff]
-extend-exclude = ["docs"]   # plan/spec markdown carries illustrative code blocks ruff must not format
+extend-exclude = ["docs", "vendor"]   # docs: illustrative code blocks ruff must not format; vendor: pinned upstream files, never edited
 line-length = 110
 target-version = "py312"
 src = ["src", "tests"]
@@ -130,6 +130,7 @@ also_copy = [
     "knowledge",
     "skills",
     "ops",
+    "vendor",
     "Taskfile.yml",
     "docs/integrations",
 ]
@@ -156,6 +157,7 @@ enrolled = [
     "src/airlie/tools/shell.py",
     "src/airlie/tools/sandbox.py",
     "src/airlie/engine/http_engine.py",
+    "src/airlie/chat/superpowers.py",
 ]
 # Mutants no test can catch, listed so they stop gating: each entry has the `mutant` name, the mutated `line`
 # (the `+` line of `mutmut show`) and the `reason` it changes nothing a caller can see. An entry whose mutant
