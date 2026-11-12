@@ -107,7 +107,8 @@ class TodoTool:
     name = "todo"
     description = (
         "Keep your checklist for this conversation. Send the whole list every call (it replaces the last); "
-        f"at most one item in_progress, at most {MAX_TODOS} items, each text up to {MAX_TODO_TEXT} characters."
+        f"at most one item in_progress, at most {MAX_TODOS} items, each text up to {MAX_TODO_TEXT} "
+        "characters."
     )
     parameters = {
         "type": "object",
