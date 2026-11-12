@@ -242,6 +242,9 @@ async def test_the_registrys_push_tool_belongs_to_the_session_it_was_given(
     class Session:
         mirror = Mirror()
 
+        async def may_publish(self) -> str | None:
+            return None
+
     ctx = ToolContext(worktree=Path("/w"), box=FakeBox("vm", state="running"))
     reg = registry_for(
         "repository",

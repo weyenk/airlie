@@ -14,10 +14,11 @@ from fastapi.responses import JSONResponse
 from airlie.auth.principal import Principal
 from airlie.auth.store import AuthStore
 from airlie.chat.repo_session import valid_repo
+from airlie.sources.access import RepoAccess
 
 Publish = Callable[[str, str | None], None]
 Pinnable = Callable[[], Awaitable[list[str]]]
-"""The repositories a person may pin ("owner/name"): `GET /v1/airlie/repos/names`."""
+"""The local checkouts a person may pin ("owner/name"): `GET /v1/airlie/repos/names`."""
 MAX_PINS = 50
 
 
@@ -25,7 +26,8 @@ def error(message: str, status: int) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
-def pins_router(store: AuthStore, publish: Publish, pinnable: Pinnable) -> APIRouter:
+def pins_router(store: AuthStore, publish: Publish, access: RepoAccess, known: Pinnable) -> APIRouter:
+    """`known`: the local checkouts; `access` says which no source reaches (the only ones to pin)."""
     router = APIRouter(prefix="/v1/airlie/chat/pins")
 
     def who(request: Request) -> str | None:
@@ -49,7 +51,11 @@ def pins_router(store: AuthStore, publish: Publish, pinnable: Pinnable) -> APIRo
             return error("a pinned repository is owner/name", 422)
         pinned = [r.lower() for r in store.pins(user)]
         if repo.lower() not in pinned:
-            if repo.lower() not in {r.lower() for r in await pinnable()}:
+            if repo.lower() not in {r.lower() for r in (await access.view(user)).extra_candidates}:
+                if repo.lower() in {r.lower() for r in await known()}:
+                    return error(
+                        f"{repo} comes from GitHub: it shows when your GitHub account can see it", 422
+                    )
                 return error(f"{repo} is not a repository airlie knows (GET /v1/airlie/repos/names)", 422)
             if len(pinned) >= MAX_PINS:
                 return error(f"at most {MAX_PINS} pinned repositories: unpin one first", 422)

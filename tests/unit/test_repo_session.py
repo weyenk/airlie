@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -352,7 +353,7 @@ async def test_a_mirror_that_cannot_be_read_is_an_engine_error(world: World) -> 
         async def refresh(self) -> None:
             raise MirrorError("no checkout of o/r")
 
-    world.sessions._mirror_for = lambda repo: Broken(world.tmp / "m", "o/r", world.runner, None)  # type: ignore[assignment]
+    world.sessions._mirror_for = lambda repo, access: Broken(world.tmp / "m", "o/r", world.runner, None)  # type: ignore[assignment]
 
     with pytest.raises(MirrorError, match="no checkout"):
         await world.sessions.open(world.thread())
@@ -490,7 +491,21 @@ class Wired:
         self.manager = Manager([], budget_gb=100.0, clock=FakeClock())
         self.threads = ThreadStore(tmp_path / "threads.db")
         self.confirmations = Confirmations(self.cfg)
-        self.sessions = default_repo_sessions(self.cfg, self.manager, self.threads, self.confirmations)
+        self.sessions = default_repo_sessions(
+            self.cfg,
+            self.manager,
+            self.threads,
+            self.confirmations,
+            SimpleNamespace(access=self.allowed, may_push=self.no_refusal),  # type: ignore[arg-type]
+        )
+
+    @staticmethod
+    async def allowed(person: str, repo: str) -> str:
+        return "source"
+
+    @staticmethod
+    async def no_refusal(person: str, repo: str) -> None:
+        return None
 
 
 @pytest.fixture
@@ -572,10 +587,10 @@ def test_a_repository_mirror_lives_under_the_state_dir_with_its_own_single_publi
     (wired.repos / "r").mkdir(parents=True)
     (wired.repos / "q").mkdir()
 
-    mirror = wired.sessions._mirror_for("o/r")
-    other = wired.sessions._mirror_for("o/q")
+    mirror = wired.sessions._mirror_for("o/r", "source")
+    other = wired.sessions._mirror_for("o/q", "source")
 
-    assert wired.sessions._mirror_for("o/r") is mirror
+    assert wired.sessions._mirror_for("o/r", "source") is mirror
     assert mirror.path == wired.state / "chat" / "mirrors" / "o__r"
     assert mirror.run is run_cmd and mirror.local_checkout == wired.repos / "r"
     assert (mirror.publisher.remote, mirror.publisher.publish) == ("upstream", "single")
@@ -585,7 +600,7 @@ def test_a_repository_mirror_lives_under_the_state_dir_with_its_own_single_publi
 
 def test_a_repository_without_a_checkout_and_without_the_app_cannot_be_mirrored(wired: Wired) -> None:
     with pytest.raises(MirrorError) as e:
-        wired.sessions._mirror_for("o/r")
+        wired.sessions._mirror_for("o/r", "source")
 
     assert f"no checkout of o/r in {wired.repos}" in str(e.value)
     assert "clone it there" in str(e.value)
@@ -597,7 +612,7 @@ def test_with_the_app_a_repository_is_mirrored_without_a_local_checkout(
     app = object()
     w = Wired(tmp_path, cfg, monkeypatch, app=app)
 
-    mirror = w.sessions._mirror_for("o/r")
+    mirror = w.sessions._mirror_for("o/r", "source")
 
     assert mirror.local_checkout is None and mirror.publisher.app is app and mirror.can_push
 
@@ -620,13 +635,33 @@ def test_the_mirror_of_a_repository_is_made_once_and_checked_out_by_its_own_name
 
     mirror_for = repo_mirrors(Path("/m"), publisher, run=runner, local_checkout=local_checkout)  # type: ignore[arg-type]
 
-    a, b = mirror_for("o/a"), mirror_for("o/b")
+    a, b = mirror_for("o/a", "extra"), mirror_for("o/b", "extra")
 
-    assert mirror_for("o/a") is a and mirror_for("o/b") is b
+    assert mirror_for("o/a", "extra") is a and mirror_for("o/b", "extra") is b
     assert (a.repo, a.path, a.run, a.publisher) == ("o/a", Path("/m/o__a"), runner, publishers[0])
+    assert a.publisher.app is None and not a.can_push  # an extra never pushes
     assert b.publisher is publishers[1] and len(publishers) == 2
     assert asked == ["o/a", "o/b"]
     assert (a.local_checkout, b.local_checkout) == (Path("/checkouts/o/a"), Path("/checkouts/o/b"))
+
+
+def test_a_source_mirror_with_the_app_never_reads_the_checkout() -> None:
+    from airlie.chat.repo_session import repo_mirrors
+    from tests.unit.test_transit import FakePublisher, FakeRunner
+
+    asked: list[str] = []
+
+    def local_checkout(repo: str) -> Path | None:
+        asked.append(repo)
+        return Path("/checkouts") / repo
+
+    mirror_for = repo_mirrors(Path("/m"), FakePublisher, run=FakeRunner(), local_checkout=local_checkout)  # type: ignore[arg-type]
+
+    mirror = mirror_for("o/a", "source")
+
+    assert mirror.local_checkout is None and mirror.can_push and asked == []  # GitHub, through the App
+    assert mirror_for("o/a", "extra") is not mirror  # the other kind is its own mirror
+    assert asked == ["o/a"]
 
 
 def test_a_mirror_has_no_local_checkout_unless_asked_for_one() -> None:
@@ -635,4 +670,48 @@ def test_a_mirror_has_no_local_checkout_unless_asked_for_one() -> None:
 
     mirror_for = repo_mirrors(Path("/m"), FakePublisher, run=FakeRunner())  # type: ignore[arg-type]
 
-    assert mirror_for("o/a").local_checkout is None
+    assert mirror_for("o/a", "source").local_checkout is None
+
+
+# --- the person's access, asked again when a yes is carried out ---------------------------------------------
+
+
+async def test_an_approved_push_and_pr_ask_the_persons_access_again_before_acting(world: World) -> None:
+    import dataclasses
+
+    from airlie.chat.repo_tools import OpenPr, PushBranch
+    from airlie.tools.protocol import ToolContext
+
+    chat = await world.sessions.open(world.thread())
+    asked: list[str] = []
+    why = "you cannot push to o/r on GitHub, so airlie will not push for you"
+
+    async def lost() -> str:
+        asked.append("asked")
+        return why
+
+    refusing = dataclasses.replace(chat, may_publish=lost)
+    ctx = ToolContext(Path("."))
+
+    pushed = await PushBranch(refusing).run_approved({}, {"head": world.base}, ctx)
+    opened = await OpenPr(refusing).run_approved({}, {"title": "t", "head": world.base}, ctx)
+
+    assert (pushed.ok, pushed.output) == (False, f"error: {why}")
+    assert (opened.ok, opened.output) == (False, f"error: {why}")
+    assert asked == ["asked", "asked"]
+    assert world.publisher.events == []  # type: ignore[attr-defined]  # nothing pushed, no PR
+
+
+async def test_a_session_that_lost_access_is_refused_even_when_already_open(world: World) -> None:
+    from airlie.chat.repo_session import NoAccess
+
+    chat = await world.sessions.open(world.thread())
+    assert chat is await world.sessions.open(world.thread())
+
+    async def gone(person: str, repo: str) -> None:
+        return None
+
+    world.sessions._authorize = gone  # type: ignore[assignment]
+
+    with pytest.raises(NoAccess, match="you have no access to o/r"):
+        await world.sessions.open(world.thread())

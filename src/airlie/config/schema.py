@@ -411,6 +411,15 @@ class ChatSpec(Strict):
     kinds: ChatKindsSpec = Field(default_factory=ChatKindsSpec)
     task: ChatTaskSpec = Field(default_factory=ChatTaskSpec)
     max_steps: int = Field(default=12, ge=1, description="model turns a chat message may take (tool rounds)")
+    sources: list[Literal["github_app"]] = Field(
+        default_factory=list,
+        description="where a person's repositories come from; github_app needs story.github_app.app_id",
+    )
+    repo_list_cache_s: float = Field(
+        default=300.0,
+        gt=0,
+        description="seconds a person's repository list is kept before it is fetched again",
+    )
 
 
 class LhrSpec(Strict):
@@ -829,6 +838,22 @@ class GitHubAppSpec(Strict):
         default="https://api.github.com",
         description="GitHub's REST API: https://, or http:// on this machine (tests); no user or password",
     )
+    client_id: str | None = Field(
+        default=None,
+        description="the App's client id (airlie.local.yaml); null: nobody can link a GitHub account",
+    )
+    client_secret_file: Path | None = Field(
+        default=None,
+        description="the App's client secret (0600); needed to refresh a user token and to revoke a grant",
+    )
+    token_key_file: Path = Field(
+        default=Path("~/.config/airlie/github-user-tokens.key"),
+        description="the 32-byte key the user tokens are sealed with; made 0600 on first use, never logged",
+    )
+    oauth_url: str = Field(
+        default="https://github.com",
+        description="GitHub's OAuth host (device flow): https://, or http:// on this machine (tests)",
+    )
 
 
 class SupervisorSpec(Strict):
@@ -1243,6 +1268,8 @@ class AirlieConfig(Strict):
             ]
             if task.default_role not in task.roles:
                 problems.append(f"chat.task.default_role '{task.default_role}' is not in chat.task.roles")
+        if "github_app" in self.chat.sources and self.story.github_app.app_id is None:
+            problems.append("chat.sources lists github_app, which needs story.github_app.app_id")
         served_by: dict[str, list[str]] = {m: [] for m in self.models}
         for ename, e in self.engines.items():
             for m in e.models:
