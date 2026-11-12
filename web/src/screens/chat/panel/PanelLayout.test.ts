@@ -7,11 +7,14 @@ import { panelServer, stubWindowWidth, thread } from "@/test-utils/chat-panel";
 const Blank = { template: "<div />" };
 const slot = { default: "<p>the thread</p>" };
 
+const mounted: ReturnType<typeof mount>[] = [];
+
 async function open(path = "/chat/c1") {
   setActivePinia(createPinia());
   const r = createRouter({ history: createMemoryHistory(), routes: [{ path: "/chat/:session?", component: Blank }, { path: "/:rest(.*)*", component: Blank }] });
   await r.push(path);
   const w = mount(PanelLayout, { slots: slot, global: { plugins: [r] }, attachTo: document.body });
+  mounted.push(w);
   await flushPromises();
   return { w, r };
 }
@@ -23,6 +26,7 @@ beforeEach(() => {
   panelServer({ threads: [thread("c1", { title: "first chat" }), thread("c2", { title: "second chat" })] });
 });
 afterEach(() => {
+  for (const w of mounted.splice(0)) w.unmount(); // before the body is emptied, or a later update patches a detached tree
   document.body.innerHTML = "";
   vi.unstubAllGlobals();
 });
