@@ -186,3 +186,14 @@ def test_an_approval_request_leaves_an_open_text_part_open() -> None:
 
     assert [c["type"] for c in request] == ["tool-approval-request"]
     assert [c["type"] for c in after] == ["text-delta"]
+
+
+def test_a_data_part_with_an_id_carries_it_before_its_data() -> None:
+    w = StreamWriter("m")
+
+    assert w.data("todo", {"a": 1}, part_id="p1") == [
+        'data: {"type":"data-todo","id":"p1","data":{"a":1}}\n\n'
+    ]
+    assert w.data("note", "x", transient=True, part_id="p2") == [
+        'data: {"type":"data-note","id":"p2","data":"x","transient":true}\n\n'
+    ]
