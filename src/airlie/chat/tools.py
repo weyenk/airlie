@@ -36,9 +36,24 @@ class TodoList:
 
     @classmethod
     def load(cls, items: list[dict[str, Any]]) -> TodoList:
+        """A stored list; a row that fails the todo tool's own checks is skipped, never an error."""
         out = cls()
-        out.replace([TodoItem(str(i["id"]), str(i["text"]), cast(TodoStatus, i["status"])) for i in items])
+        parsed = [parse_item(r, n) for n, r in enumerate(items, 1)]
+        out.replace([p for p in parsed if isinstance(p, TodoItem)])
         return out
+
+
+def parse_item(r: object, n: int) -> TodoItem | str:
+    """One todo row as a TodoItem, or the error naming what is wrong with item `n`."""
+    if not isinstance(r, dict):
+        return f"error: item {n} must be an object with id, text and status"
+    text = str(r.get("text") or "").strip()
+    status = r.get("status")
+    if not text:
+        return f"error: item {n} has empty text"
+    if status not in TODO_STATUSES:
+        return f"error: item {n} has status {status!r}; use one of {', '.join(TODO_STATUSES)}"
+    return TodoItem(str(r.get("id") or n), text, cast(TodoStatus, status))
 
 
 def render(items: list[TodoItem]) -> str:
@@ -121,17 +136,10 @@ class TodoTool:
             return ToolResult(False, f"error: at most {MAX_TODOS} items; got {len(raw)}")
         items: list[TodoItem] = []
         for n, r in enumerate(raw, 1):
-            if not isinstance(r, dict):
-                return ToolResult(False, f"error: item {n} must be an object with id, text and status")
-            text = str(r.get("text") or "").strip()
-            status = r.get("status")
-            if not text:
-                return ToolResult(False, f"error: item {n} has empty text")
-            if status not in TODO_STATUSES:
-                return ToolResult(
-                    False, f"error: item {n} has status {status!r}; use one of {', '.join(TODO_STATUSES)}"
-                )
-            items.append(TodoItem(str(r.get("id") or n), text, cast(TodoStatus, status)))
+            item = parse_item(r, n)
+            if isinstance(item, str):
+                return ToolResult(False, item)
+            items.append(item)
         busy = [i.id for i in items if i.status == "in_progress"]
         if len(busy) > 1:
             return ToolResult(False, f"error: only one item may be in_progress; got {', '.join(busy)}")

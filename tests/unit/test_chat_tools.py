@@ -174,6 +174,23 @@ def test_a_todo_list_round_trips_through_load() -> None:
     assert TodoList.load(stored).items() == todos.items()
 
 
+def test_load_skips_stored_rows_that_fail_the_tools_checks() -> None:
+    stored: list[Any] = [
+        {"id": "1", "text": "keep", "status": "done"},
+        {"text": "no id gets its number", "status": "pending"},
+        {"id": "3", "status": "pending"},
+        {"id": "4", "text": "  ", "status": "pending"},
+        {"id": "5", "text": "bad status", "status": "blocked"},
+        {"id": "6", "text": "no status"},
+        "not an object",
+    ]
+
+    assert TodoList.load(stored).items() == [
+        TodoItem("1", "keep", "done"),
+        TodoItem("2", "no id gets its number", "pending"),
+    ]
+
+
 def test_the_items_of_a_todo_list_are_a_copy() -> None:
     todos = TodoList()
     todos.replace([TodoItem("1", "a", "done")])
