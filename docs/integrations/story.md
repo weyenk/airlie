@@ -127,6 +127,7 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.amigos.tool_iterations` | 3 | read-only tool rounds an agent may take inside one turn; 0: no tools in the meeting |
 | `story.jira.statuses` | *To Do*, *In Progress*, *In Review*, *Blocked* | the names behind `intake`, `building`, `review` and `blocked` |
 | `story.github_app.app_id`, `key_file`, `api_url` | `5332832` (this repository owner's app; in a clone, set `null` or your own app's id in `airlie.local.yaml`), `~/.config/airlie/github-app.pem`, `https://api.github.com` | publish as that GitHub App's bot (*Publishing as a bot*); `null`: with your gh login and SSH key |
+| `story.github_app.token_key_file` | `~/.config/airlie/github-user-tokens.key` | the 32-byte key the linked GitHub accounts' tokens are sealed with (AES-256-GCM, first byte of each sealed token = key version 1); made 0600 in a 0700 directory on first use, refused when others can read it, when it is a symlink, or when it lies in the state directory or the repository. **Rotation: unlink and relink.** Delete the key file and restart serve: tokens sealed with the old key no longer open, each person's link is dropped and they press Connect GitHub again (no rekey command; the table holds only tokens GitHub can reissue). |
 
 ## Run one
 

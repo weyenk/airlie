@@ -73,11 +73,43 @@ def test_a_truncated_or_altered_token_is_a_vault_error(tmp_path: Path) -> None:
         vault.open(sealed[:-1] + bytes([sealed[-1] ^ 1]), aad=A)
 
 
-def test_the_associated_data_is_nul_joined() -> None:
-    assert aad("u1", "github_app", "refresh") == "u1\0github_app\0refresh"
-
-
 def test_a_vault_expands_a_home_relative_key_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     TokenVault(Path("~/k/tokens.key")).seal("ghu_x", aad=A)
     assert os.path.exists(tmp_path / "k" / "tokens.key")
+
+
+def test_the_associated_data_cannot_be_made_to_collide() -> None:
+    assert aad("u1\0github_app", "x", "access") != aad("u1", "github_app\0x", "access")
+    assert aad("ab", "c", "access") != aad("a", "bc", "access")
+
+
+def test_a_key_made_here_has_a_0700_parent(tmp_path: Path) -> None:
+    TokenVault(tmp_path / "new" / "tokens.key").seal("ghu_x", aad=A)
+    assert stat.S_IMODE((tmp_path / "new").stat().st_mode) == 0o700
+
+
+def test_a_symlinked_key_is_refused(tmp_path: Path) -> None:
+    real = tmp_path / "real.key"
+    real.write_bytes(b"k" * 32)
+    real.chmod(0o600)
+    link = tmp_path / "link.key"
+    link.symlink_to(real)
+    with pytest.raises(VaultError, match="symlink"):
+        TokenVault(link).seal("ghu_x", aad=A)
+
+
+def test_a_key_inside_a_kept_out_directory_is_refused(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    with pytest.raises(VaultError, match="state") as e:
+        TokenVault(state / "tokens.key", keep_out=[state]).seal("ghu_x", aad=A)
+    assert "outside" in str(e.value)
+    assert not state.exists()
+
+
+def test_a_sealed_token_carries_a_key_version_and_an_unknown_one_is_refused(tmp_path: Path) -> None:
+    vault = TokenVault(tmp_path / "tokens.key")
+    sealed = vault.seal("ghu_x", aad=A)
+    assert sealed[0] == 1
+    with pytest.raises(VaultError, match="version 9"):
+        vault.open(bytes([9]) + sealed[1:], aad=A)

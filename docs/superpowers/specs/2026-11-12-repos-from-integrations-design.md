@@ -51,7 +51,8 @@ access to it. GitHub is the first source behind a seam, so GitLab or Forgejo can
   12-byte nonce each; the associated data is user id, source and field, so a row copied to another person does not
   decrypt). The 32-byte key lives in `story.github_app.token_key_file` (default
   `~/.config/airlie/github-user-tokens.key`), made 0600 on first use, refused when group or others can read it:
-  a copy of the state directory alone yields no token. Tokens never reach the browser, a log, an event or an
+  a copy of the state directory alone yields no token. Rotation is unlink and relink: delete the key file, every link
+  fails to open and is dropped, people connect again (sealed tokens carry a key-version byte for a later rekey). Tokens never reach the browser, a log, an event or an
   error (GitHub's messages are masked as `github_app.py` does).
 - **Scopes.** A GitHub App's user token has no OAuth scopes: it can do at most what both the App and the person
   may. airlie asks the App for nothing new (its own Contents, Pull requests, Metadata) and uses the user token
