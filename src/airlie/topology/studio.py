@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -110,6 +110,11 @@ class Advisor(StuckAdvisor, Protocol):
         ...
 
 
+class WrongTest(Exception):  # noqa: N818 - a verdict, not an error
+    """The gate's advice says a test the coder may not change is wrong (`gate_advice`): no follow-up runs, and
+    the caller re-plans on `gate_output`."""
+
+
 @dataclass
 class SubtaskRun:
     subtask: Subtask
@@ -126,6 +131,11 @@ class SubtaskRun:
     before: str = (
         ""  # the worktree's head when it started: its review diff and its later runs' already_written
     )
+    writes: bool = False
+    """Its role writes the worktree (`_start_subtask`): only a writer is done-checked and reviewed."""
+    broke: bool = False
+    """A turn of it raised (its result says engine_error): nothing after that turn runs before its
+    `subtask_done`, no done-check, review or fix round."""
 
 
 @dataclass(frozen=True)
@@ -197,6 +207,9 @@ class StudioOrchestrator:
         self.images: list[Path] = []
         self.base_sha = ""
         self.worktree: Path | None = None
+        self.branch = ""  # the worktree's branch as the report names it ("(detached)" for none)
+        self.started = 0.0  # when the run started (`open_worktree`), for its report's wall time
+        self.answer = ""  # the chief's answer when it made no plan (`plan_phase`)
         self.test_cmd: str | None = None
         self.test_steps: tuple[str, ...] = ()  # the gate's commands, for run_tests to report one by one
         self.step_limit: int | None = (
@@ -494,35 +507,70 @@ class StudioOrchestrator:
             on_prompt=save_prompt,
         )
 
-    async def _run_subtask(self, run: SubtaskRun, test_cmd: str | None) -> None:
+    async def _run_subtask(self, run: SubtaskRun) -> None:
+        """A routed subtask from its start to its `subtask_done`: its first turn and, for a writer, the
+        done-check and the review rounds, all under the write lock."""
+        writes = await self._start_subtask(run)
+        async with self._slot(writes):  # the steps' own bodies: the write lock is not reentrant
+            await self._first_turn(run, writes)
+            if writes:
+                await self._done_check(run)
+                await self._review_and_fix(run)
+        self.close_subtask(run)
+
+    async def coder_turn(self, subtask: Subtask) -> SubtaskRun:
+        """Step: route `subtask`, then its start and its first turn (`_run_subtask` up to the turn, under the
+        write lock for a writer). An exception is its engine_error result, never raised."""
+        role, d = await self._route(subtask)
+        run = self.runs[subtask.id] = SubtaskRun(subtask, role, d)
+        writes = await self._start_subtask(run)
+        async with self._slot(writes):
+            await self._first_turn(run, writes)
+        return run
+
+    async def _start_subtask(self, run: SubtaskRun) -> bool:
+        """Its skill and preamble, the hand-offs to it and `subtask_start`; whether it writes."""
         role = self.cfg.roles[run.role]
         run.skill, skill_text = await self._skill(run.subtask, role)
-        preamble = run.preamble = "\n\n".join(x for x in (self.preamble or "", skill_text) if x)
-        writes = self._writes(role, run.subtask)
+        run.preamble = "\n\n".join(x for x in (self.preamble or "", skill_text) if x)
+        writes = run.writes = self._writes(role, run.subtask)
         self._handoff("chief", run.subtask.id, "brief", run.subtask.brief)
         for d in run.subtask.depends_on:
             dep = self.runs.get(d)
             if dep is not None and dep.result is not None:
                 self._handoff(d, run.subtask.id, "result", dep.result.final_text)
         self.sink.emit("subtask_start", subtask=run.subtask.id, role=run.role, skill=run.skill, writes=writes)
+        return writes
+
+    @contextlib.asynccontextmanager
+    async def _slot(self, writes: bool) -> AsyncIterator[None]:
+        if writes:  # the lock first: a writer waiting its turn must not hold a parallel slot
+            async with self.write_lock, self.sem:
+                yield
+        else:
+            async with self.sem:
+                yield
+
+    async def _first_turn(self, run: SubtaskRun, writes: bool) -> None:
+        role = self.cfg.roles[run.role]
         try:
-            if writes:  # the lock first: a writer waiting its turn must not hold a parallel slot
-                async with self.write_lock, self.sem:
-                    assert self.worktree is not None
-                    before = head_sha(self.worktree)  # this subtask's own base for the review diff
-                    run.before = before
-                    ctx = self._context(run, role, test_cmd, preamble=preamble, parent=None, nudge=None)
-                    run.result = await self.team.run(ctx, self.observer)
-                    await self._done_check(run, role, test_cmd, preamble, before)
-                    await self._review_and_fix(run, role, test_cmd, preamble, before)
-            else:
-                async with self.sem:
-                    ctx = self._context(run, role, test_cmd, preamble=preamble, parent=None, nudge=None)
-                    run.result = await self.team.run(ctx, self.observer)
+            if writes:
+                assert self.worktree is not None
+                run.before = head_sha(self.worktree)  # this subtask's own base for the review diff
+            ctx = self._context(run, role, self.test_cmd, preamble=run.preamble, parent=None, nudge=None)
+            run.result = await self.team.run(ctx, self.observer)
         except Exception as e:  # noqa: BLE001 - a broken subtask is reported, never a run-killer
-            run.result = TeamResult(
-                run.subtask.id, False, "engine_error", f"engine error: {type(e).__name__}: {e}", 0, 0, 0, 0.0
-            )
+            self._broke(run, e)
+
+    @staticmethod
+    def _broke(run: SubtaskRun, e: Exception) -> None:
+        run.result = TeamResult(
+            run.subtask.id, False, "engine_error", f"engine error: {type(e).__name__}: {e}", 0, 0, 0, 0.0
+        )
+        run.broke = True
+
+    def close_subtask(self, run: SubtaskRun) -> None:
+        """Step: `subtask_done` and the subtask's result handed to the chief."""
         res = run.result
         assert res is not None
         self.sink.emit(
@@ -546,52 +594,85 @@ class StudioOrchestrator:
         run.rounds += 1
         return run.rounds
 
-    async def _done_check(
-        self, run: SubtaskRun, role: RoleSpec, test_cmd: str | None, preamble: str, before: str
-    ) -> None:
-        """A coder that stopped 'done' on a brief with acceptance criteria is sent its diff with the
-        done-check: a miss it finds is fixed in a short continuation before the reviewer charges a round."""
+    async def done_check(self, run: SubtaskRun) -> None:
+        """Step: a coder that stopped 'done' on a brief with acceptance criteria is sent its diff with the
+        done-check: a miss it finds is fixed in a short continuation before the reviewer charges a round. An
+        exception is the subtask's engine_error result, never raised. Under the write lock for a writer."""
+        async with self._slot(run.writes):
+            await self._done_check(run)
+
+    async def _done_check(self, run: SubtaskRun) -> None:
         res = run.result
         assert res is not None and self.worktree is not None
         s = self.cfg.studio
         if (
-            not s.done_check
+            run.broke
+            or not run.writes
+            or not s.done_check
             or run.role not in s.review.roles  # it stands in for a review round: a role with none has none
             or res.stop_reason != "done"
             or "acceptance criteria" not in run.subtask.brief.lower()
         ):
             return
-        wip = commit_wip(self.worktree, f"studio: {run.subtask.id} (done-check)")
-        diff = diff_between(self.worktree, before, s.review.diff_chars)
-        if not diff.strip():  # nothing changed: the review says so
-            return
-        nudge = f"{self._steer('done-check', run)}\n\n## Your diff\n```diff\n{diff}\n```"
-        ctx = self._context(
-            run, role, test_cmd, preamble=preamble, parent=res, nudge=nudge, attempt=self._next_attempt(run)
-        )
-        ctx.max_steps = s.done_check_steps
-        ctx.must_act = False  # a checklist that finds everything met is the answer
-        self.sink.emit("done_check", subtask=run.subtask.id, role=run.role, fresh=ctx.initial_state is None)
-        run.result = await self.team.run(ctx, self.observer)
-        self.sink.emit(
-            "done_check_done",
-            subtask=run.subtask.id,
-            stop_reason=run.result.stop_reason,
-            steps=run.result.steps,
-            changed=dirty(self.worktree) or head_sha(self.worktree) != wip,
-        )
+        role = self.cfg.roles[run.role]
+        try:
+            wip = commit_wip(self.worktree, f"studio: {run.subtask.id} (done-check)")
+            diff = diff_between(self.worktree, run.before, s.review.diff_chars)
+            if not diff.strip():  # nothing changed: the review says so
+                return
+            nudge = f"{self._steer('done-check', run)}\n\n## Your diff\n```diff\n{diff}\n```"
+            ctx = self._context(
+                run,
+                role,
+                self.test_cmd,
+                preamble=run.preamble,
+                parent=res,
+                nudge=nudge,
+                attempt=self._next_attempt(run),
+            )
+            ctx.max_steps = s.done_check_steps
+            ctx.must_act = False  # a checklist that finds everything met is the answer
+            self.sink.emit(
+                "done_check", subtask=run.subtask.id, role=run.role, fresh=ctx.initial_state is None
+            )
+            run.result = await self.team.run(ctx, self.observer)
+            self.sink.emit(
+                "done_check_done",
+                subtask=run.subtask.id,
+                stop_reason=run.result.stop_reason,
+                steps=run.result.steps,
+                changed=dirty(self.worktree) or head_sha(self.worktree) != wip,
+            )
+        except Exception as e:  # noqa: BLE001 - as in _first_turn
+            self._broke(run, e)
 
-    async def _review_and_fix(
-        self, run: SubtaskRun, role: RoleSpec, test_cmd: str | None, preamble: str, before: str
-    ) -> None:
+    async def _review_and_fix(self, run: SubtaskRun) -> None:
+        """Review rounds, each with a fix round after it while `wants_fix`."""
+        round_no = 0
+        while True:
+            review = await self._review_round(run, round_no)
+            if review is None or not self.wants_fix(review, round_no):
+                return
+            await self._fix_turn(run, review)
+            round_no += 1
+
+    async def review_round(self, run: SubtaskRun, round_no: int) -> Review | None:
+        """Step: review round `round_no` of a subtask: its work committed, the diff to the reviewer, the
+        verdict on record (trace, `review` event, the hand-off back). None when the role has no review (or
+        the subtask broke, or does not write); an exception is the subtask's engine_error result, and None.
+        Under the write lock for a writer (its work is committed)."""
+        async with self._slot(run.writes):
+            return await self._review_round(run, round_no)
+
+    async def _review_round(self, run: SubtaskRun, round_no: int) -> Review | None:
         rv = self.cfg.studio.review
         assert self.worktree is not None and run.result is not None
-        if not rv.enabled or run.role not in rv.roles:
-            return
-        reviewer = Reviewer(self.engine, rv.role, self.cfg.roles[rv.role], self._lookup_tools(rv.role))
-        for round_no in range(rv.rounds + 1):
+        if run.broke or not run.writes or not rv.enabled or run.role not in rv.roles:
+            return None
+        try:
+            reviewer = Reviewer(self.engine, rv.role, self.cfg.roles[rv.role], self._lookup_tools(rv.role))
             commit_wip(self.worktree, f"studio: {run.subtask.id} (round {round_no})")
-            changed = changed_files(self.worktree, before)
+            changed = changed_files(self.worktree, run.before)
             files = {
                 p: (self.worktree / p).read_text(errors="replace")
                 for p in changed
@@ -602,7 +683,7 @@ class StudioOrchestrator:
             try:
                 review = await reviewer.review(
                     run.subtask.brief,
-                    diff_between(self.worktree, before, rv.diff_chars),
+                    diff_between(self.worktree, run.before, rv.diff_chars),
                     run.result.last_test_output[-3000:],
                     files,
                     diff_chars=rv.diff_chars,
@@ -625,22 +706,45 @@ class StudioOrchestrator:
                 round=round_no,
             )
             self._handoff("reviewer", run.subtask.id, "findings", findings_text(review), role=rv.role)
-            if review.verdict != "request_changes" or not review.blocking or round_no >= rv.rounds:
-                return
-            run.fix_rounds += 1
-            self.sink.emit(
-                "fix_round", subtask=run.subtask.id, round=run.fix_rounds, blocking=len(review.blocking)
-            )
+        except Exception as e:  # noqa: BLE001 - as in _first_turn
+            self._broke(run, e)
+            return None
+        return review
+
+    def wants_fix(self, review: Review | None, round_no: int) -> bool:
+        """Step: whether review round `round_no` sends the subtask a fix round: changes requested with a
+        blocking finding, and a round left (studio.review.rounds)."""
+        return (
+            review is not None
+            and review.verdict == "request_changes"
+            and bool(review.blocking)
+            and round_no < self.cfg.studio.review.rounds
+        )
+
+    async def fix_turn(self, run: SubtaskRun, review: Review) -> None:
+        """Step: the fix round for `review`'s blocking findings, in the subtask's conversation. An exception
+        is its engine_error result, never raised. Under the write lock for a writer."""
+        async with self._slot(run.writes):
+            await self._fix_turn(run, review)
+
+    async def _fix_turn(self, run: SubtaskRun, review: Review) -> None:
+        run.fix_rounds += 1
+        self.sink.emit(
+            "fix_round", subtask=run.subtask.id, round=run.fix_rounds, blocking=len(review.blocking)
+        )
+        try:
             ctx = self._context(
                 run,
-                role,
-                test_cmd,
-                preamble=preamble,
+                self.cfg.roles[run.role],
+                self.test_cmd,
+                preamble=run.preamble,
                 parent=run.result,
                 nudge=nudge_from_review(review),
                 attempt=self._next_attempt(run),
             )
             run.result = await self.team.run(ctx, self.observer)
+        except Exception as e:  # noqa: BLE001 - as in _first_turn
+            self._broke(run, e)
 
     async def follow_up(self, subtask_id: str, nudge: str, *, max_steps: int | None = None) -> None:
         """Send subtask `subtask_id`, which has run, back once more in its own conversation with `nudge` (as a
@@ -751,7 +855,7 @@ class StudioOrchestrator:
             put_back(self.worktree, self.lock_commit, back)
             self.sink.emit("locked_restored", paths=back)
 
-    async def _run_plan(self, plan: Plan, test_cmd: str | None) -> None:
+    async def _run_plan(self, plan: Plan) -> None:
         for wave in schedule(plan, satisfied=frozenset(self.runs)):
             if self.halted:
                 return
@@ -760,7 +864,7 @@ class StudioOrchestrator:
                 role, d = await self._route(s)
                 runs.append(SubtaskRun(s, role, d))
                 self.runs[s.id] = runs[-1]
-            await asyncio.gather(*(self._run_subtask(r, test_cmd) for r in runs))
+            await asyncio.gather(*(self._run_subtask(r) for r in runs))
             for r in runs:
                 check = self.checkpoints.get(r.subtask.id)
                 if check is not None and not await check():
@@ -893,21 +997,69 @@ class StudioOrchestrator:
         the coder the layer's files in its brief (brief recipes, 2026-11-01). `map_chars` caps the map below
         `repo_map.max_chars` (a story's survey and layer planning: `repo_map.story_chars`).
         `max_steps` limits every subtask's steps in this run, follow-ups included."""
+        await self.open_worktree(
+            repo,
+            base=base,
+            branch=branch,
+            detach=detach,
+            test_cmd=test_cmd,
+            test_steps=test_steps,
+            scope_tests=scope_tests,
+            checkpoints=checkpoints,
+            max_steps=max_steps,
+            goal=query_text,
+            plan=plan,
+            images=images,
+        )
+        await self.place(prepare)
+        chosen = await self.plan_phase(
+            query_text, plan=plan, repo_map=repo_map, map_focus=map_focus, map_chars=map_chars
+        )
+        final = self.answer
+        if chosen is not None:
+            await self._run_plan(chosen)
+            final = await self._synthesise(query_text) if synthesise else self.results_text()
+        checked = not self.halted and (chosen is None or before_gate is None or await before_gate())
+        passed = await self._gate(test_cmd, gate_follow_up) if checked else False
+        return self.finish(
+            goal=query_text, final=final, passed=passed, started=self.started, branch=self.branch
+        )
+
+    async def open_worktree(
+        self,
+        repo: Path,
+        *,
+        base: str | None,
+        branch: str | None,
+        detach: bool,
+        test_cmd: str | None,
+        test_steps: Sequence[str],
+        scope_tests: bool,
+        checkpoints: Mapping[str, Callable[[], Awaitable[bool]]] | None,
+        max_steps: int | None,
+        goal: str,
+        plan: Plan | None,
+        images: Sequence[Path],
+    ) -> Path:
+        """Step: the run's start (`execute_task`'s arguments of the same names): a given plan checked,
+        `run_start`, the worktree on its branch with the base committed, and the run's gate settings. Its
+        start time is `started` and its branch, as the report names it, `branch`."""
         self.step_limit = max_steps
         given = pin(plan) if plan is not None else None
         if given is not None:
             self.check_plan(given)
-        t0 = time.monotonic()
+        self.started = time.monotonic()
         self.images = list(images)
         self.sink.emit(
             "run_start",
-            goal=query_text,
+            goal=goal,
             k=1,
             repo=str(repo),
             orchestrator="studio",
             given_plan=given is not None,
         )
         name = None if detach else (branch or f"airlie/{self.run_dir.run_id}/studio")
+        self.branch = name or "(detached)"
         self.worktree = add_worktree(repo, self.run_dir.path / "studio", branch=name, start_point=base)
         seed_mypy_cache(repo, self.worktree)  # the gate's mypy runs warm from the roles' first run_tests on
         self.base_sha = commit_wip(self.worktree, "studio: base")
@@ -915,22 +1067,39 @@ class StudioOrchestrator:
         self.scope_base = self.base_sha if scope_tests else ""
         self.gate_memo = GateMemo()
         self.checkpoints, self.halted = dict(checkpoints or {}), False
+        return self.worktree
+
+    async def place(self, prepare: Callable[[Path], Awaitable[None]] | None) -> None:
+        """Step: `prepare` run on the worktree (`execute_task`'s), before the map and the plan."""
+        assert self.worktree is not None
         if prepare is not None:
             await prepare(self.worktree)
+
+    async def plan_phase(
+        self,
+        query_text: str,
+        *,
+        plan: Plan | None,
+        repo_map: bool,
+        map_focus: Sequence[str],
+        map_chars: int | None,
+    ) -> Plan | None:
+        """Step: the repo map (unless `repo_map` is False), then `plan` pinned, or the chief's. None when the
+        chief answered instead: its answer is `answer`."""
+        assert self.worktree is not None
         if repo_map:
-            self._prepare(self.worktree, test_cmd, map_focus, map_chars)
-        chosen: Plan | None = given
-        final = ""
-        if given is not None:
+            self._prepare(self.worktree, self.test_cmd, map_focus, map_chars)
+        self.answer = ""
+        if plan is not None:
+            given = pin(plan)
             self._emit_plan(given)
-        else:
-            chosen, final = await self._make_plan(query_text)
-        if chosen is not None:
-            await self._run_plan(chosen, test_cmd)
-            final = await self._synthesise(query_text, test_cmd) if synthesise else self._results_text()
-        checked = not self.halted and (chosen is None or before_gate is None or await before_gate())
-        passed = await self._gate(test_cmd, gate_follow_up) if checked else False
-        report = self._report(query_text, final, t0, name or "(detached)", passed)
+            return given
+        chosen, self.answer = await self._make_plan(query_text)
+        return chosen
+
+    def finish(self, *, goal: str, final: str, passed: bool | None, started: float, branch: str) -> RunReport:
+        """Step: the run's report (report.md) and `run_done`."""
+        report = self._report(goal, final, started, branch, passed)
         self.sink.emit(
             "run_done",
             ok=report.any_ok,
@@ -940,14 +1109,14 @@ class StudioOrchestrator:
         )
         return report
 
-    def _results_text(self) -> str:
+    def results_text(self) -> str:
         """The answer without a synthesis: every subtask's own closing text, in run order."""
         return "\n\n".join(
             f"### {r.subtask.id} ({r.role})\n{r.result.final_text if r.result else '(not run)'}"
             for r in self.runs.values()
         )
 
-    async def _synthesise(self, goal: str, test_cmd: str | None) -> str:
+    async def _synthesise(self, goal: str) -> str:
         """Synthesis rounds: a delegate runs one more subtask (its rejection is fed back); the last round
         forbids delegation so the run always ends with an answer."""
         rejected: str | None = None
@@ -970,7 +1139,7 @@ class StudioOrchestrator:
                     self.sink.emit("plan_error", attempt=round_no, error=rejected)
                     continue
                 rejected = None
-                await self._run_plan(Plan((), (sub,)), test_cmd)
+                await self._run_plan(Plan((), (sub,)))
                 continue
             final = parsed.answer if isinstance(parsed, Synthesis) else text
             open_q = list(parsed.open_questions) if isinstance(parsed, Synthesis) else []
@@ -982,42 +1151,70 @@ class StudioOrchestrator:
     async def _gate(self, test_cmd: str | None, follow_up: str | None) -> bool | None:
         """The final gate (`_tests_pass`); when it fails and `follow_up` names a subtask that finished, that
         subtask is sent its output once (gate-failed) and the gate runs again."""
-        passed, output = await self._tests_pass(test_cmd)
-        self.gate_output = output
+        passed = await self.gate_once(test_cmd)
+        if not self.gate_follows_up(passed, follow_up):
+            return passed
+        assert follow_up is not None
+        text = self.gate_tail(follow_up)
+        try:
+            text = await self.gate_advice(follow_up, text)
+        except WrongTest:
+            return False
+        await self.follow_up(follow_up, text)
+        passed = await self.gate_once(test_cmd)
+        self.settle_gate(passed, follow_up)
+        return passed
+
+    async def gate_once(self, test_cmd: str | None) -> bool | None:
+        """Step: one run of the final gate (`_tests_pass`); its output is `gate_output`."""
+        passed, self.gate_output = await self._tests_pass(test_cmd)
+        return passed
+
+    def gate_follows_up(self, passed: bool | None, follow_up: str | None) -> bool:
+        """Step: whether the gate's red sends subtask `follow_up` back. `test_wrong` is set from how it
+        stopped."""
         run = self.runs.get(follow_up) if follow_up is not None else None
         ended = run.result.stop_reason if run is not None and run.result is not None else None
         self.test_wrong = ended == "test_wrong"
         # only a subtask that finished is sent back: one cut off or broken has its own stop to report
-        if passed is not False or run is None or run.result is None or not run.result.ok:
-            return passed
-        assert follow_up is not None
+        return not (passed is not False or run is None or run.result is None or not run.result.ok)
+
+    def gate_tail(self, follow_up: str) -> str:
+        """Step: the red gate on record (`gate_failed`) and the gate-failed text for `follow_up`, with the end
+        of the gate's output."""
+        run = self.runs[follow_up]
+        output = self.gate_output
         # the end of the output is on record: a diagnosis is read from disk, after `gate_output` is gone
         self.sink.emit(
             "gate_failed", follow_up=follow_up, output="\n".join(output.strip().splitlines()[-60:])
         )
         tail = output[-self.cfg.tools.output_cap_chars :]
-        text = f"{self._steer('gate-failed', run)}\n\n```\n{tail}\n```"
-        if self.advisor is not None:
-            try:
-                # `text` carries the gate's tail already: it is not sent a second time as evidence
-                advice = await self.advisor.advise(
-                    "gate_retry", follow_up, run.role, text, kinds=("gate_fails",)
-                )
-            except Exception:  # noqa: BLE001 - an advisor that fails leaves gate-failed as it is, never a stop
-                advice = None
-            if advice and getattr(self.advisor, "last_category", None) == WRONG_TEST:
-                # no code fixes a wrong test: no fix round (31 minutes on 2026-10-28), the architect's re-plan
-                # gets the diagnosis with the gate's output
-                self.test_wrong = True
-                self.gate_output = with_advice(output, advice)
-                return False
-            text = with_advice(text, advice)
-        await self.follow_up(follow_up, text)
-        passed, self.gate_output = await self._tests_pass(test_cmd)
+        return f"{self._steer('gate-failed', run)}\n\n```\n{tail}\n```"
+
+    async def gate_advice(self, follow_up: str, text: str) -> str:
+        """Step: the advisor's word on the red gate: `text` with its advice. Raises WrongTest (with
+        `test_wrong` set and the advice in `gate_output`) when it says the test is wrong."""
+        if self.advisor is None:
+            return text
+        run = self.runs[follow_up]
+        try:
+            # `text` carries the gate's tail already: it is not sent a second time as evidence
+            advice = await self.advisor.advise("gate_retry", follow_up, run.role, text, kinds=("gate_fails",))
+        except Exception:  # noqa: BLE001 - an advisor that fails leaves gate-failed as it is, never a stop
+            advice = None
+        if advice and getattr(self.advisor, "last_category", None) == WRONG_TEST:
+            # no code fixes a wrong test: no fix round (31 minutes on 2026-10-28), the architect's re-plan
+            # gets the diagnosis with the gate's output
+            self.test_wrong = True
+            self.gate_output = with_advice(self.gate_output, advice)
+            raise WrongTest(advice)
+        return with_advice(text, advice)
+
+    def settle_gate(self, passed: bool | None, follow_up: str) -> None:
+        """Step: what came of the gate retry's advice, told to the advisor."""
         if self.advisor is not None:
             with contextlib.suppress(Exception):  # an outcome it cannot record does not touch the run
                 self.advisor.settle("gate_retry", "helped" if passed else "not_helped", subtask=follow_up)
-        return passed
 
     async def _tests_pass(self, test_cmd: str | None) -> tuple[bool | None, str]:
         """The test gate, and its output. The test command loads the code the roles wrote, so it runs as

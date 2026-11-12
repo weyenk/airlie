@@ -502,3 +502,19 @@ def test_a_blocking_nodes_loop_line_goes_back_to_a_node_upstream_of_it():
         "workflow w: node c: the loop line to 'a' goes to a node that does not reach this one through "
         "forward lines"
     ]
+
+
+def test_a_bundle_workflows_transient_output_needs_no_hand_back():
+    outer = wf(lay=NodeSpec(type="bundle", workflow="layer"))
+    inner = WorkflowSpec(
+        outputs=["built.{item}"],
+        nodes={
+            "a": check(
+                outputs={
+                    "built.{item}": "json",
+                    "build.coder.{item}": OutputSpec(format="bool", transient=True),
+                }
+            )
+        },
+    )
+    assert check_workflows({"story": outer, "layer": inner}) == []

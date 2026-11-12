@@ -1,8 +1,11 @@
 # The layer bundle, schema v2: what the story workflow's build_layers node runs once per layer. A layer built
 # or satisfied already runs none of its steps; layer 01's turn drafts every layer's package in one architect
 # conversation, which each layer's package step continues. Design:
-# docs/superpowers/specs/2026-11-08-nodes-are-config-design.md ("Bundles and isolation", D23). The drafts,
-# package and build steps are catalog operations until Part 2 splits them into model nodes.
+# docs/superpowers/specs/2026-11-08-nodes-are-config-design.md ("Bundles and isolation", D23). The drafts and
+# package steps are catalog operations until a later plan makes them model nodes. The build runs as one
+# check node per step over the layer's studio (`place` opens it; generic nodes Part 2, "The layer bundle"),
+# each step's word a transient `build.<step>.{item}` that the lines after it read: held for the run, never
+# saved, so a run stopped part-way builds the layer again from `place`.
 workflows:
   layer:
     inputs: [card, repo, story, layers, base, gate, agreement]
@@ -37,16 +40,88 @@ workflows:
         # satisfies the layer and its build is skipped
         outputs: {"package.{item}": json, "satisfied.{item}": json}
         to:
-          - {node: build, when: "package.{item} exists and not satisfied.{item} exists"}
+          - {node: place, when: "package.{item} exists and not satisfied.{item} exists"}
           - costed_layer
-      build:
+      place:  # the layer's studio run, supervisor, brief and worktree, the package placed: held for the run
         type: check
-        run: story.build_once
-        inputs: [card, repo, "package.{item}", story, layers]
-        outputs: {"built.{item}": json}
+        run: story.place_layer
+        inputs: [card, repo, story, layers, "package.{item}"]
+        outputs: {"studio.{item}": session}
+        to: [build]
+      build:  # the coder's turn
+        type: check
+        run: story.coder_turn
+        inputs: ["studio.{item}"]
+        outputs: {"build.coder.{item}": {format: json, transient: true}}
+        to: [done_check]
+      done_check:
+        type: check
+        run: story.done_check
+        inputs: ["studio.{item}", "build.coder.{item}"]
+        outputs: {"build.done_check.{item}": {format: json, transient: true}}
+        to: [review]
+      review:  # its `fix` says whether a fix round follows: changes asked with a blocker, and a round left
+        type: check
+        run: story.review_round
+        inputs: ["studio.{item}"]
+        outputs: {"build.review.{item}": {format: json, transient: true}}
         to:
-          - {node: package, loop: {max: story.layer_attempts, carry: feedback}}  # red: back to the architect
-          - costed_layer
+          - {node: fix, when: "build.review.{item}.fix"}
+          - {node: final_gate, when: "not build.review.{item}.fix"}
+      fix:
+        type: check
+        run: story.fix_turn
+        inputs: ["studio.{item}", "build.review.{item}"]
+        outputs: {"build.fix.{item}": {format: json, transient: true}}
+        to:
+          # back to the review after every fix (the review's own `fix` bounds the rounds). The line to the gate
+          # is a guard: it keeps the gate waiting while a fix runs, and never fires while loop.max is
+          # studio.review.rounds. Were it to fire (a lower max), the gate would follow a fix with no review,
+          # which the driver never does
+          - {node: review, when: "build.fix.{item} exists", loop: {max: studio.review.rounds}}
+          - final_gate
+      final_gate:  # its `follow_up`: red, and the coder finished (one cut off or broken asks no advice)
+        type: check
+        run: story.final_gate
+        inputs: ["studio.{item}"]
+        outputs: {"build.gate.{item}": {format: json, transient: true}}
+        to:
+          - {node: gate_advice, when: "build.gate.{item}.follow_up"}
+          - {node: outcome, when: "not build.gate.{item}.follow_up"}
+      gate_advice:  # the supervisor's word on the red gate: go, or the acceptance test is wrong
+        type: check
+        run: story.gate_advice
+        inputs: ["studio.{item}", "build.gate.{item}"]
+        outputs: {"build.advice.{item}": {format: json, transient: true}}
+        to:
+          - {node: follow_up, when: "build.advice.{item}.verdict == go"}
+          - {node: outcome, when: "build.advice.{item}.verdict == wrong_test"}
+      follow_up:  # the gate's output and the advice, in the coder's conversation
+        type: check
+        run: story.follow_up_turn
+        inputs: ["studio.{item}", "build.advice.{item}"]
+        outputs: {"build.follow_up.{item}": {format: json, transient: true}}
+        to: [regate]
+      regate:
+        type: check
+        run: story.regate
+        inputs: ["studio.{item}"]
+        outputs: {"build.regate.{item}": {format: json, transient: true}}
+        to: [outcome]
+      outcome:  # built, or red: back to the architect with the feedback (the last build stops the story)
+        type: check
+        run: story.layer_outcome
+        inputs: ["studio.{item}"]
+        outputs: {"build.outcome.{item}": {format: json, transient: true}}
+        to:
+          - {node: package, loop: {max: story.layer_attempts, carry: feedback}}
+          - squash
+      squash:
+        type: check
+        run: story.squash_layer
+        inputs: ["studio.{item}", "build.outcome.{item}"]
+        outputs: {"built.{item}": json}
+        to: [costed_layer]
       costed_layer:
         type: check
         run: story.costed

@@ -6,7 +6,7 @@ import pytest
 
 from airlie.config import ConfigError
 from airlie.flow import Composer, EndRun, MemoryStore, Registry, Sessions, Stalled, resolve_count
-from airlie.flow.spec import WorkflowSpec, check_workflows
+from airlie.flow.spec import WorkflowSpec, check_workflows, transient_heads
 from airlie.story.asking import StoryBlocked
 from tests.support.studio import cfg_for
 
@@ -174,6 +174,68 @@ async def test_a_loop_line_reruns_the_target_and_everything_downstream_and_clear
     assert all(c.store.done(n) for n in "abcd")
 
 
+async def test_a_loop_inside_another_loops_body_has_its_whole_bound_on_each_pass(tmp_path):
+    """b's line back to itself (at most 1 re-run) lies in the body c's loop sends back: each pass of the outer
+    loop runs b again with its own bound, as a layer's second build has review rounds of its own."""
+    calls = []
+
+    def run(n, c):
+        calls.append(c.node)
+        if c.node == "b":
+            return {"again": {"yes": calls.count("b") % 2 == 1}}
+        if c.node == "c" and calls.count("c") == 1:
+            return {"__fail__": "red"}
+        return {k: c.node for k in n.outputs}
+
+    wf = {
+        "w": {
+            "nodes": {
+                "a": chk(outputs={"x": "text"}, to=["b"]),
+                "b": chk(
+                    outputs={"again": "json"},
+                    to=[{"node": "b", "when": "again.yes", "loop": {"max": 1}}, {"node": "c"}],
+                ),
+                "c": chk(outputs={"z": "text"}, to=[{"node": "a", "loop": {"max": 1}}]),
+            }
+        }
+    }
+    c = composer(tmp_path, wf, {"check": check_that(run)})
+    assert await c.run("w") == "c"
+    assert calls == ["a", "b", "b", "c", "a", "b", "b", "c"]
+
+
+async def test_two_loops_into_one_node_keep_their_own_counts_and_the_run_ends_within_both_bounds(tmp_path):
+    """test and review both send code back (at most 2 re-runs each): neither firing resets the other's count,
+    so once both are spent the run ends, whatever the checks keep saying."""
+    calls = []
+
+    def run(n, c):
+        calls.append(c.node)
+        if c.node in ("test", "review"):
+            return {"__fail__": "again"}
+        return {k: c.node for k in n.outputs}
+
+    wf = {
+        "w": {
+            "nodes": {
+                "code": chk(outputs={"x": "text"}, to=["test"]),
+                "test": chk(
+                    outputs={"t": "text"},
+                    on_fail="continue",
+                    to=[{"node": "code", "loop": {"max": 2}}, "review"],
+                ),
+                "review": chk(
+                    outputs={"r": "text"}, on_fail="continue", to=[{"node": "code", "loop": {"max": 2}}]
+                ),
+            }
+        }
+    }
+    c = composer(tmp_path, wf, {"check": check_that(run)})
+    await asyncio.wait_for(c.run("w"), 5)
+    assert calls.count("code") == 5  # the first run, then two re-runs from each loop
+    assert len(calls) <= 15
+
+
 @pytest.mark.parametrize("on_fail", ["block", "continue"])
 async def test_a_loop_bound_spent_blocks_or_continues_by_on_fail(tmp_path, on_fail):
     calls = []
@@ -238,6 +300,12 @@ async def test_a_bundle_runs_once_per_item_and_writes_back_only_its_declared_out
     events = [(k, f["node"], f.get("item")) for k, f in store.events]
     assert events[0] == ("node_started", "lay", None) and events[-1][:2] == ("node_finished", "lay")
     assert ("node_skipped", "b", "01") in events
+    # a finish names its workflow and item as a start does: two nodes of one name are told apart
+    finished = [f for k, f in store.events if k == "node_finished" and f["node"] == "b"]
+    assert [(f["workflow"], f["item"], f["type"]) for f in finished] == [
+        ("layer", "02", "check"),
+        ("layer", "03", "check"),
+    ]
     assert store.done("lay/b@02") and store.done("lay/b@03") and store.done("lay")
 
     # a bundle node writing a name its workflow does not declare as an output is refused: by the check
@@ -566,6 +634,63 @@ async def test_a_node_of_transient_outputs_and_an_every_run_check_run_on_every_r
         "w"
     )
     assert not store.done("mark") and store.done("flag")
+
+
+def _layer_with_a_transient(*, to_flag, flag="flag.{item}"):
+    """A story over one layer whose bundle workflow writes a transient output it does not hand back."""
+    return {
+        "story": {
+            "inputs": ["card", "layers"],
+            "nodes": {"lay": {"type": "bundle", "workflow": "layer", "each": "layers", "inputs": ["layers"]}},
+        },
+        "layer": {
+            "inputs": ["layers"],
+            "outputs": ["built.{item}"],
+            "nodes": {
+                "work": chk(outputs={"built.{item}": "json"}, to=["check"]),
+                "check": chk(outputs={flag: {"format": "bool", "transient": True}}, to=to_flag),
+                "fix": chk(),
+            },
+        },
+    }
+
+
+async def test_a_transient_output_written_inside_a_bundle_item_is_never_saved(tmp_path):
+    from airlie.flow import StateStore
+    from airlie.story.state import StoryState
+    from tests.support.git import repo_with_marker_tests
+    from tests.support.story import text_card
+
+    seen = []
+    wf = _layer_with_a_transient(to_flag=[{"node": "fix", "when": "flag.{item} exists"}])
+    specs = {n: WorkflowSpec.model_validate(w) for n, w in wf.items()}
+    assert check_workflows(specs) == []
+    repo = repo_with_marker_tests(tmp_path)
+    st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    store = StateStore(st, loose={"card": "c", "layers": [{}]}, transient=transient_heads(specs))
+    await composer(tmp_path, wf, {"check": outputs(seen)}, store=store).run("story")
+    assert seen == ["work", "check", "fix"]  # the condition read the transient the check wrote
+    assert store.get("flag.01") == "check"
+    saved = json.loads((tmp_path / "AIR-1" / "state.json").read_text())
+    assert "flag" not in saved.get("artifacts", {}) and "flag.01" not in json.dumps(saved)
+
+
+async def test_a_loop_inside_a_bundle_clears_its_transient_outputs(tmp_path):
+    held = []
+
+    def run(n, c):
+        if n_is_work(n):
+            held.append(c.store.has("flag.01"))
+        return {k: c.node for k in n.outputs}
+
+    def n_is_work(n):
+        return "built.{item}" in n.outputs
+
+    wf = _layer_with_a_transient(to_flag=[{"node": "work", "when": "flag.{item} exists", "loop": {"max": 1}}])
+    store = MemoryStore({"card": "c", "layers": [{}]})
+    await composer(tmp_path, wf, {"check": check_that(run)}, store=store).run("story")
+    assert held == [False, False]  # the send-back cleared the flag before work ran again
+    assert store.get("flag.01") == "check"  # and check wrote it afresh
 
 
 # ---- the node step: events, outputs, sessions, failures, the run's end ----

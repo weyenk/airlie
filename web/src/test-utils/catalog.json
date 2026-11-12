@@ -186,13 +186,216 @@
     },
     {
       "name": "story.build_once",
-      "title": "Build the layer once from its package (interim: Part 2 makes it a write node)",
+      "title": "Build the layer once from its package, in one node (a card on an old snapshot)",
       "inputs": [
         "card",
         "repo",
         "package.{item}",
         "story",
         "layers"
+      ],
+      "outputs": [
+        "built.{item}"
+      ],
+      "formats": {
+        "built.{item}": "json"
+      },
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.place_layer",
+      "title": "Open the layer's studio: its run, supervisor, brief and worktree, with the package placed",
+      "inputs": [
+        "card",
+        "repo",
+        "story",
+        "layers",
+        "package.{item}"
+      ],
+      "outputs": [
+        "studio.{item}"
+      ],
+      "formats": {
+        "studio.{item}": "session"
+      },
+      "transient": [],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.coder_turn",
+      "title": "The coder's turn on the layer: how it stopped, and whether it finished",
+      "inputs": [
+        "studio.{item}"
+      ],
+      "outputs": [
+        "build.coder.{item}"
+      ],
+      "formats": {
+        "build.coder.{item}": "json"
+      },
+      "transient": [
+        "build.coder.{item}"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.done_check",
+      "title": "Ask the coder whether the layer is done (studio.done_check)",
+      "inputs": [
+        "studio.{item}",
+        "build.coder.{item}"
+      ],
+      "outputs": [
+        "build.done_check.{item}"
+      ],
+      "formats": {
+        "build.done_check.{item}": "json"
+      },
+      "transient": [
+        "build.done_check.{item}"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.review_round",
+      "title": "Review the layer's change: the verdict, and whether a fix round follows (one left, a blocker)",
+      "inputs": [
+        "studio.{item}"
+      ],
+      "outputs": [
+        "build.review.{item}"
+      ],
+      "formats": {
+        "build.review.{item}": "json"
+      },
+      "transient": [
+        "build.review.{item}"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.fix_turn",
+      "title": "The coder's fix round for the review's blocking findings",
+      "inputs": [
+        "studio.{item}",
+        "build.review.{item}"
+      ],
+      "outputs": [
+        "build.fix.{item}"
+      ],
+      "formats": {
+        "build.fix.{item}": "json"
+      },
+      "transient": [
+        "build.fix.{item}"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.final_gate",
+      "title": "Run the whole gate on the layer: whether it passed, and whether its red goes back to the coder",
+      "inputs": [
+        "studio.{item}"
+      ],
+      "outputs": [
+        "build.gate.{item}"
+      ],
+      "formats": {
+        "build.gate.{item}": "json"
+      },
+      "transient": [
+        "build.gate.{item}"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.gate_advice",
+      "title": "Put the red gate on record and ask the supervisor: go (a follow-up), or the test is wrong",
+      "inputs": [
+        "studio.{item}",
+        "build.gate.{item}"
+      ],
+      "outputs": [
+        "build.advice.{item}"
+      ],
+      "formats": {
+        "build.advice.{item}": "json"
+      },
+      "transient": [
+        "build.advice.{item}"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.follow_up_turn",
+      "title": "Send the coder the red gate's output with the advice, in its conversation",
+      "inputs": [
+        "studio.{item}",
+        "build.advice.{item}"
+      ],
+      "outputs": [
+        "build.follow_up.{item}"
+      ],
+      "formats": {
+        "build.follow_up.{item}": "json"
+      },
+      "transient": [
+        "build.follow_up.{item}"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.regate",
+      "title": "Run the whole gate again after the follow-up, and tell the supervisor what came of its advice",
+      "inputs": [
+        "studio.{item}"
+      ],
+      "outputs": [
+        "build.regate.{item}"
+      ],
+      "formats": {
+        "build.regate.{item}": "json"
+      },
+      "transient": [
+        "build.regate.{item}"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.layer_outcome",
+      "title": "End the layer's studio run: built, or back to the architect (the last build stops the story)",
+      "inputs": [
+        "studio.{item}"
+      ],
+      "outputs": [
+        "build.outcome.{item}"
+      ],
+      "formats": {
+        "build.outcome.{item}": "json"
+      },
+      "transient": [
+        "build.outcome.{item}"
+      ],
+      "every_run": false,
+      "args": []
+    },
+    {
+      "name": "story.squash_layer",
+      "title": "Squash the built layer to one commit on its branch and record it",
+      "inputs": [
+        "studio.{item}",
+        "build.outcome.{item}"
       ],
       "outputs": [
         "built.{item}"

@@ -409,3 +409,15 @@ The Vue builder reads and writes the v2 files. What differs from the design text
 - **Adopt.** The story screen and the card modal offer "Use the current workflow", with a confirm.
 - **The run view** drops the `group` bracket (the server never emits it); a bundle's per-item lanes draw as the
   layer lanes.
+
+## As built (generic nodes Part 2, Task 5, 2026-11-12)
+
+- **Nested loops.** When a loop line fires, a loop line *nested in the body it sends back* has its count
+  cleared: its source is among the nodes sent back and its target is strictly downstream of the firing
+  loop's target. So the inner loop has its whole bound on every pass of the outer one (the layer's review
+  rounds, `fix → review`, start afresh on each build that `outcome → package` sends back, as the driver's
+  rounds do). A loop into the same target (the firing one, or a sibling, such as a red test and a review both
+  sending the coder back) keeps its count, so every bound is still spent and the run ends.
+- **Node events.** `node_finished` carries `workflow` and `item`, as `node_started` and `node_skipped` do; the
+  run view keys a finish by them, and falls back to the latest open start of its name only for a finish
+  from before they were carried.

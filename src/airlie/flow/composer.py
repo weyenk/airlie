@@ -61,7 +61,7 @@ from pydantic import BaseModel
 
 from airlie.flow import conditions
 from airlie.flow.prompt_files import FEEDBACK
-from airlie.flow.spec import Line, NodeSpec, NodeType, WorkflowSpec
+from airlie.flow.spec import Line, NodeSpec, NodeType, WorkflowSpec, transient_heads
 from airlie.flow.store import MEMORY, BundleStore, Sessions, Store
 from airlie.prompts.hub import PromptText
 
@@ -531,7 +531,7 @@ class _Run:
 
     def finished(self, name: str, outcome: str, started: float) -> None:
         ms = int((time.monotonic() - started) * 1000)
-        self.store.emit("node_finished", node=name, type=self.nodes[name].type, outcome=outcome, ms=ms)
+        self.store.emit("node_finished", **self.fields(name), outcome=outcome, ms=ms)
 
     async def bundle_items(self, name: str, node: NodeSpec) -> Mapping[str, Any]:
         assert node.workflow is not None  # spec.py: a bundle needs workflow
@@ -539,8 +539,11 @@ class _Run:
         items = self.items_of(node)
         scope = f"{self.scope}{name}/"
         self.items_run[name] = items
+        transient = transient_heads(self.c.workflows or self.c.cfg.workflows)
         for item in items:
-            view = BundleStore(self.store, workflow=node.workflow, outputs=spec.outputs, item=item)
+            view = BundleStore(
+                self.store, workflow=node.workflow, outputs=spec.outputs, item=item, transient=transient
+            )
             await _Run(self.c, node.workflow, item, view, until=None, bundle=True, scope=scope).go()
         return {}
 
@@ -592,6 +595,7 @@ class _Run:
                 name, line, result
             ):
                 again = self.readers({line.node} | self.downstream(line.node))
+                self.reset_loops(again, target=line.node)
                 if name not in again:
                     self.state[name] = "finished"
                     self.fire(name)
@@ -614,6 +618,17 @@ class _Run:
         if line.loop.carry is not None and line.loop.carry in result:
             self.store.put(self.feedback_name(line.node), result[line.loop.carry])
         return True
+
+    def reset_loops(self, names: set[str], *, target: str) -> None:
+        """A loop nested in the body a loop to `target` sends back (`names`): its source among them, its own
+        target strictly downstream of `target`. Its re-runs are counted afresh, so it has its whole bound on
+        each pass, as a layer's second build has review rounds of its own. A loop into `target` itself (the
+        one firing, or a sibling such as a red test and a review both going back to the coder) keeps its
+        count: every bound is still spent in the end, and the run ends."""
+        scope, below = f"{self.scope}{self.workflow}", self.downstream(target)
+        for (src, _), ln in self.lines.items():
+            if ln.loop is not None and src in names and ln.node != target and ln.node in below:
+                self.c.loops.pop((scope, self.item, src, ln.node), None)
 
     def readers(self, names: set[str]) -> set[str]:
         """`names` and every node that has run (or is running) and reads, among its inputs, an output of

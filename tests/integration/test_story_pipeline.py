@@ -47,6 +47,7 @@ from airlie.story.state import STAGES, StoryState
 from airlie.teams.protocol import TeamResult
 from airlie.teams.worktree import add_worktree
 from airlie.topology.studio import StudioOrchestrator
+from airlie.topology.studio_plan import Plan
 from tests.support.git import git, repo_with_marker_tests
 from tests.support.story import (
     AGREE_V,
@@ -162,12 +163,13 @@ async def test_each_layer_build_records_its_brief_event_and_runs_without_the_rep
 ) -> None:
     """Brief recipes (2026-11-01): the coder's brief is the layer-build recipe's, its size per section on
     record before the run starts; the brief shows the layer's files, so the studio builds no repo map."""
-    tasks: list[dict[str, Any]] = []
+    builds: list[dict[str, Any]] = []
 
     class Records(StudioOrchestrator):
-        async def execute_task(self, query_text: str, **kwargs: Any) -> RunReport:
-            tasks.append(kwargs)
-            return await super().execute_task(query_text, **kwargs)
+        async def plan_phase(self, query_text: str, *, plan: Plan | None, **kwargs: Any) -> Plan | None:
+            if plan is not None and [s.id for s in plan.subtasks] == ["build"]:  # a layer's build
+                builds.append(kwargs)
+            return await super().plan_phase(query_text, plan=plan, **kwargs)
 
     repo = repo_with_marker_tests(tmp_path)
     st = await pipeline(tmp_path, repo, happy_engine(), studio=Records).run(text_card("avatars"))
@@ -182,9 +184,8 @@ async def test_each_layer_build_records_its_brief_event_and_runs_without_the_rep
         assert e["chars"] == sum(s["chars"] for s in e["sections"]) + joins
     names = [e["kind"] for e in kinds_all(events)]
     assert names.index("brief") < names.index("layer_built")
-    builds = [t for t in tasks if t.get("gate_follow_up") == "build"]
     assert len(builds) == 2 and all(t["repo_map"] is False for t in builds)
-    assert all("map_focus" not in t for t in builds)
+    assert all(t["map_focus"] == () and t["map_chars"] is None for t in builds)
 
 
 async def test_only_the_layer_planning_starts_with_a_repository_map_and_its_map_is_capped(
@@ -196,8 +197,7 @@ async def test_only_the_layer_planning_starts_with_a_repository_map_and_its_map_
 
     class Records(StudioOrchestrator):
         async def execute_task(self, query_text: str, **kwargs: Any) -> RunReport:
-            if kwargs.get("gate_follow_up") != "build":
-                asked.setdefault(query_text.split(":")[0], kwargs)
+            asked.setdefault(query_text.split(":")[0], kwargs)  # only asks: a layer builds by its steps
             return await super().execute_task(query_text, **kwargs)
 
     repo = repo_with_marker_tests(tmp_path)
@@ -340,7 +340,7 @@ class DownBoard(NullBoard):
 class GitFails(StudioOrchestrator):
     """A studio whose git fails the way a command against a remote with credentials in its URL does."""
 
-    async def execute_task(self, query_text: str, **kwargs: Any) -> RunReport:
+    async def open_worktree(self, repo: Path, **kwargs: Any) -> Path:
         url = "https://user:secret@example.com/o/r.git"
         raise subprocess.CalledProcessError(
             128, ["git", "ls-remote", url], stderr=f"fatal: unable to access '{url}/': Could not resolve host"
@@ -350,7 +350,7 @@ class GitFails(StudioOrchestrator):
 class Crashes(StudioOrchestrator):
     """A studio that dies after it made its worktree."""
 
-    async def execute_task(self, query_text: str, *, repo: Path, **kwargs: Any) -> RunReport:
+    async def open_worktree(self, repo: Path, **kwargs: Any) -> Path:
         add_worktree(repo, self.run_dir.path / "studio", branch=None)
         raise RuntimeError("the engine fell over")
 
@@ -359,22 +359,23 @@ def studio_failing_from(
     n: int, act: Callable[[StudioOrchestrator, dict[str, Any]], Awaitable[None]]
 ) -> type[StudioOrchestrator]:
     """A studio that runs its first `n` tasks for real and, from the next, does `act` instead (after it made
-    the worktree and branch the task would have made, as a task that dies half way has)."""
+    the worktree and branch the task would have made, as a task that dies half way has). A task is an ask's
+    `execute_task` or a layer's build: each opens its worktree once."""
     calls = 0
 
     class FailsFrom(StudioOrchestrator):
-        async def execute_task(self, query_text: str, **kwargs: Any) -> RunReport:
+        async def open_worktree(self, repo: Path, **kwargs: Any) -> Path:
             nonlocal calls
             calls += 1
             if calls <= n:
-                return await super().execute_task(query_text, **kwargs)
+                return await super().open_worktree(repo, **kwargs)
             add_worktree(
-                kwargs["repo"],
+                repo,
                 self.run_dir.path / "studio",
-                branch=kwargs.get("branch"),
-                start_point=kwargs.get("base"),
+                branch=None if kwargs["detach"] else kwargs["branch"],
+                start_point=kwargs["base"],
             )
-            await act(self, kwargs)
+            await act(self, {"repo": repo, **kwargs})
             raise AssertionError("act must raise or wait")
 
     return FailsFrom

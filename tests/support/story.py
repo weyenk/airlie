@@ -201,6 +201,13 @@ def pipeline(
     )
 
 
+def neutral(text: str, root: Path, sha: str) -> Any:
+    """`text` (JSON) with this run's directory and base commit spelled the same for every run."""
+    return json.loads(
+        text.replace(str(root.resolve()), "<root>").replace(str(root), "<root>").replace(sha, "<sha>")
+    )
+
+
 def kinds_all(path: Path) -> list[dict[str, Any]]:
     return [json.loads(x) for x in path.read_text().splitlines()]
 

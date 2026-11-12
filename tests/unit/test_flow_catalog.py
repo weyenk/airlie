@@ -148,6 +148,19 @@ DECLARED: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "story.finish": (("card",), ()),
     "story.ready_package": (("card", "repo", "story", "layers"), ("package.{item}", "satisfied.{item}")),
     "story.build_once": (("card", "repo", "package.{item}", "story", "layers"), ("built.{item}",)),
+    # the layer's build as nodes over one layer studio (Part 2): the session `place` opens, then a
+    # transient output per step that the next lines' conditions read
+    "story.place_layer": (("card", "repo", "story", "layers", "package.{item}"), ("studio.{item}",)),
+    "story.coder_turn": (("studio.{item}",), ("build.coder.{item}",)),
+    "story.done_check": (("studio.{item}", "build.coder.{item}"), ("build.done_check.{item}",)),
+    "story.review_round": (("studio.{item}",), ("build.review.{item}",)),
+    "story.fix_turn": (("studio.{item}", "build.review.{item}"), ("build.fix.{item}",)),
+    "story.final_gate": (("studio.{item}",), ("build.gate.{item}",)),
+    "story.gate_advice": (("studio.{item}", "build.gate.{item}"), ("build.advice.{item}",)),
+    "story.follow_up_turn": (("studio.{item}", "build.advice.{item}"), ("build.follow_up.{item}",)),
+    "story.regate": (("studio.{item}",), ("build.regate.{item}",)),
+    "story.layer_outcome": (("studio.{item}",), ("build.outcome.{item}",)),
+    "story.squash_layer": (("studio.{item}", "build.outcome.{item}"), ("built.{item}",)),
     # the computed inputs of the briefs (D13)
     "story.repo_guide": (("repo", "story", "base"), ("guide",)),
     "story.scope_guide": (("repo", "base", "layers"), ("guide",)),
@@ -228,13 +241,18 @@ COMPUTED = {
     "story.lint_note": ("lint",),
 }
 """The briefs' computed inputs (D13): transient, the value of the run that reads them."""
+BUILD_STEPS = {
+    name: outs for name, (_, outs) in DECLARED.items() if outs and all(o.startswith("build.") for o in outs)
+}
+"""The layer build's steps: each output transient, the step's word for the lines after it."""
 EVERY_RUN = {"story.intake", "story.costed", "story.planned", "story.build_done", "story.layer_start"}
 """The output-less checks the driver makes on every pass, never recorded done."""
 
 
 def test_the_computed_inputs_and_bools_are_transient_and_the_marks_run_every_run() -> None:
     transient = {c.name: c.transient for c in STORY_CATALOG if c.transient}
-    assert transient == {**COMPUTED, **{f"story.{p}": (p,) for p in PREDICATES}}
+    assert transient == {**COMPUTED, **BUILD_STEPS, **{f"story.{p}": (p,) for p in PREDICATES}}
+    assert len(BUILD_STEPS) == 9  # place and squash keep theirs: a session, the layer's built record
     assert {c.name for c in STORY_CATALOG if c.every_run} == EVERY_RUN
 
 
@@ -518,6 +536,19 @@ THROUGH_THE_PIPELINE = {
     # the card's block is read only while no story is stored (here one is)
     "story.is_story_card": {"card"},
     "story.not_story_card": {"card"},
+    # the layer's build: `open_layer` reads the pipeline's repo; the layer's studio is a session
+    # (`ctx.sessions`), never read from the store; an input that names the step before only orders the node
+    "story.place_layer": {"repo"},
+    "story.coder_turn": {"studio.01"},
+    "story.done_check": {"studio.01", "build.coder.01"},
+    "story.review_round": {"studio.01"},
+    "story.fix_turn": {"studio.01", "build.review.01"},
+    "story.final_gate": {"studio.01"},
+    "story.gate_advice": {"studio.01", "build.gate.01"},
+    "story.follow_up_turn": {"studio.01", "build.advice.01"},
+    "story.regate": {"studio.01"},
+    "story.layer_outcome": {"studio.01"},
+    "story.squash_layer": {"studio.01", "build.outcome.01"},
 }
 
 
@@ -562,6 +593,26 @@ async def test_every_story_check_reads_only_what_it_declares(
     monkeypatch.setattr(pipe, "_build_once", build)
     monkeypatch.setattr(pipe, "_story_card", lambda card: None)
     monkeypatch.setattr("airlie.story.flow.Package", SimpleNamespace(from_dict=lambda d: d))
+
+    async def step(*args: Any) -> dict[str, Any]:
+        return {"ran": True}
+
+    async def squashed(pipe: Any, ls: Any, st: StoryState, *args: Any) -> None:
+        st.built["01"] = {"sha": "x"}
+
+    async def closed() -> None:
+        return None
+
+    studio = SimpleNamespace(nn="01", card=None, story=None, layers=None, close=closed)
+
+    async def opened(*args: Any) -> Any:
+        return studio
+
+    for name in ("coder", "done_check", "review", "fix", "final_gate", "gate_advice", "follow_up", "regate"):
+        monkeypatch.setattr(f"airlie.story.flow.{name}_step", step)
+    monkeypatch.setattr("airlie.story.flow.open_layer", opened)
+    monkeypatch.setattr("airlie.story.flow.layer_outcome", nothing)
+    monkeypatch.setattr("airlie.story.flow.squash_layer", squashed)
     values = {
         **run.planned(),
         "card": run.card,
@@ -582,6 +633,7 @@ async def test_every_story_check_reads_only_what_it_declares(
         ctx = run.ctx({}, item="01")
         ctx.store = store
         ctx.held = contextlib.AsyncExitStack()
+        ctx.sessions.put("studio.01", studio)  # what `place` held for the steps after it
         try:
             await call(c.name, ctx, **args.get(c.name, {}))
         except Undeclared as e:
@@ -589,6 +641,27 @@ async def test_every_story_check_reads_only_what_it_declares(
         if left := allowed - store.read:
             unread[c.name] = left
     assert unread == THROUGH_THE_PIPELINE
+
+
+async def test_a_squashed_layer_closes_its_studio_and_the_run_lets_it_go(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After the squash nothing reads the layer's studio: it is closed and leaves the run's sessions, so a
+    story's built layers are not all held until its run ends."""
+    run = Run(tmp_path)
+    closed: list[str] = []
+
+    async def close() -> None:
+        closed.append("closed")
+
+    async def squashed(pipe: Any, ls: Any, st: StoryState, *args: Any) -> None:
+        st.built["01"] = {"sha": "x"}
+
+    monkeypatch.setattr("airlie.story.flow.squash_layer", squashed)
+    ctx = run.ctx({}, item="01")
+    ctx.sessions.put("studio.01", SimpleNamespace(nn="01", card=None, story=None, layers=None, close=close))
+    assert await call("story.squash_layer", ctx) == {"built.{item}": {"sha": "x"}}
+    assert closed == ["closed"] and ctx.sessions.get("studio.01") is None
 
 
 async def test_a_missing_input_names_the_node_the_check_and_the_input(tmp_path: Path) -> None:

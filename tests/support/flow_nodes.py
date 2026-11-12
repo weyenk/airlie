@@ -40,13 +40,22 @@ def ev(
     ts: float, kind: str, node: str, type: str, workflow: str, item: str | None = None, **f: Any
 ) -> dict[str, Any]:
     e: dict[str, Any] = {"ts": ts, "run_id": "r1", "kind": kind, "node": node, "type": type}
-    if kind != "node_finished":  # the composer's finish carries neither the workflow nor the item
+    if workflow:  # a finish from before the composer named its workflow and item carries neither
         e.update(workflow=workflow, item=item)
     return {**e, **f}
 
 
-def done(ts: float, node: str, type: str, outcome: str = "done", ms: int = 1000) -> dict[str, Any]:
-    return ev(ts, "node_finished", node, type, "", outcome=outcome, ms=ms)
+def done(
+    ts: float,
+    node: str,
+    type: str,
+    outcome: str = "done",
+    ms: int = 1000,
+    *,
+    workflow: str = "",
+    item: str | None = None,
+) -> dict[str, Any]:
+    return ev(ts, "node_finished", node, type, workflow, item, outcome=outcome, ms=ms)
 
 
 EVENTS = [

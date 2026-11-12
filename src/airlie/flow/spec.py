@@ -419,14 +419,18 @@ def _reaches(w: WorkflowSpec, start: str, goal: str) -> bool:
 
 
 def _handed_back(w: WorkflowSpec, n: NodeSpec) -> list[str]:
-    """An output of a node in a bundle's workflow that the store keeps (not a memory head, not a session) and
-    that the workflow's `outputs` do not list: the bundle writes only those back (`BundleStore`)."""
+    """An output of a node in a bundle's workflow that the store keeps (not a memory head, not a session, not
+    transient: the run's memory holds those) and that the workflow's `outputs` do not list: the bundle writes
+    only those back (`BundleStore`)."""
     from airlie.flow.store import MEMORY  # the store imports this module
 
     return [
         f"output '{name}' is not among the bundle workflow's outputs {_listed(w.outputs, sort=False)}"
         for name, out in n.outputs.items()
-        if name.partition(".")[0] not in MEMORY and out.format != "session" and name not in w.outputs
+        if name.partition(".")[0] not in MEMORY
+        and out.format != "session"
+        and not out.transient
+        and name not in w.outputs
     ]
 
 

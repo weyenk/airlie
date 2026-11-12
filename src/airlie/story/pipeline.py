@@ -47,13 +47,10 @@ from airlie.story.amigos import (
 )
 from airlie.story.asking import ASK_LAYER, Asker, MapUse, Say, StoryBlocked, StudioFactory, Writes
 from airlie.story.board import Board, Card, Column, note
-from airlie.story.brief_recipe import BriefInputs, assemble, load_recipe
 from airlie.story.briefs import (
     built_so_far,
     criteria_revision_brief,
     critic_brief,
-    layer_goal,
-    layer_plan,
     layer_size_brief,
     layer_sources,
     next_package_brief,
@@ -67,9 +64,8 @@ from airlie.story.briefs import (
 )
 from airlie.story.budgets import StageMeter, check, run_dir_of
 from airlie.story.cleanup import draft_ref, drop_draft_refs
-from airlie.story.context import CHARS_PER_TOKEN, guide_budget, named_paths, repo_guide
+from airlie.story.context import guide_budget, named_paths, repo_guide
 from airlie.story.diagnosis import (
-    GATE_TAIL_LINES,
     Classified,
     Diagnosis,
     Pack,
@@ -110,6 +106,18 @@ from airlie.story.harvest import (
     place_reply_tests,
     place_tests,
     rebase_draft,
+)
+from airlie.story.layer_build import (
+    coder_step,
+    done_check_step,
+    final_gate_step,
+    fix_step,
+    follow_up_step,
+    gate_advice_step,
+    layer_outcome,
+    open_layer,
+    regate_step,
+    review_step,
 )
 from airlie.story.layer_checks import Finding, Said, checks_for
 from airlie.story.lessons import Lesson, LessonsStore
@@ -156,7 +164,6 @@ from airlie.supervisor.triage import triage_for
 from airlie.teams.protocol import TeamResult, cut_off_text
 from airlie.teams.worktree import (
     add_worktree,
-    changed_files,
     checkout_worktree,
     commit_wip,
     delete_branch,
@@ -167,7 +174,6 @@ from airlie.teams.worktree import (
     read_blob,
     remove_worktree,
     rev_parse,
-    squash_since,
 )
 from airlie.tools import ToolContext, ToolRegistry
 from airlie.topology.studio import SKILL_QUESTION, StudioOrchestrator
@@ -1620,118 +1626,27 @@ class StoryPipeline:
         one commit, recorded); else, when this was not the last build, what to tell the architect for the
         next package (the worktree and branch are removed so the layer's branch name is free again); on the
         last build, StoryBlocked. `where` is the layer's base ref and commit, its branch and its commit's
-        author."""
-        base_ref, base_sha, branch, author = where
-        nn, total = f"{i + 1:02d}", f"{len(layers):02d}"
-        layer = layers[i]
-        last = attempt >= self.s.layer_attempts
-        orch = self.studio()
-        self._layer_base = base_sha
-        wt = orch.run_dir.path / "studio"
-        st.runs.append(orch.run_dir.run_id)  # on record before it starts: a run that dies is still named
-        if rev_parse(self.repo, f"refs/heads/{branch}") is None:
-            # only a branch this attempt makes is recorded: a resume deletes what the attempt left, and a
-            # branch that was already there (git then refuses to make it) is not airlie's to delete
-            st.attempt = {"layer": nn, "branch": branch, "worktree": str(wt)}
-        st.save()
-        st.emit(
-            "layer_start",
-            layer=nn,
-            branch=branch,
-            base=base_ref,
-            base_sha=base_sha,
-            studio_run=orch.run_dir.run_id,
-            attempt=attempt,
-        )
-        sup = self._supervisor(st, card, layer, nn, orch, wt, base_sha)
-        orch.advisor = sup  # the gate retry and the repeat guard, in the studio and the team
+        author.
+
+        A wrapper over `layer_build` and the studio's steps, in the order `execute_task` runs them for a
+        one-subtask plan (the layer bundle's nodes call the same steps one at a time): the coder turn, the
+        done-check, the review rounds with a fix after each that asks for one, the subtask closed, the final
+        gate and, when it is red and the coder finished, the gate-failed follow-up (with the supervisor's
+        advice) and the gate again."""
+        ls = await open_layer(self, st, card, story, layers, i, package, where, built, attempt)
         try:
-            chars = self.cfg.roles[self.s.build_role].max_context * CHARS_PER_TOKEN
-            inputs = BriefInputs(
-                story, layers, i, package, self.repo, base_sha, chars, built=built, survey=st.survey or ""
-            )
-            brief = assemble("layer-build", load_recipe("layer-build"), inputs)
-            st.emit("brief", brief="layer-build", layer=nn, chars=len(brief.text), sections=brief.sizes())
-            plan = layer_plan(brief.text, build_role=self.s.build_role)
-            async with decoding(
-                self.stories_dir, orch.run_dir.path
-            ):  # the planning lane waits for the gap after
-                report = await orch.execute_task(
-                    layer_goal(story, layers, i),
-                    repo=self.repo,
-                    test_cmd=self.test_cmd,
-                    test_steps=self.commands,
-                    plan=plan,
-                    base=base_sha,
-                    branch=branch,
-                    synthesise=False,
-                    scope_tests=True,
-                    gate_follow_up="build",
-                    repo_map=False,  # the brief shows the layer's files (brief recipes, 2026-11-01)
-                    prepare=self._place(st, orch, package, nn),
-                )
-            commit_wip(wt, f"studio: {branch} (final)")
-            cut, kept = _cut_off(orch), _kept(wt, branch)
-            ran = orch.runs.get("build")
-            coder = ran.result if ran is not None else None
-            builds = f"{attempt} build{'' if attempt == 1 else 's'}"
-            stopped = "" if attempt == 1 and last else f" after {builds}"
-            failure: tuple[str, str, str, str] | None = None  # the ending, why, the reason, the evidence kind
-            if not changed_files(wt, orch.lock_commit):
-                reason = f"layer {nn} ({layer.title}) changed nothing{stopped}{cut}{kept}"
-                failure = ("gate_red", "changed nothing", reason, "changed_nothing")
-            elif report.tests.get("studio") is not True:
-                reason = (
-                    f"layer {nn} ({layer.title}): `{self._shown_cmd}` fails on {branch}{stopped}{cut}{kept}"
-                )
-                failure = (_ending(coder), _gate_detail(orch.gate_output), reason, "gate_fails")
-            if failure is not None:
-                ending, detail, reason, kind = failure
-                if kind == "gate_fails":  # on record for the block's diagnosis, which is read from disk
-                    st.emit(
-                        "gate_tail",
-                        layer=nn,
-                        studio_run=orch.run_dir.run_id,
-                        output=_redact_urls(
-                            "\n".join(orch.gate_output.strip().splitlines()[-GATE_TAIL_LINES:])
-                        ),
-                    )
-                self._lesson(st, nn, layer, package, coder, ending, detail)
-                if last:
-                    raise StoryBlocked(reason)
-                st.emit("layer_replanned", layer=nn, attempt=attempt, why=ending, detail=detail)
-                told = self._replan_feedback(st, orch, nn, coder)
-                remove_worktree(self.repo, wt)
-                delete_branch(self.repo, branch)
-                st.attempt = None
-                st.save()
-                return told
-            sha = squash_since(
-                wt,
-                base_sha,
-                f"{story.title}: {layer.title} ({nn}/{total})",
-                author=author,
-                trailers=self._trailers(card, nn, total, orch.run_dir.run_id, package),
-            )
-            remove_worktree(self.repo, wt)
-            st.built[nn] = {
-                "branch": branch,
-                "sha": sha,
-                "run_id": report.run_id,
-                "subtasks": _rows(orch),
-                "gate": self._shown_cmd,  # what this layer passed, for its PR: a resume can pass another
-                "package": package.to_dict(),
-                "tests": list(package.test_ids),
-            }
-            st.attempt = None
-            st.save()
-            st.emit("layer_built", layer=nn, branch=branch, sha=sha)
-            note_text = f"layer {nn}/{total} built: {layer.title} (`{self._shown_cmd}` passes)"
-            await self.board.comment(card, note(note_text), role=self.s.build_role)
-            return None
+            await coder_step(ls)
+            await done_check_step(ls)
+            while (await review_step(ls))["fix"]:
+                await fix_step(ls)
+            # a red gate on a coder that finished asks the advice; its `go` sends the follow-up, then the gate
+            gated = await final_gate_step(self, ls)
+            if gated["follow_up"] and (await gate_advice_step(ls))["verdict"] == "go":
+                await follow_up_step(ls)
+                await regate_step(self, ls)
+            return await layer_outcome(self, ls, st, card, story, layers, squash=True)
         finally:
-            if sup is not None:
-                sup.close()  # after every subtask has finished: an advice in flight is never cut off
+            await ls.close()  # after every subtask has finished: an advice in flight is never cut off
 
     def _store(self) -> BoardStore | None:
         """The local board's store, None for any other board."""

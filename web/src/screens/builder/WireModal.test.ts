@@ -254,9 +254,9 @@ const mountShipped = (g: Graph, from: string, to: string) =>
     attachTo: document.body,
   });
 
-test("a carry that is not a declared output shows as the YAML has it (layer's build -> package carries feedback), and another value typed saves", async () => {
+test("a carry that is not a declared output shows as the YAML has it (layer's outcome -> package carries feedback), and another value typed saves", async () => {
   const layer = shipped(LAYER_YAML);
-  const w = mountShipped(layer, "build", "package");
+  const w = mountShipped(layer, "outcome", "package");
   await flushPromises();
   expect($<HTMLInputElement>("[data-wire-loop]")!.checked).toBe(true);
   expect($<HTMLInputElement>("[data-wire-max]")!.value).toBe("story.layer_attempts");
@@ -266,7 +266,7 @@ test("a carry that is not a declared output shows as the YAML has it (layer's bu
   await flushPromises();
   expect(w.emitted("apply")).toBeUndefined();
   document.body.innerHTML = "";
-  const again = mountShipped(layer, "build", "package");
+  const again = mountShipped(layer, "outcome", "package");
   await flushPromises();
   type($("[data-wire-carry]"), "report");
   await flushPromises();
