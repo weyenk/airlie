@@ -3,12 +3,13 @@ the web tools, `skill` and `todo`; a repository chat adds the tools of its VM (c
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Literal
 
 from airlie.chat.superpowers import SuperpowersLibrary
 from airlie.chat.tools import SkillTool, TodoList, TodoTool
 from airlie.config.schema import CHAT_TOOLS, PLAIN_CHAT_FORBIDDEN, AirlieConfig
+from airlie.engine.protocol import Engine
 from airlie.skills.library import Skill
 from airlie.tools.protocol import Tool, ToolContext
 from airlie.tools.registry import ToolRegistry
@@ -43,6 +44,7 @@ def registry_for(
     web: Mapping[str, Tool],
     skills_extra: Mapping[str, Skill] | None = None,
     repo: RepoChat | None = None,
+    task_engine_for: Callable[[str], Engine] | None = None,
 ) -> ToolRegistry:
     """The tools of `kind`. A repository chat needs its opened session (`repo`): its file, shell and git tools
     run in that session's VM, and `ctx` is that VM's context."""
@@ -52,7 +54,12 @@ def registry_for(
         from airlie.chat.repo_tools import build_repo_tools
 
         names = cfg.chat.kinds.repository.tools
-        registry = build_repo_tools(repo, ctx, names)
+        task = None
+        if task_engine_for is not None and "task" in names:
+            from airlie.chat.task_tool import Task
+
+            task = Task(cfg, task_engine_for, library=library, chat_skills=skills_extra)
+        registry = build_repo_tools(repo, ctx, names, task=task)
     else:
         names = cfg.chat.kinds.plain.tools
         registry = ToolRegistry([], ctx)

@@ -15,7 +15,7 @@ from airlie.boxes.recipe import Recipe
 from airlie.boxes.transit import open_pr, push_branch
 from airlie.engine.types import EngineError
 from airlie.story.publish import Publisher
-from airlie.tools.protocol import ToolContext, ToolResult
+from airlie.tools.protocol import Tool, ToolContext, ToolResult
 from airlie.tools.registry import BOXED, ToolRegistry
 
 TITLE_MAX = 200
@@ -110,7 +110,9 @@ class OpenPr:
         return ToolResult(True, f"opened draft pull request #{number}: {url}")
 
 
-def build_repo_tools(chat: RepoChat, ctx: ToolContext, names: Iterable[str]) -> ToolRegistry:
+def build_repo_tools(
+    chat: RepoChat, ctx: ToolContext, names: Iterable[str], *, task: Tool | None = None
+) -> ToolRegistry:
     """The repository chat's registry for `names`: builtin tools in the VM, plus the host push and PR tools
     when named. Other names (skill, todo, the web tools) are the kind's to add."""
     wanted = list(names)
@@ -119,4 +121,6 @@ def build_repo_tools(chat: RepoChat, ctx: ToolContext, names: Iterable[str]) -> 
         registry.add(PushBranch(chat))
     if "open_pr" in wanted:
         registry.add(OpenPr(chat))
+    if task is not None and "task" in wanted:
+        registry.add(task)
     return registry

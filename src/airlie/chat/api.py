@@ -380,6 +380,7 @@ def chat_router(
                 web=web,
                 skills_extra=chat_skills,
                 repo=chat,
+                task_engine_for=lambda role: engine,  # the turn's engine, routed by role, holds each call
             )
         except KindUnavailable as e:
             return error(str(e), 400)

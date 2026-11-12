@@ -1703,3 +1703,32 @@ def test_superpowers_defaults(tmp_path: Path) -> None:
     )  # of the config's directory
     off = load_config(_chat(tmp_path, {"superpowers": {"enabled": False, "path": "sp"}}))
     assert off.chat.superpowers.enabled is False and off.chat.superpowers.path == (tmp_path / "sp").resolve()
+
+
+def test_chat_task_defaults(tmp_path: Path) -> None:
+    task = load_config(write(tmp_path, MINIMAL)).chat.task
+    assert (task.default_role, task.roles, task.max_steps, task.max_depth) == (
+        "coder",
+        ["coder", "reviewer", "tester", "architect"],
+        30,
+        1,
+    )
+
+
+def test_chat_task_rejects_a_role_that_does_not_exist(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"chat.task names role 'ghost', which is not in roles"):
+        load_config(_chat(tmp_path, {"task": {"roles": ["coder", "ghost"]}}))
+    with pytest.raises(ConfigError, match=r"chat.task names role 'ghost'"):
+        load_config(_chat(tmp_path, {"task": {"default_role": "ghost", "roles": ["coder"]}}))
+
+
+def test_chat_task_default_role_must_be_one_a_model_may_choose(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"default_role 'judge' is not in chat.task.roles"):
+        load_config(_chat(tmp_path, {"task": {"default_role": "judge", "roles": ["coder"]}}))
+    assert load_config(_chat(tmp_path, {"task": {"roles": ["coder"]}})).chat.task.roles == ["coder"]
+
+
+@pytest.mark.parametrize("bad", [{"max_steps": 0}, {"max_depth": 2}, {"roles": []}])
+def test_chat_task_bounds(tmp_path: Path, bad: dict) -> None:
+    with pytest.raises(ConfigError):
+        load_config(_chat(tmp_path, {"task": bad}))

@@ -377,10 +377,26 @@ class ChatKindsSpec(Strict):
         return self
 
 
+class ChatTaskSpec(Strict):
+    """The repository chat's `task` tool: a fresh-context subagent on a chosen role, in the session's VM."""
+
+    default_role: str = Field(default="coder", description="the role a task runs on when it names none")
+    roles: list[str] = Field(
+        default_factory=lambda: ["coder", "reviewer", "tester", "architect"],
+        min_length=1,
+        description="the roles a model may choose for a task",
+    )
+    max_steps: int = Field(default=30, ge=1, description="tool rounds a subagent may take")
+    max_depth: int = Field(
+        default=1, ge=1, le=1, description="a subagent has no `task` tool, so the depth is 1"
+    )
+
+
 class ChatSpec(Strict):
     attachments: AttachmentsSpec = Field(default_factory=AttachmentsSpec)
     superpowers: SuperpowersSpec = Field(default_factory=SuperpowersSpec)
     kinds: ChatKindsSpec = Field(default_factory=ChatKindsSpec)
+    task: ChatTaskSpec = Field(default_factory=ChatTaskSpec)
     max_steps: int = Field(default=12, ge=1, description="model turns a chat message may take (tool rounds)")
 
 
@@ -1199,6 +1215,15 @@ class AirlieConfig(Strict):
                 for name in ("story", "layer")
                 if name not in self.workflows
             ]
+        if "task" in self.chat.model_fields_set:  # the defaults name roles a small config may not have
+            task = self.chat.task
+            problems += [
+                f"chat.task names role '{r}', which is not in roles ({sorted(self.roles)})"
+                for r in dict.fromkeys([task.default_role, *task.roles])
+                if r not in self.roles
+            ]
+            if task.default_role not in task.roles:
+                problems.append(f"chat.task.default_role '{task.default_role}' is not in chat.task.roles")
         served_by: dict[str, list[str]] = {m: [] for m in self.models}
         for ename, e in self.engines.items():
             for m in e.models:
