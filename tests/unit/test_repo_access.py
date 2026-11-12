@@ -25,6 +25,10 @@ LOCAL = ["o/r", "local/only", "Local/Two"]
 INSTALLATIONS = "/api/user/installations"
 
 
+async def local_names() -> list[str]:
+    return list(LOCAL)
+
+
 @pytest.fixture(autouse=True)
 def _no_real_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     async def refuse(self: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
@@ -82,11 +86,8 @@ def world(tmp_path: Path) -> Callable[..., World]:
         store = AuthStore(tmp_path / "state" / "auth.sqlite", now=clock)
         vault = TokenVault(tmp_path / "keys" / "tokens.key")
 
-        async def local() -> list[str]:
-            return list(LOCAL)
-
         access = RepoAccess(
-            store, vault, {"github_app": source} if sources else {}, local, cache_s=cache_s, clock=clock
+            store, vault, {"github_app": source} if sources else {}, local_names, cache_s=cache_s, clock=clock
         )
         return World(access, fake, clock, store, source, tmp_path)
 
@@ -195,9 +196,11 @@ async def test_a_vault_that_cannot_open_the_tokens_reads_as_unlinked(
 ) -> None:
     w = world()
     first = await w.link("noah")
-    w.access._vault = TokenVault(w.tmp / "keys" / "other.key")  # the key file was replaced
+    key = w.tmp / "keys" / "tokens.key"
+    key.write_bytes(b"k" * 32)  # the key file was replaced; a restarted serve reads the new one
+    restarted = RepoAccess(w.store, TokenVault(key), {"github_app": w.source}, local_names, cache_s=300)
     with caplog.at_level(logging.WARNING, logger="airlie.sources"):
-        got = await w.access.view("u-noah")
+        got = await restarted.view("u-noah")
     assert got.sources[0].linked is False and got.sources[0].error == ENDED
     assert w.store.link("u-noah", "github_app") is None
     assert "dropped" in caplog.text and first.access_token not in caplog.text
@@ -275,3 +278,54 @@ async def test_with_no_source_every_local_name_is_source(world: Callable[..., Wo
     assert await w.access.may_push("u-noah", "local/only") is None
     got = await w.access.view("u-noah")
     assert got.sources == () and got.extra_candidates == tuple(LOCAL)
+
+
+async def test_a_failed_live_listing_never_grants_push_or_fresh_access(world: Callable[..., World]) -> None:
+    w = world()
+    await w.link("noah")
+    await w.access.view("u-noah")
+    w.fake.fail_listing = 500
+    refusal = await w.access.may_push("u-noah", "o/r")
+    assert refusal == "airlie could not check your access to o/r on GitHub: try again"
+    assert await w.access.access("u-noah", "o/r", fresh=True) is None
+    assert await w.access.access("u-noah", "o/r") == "source"  # a turn may use the last good list for now
+
+
+async def test_a_list_kept_through_failures_ages_out(world: Callable[..., World]) -> None:
+    w = world()
+    await w.link("noah")
+    await w.access.view("u-noah")
+    w.fake.fail_listing = 500
+    w.clock.advance(301)
+    assert await w.access.access("u-noah", "o/r") == "source"
+    w.clock.advance(3 * 300)
+    got = await w.access.view("u-noah")
+    assert got.sources[0].repositories == () and got.sources[0].error
+    assert await w.access.access("u-noah", "o/r") is None
+
+
+async def test_forget_during_a_slow_refresh_leaves_no_link(world: Callable[..., World]) -> None:
+    w = world()
+    first = await w.link("noah")
+    assert first.access_expires_at is not None
+    w.clock.now = first.access_expires_at - 10
+    real, entered, release = w.source.refresh, asyncio.Event(), asyncio.Event()
+
+    async def slow(token: str) -> UserTokens:
+        entered.set()
+        await release.wait()
+        return await real(token)
+
+    async def no_revoke(token: str) -> None:  # an App with no client secret cannot revoke: the tokens live on
+        return None
+
+    w.source.refresh = slow  # type: ignore[method-assign]
+    w.source.revoke = no_revoke  # type: ignore[method-assign]
+    viewing = asyncio.create_task(w.access.view("u-noah"))
+    await entered.wait()
+    forgetting = asyncio.create_task(w.access.forget("u-noah", "github_app"))
+    await asyncio.sleep(0.05)  # an unlocked forget would be done by now
+    release.set()
+    await asyncio.gather(viewing, forgetting)
+    assert w.store.link("u-noah", "github_app") is None
+    assert await w.access.access("u-noah", "o/r") is None
