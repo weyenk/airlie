@@ -8,6 +8,7 @@ link-local or private space is refused before it is fetched."""
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import http.client
 import ipaddress
@@ -25,6 +26,8 @@ UNTRUSTED_MARKER = "[untrusted web text]"
 MAX_REDIRECT_HOPS = 5
 TAILNET = ipaddress.ip_network("100.64.0.0/10")
 NAT64 = ipaddress.ip_network("64:ff9b::/96")
+V4_COMPATIBLE = ipaddress.ip_network("::/96")
+SITE_LOCAL = ipaddress.ip_network("fec0::/10")
 
 
 def _embedded_v4(a: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
@@ -36,6 +39,8 @@ def _embedded_v4(a: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
         return ipaddress.IPv4Address(int(a) & 0xFFFFFFFF)
     if a.sixtofour is not None:
         return a.sixtofour
+    if a in V4_COMPATIBLE:  # the deprecated IPv4-compatible form `::a.b.c.d`
+        return ipaddress.IPv4Address(int(a))
     return None
 
 
@@ -44,12 +49,14 @@ def check_address(ip: str) -> str | None:
 
     Order matters: 100.64.0.0/10 (tailnet) is also private, so it must be checked first."""
     a = ipaddress.ip_address(ip)
-    if isinstance(a, ipaddress.IPv6Address) and (inner := _embedded_v4(a)) is not None:
+    if isinstance(a, ipaddress.IPv6Address) and not a.is_loopback and (inner := _embedded_v4(a)) is not None:
         a = inner
     if a.is_loopback:
         return "refused: loopback address"
     if a in TAILNET:
         return "refused: tailnet address"
+    if isinstance(a, ipaddress.IPv6Address) and a in SITE_LOCAL:
+        return "refused: private address"
     if a.is_link_local:
         return "refused: link-local address"
     if a.is_private:
@@ -190,7 +197,7 @@ class UrllibClient:
     pinned to the address the caller vetted."""
 
     def request(self, url: str, timeout_s: float, pinned_ip: str | None = None) -> WebResponse:
-        handlers: list[Any] = [_NoRedirectHandler()]
+        handlers: list[Any] = [_NoRedirectHandler(), urllib.request.ProxyHandler({})]  # never an env proxy
         if pinned_ip is not None:
             handlers += [_PinnedHTTPHandler(pinned_ip), _PinnedHTTPSHandler(pinned_ip)]
         opener = urllib.request.build_opener(*handlers)
@@ -347,7 +354,7 @@ class WebFetch:
 
         current = url
         for _ in range(MAX_REDIRECT_HOPS + 1):
-            resp = self._client.request(current, self._timeout_s, pinned)
+            resp = await asyncio.to_thread(self._client.request, current, self._timeout_s, pinned)
             if 300 <= resp.status < 400:
                 location = resp.headers.get("location")
                 if not location:

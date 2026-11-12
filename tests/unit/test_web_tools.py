@@ -230,6 +230,10 @@ async def test_a_rebinding_redirect_target_is_pinned_where_it_first_resolved(tmp
         "::ffff:127.0.0.1",
         "::ffff:7f00:1",
         "::ffff:0.0.0.0",
+        "::7f00:1",
+        "::a9fe:a9fe",
+        "::127.0.0.1",
+        "fec0::1",
         "fe80::1",
         "fc00::1",
         "64:ff9b::7f00:1",
@@ -287,3 +291,34 @@ def test_the_pinned_tls_connection_keeps_the_name_for_sni(monkeypatch: pytest.Mo
     conn = _PinnedHTTPSConnection("example.com", 443, pinned_ip="93.184.216.34", context=FakeCtx())  # type: ignore[arg-type]
     conn.connect()
     assert calls == {"addr": ("93.184.216.34", 443), "sni": "example.com"}
+
+
+def test_an_environment_proxy_never_steers_the_pinned_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+    srv, port = _serve_once(seen)
+    monkeypatch.delenv("NO_PROXY", raising=False)  # the unit conftest sets it to "*"
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:9")
+    monkeypatch.setenv("http_proxy", "http://proxy.invalid:9")
+    try:
+        resp = UrllibClient().request(f"http://pinned.invalid:{port}/", 5.0, "127.0.0.1")
+    finally:
+        srv.server_close()
+    assert resp.status == 200 and seen == [f"pinned.invalid:{port}"]
+
+
+async def test_the_blocking_request_runs_off_the_event_loop(tmp_path: Path) -> None:
+    threads: list[int] = []
+
+    class ThreadClient(FakeClient):
+        def request(self, url: str, timeout_s: float, pinned_ip: str | None = None) -> FakeResponse:
+            threads.append(threading.get_ident())
+            return super().request(url, timeout_s, pinned_ip)
+
+    client = ThreadClient(
+        responses=[FakeResponse(200, {"content-type": "text/plain"}, b"ok", "http://a.example/")]
+    )
+    r = await fetch(client, FakeResolver({"a.example": ["93.184.216.34"]})).run(
+        {"url": "http://a.example/"}, ctx(tmp_path)
+    )
+    assert r.ok and threads and threads[0] != threading.get_ident()
