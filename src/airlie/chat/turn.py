@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AsyncExitStack, suppress
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
@@ -25,7 +25,7 @@ from airlie.chat.threads import StoredMessage, Thread, ThreadStore
 from airlie.chat.tools import TodoList
 from airlie.config.schema import RoleSpec
 from airlie.engine.protocol import Engine
-from airlie.engine.types import EngineError, GenRequest, GenResult, Message, TokenEvent, ToolCall
+from airlie.engine.types import ContentPart, EngineError, GenRequest, GenResult, Message, TokenEvent, ToolCall
 from airlie.manager.client import Holder
 from airlie.manager.core import Status
 from airlie.prompts import text
@@ -45,6 +45,16 @@ class TurnRequest:
     thread: Thread
     user_message: StoredMessage
     ctx: TurnContext
+    user_parts: Mapping[str, tuple[ContentPart, ...]] = field(default_factory=dict)
+    """Per user message id: what the model gets for a message that carries attachments (text, pictures and
+    video frames, as `serve.uploads.resolve` made them). A message with no entry goes as its text."""
+
+
+def _user_message(message: StoredMessage, user_parts: Mapping[str, tuple[ContentPart, ...]]) -> Message:
+    parts = user_parts.get(message.id)
+    if parts:
+        return Message(role="user", content="\n".join(p.text for p in parts if p.type == "text"), parts=parts)
+    return Message(role="user", content=_user_text(message))
 
 
 def _user_text(message: StoredMessage) -> str:
@@ -59,14 +69,17 @@ def _tool_part_call(part: dict[str, Any]) -> ToolCall:
     )
 
 
-def history_messages(messages: list[StoredMessage]) -> list[Message]:
+def history_messages(
+    messages: list[StoredMessage], user_parts: Mapping[str, tuple[ContentPart, ...]] | None = None
+) -> list[Message]:
     """Stored messages as the model's history: a user message's text; an assistant message's text and its
     tool calls (each with its result, or a note that it never ran). Reasoning and data parts stay behind."""
     out: list[Message] = []
     for m in messages:
         if m.role == "user":
-            if body := _user_text(m):
-                out.append(Message(role="user", content=body))
+            msg = _user_message(m, user_parts or {})
+            if msg.content or msg.parts:
+                out.append(msg)
             continue
         buffer = ""
         for part in m.parts:
@@ -155,8 +168,8 @@ class _Run:
         thread, user = self.req.thread, self.req.user_message
         return [
             Message(role="system", content=self.req.ctx.system_prompt),
-            *history_messages(thread.messages),
-            Message(role="user", content=_user_text(user)),
+            *history_messages(thread.messages, self.req.user_parts),
+            _user_message(user, self.req.user_parts),
         ]
 
     # --- the hold -------------------------------------------------------------------------------------------

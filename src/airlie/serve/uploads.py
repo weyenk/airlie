@@ -7,6 +7,7 @@ an upload (a scaled picture, a video's frames, a PDF's text) is kept beside it a
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
@@ -34,6 +35,10 @@ _AUDIO = {b"M4A ", b"M4B ", b"M4P ", b"F4A "}
 
 class UploadTooLarge(Exception):
     """The body ran past its kind's limit; the message names the limit."""
+
+
+class TooManyAttachments(ValueError):
+    """A message carries more attachments than `chat.attachments.max_per_message`; the message says so."""
 
 
 class Unreadable(ValueError):
@@ -443,3 +448,16 @@ def resolve(
             parts.extend(replaced.get((i, j), [p]))
         out[i]["content"] = parts
     return out
+
+
+async def attach_uploads(
+    messages: list[dict[str, Any]], store: UploadStore, *, can_see: Callable[[Upload], bool], vision: bool
+) -> list[dict[str, Any]]:
+    """`resolve` for a request: a message over the per-message limit is TooManyAttachments, and the decoding
+    (a picture, a video, a PDF) runs off the event loop. Both chat routes call it."""
+    limit = store.spec.max_per_message
+    for m in messages:
+        parts = m.get("content") if isinstance(m, dict) else None
+        if isinstance(parts, list) and sum(p.get("type") == "airlie_upload" for p in parts) > limit:
+            raise TooManyAttachments(f"a message may carry up to {limit} attachments")
+    return await asyncio.to_thread(resolve, messages, store, can_see=can_see, vision=vision)

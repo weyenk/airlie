@@ -31,7 +31,9 @@ from airlie.auth.store import AuthStore
 from airlie.board import BoardStore
 from airlie.board.api import board_router
 from airlie.board.model import WorkflowDraft
-from airlie.chat.hooks import UnknownSkill, slash_section
+from airlie.chat.hooks import UnknownSkill, default_hooks, slash_section
+from airlie.chat.superpowers import SuperpowersLibrary
+from airlie.chat.threads import ThreadStore
 from airlie.config import AirlieConfig
 from airlie.engine.dialect import (
     dialect_for,
@@ -60,7 +62,15 @@ from airlie.serve.run_flow import run_flow, run_job_detail
 from airlie.serve.running import running as in_progress
 from airlie.serve.ticker import LineFor, LineTicker
 from airlie.serve.tree import RunNotFound, run_tree
-from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
+from airlie.serve.uploads import (
+    MEDIA,
+    TooManyAttachments,
+    Upload,
+    UploadStore,
+    UploadTooLarge,
+    attach_uploads,
+    has_uploads,
+)
 from airlie.serve.watch import Watcher
 from airlie.serve.workflows_api import workflows_router
 from airlie.skills import Skill, load_chat_skills, prompt_text
@@ -79,6 +89,7 @@ from airlie.story.stats import line_stats, parse_since
 from airlie.story.workflow_publish import publish_workflow
 from airlie.story.workflows import WorkflowError, board_problems
 from airlie.teams.worktree import rev_parse
+from airlie.tools.web import SearXNGProvider, UrllibClient, WebFetch, WebSearch
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
 
@@ -508,7 +519,9 @@ def create_app(
     restart_story = story_restart or _story_restart_factory()
     adopt_story = story_adopt or _story_adopt_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
-    # imported here: the manager's clock lives under airlie.serve, whose package imports this module
+    # imported here: the manager's clock lives under airlie.serve, whose package imports this module (and the
+    # chat routes import the manager)
+    from airlie.chat.api import chat_router
     from airlie.manager.api import Leases, UnknownLease
     from airlie.manager.core import Manager as ManagerImpl
     from airlie.manager.engines import engine_resources
@@ -805,21 +818,49 @@ def create_app(
 
     async def attach(body: dict[str, Any], request: Request) -> dict[str, Any]:
         """The chat body with every `airlie_upload` part turned into what the chat model can take."""
-        msgs = list(body.get("messages") or [])
-        limit = cfg.chat.attachments.max_per_message
-        for m in msgs:
-            parts = m.get("content") if isinstance(m, dict) else None
-            if isinstance(parts, list) and sum(p.get("type") == "airlie_upload" for p in parts) > limit:
-                raise HTTPException(400, f"a message may carry up to {limit} attachments")
         principal = owner_of(request)
-        msgs = await asyncio.to_thread(  # decoding a picture or a video, or reading a PDF, blocks
-            resolve,
-            msgs,
-            uploads,
-            can_see=lambda u: may_see(principal, u),
-            vision=cfg.roles["chat"].vision,
-        )
+        try:
+            msgs = await attach_uploads(
+                list(body.get("messages") or []),
+                uploads,
+                can_see=lambda u: may_see(principal, u),
+                vision=cfg.roles["chat"].vision,
+            )
+        except TooManyAttachments as e:
+            raise HTTPException(400, str(e)) from e
         return {**body, "messages": msgs}
+
+    async def attach_for(principal: Principal, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return await attach_uploads(
+            msgs, uploads, can_see=lambda u: may_see(principal, u), vision=cfg.roles["chat"].vision
+        )
+
+    chat_threads = ThreadStore(cfg.observability.state_dir.expanduser() / "chat" / "threads.sqlite")
+    superpowers = SuperpowersLibrary(cfg.chat.superpowers.path) if cfg.chat.superpowers.enabled else None
+    chat_hooks = default_hooks(
+        cfg,
+        superpowers,
+        chat_skills=chat_skills,
+        uploads_limit=cfg.chat.attachments.max_per_message,
+        notifier=notifier,
+    )
+    app.state.chat_threads = chat_threads
+    app.state.chat_hooks = chat_hooks
+    app.include_router(
+        chat_router(
+            cfg,
+            threads=chat_threads,
+            library=superpowers,
+            hooks=chat_hooks,
+            web={
+                "web_search": WebSearch(SearXNGProvider(cfg.web.search.url, UrllibClient())),
+                "web_fetch": WebFetch(timeout_s=cfg.web.fetch_timeout_s),
+            },
+            manager=manager,
+            attach=attach_for,
+            transport=transport,
+        )
+    )
 
     @app.post("/v1/chat/completions")
     async def chat(body: dict[str, Any], request: Request) -> Any:

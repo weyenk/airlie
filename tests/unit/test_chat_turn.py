@@ -19,6 +19,7 @@ from airlie.chat.turn import TurnRequest, history_messages, run_turn
 from airlie.config import AirlieConfig, load_config
 from airlie.config.schema import RoleSpec
 from airlie.engine.types import (
+    ContentPart,
     EngineCapabilities,
     EngineError,
     GenRequest,
@@ -651,6 +652,18 @@ def test_history_is_replayed_with_tool_calls_and_without_reasoning() -> None:
         ),
         Message(role="assistant", content="Done."),
     ]
+
+
+def test_a_user_message_with_resolved_attachments_goes_to_the_model_as_its_parts() -> None:
+    stored = [
+        StoredMessage("u1", "user", [{"type": "text", "text": "see"}, {"type": "airlie_upload"}], 1.0),
+        StoredMessage("u2", "user", [{"type": "text", "text": "plain"}], 2.0),
+    ]
+    parts = (ContentPart("text", text="see"), ContentPart("image_url", url="data:image/png;base64,AA"))
+
+    got = history_messages(stored, {"u1": parts})
+
+    assert got == [Message(role="user", content="see", parts=parts), Message(role="user", content="plain")]
 
 
 async def test_a_second_turn_sends_the_stored_history_to_the_model(tmp_path: Path, role: RoleSpec) -> None:
