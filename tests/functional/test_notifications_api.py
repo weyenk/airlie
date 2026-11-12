@@ -16,7 +16,7 @@ from tests.support.serve import FakeUpstream, cfg
 from tests.unit.serve_helpers import TestClient
 
 ORIGIN = "http://localhost:8090"
-SUB = {"endpoint": "https://push.example/abc", "keys": {"p256dh": "k", "auth": "a"}}
+SUB = {"endpoint": "https://web.push.apple.com/abc", "keys": {"p256dh": "k", "auth": "a"}}
 
 
 class Studio:
@@ -74,6 +74,70 @@ def test_a_kind_switched_off_is_reflected(studio: Studio) -> None:
 
 def test_an_unknown_kind_is_refused(studio: Studio) -> None:
     assert studio.admin.put("/v1/notifications/kinds", json={"nope": True}).status_code == 422
+
+
+class OkSender:
+    async def send(self, sub: Any, payload: dict[str, str]) -> int:
+        return 201
+
+
+def test_the_test_push_reaches_a_device_even_with_chat_replies_off(studio: Studio) -> None:
+    studio.app.state.notifier.sender = OkSender()
+    studio.admin.post("/v1/notifications/subscriptions", json=SUB)
+    studio.admin.put("/v1/notifications/kinds", json={"chat_reply": False})
+    assert studio.admin.post("/v1/notifications/test").json() == {"sent": 1}
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://fcm.googleapis.com/fcm/send/x",
+        "https://updates.push.services.mozilla.com/wpush/v2/x",
+        "https://wns2.notify.windows.com/x",
+        "https://push.apple.com/x",
+    ],
+)
+def test_the_known_push_services_are_accepted(studio: Studio, endpoint: str) -> None:
+    body = {**SUB, "endpoint": endpoint}
+    assert studio.admin.post("/v1/notifications/subscriptions", json=body).status_code == 204
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://web.push.apple.com/x",
+        "https://evil.com/x",
+        "https://push.apple.com.evil.com/x",
+        "https://evilpush.apple.com.evil.com/x",
+        "https://127.0.0.1/x",
+        "https://169.254.169.254/latest",
+        "https://push.apple.com@evil.com/x",
+        "not a url",
+    ],
+)
+def test_an_endpoint_that_is_not_a_push_service_is_refused(studio: Studio, endpoint: str) -> None:
+    r = studio.admin.post("/v1/notifications/subscriptions", json={**SUB, "endpoint": endpoint})
+    assert r.status_code == 422
+    assert "push service" in r.text
+    assert studio.admin.get("/v1/notifications").json()["devices"] == 0
+
+
+def test_a_subscription_without_keys_is_refused(studio: Studio) -> None:
+    r = studio.admin.post("/v1/notifications/subscriptions", json={"endpoint": SUB["endpoint"]})
+    assert r.status_code == 422
+    assert "keys" in r.text
+
+
+def test_deleting_another_persons_endpoint_leaves_it_in_place(studio: Studio) -> None:
+    pat = studio.store.add_user("Pat", "member").id
+    studio.store.save_push(pat, SUB["endpoint"], "k", "a")
+    r = studio.admin.request("DELETE", "/v1/notifications/subscriptions", json={"endpoint": SUB["endpoint"]})
+    assert r.status_code == 204
+    assert [s.user_id for s in studio.store.push_subscriptions()] == [pat]
+
+
+def test_the_key_file_lands_in_the_state_dir_when_vapid_key_is_unset(studio: Studio, tmp_path: Path) -> None:
+    assert (tmp_path / "state" / "vapid.pem").is_file()
 
 
 def test_the_test_push_with_no_device_sends_nothing(studio: Studio) -> None:

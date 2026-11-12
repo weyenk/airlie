@@ -22,14 +22,22 @@ class Notifier:
         self, store: AuthStore, sender: PushSender | None, default_kinds: Sequence[NotificationKind]
     ) -> None:
         self._store = store
-        self._sender = sender
+        self.sender = sender
         self.default_kinds = frozenset(default_kinds)
 
     async def notify(
-        self, user_id: str | None, kind: NotificationKind, title: str, url: str, body: str | None = None
+        self,
+        user_id: str | None,
+        kind: NotificationKind,
+        title: str,
+        url: str,
+        body: str | None = None,
+        *,
+        force: bool = False,
     ) -> int:
-        """Push to `user_id`'s devices (everyone's when None) whose person has `kind` on; the count sent."""
-        if self._sender is None:
+        """Push to `user_id`'s devices (everyone's when None) whose person has `kind` on (`force`: whatever
+        their settings); the count sent."""
+        if self.sender is None:
             return 0
         payload = {"title": title, "url": url}
         if body is not None:
@@ -39,11 +47,14 @@ class Notifier:
         for sub in self._store.push_subscriptions(user_id):
             if sub.user_id not in settings:
                 settings[sub.user_id] = self._store.notification_kinds(sub.user_id)
-            if not settings[sub.user_id].get(kind, kind in self.default_kinds):
+            if not force and not settings[sub.user_id].get(kind, kind in self.default_kinds):
                 continue
             try:
-                status = await self._sender.send(sub, payload)
-            except httpx.HTTPError as err:  # one unreachable push service must not stop the rest
+                status = await self.sender.send(sub, payload)
+            except (
+                httpx.HTTPError,
+                ValueError,
+            ) as err:  # one dead endpoint or bad payload must not stop the rest
                 log.warning("push to %s failed: %s", urlsplit(sub.endpoint).netloc, type(err).__name__)
                 continue
             if status in GONE:

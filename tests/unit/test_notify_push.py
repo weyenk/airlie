@@ -143,3 +143,15 @@ def test_a_second_process_winning_the_key_file_race_is_loaded_not_overwritten(
     monkeypatch.setattr(Path, "exists", lambda self: False)  # this process looked before the winner wrote
     loser = load_or_create_vapid(path)
     assert application_server_key(loser) == application_server_key(winner)
+
+
+def test_a_loser_that_reads_the_key_before_the_winner_finished_writing_waits_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "v.pem"
+    winner = load_or_create_vapid(tmp_path / "w.pem")
+    pem = (tmp_path / "w.pem").read_bytes()
+    path.write_bytes(b"")  # created by the winner, not yet written
+    monkeypatch.setattr("airlie.notify.vapid.time.sleep", lambda _s: path.write_bytes(pem))
+    loser = load_or_create_vapid(path)
+    assert application_server_key(loser) == application_server_key(winner)

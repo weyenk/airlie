@@ -1033,6 +1033,12 @@ def test_notifications_defaults_name_every_kind_and_no_contact_or_key(tmp_path: 
     cfg = load_config(write(tmp_path, MINIMAL))
     assert cfg.notifications.contact is None
     assert cfg.notifications.vapid_key is None
+    assert cfg.notifications.push_hosts == [
+        "push.apple.com",
+        "fcm.googleapis.com",
+        "push.services.mozilla.com",
+        "notify.windows.com",
+    ]
     assert cfg.notifications.default_kinds == [
         "chat_reply",
         "model_ready",
@@ -1604,3 +1610,10 @@ def test_manager_spec_rejects_unknown_keys_and_a_bad_lifecycle() -> None:
         ManagerSpec(nope=1)  # type: ignore[call-arg]
     with pytest.raises(ValidationError):
         EngineSpec(kind="mlx_vlm", model="m", lifecycle="sometimes")  # type: ignore[arg-type]
+
+
+def test_notifications_push_hosts_can_be_replaced_and_rejects_non_hosts(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, {**MINIMAL, "notifications": {"push_hosts": ["push.example.com"]}}))
+    assert cfg.notifications.push_hosts == ["push.example.com"]
+    with pytest.raises(ConfigError, match="notifications.push_hosts"):
+        load_config(write(tmp_path, {**MINIMAL, "notifications": {"push_hosts": ["https://x.com/y"]}}))

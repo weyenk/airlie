@@ -58,6 +58,27 @@ async def test_an_unreachable_endpoint_is_skipped_and_kept_and_others_still_send
     assert {s.endpoint for s in store.push_subscriptions(u)} == {"https://down", "https://up"}
 
 
+async def test_forced_sends_even_with_the_kind_off(store: AuthStore) -> None:
+    u = store.add_user("Noah", "admin").id
+    store.save_push(u, "https://a", K, A)
+    store.set_notification_kind(u, "chat_reply", False)
+    sender = FakeSender({"https://a": 201})
+    assert await notifier(store, sender).notify(u, "chat_reply", "t", "/", force=True) == 1
+
+
+async def test_an_oversized_payload_is_skipped_per_subscription_not_fatal(store: AuthStore) -> None:
+    u = store.add_user("Noah", "admin").id
+    store.save_push(u, "https://a", K, A)
+    sender = FakeSender({"https://a": 201})
+
+    async def refuse(sub: PushSubscription, payload: dict[str, str]) -> int:
+        raise ValueError("payload is over 4096 bytes")
+
+    sender.send = refuse  # type: ignore[method-assign]
+    assert await notifier(store, sender).notify(u, "chat_reply", "t", "/") == 0
+    assert len(store.push_subscriptions(u)) == 1
+
+
 async def test_a_body_is_sent_when_given(store: AuthStore) -> None:
     u = store.add_user("Noah", "admin").id
     store.save_push(u, "https://a", K, A)

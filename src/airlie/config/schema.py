@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, model_validator
 
 from airlie.flow.spec import WorkflowSpec, check_workflows
 from airlie.notify.kinds import KINDS, NotificationKind
@@ -518,6 +518,9 @@ class ObservabilitySpec(Strict):
     retain_days: int = 14
 
 
+PushHost = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9-]+)+$")]
+
+
 class NotificationsSpec(Strict):
     """Web Push to installed phones and desktops."""
 
@@ -531,6 +534,16 @@ class NotificationsSpec(Strict):
     )
     default_kinds: list[NotificationKind] = Field(
         default_factory=lambda: list(KINDS), description="kinds a person hears until they set their own"
+    )
+    push_hosts: list[PushHost] = Field(
+        default_factory=lambda: [
+            "push.apple.com",
+            "fcm.googleapis.com",
+            "push.services.mozilla.com",
+            "notify.windows.com",
+        ],
+        description="push services a browser may subscribe through: an endpoint must be https on one of "
+        "these hosts or a subdomain of one (serve POSTs to it)",
     )
 
 

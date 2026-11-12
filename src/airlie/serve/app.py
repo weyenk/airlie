@@ -614,7 +614,7 @@ def create_app(
         public_key = application_server_key(vapid)
     notifier = Notifier(store, sender, cfg.notifications.default_kinds)
     app.state.notifier = notifier
-    app.include_router(notifications_router(store, notifier, public_key))
+    app.include_router(notifications_router(store, notifier, public_key, cfg.notifications.push_hosts))
 
     uploads = UploadStore(cfg.observability.state_dir.expanduser() / "uploads", cfg.chat.attachments, now=now)
 
