@@ -151,7 +151,7 @@ async def test_each_repository_pushes_through_its_own_publisher_after_another_wa
     mirrors = repo_mirrors(
         tmp_path / "mirrors", lambda: Publisher(run=gh, app=app, publish="single"), run=run_cmd
     )
-    a, b = mirrors("o/a"), mirrors("o/b")
+    a, b = mirrors("o/a", "source"), mirrors("o/b", "source")
     await a.refresh()
     await b.refresh()  # the second repository's first open: prepare reads o/b for its own publisher
     head = git(local_checkout(tmp_path), "rev-parse", "HEAD")
@@ -161,7 +161,7 @@ async def test_each_repository_pushes_through_its_own_publisher_after_another_wa
 
     assert gh.calls[-1] == (["git", "push", "-q", "origin", BRANCH], a.path)
     assert github.minted_for()[-1] == ["a"]
-    assert mirrors("o/a") is a and a.publisher is not b.publisher
+    assert mirrors("o/a", "source") is a and a.publisher is not b.publisher
     assert (a.publisher.repository, b.publisher.repository) == ("o/a", "o/b")
 
 
@@ -201,3 +201,81 @@ async def test_a_bundle_with_a_corrupt_object_fails_the_fetch_and_no_ref_lands(t
     with pytest.raises(TransitError, match="refused"):
         await harvest(box, mirror, base_sha=base, branch=BRANCH, workdir=str(vm), max_bytes=10_000_000)
     assert git(mirror.path, "for-each-ref", "--format=%(refname)", "refs/heads") == ""
+
+
+def no_url_rewrites(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rules = tmp_path / "gitconfig"  # this machine's own url rewrites are no part of the test
+    rules.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(rules))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+async def test_a_github_repository_is_fetched_through_the_app_not_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    no_url_rewrites(tmp_path, monkeypatch)
+    source = local_checkout(tmp_path)  # a checkout is there, and is not what a GitHub repository reads
+    github = FakeGitHub(installed=("o/r",))
+    gh = ScriptedPublishRunner()
+    mirrors = repo_mirrors(
+        tmp_path / "mirrors",
+        lambda: Publisher(run=gh, app=fake_app(tmp_path, github), publish="single"),
+        run=run_cmd,
+        local_checkout=lambda repo: source,
+    )
+    mirror = mirrors("o/r", "source")
+
+    await mirror.refresh()
+
+    assert mirror.local_checkout is None
+    assert git(mirror.path, "remote", "get-url", "origin") == "https://github.com/o/r.git"
+    assert any(p.endswith("/access_tokens") for p in github.asked("POST"))  # the fetch's token, for o/r
+    assert github.minted_for() == [["r"]]
+    assert [c[0][:2] for c in gh.calls if c[0][0] == "git"][-1] == ["git", "fetch"]
+
+
+async def test_an_extra_reads_its_checkout_and_never_pushes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    no_url_rewrites(tmp_path, monkeypatch)
+    source = local_checkout(tmp_path)
+    github = FakeGitHub(installed=("o/r",))
+    mirrors = repo_mirrors(
+        tmp_path / "mirrors",
+        lambda: Publisher(app=fake_app(tmp_path, github), publish="single"),
+        run=run_cmd,
+        local_checkout=lambda repo: source,
+    )
+    mirror = mirrors("o/r", "extra")
+
+    await mirror.refresh()
+
+    assert mirror.can_push is False and mirror.publisher.app is None
+    assert git(mirror.path, "remote", "get-url", "origin") == str(source)
+    assert await mirror.resolve("origin/main") == git(source, "rev-parse", "HEAD")
+    assert github.requests == []  # GitHub was never asked
+
+
+async def test_a_mirror_that_switches_from_local_to_source_repoints_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    no_url_rewrites(tmp_path, monkeypatch)
+    source = local_checkout(tmp_path)
+    github = FakeGitHub(installed=("o/r",))
+    mirrors = repo_mirrors(
+        tmp_path / "mirrors",
+        lambda: Publisher(run=ScriptedPublishRunner(), app=fake_app(tmp_path, github), publish="single"),
+        run=run_cmd,
+        local_checkout=lambda repo: source,
+    )
+    local = mirrors("o/r", "extra")
+    await local.refresh()  # made from the checkout, as a pinned local repository
+    assert git(local.path, "remote", "get-url", "origin") == str(source)
+
+    through_app = mirrors("o/r", "source")  # the App was installed on it since
+    await through_app.refresh()
+
+    assert through_app.path == local.path
+    assert git(through_app.path, "remote", "get-url", "origin") == "https://github.com/o/r.git"
+    await local.refresh()  # and back: the repository is the person's own checkout again
+    assert git(local.path, "remote", "get-url", "origin") == str(source)

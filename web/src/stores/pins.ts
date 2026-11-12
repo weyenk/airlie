@@ -11,7 +11,7 @@ export const usePins = defineStore("pins", () => {
   /** A refused pin (a name airlie does not list, a 51st pin) rejects with the server's reason. */
   async function pin(repo: string): Promise<void> {
     await pinRepository(repo);
-    await live.refresh();
+    await live.refresh(); // the repositories store hears the same `chat` hint
   }
 
   async function unpin(repo: string): Promise<void> {

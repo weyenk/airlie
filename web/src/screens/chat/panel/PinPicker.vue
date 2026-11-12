@@ -1,31 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, ref } from "vue";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import Typeahead from "@/components/Typeahead.vue";
 import { Button } from "@/components/ui/button";
-import { listRepositories } from "@/api/sessions";
 import { usePins } from "@/stores/pins";
+import { useRepositories } from "@/stores/repositories";
 
 const emit = defineEmits<{ pin: [repo: string] }>();
 
 const pins = usePins();
-const names = ref<string[]>([]);
-const lookupFailed = ref(false);
+const repos = useRepositories();
 const text = ref("");
 const refused = ref("");
 
-// only a name airlie lists can be pinned (the server refuses any other with 422)
-const pinnable = computed(() => names.value.includes(text.value.trim()));
+const names = computed(() => repos.view?.extra_candidates ?? []);
 
-async function lookup(): Promise<void> {
-  lookupFailed.value = false;
-  try {
-    names.value = await listRepositories();
-  } catch {
-    lookupFailed.value = true;
-  }
-}
-onMounted(lookup);
+// only a local checkout airlie lists can be pinned (the server refuses a GitHub-sourced name with 422)
+const pinnable = computed(() => names.value.includes(text.value.trim()));
 
 async function submit(): Promise<void> {
   if (!pinnable.value) return;
@@ -33,6 +24,7 @@ async function submit(): Promise<void> {
   const repo = text.value.trim();
   try {
     await pins.pin(repo);
+    await repos.reload();
   } catch (e) {
     refused.value = e instanceof Error ? e.message : String(e);
     return;
@@ -44,14 +36,11 @@ async function submit(): Promise<void> {
 
 <template>
   <form class="flex flex-col gap-1.5 px-2 pt-3" @submit.prevent="submit">
+    <h3 class="text-[11px] font-bold tracking-wider text-muted-foreground uppercase">Pin a local checkout</h3>
     <div class="flex items-center gap-1.5">
-      <div class="min-w-0 grow"><Typeahead v-model="text" :source="names" label="Pin a repository" placeholder="Pin a repository" /></div>
+      <div class="min-w-0 grow"><Typeahead v-model="text" :source="names" label="Pin a local checkout" placeholder="Pin a local checkout" /></div>
       <Button type="submit" size="sm" variant="outline" :disabled="!pinnable">Pin</Button>
     </div>
-    <p v-if="lookupFailed" role="alert" class="flex items-center gap-2 text-xs text-muted-foreground">
-      Could not list repositories.
-      <Button type="button" size="xs" variant="outline" @click="lookup">Retry</Button>
-    </p>
     <ErrorBanner v-if="refused" :error="refused" />
   </form>
 </template>

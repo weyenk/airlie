@@ -39,6 +39,7 @@ dependencies = [
     "huggingface-hub>=2.2",
     "py-vapid>=1.9.6",
     "http-ece>=1.2.1",
+    "cryptography>=50.0.2",
 ]
 
 [project.scripts]
@@ -178,6 +179,7 @@ equivalent = [
     { mutant = "airlie.boxes.transit.x__changed_paths__mutmut_10", line = "status = (await mirror.git(\"diff\", \"--name-status\", \"-M\", base_sha, sha)).split(\"\\0\")", reason = "the log scan below lists every path any commit of the range touched (a superset of the net diff's paths), so the diff half adds none" },
     { mutant = "airlie.boxes.transit.x__changed_paths__mutmut_28", line = "while i <= len(status) and status[i].strip():", reason = "the NUL-split diff output ends in an empty element that stops the loop before i reaches len(status)" },
     { mutant = "airlie.boxes.transit.x__changed_paths__mutmut_35", line = "width = 3 if status[i][0] in \"XXRCXX\" else 2", reason = "the paths a rename or copy status names are also in the log scan (--no-renames lists both sides)" },
+    { mutant = "airlie.boxes.transit.x__changed_paths__mutmut_55", line = "names = await mirror.git(\"log\", \"-z\", \"--name-only\", \"--format=\", f\"{base_sha}..{sha}\")", reason = "with rename detection the log lists a rename's new path and the net diff its old one: the union is the same" },
     { mutant = "airlie.boxes.transit.x_harvest__mutmut_181", line = "sha = (await mirror.git(\"rev-parse\", ref)).strip()", reason = "rev-parse prints the same commit for a full ref name with or without --verify" },
     { mutant = "airlie.boxes.transit.x_harvest__mutmut_111", line = "None,", reason = "git init names the scratch directory itself, so the directory it runs in is never read" },
     { mutant = "airlie.boxes.transit.x_harvest__mutmut_52", line = "with tempfile.TemporaryDirectory(prefix=None) as tmp:", reason = "the temporary directory's name prefix is never read" },
@@ -219,12 +221,14 @@ equivalent = [
     { mutant = "airlie.chat.threads.xǁThreadStoreǁlist__mutmut_15", line = "\"ORDER BY UPDATED DESC, ROWID DESC\",", reason = "SQLite keywords, identifiers and pragma names are case-insensitive: the upper-case statement does the same" },
     { mutant = "airlie.chat.threads.xǁThreadStoreǁlist__mutmut_32", line = "return [ThreadSummary(r[0], r[1], cast(None, r[2]), r[3], r[4], r[5], r[6]) for r in rows]", reason = "typing.cast returns its value unchanged at run time; only the type checker reads its first argument" },
     { mutant = "airlie.manager.core.xǁManagerǁ_stop__mutmut_17", line = "slot.stop_failed = None", reason = "None and False are both falsy: every reader tests the flag's truth only" },
+    { mutant = "airlie.manager.core.xǁManagerǁ_forget_the_dead__mutmut_5", line = "slot.stop_failed = None", reason = "None and False are both falsy: every reader tests the flag's truth only" },
     { mutant = "airlie.manager.core.xǁManagerǁ_make_room__mutmut_7", line = "if self._used_gb(None) + need <= self._budget_gb:", reason = "the slot being made room for is never in use or stop_failed when this runs, so excluding it changes no sum" },
     { mutant = "airlie.manager.core.xǁManagerǁ_make_room__mutmut_9", line = "return", reason = "break leaves the try and the function ends: return does the same" },
     { mutant = "airlie.manager.core.xǁManagerǁ_make_room__mutmut_11", line = "victim = self._victim(None)", reason = "the slot being made room for is never ready, so it is never its own victim" },
     { mutant = "airlie.manager.core.xǁManagerǁ_make_room__mutmut_21", line = "reason = \"waiting for memory: \" + \", \".join(self._blockers(None))", reason = "the slot being made room for is never in use or stop_failed when this runs, so excluding it names no other blocker" },
     { mutant = "airlie.manager.core.xǁManagerǁ_blockers__mutmut_2", line = "others = self._using_memory(None)", reason = "its only caller is _make_room, whose slot is never in use or stop_failed then, so excluding it filters nothing" },
     { mutant = "airlie.manager.core.xǁManagerǁ_used_gb__mutmut_2", line = "return sum(s.resource.footprint_gb for s in self._using_memory(None))", reason = "its only caller is _make_room, whose slot is never in use or stop_failed then, so excluding it changes no sum" },
+    { mutant = "airlie.manager.core.xǁManagerǁ_start__mutmut_33", line = "slot.last_used = None", reason = "hold sets last_used on release before anything reads it, and no await sits between the start and the holder entry" },
     { mutant = "airlie.chat.threads.xǁThreadStoreǁ__init____mutmut_10", line = "self.conn = sqlite3.connect(path, isolation_level=None, check_same_thread=None)", reason = "None and False are both falsy: sqlite3 reads either as the thread check being off" },
     { mutant = "airlie.chat.threads.xǁThreadStoreǁ__init____mutmut_17", line = "self.conn.execute(\"PRAGMA JOURNAL_MODE=WAL\")", reason = "SQLite keywords, identifiers and pragma names are case-insensitive: the upper-case statement does the same" },
     { mutant = "airlie.chat.threads.xǁThreadStoreǁ__init____mutmut_20", line = "self.conn.execute(\"PRAGMA FOREIGN_KEYS=ON\")", reason = "SQLite keywords, identifiers and pragma names are case-insensitive: the upper-case statement does the same" },
@@ -237,6 +241,7 @@ equivalent = [
     { mutant = "airlie.chat.threads.xǁThreadStoreǁappend__mutmut_32", line = "self.conn.execute(\"ROLLBACK\")", reason = "SQLite keywords, identifiers and pragma names are case-insensitive: the upper-case statement does the same" },
     { mutant = "airlie.chat.threads.xǁThreadStoreǁappend__mutmut_9", line = "\"INSERT INTO MESSAGES (THREAD_ID, ID, ROLE, PARTS, CREATED, USAGE, INTERRUPTED) \"", reason = "SQLite keywords, identifiers and pragma names are case-insensitive: the upper-case statement does the same" },
     { mutant = "airlie.chat.threads.xǁThreadStoreǁdelete__mutmut_7", line = "cur = self.conn.execute(\"DELETE FROM THREADS WHERE ID = ? AND OWNER = ?\", (thread_id, owner))", reason = "SQLite keywords, identifiers and pragma names are case-insensitive: the upper-case statement does the same" },
+    { mutant = "airlie.chat.threads.xǁThreadStoreǁlist__mutmut_24", line = "return [ThreadSummary(r[0], r[1], cast(None, r[2]), r[3]) for r in rows]", reason = "typing.cast returns its value unchanged at run time; only the type checker reads its first argument" },
     { mutant = "airlie.chat.threads.xǁThreadStoreǁlist__mutmut_5", line = "where, args = (\"OWNER = ?\", (owner,)) if kind is None else (\"owner = ? and kind = ?\", (owner, kind))", reason = "SQLite keywords, identifiers and pragma names are case-insensitive: the upper-case statement does the same" },
     { mutant = "airlie.chat.threads.xǁThreadStoreǁlist__mutmut_8", line = "where, args = (\"owner = ?\", (owner,)) if kind is None else (\"OWNER = ? AND KIND = ?\", (owner, kind))", reason = "SQLite keywords, identifiers and pragma names are case-insensitive: the upper-case statement does the same" },
     { mutant = "airlie.chat.threads.xǁThreadStoreǁset_todos__mutmut_6", line = "\"UPDATE THREADS SET TODOS = ?, UPDATED = ? WHERE ID = ?\",", reason = "SQLite keywords, identifiers and pragma names are case-insensitive: the upper-case statement does the same" },

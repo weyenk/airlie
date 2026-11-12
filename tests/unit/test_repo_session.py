@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -352,7 +353,7 @@ async def test_a_mirror_that_cannot_be_read_is_an_engine_error(world: World) -> 
         async def refresh(self) -> None:
             raise MirrorError("no checkout of o/r")
 
-    world.sessions._mirror_for = lambda repo: Broken(world.tmp / "m", "o/r", world.runner, None)  # type: ignore[assignment]
+    world.sessions._mirror_for = lambda repo, access: Broken(world.tmp / "m", "o/r", world.runner, None)  # type: ignore[assignment]
 
     with pytest.raises(MirrorError, match="no checkout"):
         await world.sessions.open(world.thread())
@@ -490,7 +491,21 @@ class Wired:
         self.manager = Manager([], budget_gb=100.0, clock=FakeClock())
         self.threads = ThreadStore(tmp_path / "threads.db")
         self.confirmations = Confirmations(self.cfg)
-        self.sessions = default_repo_sessions(self.cfg, self.manager, self.threads, self.confirmations)
+        self.sessions = default_repo_sessions(
+            self.cfg,
+            self.manager,
+            self.threads,
+            self.confirmations,
+            SimpleNamespace(access=self.allowed, may_push=self.no_refusal),  # type: ignore[arg-type]
+        )
+
+    @staticmethod
+    async def allowed(person: str, repo: str) -> str:
+        return "source"
+
+    @staticmethod
+    async def no_refusal(person: str, repo: str) -> None:
+        return None
 
 
 @pytest.fixture
@@ -572,10 +587,10 @@ def test_a_repository_mirror_lives_under_the_state_dir_with_its_own_single_publi
     (wired.repos / "r").mkdir(parents=True)
     (wired.repos / "q").mkdir()
 
-    mirror = wired.sessions._mirror_for("o/r")
-    other = wired.sessions._mirror_for("o/q")
+    mirror = wired.sessions._mirror_for("o/r", "source")
+    other = wired.sessions._mirror_for("o/q", "source")
 
-    assert wired.sessions._mirror_for("o/r") is mirror
+    assert wired.sessions._mirror_for("o/r", "source") is mirror
     assert mirror.path == wired.state / "chat" / "mirrors" / "o__r"
     assert mirror.run is run_cmd and mirror.local_checkout == wired.repos / "r"
     assert (mirror.publisher.remote, mirror.publisher.publish) == ("upstream", "single")
@@ -585,7 +600,7 @@ def test_a_repository_mirror_lives_under_the_state_dir_with_its_own_single_publi
 
 def test_a_repository_without_a_checkout_and_without_the_app_cannot_be_mirrored(wired: Wired) -> None:
     with pytest.raises(MirrorError) as e:
-        wired.sessions._mirror_for("o/r")
+        wired.sessions._mirror_for("o/r", "source")
 
     assert f"no checkout of o/r in {wired.repos}" in str(e.value)
     assert "clone it there" in str(e.value)
@@ -597,7 +612,7 @@ def test_with_the_app_a_repository_is_mirrored_without_a_local_checkout(
     app = object()
     w = Wired(tmp_path, cfg, monkeypatch, app=app)
 
-    mirror = w.sessions._mirror_for("o/r")
+    mirror = w.sessions._mirror_for("o/r", "source")
 
     assert mirror.local_checkout is None and mirror.publisher.app is app and mirror.can_push
 
@@ -620,13 +635,33 @@ def test_the_mirror_of_a_repository_is_made_once_and_checked_out_by_its_own_name
 
     mirror_for = repo_mirrors(Path("/m"), publisher, run=runner, local_checkout=local_checkout)  # type: ignore[arg-type]
 
-    a, b = mirror_for("o/a"), mirror_for("o/b")
+    a, b = mirror_for("o/a", "extra"), mirror_for("o/b", "extra")
 
-    assert mirror_for("o/a") is a and mirror_for("o/b") is b
+    assert mirror_for("o/a", "extra") is a and mirror_for("o/b", "extra") is b
     assert (a.repo, a.path, a.run, a.publisher) == ("o/a", Path("/m/o__a"), runner, publishers[0])
+    assert a.publisher.app is None and not a.can_push  # an extra never pushes
     assert b.publisher is publishers[1] and len(publishers) == 2
     assert asked == ["o/a", "o/b"]
     assert (a.local_checkout, b.local_checkout) == (Path("/checkouts/o/a"), Path("/checkouts/o/b"))
+
+
+def test_a_source_mirror_with_the_app_never_reads_the_checkout() -> None:
+    from airlie.chat.repo_session import repo_mirrors
+    from tests.unit.test_transit import FakePublisher, FakeRunner
+
+    asked: list[str] = []
+
+    def local_checkout(repo: str) -> Path | None:
+        asked.append(repo)
+        return Path("/checkouts") / repo
+
+    mirror_for = repo_mirrors(Path("/m"), FakePublisher, run=FakeRunner(), local_checkout=local_checkout)  # type: ignore[arg-type]
+
+    mirror = mirror_for("o/a", "source")
+
+    assert mirror.local_checkout is None and mirror.can_push and asked == []  # GitHub, through the App
+    assert mirror_for("o/a", "extra") is not mirror  # the other kind is its own mirror
+    assert asked == ["o/a"]
 
 
 def test_a_mirror_has_no_local_checkout_unless_asked_for_one() -> None:
@@ -635,420 +670,48 @@ def test_a_mirror_has_no_local_checkout_unless_asked_for_one() -> None:
 
     mirror_for = repo_mirrors(Path("/m"), FakePublisher, run=FakeRunner())  # type: ignore[arg-type]
 
-    assert mirror_for("o/a").local_checkout is None
+    assert mirror_for("o/a", "source").local_checkout is None
 
 
-# --- the session's parts, one by one -------------------------------------------------------------------
+# --- the person's access, asked again when a yes is carried out ---------------------------------------------
 
 
-def _cfg_with(cfg: AirlieConfig, **network: object) -> AirlieConfig:
-    out = cfg.model_copy(deep=True)
-    for key, value in network.items():
-        setattr(out.boxes.network, key, value)
-    return out
+async def test_an_approved_push_and_pr_ask_the_persons_access_again_before_acting(world: World) -> None:
+    import dataclasses
 
-
-async def test_an_allow_list_network_lets_the_vm_reach_the_configured_hosts_and_no_others(
-    tmp_path: Path, cfg: AirlieConfig
-) -> None:
-    from airlie.boxes.protocol import Network
-
-    w = World(tmp_path, _cfg_with(cfg, after_setup="allow_list", allow_hosts=["pypi.org", "github.com"]))
-    chat = await w.sessions.open(w.thread())
-
-    async with w.sessions.turn(chat, "chat:t1"):
-        pass
-
-    assert w.sessions._configured_network() == Network("allow_list", ("pypi.org", "github.com"))
-    assert w.vm().boots == [Network("allow_list", ("pypi.org", "github.com"))]
-    assert type(w.vm().boots[0].allow) is tuple
-
-
-async def test_a_network_that_is_off_reaches_no_host_even_with_hosts_listed(
-    tmp_path: Path, cfg: AirlieConfig
-) -> None:
-    from airlie.boxes.protocol import Network
-
-    w = World(tmp_path, _cfg_with(cfg, after_setup="off", allow_hosts=["pypi.org"]))
-    asked: list[Network] = []
-    w.network_check = asked.append
-    chat = await w.sessions.open(w.thread())
-
-    async with w.sessions.turn(chat, "chat:t1"):
-        pass
-
-    assert asked == [Network("off", ())] and w.vm().boots == [Network("off", ())]
-
-
-async def test_the_image_of_a_chat_not_opened_yet_is_refused_with_how_to_open_it(world: World) -> None:
-    with pytest.raises(EngineError) as e:
-        await world.sessions._image("t1")
-
-    assert str(e.value) == "this chat's environment is not known yet: send a message to open it"
-
-
-async def test_the_image_is_ensured_for_the_chats_recipe_and_repo_as_that_session(world: World) -> None:
-    from airlie.chat.repo_session import _session
+    from airlie.chat.repo_tools import OpenPr, PushBranch
+    from airlie.tools.protocol import ToolContext
 
     chat = await world.sessions.open(world.thread())
-    seen: list[tuple[object, str, str]] = []
-
-    async def ensure(recipe: object, repo: str) -> str:
-        seen.append((recipe, repo, _session.get()))
-        return "airlie-image-x"
-
-    world.images.ensure = ensure  # type: ignore[method-assign]
-
-    assert await world.sessions._image("t1") == "airlie-image-x"
-    assert seen == [(chat.recipe, "o/r", "t1")]
-    assert _session.get() == ""  # the session is set for the build alone
-
-
-async def test_a_chats_vm_resource_is_named_for_its_repository(world: World) -> None:
-    await world.sessions.open(world.thread())
-
-    resource = world.sessions._resources["t1"]
-
-    assert (resource.name, resource.display) == ("vm:t1", "o/r VM")
-    assert resource.box is world.vm() and resource.spec is world.sessions._cfg.boxes
-
-
-async def test_opening_a_chat_that_is_not_a_repository_chat_is_refused(world: World) -> None:
-    plain = Thread("p1", "noah", "plain", "", 0.0, 0.0, repo="o/r")
-
-    with pytest.raises(AssertionError):
-        await world.sessions.open(plain)
-
-    assert world.sessions._chats == {} and world.boxes == {}
-
-
-async def test_an_opened_chat_carries_its_slug_its_mirror_its_vm_and_its_bundle_limit(
-    world: World, cfg: AirlieConfig
-) -> None:
-    chat = await world.sessions.open(world.thread())
-
-    assert (chat.session_id, chat.slug) == ("t1", slug_of("t1"))
-    assert chat.mirror is world.mirror and chat.box is world.vm()
-    assert chat.max_bytes == cfg.boxes.bundle_max_mb * 1048576 and type(chat.max_bytes) is int
-
-
-async def test_opening_an_open_chat_again_asks_nothing_of_the_vm_the_network_or_the_mirror(
-    world: World,
-) -> None:
-    thread = world.thread()
-    chat = await world.sessions.open(thread)
-    asked: list[object] = []
-    world.network_check = asked.append
-    world.sessions._mirror_for = lambda repo: asked.append(repo) or world.mirror  # type: ignore[assignment,func-returns-value]
-
-    assert await world.sessions.open(thread) is chat
-    assert asked == []
-
-
-async def test_a_chat_opens_its_own_repositorys_mirror_at_its_base_ref_and_reads_the_recipe_there(
-    world: World,
-) -> None:
     asked: list[str] = []
-    recipe_at: list[str | None] = []
-    real_recipe_text = world.mirror.recipe_text
+    why = "you cannot push to o/r on GitHub, so airlie will not push for you"
 
-    def mirror_for(repo: str) -> FakeMirror:
-        asked.append(repo)
-        return world.mirror
+    async def lost() -> str:
+        asked.append("asked")
+        return why
 
-    async def recipe_text(ref: str) -> str | None:
-        recipe_at.append(ref)
-        return await real_recipe_text(ref)
+    refusing = dataclasses.replace(chat, may_publish=lost)
+    ctx = ToolContext(Path("."))
 
-    world.sessions._mirror_for = mirror_for  # type: ignore[assignment]
-    world.mirror.recipe_text = recipe_text  # type: ignore[method-assign]
-    thread = world.threads.open("t1", "noah", "repository", repo="o/r", base_ref="dev")
+    pushed = await PushBranch(refusing).run_approved({}, {"head": world.base}, ctx)
+    opened = await OpenPr(refusing).run_approved({}, {"title": "t", "head": world.base}, ctx)
 
-    chat = await world.sessions.open(thread)
+    assert (pushed.ok, pushed.output) == (False, f"error: {why}")
+    assert (opened.ok, opened.output) == (False, f"error: {why}")
+    assert asked == ["asked", "asked"]
+    assert world.publisher.events == []  # type: ignore[attr-defined]  # nothing pushed, no PR
 
-    assert asked == ["o/r"] and recipe_at == [TIP]
-    assert chat.base_ref == "origin/dev"
-    resolved = [a for a, _, _ in world.runner.calls if a[1:2] == ["rev-parse"]]
-    assert resolved and resolved[-1][-1] == "origin/dev^{commit}"
 
+async def test_a_session_that_lost_access_is_refused_even_when_already_open(world: World) -> None:
+    from airlie.chat.repo_session import NoAccess
 
-async def test_two_opens_of_one_chat_at_once_make_one_session(world: World) -> None:
-    thread = world.thread()
-    world.mirror.refresh_gate = asyncio.Event()
+    chat = await world.sessions.open(world.thread())
+    assert chat is await world.sessions.open(world.thread())
 
-    first = asyncio.create_task(world.sessions.open(thread))
-    await world.mirror.refreshing.wait()
-    second = asyncio.create_task(world.sessions.open(thread))
-    await settle()
-    world.mirror.refresh_gate.set()
+    async def gone(person: str, repo: str) -> None:
+        return None
 
-    a, b = await asyncio.gather(first, second)
+    world.sessions._authorize = gone  # type: ignore[assignment]
 
-    assert a is b and world.mirror.refreshes == 1
-
-
-async def test_a_mirror_being_refreshed_for_one_repository_does_not_hold_up_another(world: World) -> None:
-    other = FakeMirror(world.tmp / "other", "o/q", world.runner, RECIPE)
-    world.sessions._mirror_for = lambda repo: other if repo == "o/q" else world.mirror  # type: ignore[assignment]
-    world.mirror.refresh_gate = asyncio.Event()
-
-    slow = asyncio.create_task(world.sessions.open(world.thread("t1")))
-    await world.mirror.refreshing.wait()
-    quick = asyncio.create_task(
-        world.sessions.open(world.threads.open("t2", "noah", "repository", repo="o/q", base_ref="main"))
-    )
-    await settle()
-
-    assert quick.done() and quick.result().mirror is other and not slow.done()
-    world.mirror.refresh_gate.set()
-    await slow
-
-
-async def test_the_tool_context_takes_the_shell_timeout_and_output_cap_from_the_config(
-    tmp_path: Path, cfg: AirlieConfig
-) -> None:
-    custom = cfg.model_copy(deep=True)
-    custom.tools.shell_timeout_s = 321.0
-    custom.tools.output_cap_chars = 4321
-    w = World(tmp_path, custom)
-    chat = await w.sessions.open(w.thread())
-
-    ctx = w.sessions.tool_context(chat)
-
-    assert (ctx.shell_timeout_s, ctx.output_cap_chars) == (321.0, 4321)
-
-
-async def test_a_delete_refused_for_a_busy_vm_keeps_the_session_and_its_resource(world: World) -> None:
-    thread = world.thread()
-    chat = await world.sessions.open(thread)
-    resource = world.sessions._resources["t1"]
-
-    async with world.sessions.turn(chat, "chat:t1"):
-        with pytest.raises(EngineError, match="in use"):
-            await world.sessions.delete(thread)
-
-    assert world.sessions._chats == {"t1": chat} and world.sessions._resources == {"t1": resource}
-    assert await world.sessions.open(thread) is chat
-
-
-async def test_a_failed_tart_delete_keeps_the_resource_the_chat_was_using(world: World) -> None:
-    thread = world.thread()
-    chat = await world.sessions.open(thread)
-    resource = world.sessions._resources["t1"]
-    async with world.sessions.turn(chat, "chat:t1"):
-        pass
-
-    async def locked() -> None:
-        raise BoxUnavailable("the VM is locked")
-
-    world.vm().delete = locked  # type: ignore[method-assign]
-
-    with pytest.raises(EngineError, match="could not delete"):
-        await world.sessions.delete(thread)
-
-    assert world.sessions._chats == {"t1": chat} and world.sessions._resources == {"t1": resource}
-
-
-async def test_deleting_an_opened_chat_deletes_the_box_it_was_using_without_making_another(
-    world: World,
-) -> None:
-    thread = world.thread()
-    await world.sessions.open(thread)
-    made: list[str] = []
-    world.sessions._box_for = lambda name: made.append(name) or FakeBox(name)  # type: ignore[assignment,func-returns-value]
-
-    await world.sessions.delete(thread)
-
-    assert made == []
-
-
-async def test_deleting_a_chat_forgets_its_approvals_and_drops_its_branch_from_its_own_mirror(
-    world: World,
-) -> None:
-    thread = world.thread()
-    asked = world.confirmations.request("t1", "c", "push_branch", {})
-    world.confirmations.approve("t1", [Approval(id=asked, approved=True)])
-    repos: list[str] = []
-    world.sessions._mirror_for = lambda repo: repos.append(repo) or world.mirror  # type: ignore[assignment,func-returns-value]
-
-    await world.sessions.delete(thread)
-
-    assert world.confirmations.check("t1", "push_branch", {}) == "pending"  # the yes went with the chat
-    assert repos == ["o/r"]
-
-
-async def test_a_session_branch_that_cannot_be_dropped_is_logged_with_its_chat_and_reason(
-    world: World, caplog: pytest.LogCaptureFixture
-) -> None:
-    thread = world.thread()
-    world.runner.failures["update-ref"] = "no such ref"
-
-    with caplog.at_level("WARNING", logger="airlie.chat.repo_session"):
-        await world.sessions.delete(thread)
-
-    [record] = caplog.records
-    assert record.getMessage() == "could not drop the session branch of t1 from the mirror"
-    assert record.exc_info and record.exc_info[1] is not None and record.levelname == "WARNING"
-
-
-async def test_a_vm_that_cannot_be_asked_at_shutdown_is_logged_and_the_others_still_stop(
-    world: World, caplog: pytest.LogCaptureFixture
-) -> None:
-    for thread_id in ("t1", "t2"):
-        chat = await world.sessions.open(world.thread(thread_id))
-        async with world.sessions.turn(chat, f"chat:{thread_id}"):
-            pass
-
-    async def unknown() -> bool:
-        raise BoxUnavailable("tart list failed")
-
-    world.vm("t1").running = unknown  # type: ignore[method-assign]
-
-    with caplog.at_level("WARNING", logger="airlie.chat.repo_session"):
-        await world.sessions.stop_all()
-
-    [record] = caplog.records
-    assert record.getMessage() == "could not stop the VM of chat t1 at shutdown"
-    assert record.exc_info and record.exc_info[1] is not None and record.levelname == "WARNING"
-    assert world.vm("t2").state == "stopped"
-
-
-async def test_adopting_goes_on_past_a_chat_whose_disk_is_gone(world: World) -> None:
-    world.thread("t1")
-    world.threads.set_base("t1", TIP)  # based, but no VM disk
-    world.thread("t2")
-    world.threads.set_base("t2", TIP)
-    world.box_for(f"airlie-chat-{slug_of('t2')}").state = "stopped"  # type: ignore[attr-defined]
-
-    await world.sessions.adopt()
-
-    assert [s.name for s in world.manager.status()] == ["vm:t2"]
-
-
-async def test_a_vm_that_cannot_be_adopted_is_logged_with_its_chat_and_reason(
-    world: World, caplog: pytest.LogCaptureFixture
-) -> None:
-    world.thread()
-    world.threads.set_base("t1", TIP)
-
-    class NoTart(FakeBox):
-        async def exists(self) -> bool:
-            raise BoxUnavailable(INSTALL_HINT)
-
-    world.boxes[f"airlie-chat-{slug_of('t1')}"] = NoTart("x")
-
-    with caplog.at_level("WARNING", logger="airlie.chat.repo_session"):
-        await world.sessions.adopt()
-
-    [record] = caplog.records
-    assert record.getMessage() == "could not adopt the VM of chat t1"
-    assert record.exc_info and record.exc_info[1] is not None and record.levelname == "WARNING"
-
-
-# --- the session branch as the host's mirror sees it ---------------------------------------------------
-
-
-class GitAnswers:
-    """A mirror whose git answers only the exact commands it was given (a missing one fails, as git would);
-    every command is recorded."""
-
-    def __init__(self, answers: dict[tuple[str, ...], str]) -> None:
-        self.answers = answers
-        self.calls: list[tuple[str, ...]] = []
-
-    async def git(self, *args: str) -> str:
-        self.calls.append(args)
-        if args not in self.answers:
-            raise MirrorError(f"git {' '.join(map(str, args))} failed")
-        return self.answers[args]
-
-
-def _branch_world(world: World, answers: dict[tuple[str, ...], str]) -> tuple[GitAnswers, list[str]]:
-    mirror = GitAnswers(answers)
-    repos: list[str] = []
-    world.sessions._mirror_for = lambda repo: repos.append(repo) or mirror  # type: ignore[assignment,func-returns-value]
-    return mirror, repos
-
-
-BRANCH_HEAD = "c" * 40
-BRANCH = f"airlie/chat-{slug_of('t1')}"
-HEADS = ("rev-parse", "--verify", "-q", f"refs/heads/{BRANCH}")
-COUNT = ("rev-list", "--count", f"{TIP}..{BRANCH_HEAD}")
-REMOTE = ("rev-parse", "--verify", "-q", f"refs/remotes/origin/{BRANCH}")
-
-
-async def test_the_branch_state_counts_the_commits_past_the_base_and_sees_the_remote_at_the_head(
-    world: World,
-) -> None:
-    world.thread()
-    world.threads.set_base("t1", TIP)
-    mirror, repos = _branch_world(
-        world, {HEADS: f"{BRANCH_HEAD}\n", COUNT: " 3\n", REMOTE: f"{BRANCH_HEAD}\n"}
-    )
-
-    state = await world.sessions.branch_state(world.threads.get("t1", "noah"))
-
-    assert state == (3, True) and type(state[0]) is int and state[1] is True
-    assert mirror.calls == [HEADS, COUNT, REMOTE]  # the mirror alone: the VM is never asked
-    assert repos == ["o/r"]
-
-
-async def test_a_remote_branch_at_another_commit_is_not_pushed(world: World) -> None:
-    world.thread()
-    world.threads.set_base("t1", TIP)
-    _branch_world(world, {HEADS: BRANCH_HEAD, COUNT: "1", REMOTE: "d" * 40})
-
-    ahead, pushed = await world.sessions.branch_state(world.threads.get("t1", "noah"))
-
-    assert ahead == 1 and pushed is False
-
-
-async def test_a_branch_the_remote_does_not_have_is_not_pushed(world: World) -> None:
-    world.thread()
-    world.threads.set_base("t1", TIP)
-    mirror, _ = _branch_world(world, {HEADS: BRANCH_HEAD, COUNT: "2"})
-
-    ahead, pushed = await world.sessions.branch_state(world.threads.get("t1", "noah"))
-
-    assert ahead == 2 and pushed is False
-    assert mirror.calls[-1] == REMOTE
-
-
-async def test_a_chat_not_opened_yet_has_no_branch_state_and_asks_no_mirror(world: World) -> None:
-    world.thread()
-    mirror, repos = _branch_world(world, {HEADS: BRANCH_HEAD, COUNT: "2", REMOTE: BRANCH_HEAD})
-
-    assert await world.sessions.branch_state(world.threads.get("t1", "noah")) == (None, None)
-    assert repos == [] and mirror.calls == []
-
-
-async def test_a_branch_the_mirror_does_not_have_has_no_state_and_is_logged(
-    world: World, caplog: pytest.LogCaptureFixture
-) -> None:
-    world.thread()
-    world.threads.set_base("t1", TIP)
-    mirror, _ = _branch_world(world, {})
-
-    with caplog.at_level("DEBUG", logger="airlie.chat.repo_session"):
-        state = await world.sessions.branch_state(world.threads.get("t1", "noah"))
-
-    assert state == (None, None) and mirror.calls == [HEADS]  # the remote is not asked about a missing branch
-    [record] = caplog.records
-    assert record.getMessage() == f"could not count the commits of {BRANCH} in the mirror"
-    assert record.levelname == "DEBUG" and record.exc_info and isinstance(record.exc_info[1], MirrorError)
-
-
-async def test_a_count_the_mirror_cannot_give_has_no_state(world: World) -> None:
-    world.thread()
-    world.threads.set_base("t1", TIP)
-    mirror, _ = _branch_world(world, {HEADS: BRANCH_HEAD, REMOTE: BRANCH_HEAD})
-
-    assert await world.sessions.branch_state(world.threads.get("t1", "noah")) == (None, None)
-    assert mirror.calls == [HEADS, COUNT]
-
-
-async def test_a_chat_without_a_repository_has_no_branch_state(world: World) -> None:
-    plain = Thread("p1", "noah", "plain", "", 0.0, 0.0)
-
-    with pytest.raises(AssertionError):
-        await world.sessions.branch_state(plain)
+    with pytest.raises(NoAccess, match="you have no access to o/r"):
+        await world.sessions.open(world.thread())

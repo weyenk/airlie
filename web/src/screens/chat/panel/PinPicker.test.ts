@@ -23,9 +23,10 @@ async function type(w: Awaited<ReturnType<typeof open>>, text: string) {
 
 const pinButton = (w: Awaited<ReturnType<typeof open>>) => w.findAll("button").find((b) => b.text() === "Pin")!;
 
-test("it offers the repositories airlie knows and pins the one picked", async () => {
+test("it offers the local checkouts airlie lists and pins the one picked", async () => {
   const server = panelServer({ repos: ["acme/api", "acme/web"] });
   const w = await open();
+  expect(w.text()).toContain("Pin a local checkout");
   await type(w, "acme/a");
   expect(w.findAll('[role="option"]').map((o) => o.text())).toEqual([expect.stringContaining("acme/api")]);
   await w.get('[role="option"]').trigger("mousedown");
@@ -54,16 +55,4 @@ test("a refused pin shows the servers reason", async () => {
   await flushPromises();
   expect(w.get('[role="alert"]').text()).toContain("at most 50 pinned repositories");
   expect(w.emitted("pin")).toBeUndefined();
-});
-
-test("a failed lookup says so and offers retry", async () => {
-  const server = panelServer({ repos: ["acme/api"], down: new Set(["repos"]) });
-  const w = await open();
-  expect(w.get('[role="alert"]').text()).toContain("Could not list repositories");
-  server.down.clear();
-  await w.findAll("button").find((b) => b.text() === "Retry")!.trigger("click");
-  await flushPromises();
-  expect(w.find('[role="alert"]').exists()).toBe(false);
-  await type(w, "acme/api");
-  expect(pinButton(w).attributes("disabled")).toBeUndefined();
 });

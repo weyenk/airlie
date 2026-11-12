@@ -11,7 +11,7 @@ import contextvars
 import hashlib
 import logging
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -27,6 +27,7 @@ from airlie.config.schema import AirlieConfig
 from airlie.engine.types import EngineError
 from airlie.manager.core import Manager
 from airlie.manager.vms import VMResource
+from airlie.sources.access import Access, RepoAccess
 from airlie.story.publish import Publisher, Runner
 from airlie.tools.protocol import ToolContext
 
@@ -37,6 +38,16 @@ REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/(?!-)[A-Za-z0-9_.-]+")
 _SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _session: contextvars.ContextVar[str] = contextvars.ContextVar("airlie_repo_session", default="")
 """The session whose VM is being prepared: the image build's confirmation is that session's."""
+
+
+Authorize = Callable[[str, str], Awaitable[Access | None]]
+"""(person, repo): how the person may use the repository, or None."""
+MayPush = Callable[[str, str], Awaitable[str | None]]
+"""(person, repo): the refusal to push for them, or None."""
+
+
+class NoAccess(EngineError):
+    """The person may not use the repository (never could, or lost it since)."""
 
 
 def valid_repo(repo: str) -> bool:
@@ -78,12 +89,17 @@ class RepoSessions:
         *,
         images: Images,
         confirmations: Confirmations,
-        mirror_for: Callable[[str], Mirror],
+        mirror_for: Callable[[str, Access], Mirror],
+        authorize: Authorize,
+        may_push: MayPush,
         box_for: Callable[[str], Box],
         threads: ThreadStore,
         network_check: Callable[[Network], None] = lambda network: None,
     ) -> None:
-        """`mirror_for` gives each repository its own Mirror with its own Publisher (repo_mirrors).
+        """`mirror_for` gives each repository its own Mirror with its own Publisher (repo_mirrors), read from
+        GitHub for a repository of the person's source and from a local checkout for an extra. `authorize`
+        and `may_push` are the server's rule (RepoAccess.access, RepoAccess.may_push): `open` asks the first
+        every time, even of a session already open, and the session's push and PR tools ask the second.
         `network_check` raises BoxUnavailable, with how to fix it, when the backend cannot give the VM the
         configured network (softnet missing)."""
         self._cfg = cfg
@@ -93,6 +109,8 @@ class RepoSessions:
         self._images = images
         self._confirmations = confirmations
         self._mirror_for = mirror_for
+        self._authorize = authorize
+        self._may_push = may_push
         self._box_for = box_for
         self._threads = threads
         self._chats: dict[str, RepoChat] = {}
@@ -141,15 +159,20 @@ class RepoSessions:
     async def open(self, thread: Thread) -> RepoChat:
         """The session of a repository chat, made ready: its VM registered, the base commit fixed (the first
         time) and the recipe read at it. Raises BoxUnavailable when Tart is missing (nothing has run yet), and
-        MirrorError or RecipeError (EngineErrors naming the problem) for a repository that cannot be read."""
+        MirrorError or RecipeError (EngineErrors naming the problem) for a repository that cannot be read, and
+        NoAccess when the person may not use the repository (asked first, also of an open session)."""
         assert thread.kind == "repository" and thread.repo is not None
+        repo, owner = thread.repo, thread.owner
+        access = await self._authorize(owner, repo)
+        if access is None:
+            raise NoAccess(f"you have no access to {repo}")
         found = self._chats.get(thread.id)
         if found is not None:
             return found
         resource = self._resource(thread)
         await resource.box.exists()  # BoxUnavailable, with the install hint, when tart is not there
         self._network_check(self._configured_network())  # and when softnet is not, for allow_list or off
-        mirror = self._mirror_for(thread.repo)
+        mirror = self._mirror_for(repo, access)
         lock = self._repo_locks.setdefault(thread.repo, asyncio.Lock())
         async with lock:  # one repository's mirror is made and fetched by one chat at a time
             found = self._chats.get(thread.id)
@@ -172,6 +195,7 @@ class RepoSessions:
             box=resource.box,
             mirror=mirror,
             max_bytes=self._cfg.boxes.bundle_max_mb * 1024 * 1024,
+            may_publish=lambda: self._may_push(owner, repo),
         )
         self._chats[thread.id] = chat
         return chat
@@ -184,9 +208,9 @@ class RepoSessions:
         base_sha = self._threads.get(thread.id, thread.owner).base_sha
         if base_sha is None:
             return None, None
-        mirror = self._mirror_for(thread.repo)
         branch = session_branch(thread.id)
         try:
+            mirror = self._local_mirror(thread)
             head = (await mirror.git("rev-parse", "--verify", "-q", f"refs/heads/{branch}")).strip()
             ahead = int((await mirror.git("rev-list", "--count", f"{base_sha}..{head}")).strip())
         except Exception:  # no branch in the mirror yet (nothing harvested), or the mirror cannot say
@@ -199,6 +223,14 @@ class RepoSessions:
         except Exception:  # the remote has no such branch
             pushed = False
         return ahead, pushed
+
+    def _local_mirror(self, thread: Thread) -> Mirror:
+        """The thread's mirror to read what is already in it (the session branch): the open session's, else
+        the repository's own. Nothing is fetched and nobody's access is asked: listing and deleting a chat
+        work for a person who lost the repository."""
+        assert thread.repo is not None
+        chat = self._chats.get(thread.id)
+        return chat.mirror if chat is not None else self._mirror_for(thread.repo, "extra")
 
     def tool_context(self, chat: RepoChat) -> ToolContext:
         tools = self._cfg.tools
@@ -266,7 +298,7 @@ class RepoSessions:
         self._confirmations.forget(thread.id)
         if thread.repo is not None:
             try:  # the host's copy of the session branch (pushed or not)
-                mirror = self._mirror_for(thread.repo)
+                mirror = self._local_mirror(thread)
                 await mirror.git("update-ref", "-d", f"refs/heads/{session_branch(thread.id)}")
             except Exception:
                 log.warning(
@@ -302,28 +334,40 @@ def repo_mirrors(
     *,
     run: Runner,
     local_checkout: Callable[[str], Path | None] = lambda repo: None,
-) -> Callable[[str], Mirror]:
-    """`mirror_for`: one Mirror per repository ("owner/name"), made on its first use and kept, each with a
-    Publisher of its own. A Publisher holds the one repository its steps may fetch from and push to (what
-    `prepare` read), so one shared by two repositories would send a push of one to the other's check (and
-    refuse it), or mint a token for the wrong repository."""
-    made: dict[str, Mirror] = {}
+) -> Callable[[str, Access], Mirror]:
+    """`mirror_for`: one Mirror per repository ("owner/name") and kind of access, made on its first use and
+    kept, each with a Publisher of its own. A Publisher holds the one repository its steps may fetch from and
+    push to (what `prepare` read), so one shared by two repositories would send a push of one to the other's
+    check (and refuse it), or mint a token for the wrong repository. A "source" repository is fetched through
+    the publisher's App (its installation token, scoped to that repository) and read from its local checkout
+    only when there is no App; an "extra" has no App at all: it is read from its checkout and never pushed.
+    Both kinds share the repository's directory, and a mirror's `origin` follows the kind (Mirror.refresh)."""
+    made: dict[tuple[str, Access], Mirror] = {}
 
-    def mirror_for(repo: str) -> Mirror:
-        found = made.get(repo)
+    def mirror_for(repo: str, access: Access) -> Mirror:
+        found = made.get((repo, access))
         if found is None:
-            found = made[repo] = Mirror(root, repo, publisher(), run=run, local_checkout=local_checkout(repo))
+            pub = publisher()
+            if access == "extra":
+                pub.app = None
+            checkout = local_checkout(repo) if pub.app is None else None
+            found = made[(repo, access)] = Mirror(root, repo, pub, run=run, local_checkout=checkout)
         return found
 
     return mirror_for
 
 
 def default_repo_sessions(
-    cfg: AirlieConfig, manager: Manager, threads: ThreadStore, confirmations: Confirmations
+    cfg: AirlieConfig,
+    manager: Manager,
+    threads: ThreadStore,
+    confirmations: Confirmations,
+    access: RepoAccess,
 ) -> RepoSessions:
     """The serve wiring: Tart boxes (softnet checked for a filtered network), and a host mirror per
     repository under `<state_dir>/chat/mirrors` with its own publisher, as the GitHub App's bot when one is
-    configured (else read from `story.repos_root`, and nothing is pushed)."""
+    configured (else read from `story.repos_root`, and nothing is pushed); a pinned extra is always read
+    from its checkout. `access` is the server's rule for who may use which repository."""
     from airlie.boxes.images import SecretStore
     from airlie.boxes.mirror import MirrorError
     from airlie.boxes.tart import SOFTNET_HINT, TartBox, softnet_installed
@@ -343,10 +387,8 @@ def default_repo_sessions(
     def local_checkout(repo: str) -> Path | None:
         try:
             return find_checkout(cfg.story.repos_root.expanduser(), repo)
-        except RepositoryError as e:
-            if app is None:  # nothing else to read the code from
-                raise MirrorError(str(e)) from e
-            return None
+        except RepositoryError as e:  # asked only when nothing else reads the code
+            raise MirrorError(str(e)) from e
 
     def network_check(network: Network) -> None:
         if network.mode != "open" and not softnet_installed():
@@ -369,6 +411,8 @@ def default_repo_sessions(
             run=run_cmd,
             local_checkout=local_checkout,
         ),
+        authorize=access.access,
+        may_push=access.may_push,
         box_for=box_for,
         threads=threads,
         network_check=network_check,

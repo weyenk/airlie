@@ -340,6 +340,15 @@ caller that must wait gets the reason (shown in the chat strip and the Admin Eng
 
 ## Repository chats
 
+The chat panel lists the repositories each signed-in person can reach on GitHub when
+`chat.sources` includes `github_app` (as in the committed `airlie.yaml`). Until they link,
+**Connect GitHub** shows the device-flow code and a link to GitHub; after approval the panel lists
+their installations' repositories, plus any **extras** that are local checkouts only (pinned by hand).
+Set `story.github_app.client_id` in `airlie.local.yaml`, turn **Device flow** on for the App, and put the
+App's client secret at `story.github_app.client_secret_file` (0600) so refresh and revocation work;
+linked tokens are sealed with `story.github_app.token_key_file` (losing that file drops every link — people
+connect again). See [`docs/integrations/story.md`](docs/integrations/story.md) (*Publishing as a bot*).
+
 A repository chat works on a checkout inside its own Tart VM, one VM per chat. The model's tools (`shell`,
 `run_tests`, file edits, `compute`) run in the VM, never on the host. There is no host fallback: when Tart is
 missing or the VM cannot start, the chat says so and stops. Install Tart with

@@ -49,6 +49,21 @@ class PushSubscription:
     created_at: float
 
 
+@dataclass(frozen=True)
+class SourceLink:
+    """One person's linked account at a repository source. The tokens are sealed (sources/vault.py)."""
+
+    user_id: str
+    source: str
+    login: str
+    account_id: int
+    access_token: bytes
+    access_expires_at: float | None
+    refresh_token: bytes | None
+    refresh_expires_at: float | None
+    created_at: float
+
+
 SCHEMA = """
 create table if not exists users (
     id text primary key, name text not null, login text unique, role text not null, created_at real not null);
@@ -72,6 +87,11 @@ create table if not exists notification_settings (
 create table if not exists chat_pins (
     user_id text not null, repo text not null collate nocase, created_at real not null,
     primary key (user_id, repo));
+-- no foreign key, as chat_pins: the admin key and the bootstrap admin link too
+create table if not exists source_links (
+    user_id text not null, source text not null, login text not null, account_id integer not null,
+    access_token blob not null, access_expires_at real, refresh_token blob, refresh_expires_at real,
+    created_at real not null, primary key (user_id, source));
 """
 
 
@@ -120,6 +140,7 @@ class AuthStore:
     def delete_user(self, id: str) -> None:
         self.conn.execute("delete from users where id = ?", (id,))
         self.conn.execute("delete from chat_pins where user_id = ?", (id,))
+        self.conn.execute("delete from source_links where user_id = ?", (id,))
 
     # ---- invites ----
     def make_invite(self, user_id: str, hours: int) -> str:
@@ -273,4 +294,41 @@ class AuthStore:
     def unpin(self, user_id: str, repo: str) -> bool:
         """False when `repo` was not pinned."""
         cur = self.conn.execute("delete from chat_pins where user_id = ? and repo = ?", (user_id, repo))
+        return cur.rowcount > 0
+
+    # ---- linked repository-source accounts ----
+    def link(self, user_id: str, source: str) -> SourceLink | None:
+        row = self.conn.execute(
+            "select user_id, source, login, account_id, access_token, access_expires_at, refresh_token,"
+            " refresh_expires_at, created_at from source_links where user_id = ? and source = ?",
+            (user_id, source),
+        ).fetchone()
+        return None if row is None else SourceLink(*row)
+
+    def save_link(self, link: SourceLink) -> None:
+        self.conn.execute(
+            "insert into source_links (user_id, source, login, account_id, access_token, access_expires_at,"
+            " refresh_token, refresh_expires_at, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " on conflict (user_id, source) do update set login = excluded.login,"
+            " account_id = excluded.account_id, access_token = excluded.access_token,"
+            " access_expires_at = excluded.access_expires_at, refresh_token = excluded.refresh_token,"
+            " refresh_expires_at = excluded.refresh_expires_at, created_at = excluded.created_at",
+            (
+                link.user_id,
+                link.source,
+                link.login,
+                link.account_id,
+                link.access_token,
+                link.access_expires_at,
+                link.refresh_token,
+                link.refresh_expires_at,
+                link.created_at,
+            ),
+        )
+
+    def drop_link(self, user_id: str, source: str) -> bool:
+        """False when there was no link."""
+        cur = self.conn.execute(
+            "delete from source_links where user_id = ? and source = ?", (user_id, source)
+        )
         return cur.rowcount > 0

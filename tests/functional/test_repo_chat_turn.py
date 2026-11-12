@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 import pytest
+import yaml
 
 from airlie.auth.principal import SESSION_COOKIE
 from airlie.auth.store import AuthStore
@@ -22,10 +23,13 @@ from airlie.chat.repo_session import slug_of
 from airlie.config import load_config
 from airlie.manager.core import Manager
 from airlie.serve.app import create_app
+from airlie.sources.github import GitHubSource
 from tests.support.box import FakeBox
+from tests.support.github_user import INTERVAL, Clock, FakeGitHubUser
 from tests.support.repo_chat import RepoFakes
 from tests.support.serve import FakeEngine, StuckClock
 from tests.support.serve_chat import Call, ScriptedUpstream, Text, chat_cfg
+from tests.unit.github_helpers import APP_ID, FakeGitHub, app_spec
 from tests.unit.serve_helpers import TestClient
 
 ELSEWHERE = ("10.0.0.5", 40000)
@@ -56,12 +60,21 @@ def tool_names(request_body: dict[str, Any]) -> set[str]:
 
 
 class Rig:
-    def __init__(self, tmp_path: Path, *replies: Any, recipe: str | None = None, **app_kw: Any) -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        *replies: Any,
+        recipe: str | None = None,
+        cfg: Any = None,
+        client: tuple[str, int] | None = None,
+        **app_kw: Any,
+    ) -> None:
         self.fakes = RepoFakes(tmp_path) if recipe is None else RepoFakes(tmp_path, recipe=recipe)
         self.up = ScriptedUpstream(*replies)
         self.engine = FakeEngine("main")
         self.manager = Manager([self.engine], budget_gb=100.0, clock=StuckClock())
-        cfg = chat_cfg(tmp_path)
+        cfg = cfg or chat_cfg(tmp_path)
+        app_kw.setdefault("pinnable", pinnable_or)  # no source: the checkouts airlie has are the person's
         self.app = create_app(
             cfg,
             transport=httpx.MockTransport(self.up),
@@ -69,7 +82,7 @@ class Rig:
             repo_sessions=self.fakes.build,
             **app_kw,
         )
-        self.c = TestClient(self.app)
+        self.c = TestClient(self.app) if client is None else TestClient(self.app, client=client)
 
     def post(self, payload: dict[str, Any] | None = None, **kw: Any) -> httpx.Response:
         return self.c.post("/v1/airlie/chat/turn", json=payload or body(), **kw)
@@ -740,12 +753,14 @@ def test_a_new_repository_chat_starts_its_vm_in_the_background(tmp_path: Path) -
         assert r.status_code == 200 and rig.fakes.mirror.refreshes == 1  # the turn found it ready
 
 
-def test_a_repository_airlie_does_not_know_is_not_pre_warmed(tmp_path: Path) -> None:
+def test_a_repository_airlie_does_not_know_cannot_be_made_a_chat_of(tmp_path: Path) -> None:
     rig = Rig(tmp_path, pinnable=pinnable_or)
     with TestClient(rig.app) as c:
-        made(c, "x/y")
+        r = c.post("/v1/airlie/chat/threads", json={"kind": "repository", "repo": "x/y"})
         settle(c)
 
+        assert (r.status_code, r.json()) == (403, {"error": "x/y is not a repository airlie knows"})
+        assert c.get("/v1/airlie/chat/threads").json() == []
         assert rig.fakes.boxes == {} and rig.fakes.mirror.refreshes == 0
 
 
@@ -1000,3 +1015,237 @@ def test_a_retry_that_replaces_a_reply_with_a_prompt_drops_that_request(tmp_path
     r = rig.post(answer(asked))  # the replaced reply's prompt
     assert r.status_code == 409 and rig.pushes() == 0
     assert not any(p["type"] == "data-approval" for p in stored_parts(rig))
+
+
+# --- each person's own repositories (GitHub through the App, and the local extras) -------------------------
+
+CLIENT_ID, SECRET = "Iv1.testclient", "s3cr3t-client-secret"
+LINK = "/v1/airlie/chat/sources/github_app/link"
+NAMES = ["weyenk/airlie", "o/r", "local/only"]
+"""The checkouts airlie has; the App is installed on the first two."""
+
+
+async def names() -> list[str]:
+    return list(NAMES)
+
+
+class GitHubRig(Rig):
+    """The real app with GitHub as the source: Noah (weyenk) may push o/r and weyenk/airlie, Ashley sees o/r
+    read-only; both sign in by cookie, and `link` is the device flow, approved on the fake."""
+
+    def __init__(self, tmp_path: Path, *replies: Any) -> None:
+        self.clock = Clock()
+        self.fake = FakeGitHubUser(
+            FakeGitHub(installed=("o/r", "weyenk/airlie")),
+            client_id=CLIENT_ID,
+            client_secret=SECRET,
+            clock=self.clock,
+        )
+        self.fake.grant("weyenk", {1: [("weyenk/airlie", True), ("o/r", True)]})
+        self.fake.grant("ashley", {2: [("o/r", False)]})
+        secret = tmp_path / "client-secret"
+        secret.write_text(SECRET + "\n")
+        secret.chmod(0o600)
+        spec = app_spec(
+            tmp_path, client_id=CLIENT_ID, oauth_url="http://127.0.0.1:9/oauth", client_secret_file=secret
+        )
+        source = GitHubSource(
+            spec, "https://github.com/o/r.git", transport=httpx.MockTransport(self.fake), clock=self.clock
+        )
+        store = AuthStore(tmp_path / "auth.sqlite", now=self.clock)
+        noah, ashley = store.add_user("Noah", "member"), store.add_user("Ashley", "member")
+        self.noah = {"Cookie": f"{SESSION_COOKIE}={store.make_session(noah.id, 30)}"}
+        self.ashley = {"Cookie": f"{SESSION_COOKIE}={store.make_session(ashley.id, 30)}"}
+        chat_cfg(tmp_path)
+        path = tmp_path / "airlie.yaml"
+        data = yaml.safe_load(path.read_text())
+        app_cfg = {"app_id": APP_ID, "token_key_file": str(tmp_path / "keys" / "tokens.key")}
+        data["story"] = {"github_app": {**app_cfg, "client_id": CLIENT_ID}}
+        data["chat"]["sources"] = ["github_app"]
+        path.write_text(yaml.safe_dump(data))
+        super().__init__(
+            tmp_path,
+            *replies,
+            cfg=load_config(path),
+            client=ELSEWHERE,
+            auth_store=store,
+            pinnable=names,
+            repo_sources={"github_app": source},
+            now=self.clock,
+        )
+
+    def push_ready(self) -> None:
+        """The VM has two commits to push."""
+        self.fakes.script_push()
+        self.fakes.runner.answers["log"] = "b2b2b2b fix the parser\n"
+        self.fakes.runner.answers["diff"] = "M\0src/parse.py\0"
+
+    def link(self, who: dict[str, str], login: str) -> None:
+        started = self.c.post(LINK, headers=who).json()
+        self.fake.approve(started["user_code"], login)
+        self.clock.advance(INTERVAL)
+        r = self.c.post(f"{LINK}/{started['link_id']}", headers=who)
+        assert r.status_code == 200 and r.json()["state"] == "linked", r.text
+
+    def threads(self, who: dict[str, str]) -> list[str]:
+        return [t["id"] for t in self.c.get("/v1/airlie/chat/threads", headers=who).json()]
+
+    def refresh_lists(self, who: dict[str, str]) -> None:
+        assert self.c.get("/v1/airlie/chat/repositories?refresh=true", headers=who).status_code == 200
+
+
+NO_ACCESS = "you have no access to {}: connect GitHub, or ask for access to it on GitHub"
+
+
+def test_a_person_without_access_cannot_make_a_chat_of_it(tmp_path: Path) -> None:
+    rig = GitHubRig(tmp_path)
+    rig.link(rig.ashley, "ashley")
+
+    r = rig.c.post(
+        "/v1/airlie/chat/threads", json={"kind": "repository", "repo": "weyenk/airlie"}, headers=rig.ashley
+    )
+
+    assert (r.status_code, r.json()) == (403, {"error": NO_ACCESS.format("weyenk/airlie")})
+    assert rig.threads(rig.ashley) == [] and rig.fakes.boxes == {}  # no row, no VM
+
+
+def test_a_person_without_access_cannot_take_a_turn_in_it_either(tmp_path: Path) -> None:
+    rig = GitHubRig(tmp_path, Text("hello"))
+    rig.link(rig.ashley, "ashley")
+
+    r = rig.post({**body("hi"), "repo": "weyenk/airlie"}, headers=rig.ashley)
+
+    assert (r.status_code, r.json()) == (403, {"error": NO_ACCESS.format("weyenk/airlie")})
+    assert rig.threads(rig.ashley) == [] and rig.up.bodies == []  # the model was never asked
+
+
+def test_a_person_with_access_makes_a_chat_and_takes_a_turn(tmp_path: Path) -> None:
+    rig = GitHubRig(tmp_path, Text("hello"))
+    rig.link(rig.noah, "weyenk")
+
+    r = rig.post(body("hi"), headers=rig.noah)
+
+    assert r.status_code == 200 and rig.threads(rig.noah) == ["t1"]
+
+
+def test_a_turn_after_access_was_lost_is_403_and_the_chat_stays_listed(tmp_path: Path) -> None:
+    rig = GitHubRig(tmp_path, Text("hello"), Text("again"))
+    rig.link(rig.noah, "weyenk")
+    assert rig.post(body("hi"), headers=rig.noah).status_code == 200
+
+    rig.fake.revoke_all("weyenk")  # the person removed the App on GitHub
+    rig.refresh_lists(rig.noah)
+    r = rig.post(body("still there?"), headers=rig.noah)
+
+    assert r.status_code == 403
+    assert r.json() == {"error": "you have no access to o/r: GitHub ended airlie's access: connect again"}
+    assert rig.threads(rig.noah) == ["t1"]  # the chat stays listed
+    assert len(rig.up.bodies) == 1  # and the second turn never reached the model
+
+
+def test_a_list_kept_from_before_still_lets_the_turn_run(tmp_path: Path) -> None:
+    rig = GitHubRig(tmp_path, Text("hello"), Text("again"))
+    rig.link(rig.noah, "weyenk")
+    assert rig.post(body("hi"), headers=rig.noah).status_code == 200
+
+    rig.fake.revoke_all("weyenk")  # GitHub changed, airlie has not looked since (a list is kept a while)
+
+    assert rig.post(body("again"), headers=rig.noah).status_code == 200
+
+
+def test_prewarm_skips_a_repository_the_person_cannot_use(tmp_path: Path) -> None:
+    rig = GitHubRig(tmp_path)
+    rig.link(rig.noah, "weyenk")
+    real = rig.app.state.repo_access.access
+    asked: list[str] = []
+
+    async def lost_after_the_check(user_id: str, repo: str, **kw: Any) -> str | None:
+        asked.append(repo)
+        return await real(user_id, repo, **kw) if len(asked) == 1 else None  # gone when the pre-warm asks
+
+    rig.app.state.repo_access.access = lost_after_the_check
+    with TestClient(rig.app, client=ELSEWHERE) as c:
+        r = c.post("/v1/airlie/chat/threads", json={"kind": "repository", "repo": "o/r"}, headers=rig.noah)
+        settle(c)
+
+        assert r.status_code == 201 and asked == ["o/r", "o/r"]
+        assert rig.fakes.boxes == {} and rig.fakes.mirror.refreshes == 0  # its VM starts with its first turn
+
+
+def test_prewarm_starts_the_vm_of_a_repository_the_person_may_use(tmp_path: Path) -> None:
+    rig = GitHubRig(tmp_path)
+    rig.link(rig.noah, "weyenk")
+    with TestClient(rig.app, client=ELSEWHERE) as c:
+        made_chat = c.post(
+            "/v1/airlie/chat/threads", json={"kind": "repository", "repo": "o/r"}, headers=rig.noah
+        ).json()["id"]
+        settle(c)
+
+        assert f"airlie-chat-{slug_of(made_chat)}" in rig.fakes.boxes and rig.fakes.mirror.refreshes == 1
+
+
+def test_push_is_refused_before_the_prompt_without_push_permission(tmp_path: Path) -> None:
+    rig = GitHubRig(tmp_path, Call("push_branch", {}), Text("ok"))
+    rig.push_ready()
+    rig.link(rig.ashley, "ashley")  # may read o/r, not push
+
+    r = rig.post(body(), headers=rig.ashley)
+
+    got = chunks(r.text)
+    refusal = next(c for c in got if c["type"] == "tool-output-error")
+    assert refusal["errorText"] == "error: you cannot push to o/r on GitHub, so airlie will not push for you"
+    assert "data-approval" not in [c["type"] for c in got] and "tool-approval-request" not in kinds(r.text)
+    assert rig.pushes() == 0
+
+
+def test_push_is_refused_after_the_yes_when_access_went_meanwhile(tmp_path: Path) -> None:
+    rig = GitHubRig(tmp_path, Call("push_branch", {}), Text("asked"), Call("push_branch", {}), Text("done"))
+    rig.push_ready()
+    rig.link(rig.noah, "weyenk")
+    asked = approval_id(rig.post(body(), headers=rig.noah))  # at ask time he could push
+
+    rig.fake.grant("weyenk", {1: [("weyenk/airlie", True), ("o/r", False)]})  # then GitHub took push away
+    second = rig.post(body("yes, push", approvals=[{"id": asked, "approved": True}]), headers=rig.noah)
+
+    assert second.status_code == 200
+    failed = next(c for c in chunks(second.text) if c["type"] == "tool-output-error")
+    assert failed["errorText"] == "error: you cannot push to o/r on GitHub, so airlie will not push for you"
+    assert rig.pushes() == 0 and rig.events == []  # nothing was pushed
+
+
+def test_a_push_the_person_may_make_still_asks_and_pushes(tmp_path: Path) -> None:
+    rig = GitHubRig(tmp_path, Call("push_branch", {}), Text("asked"), Call("push_branch", {}), Text("done"))
+    rig.push_ready()
+    rig.link(rig.noah, "weyenk")
+    asked = approval_id(rig.post(body(), headers=rig.noah))
+
+    second = rig.post(body("yes", approvals=[{"id": asked, "approved": True}]), headers=rig.noah)
+
+    done = next(c for c in chunks(second.text) if c["type"] == "tool-output-available")
+    assert done["output"].startswith(f"pushed {BRANCH}") and rig.pushes() == 1
+
+
+def test_an_extra_reads_its_checkout_and_never_pushes(tmp_path: Path) -> None:
+    rig = GitHubRig(tmp_path, Call("push_branch", {}), Text("ok"))
+    rig.push_ready()
+    rig.link(rig.noah, "weyenk")
+    assert rig.c.put("/v1/airlie/chat/pins/local/only", headers=rig.noah).status_code == 204  # no App there
+
+    r = rig.post({**body(), "repo": "local/only"}, headers=rig.noah)
+
+    got = chunks(r.text)
+    refusal = next(c for c in got if c["type"] == "tool-output-error")
+    assert refusal["errorText"] == "error: local/only is a local checkout: airlie does not push it"
+    assert "data-approval" not in [c["type"] for c in got]
+    assert rig.pushes() == 0
+    assert rig.fakes.extra.can_push is False and rig.fakes.extra.refreshes == 1  # opened from its checkout
+    assert rig.fakes.mirror.refreshes == 0  # and not as a GitHub repository
+
+
+def test_an_unpinned_local_checkout_is_not_the_persons_to_use(tmp_path: Path) -> None:
+    rig = GitHubRig(tmp_path, Text("hi"))
+    rig.link(rig.noah, "weyenk")
+
+    r = rig.post({**body(), "repo": "local/only"}, headers=rig.noah)
+
+    assert r.status_code == 403 and rig.threads(rig.noah) == []

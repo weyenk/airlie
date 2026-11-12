@@ -12,7 +12,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, ExitStack
 from functools import partial
 from pathlib import Path
@@ -33,6 +33,7 @@ from airlie.board.api import board_router
 from airlie.board.model import WorkflowDraft
 from airlie.chat.confirm import Confirmations
 from airlie.chat.hooks import UnknownSkill, default_hooks, slash_section
+from airlie.chat.sources_api import sources_router
 from airlie.chat.superpowers import SuperpowersLibrary, check_library
 from airlie.chat.threads import ThreadStore
 from airlie.config import AirlieConfig
@@ -75,6 +76,10 @@ from airlie.serve.uploads import (
 from airlie.serve.watch import Watcher
 from airlie.serve.workflows_api import workflows_router
 from airlie.skills import Skill, load_chat_skills, prompt_text
+from airlie.sources.access import RepoAccess
+from airlie.sources.github import GitHubSource
+from airlie.sources.protocol import RepoSource
+from airlie.sources.vault import TokenVault
 from airlie.story.board import BoardError
 from airlie.story.diagnosis import diagnosis_json, latest, read_diagnosis
 from airlie.story.epic import REPOSITORY
@@ -511,6 +516,7 @@ def create_app(
     manager: Manager | None = None,
     repo_sessions: Callable[..., RepoSessions] | None = None,
     pinnable: Callable[[], Awaitable[list[str]]] | None = None,
+    repo_sources: Mapping[str, RepoSource] | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
@@ -524,10 +530,14 @@ def create_app(
     line's beat, given the function that starts a lane's job) are for tests.
     `manager` starts, holds and stops the engines (default: one over the config's mlx-vlm engines, inside
     the memory budget `memory.wired_limit_mb` less the OS reserve and `manager.margin_gb`).
-    `repo_sessions` builds what runs repository chats in VMs, given `(cfg, manager, threads, confirmations)`
+    `repo_sessions` builds what runs repository chats in VMs, given `(cfg, manager, threads, confirmations,
+    access)`
     (default: Tart boxes, chat.repo_session.default_repo_sessions; tests give one over FakeBox).
-    `pinnable` lists the repositories a person may pin and pre-warm (default: what `GET
-    /v1/airlie/repos/names` answers, read from the checkouts and the board's labels)."""
+    `pinnable` lists the local checkouts airlie has (default: what `GET /v1/airlie/repos/names` answers,
+    read from the checkouts and the board's labels): with no source linked they are the repositories a person
+    may use, else the ones no source reaches may be pinned as extras.
+    `repo_sources` are the accounts a person may link to list their repositories from (default: GitHub, for
+    each of `chat.sources` the config gives a client id; tests give one over a mock transport)."""
     app = FastAPI(title="airlie", version="0.1.0")
     started_commit = (
         build_commit()
@@ -878,17 +888,50 @@ def create_app(
     app.state.chat_threads = chat_threads
     app.state.chat_hooks = chat_hooks
     confirmations = Confirmations(cfg)
-    repo_chats = (repo_sessions or default_repo_sessions)(cfg, manager, chat_threads, confirmations)
-    app.state.repo_sessions = repo_chats
-    sweep_leftovers = _leftover_sweep(cfg, chat_threads) if repo_sessions is None else _no_sweep
-    chat_threads.on_delete(repo_chats.delete)  # a chat's VM goes with it
-    chat_busy = Busy()
 
     async def repo_names_known() -> list[str]:
         labels = [label for item in board.list() for label in item.labels]
         return await asyncio.to_thread(repo_names, cfg, labels)
 
     known_repos = pinnable or repo_names_known
+    sources: dict[str, RepoSource] = (
+        {
+            name: GitHubSource(cfg.story.github_app, cfg.story.remote)
+            for name in cfg.chat.sources
+            if name == "github_app" and cfg.story.github_app.client_id is not None
+        }
+        if repo_sources is None
+        else dict(repo_sources)
+    )
+    repo_access = RepoAccess(
+        store,
+        TokenVault(
+            cfg.story.github_app.token_key_file,
+            keep_out=tuple(
+                p
+                for p in (
+                    cfg.observability.state_dir.expanduser(),
+                    cfg.story.repos_root.expanduser(),
+                    home_checkout(),
+                    None if cfg.story.repo is None else cfg.story.repo.expanduser(),
+                )
+                if p is not None
+            ),
+        ),
+        sources,
+        known_repos,
+        cache_s=cfg.chat.repo_list_cache_s,
+        clock=now,
+    )
+    app.state.repo_access = repo_access
+    repo_chats = (repo_sessions or default_repo_sessions)(
+        cfg, manager, chat_threads, confirmations, repo_access
+    )
+    app.state.repo_sessions = repo_chats
+    sweep_leftovers = _leftover_sweep(cfg, chat_threads) if repo_sessions is None else _no_sweep
+    chat_threads.on_delete(repo_chats.delete)  # a chat's VM goes with it
+    chat_busy = Busy()
+
     chat_prewarms: set[asyncio.Task[None]] = set()
     app.state.chat_prewarms = chat_prewarms  # the VMs new repository chats start in the background
     app.state.chat_busy = chat_busy  # `Server.shutdown` stops its turns before uvicorn waits for them
@@ -911,12 +954,23 @@ def create_app(
             repo_sessions=repo_chats,
             confirmations=confirmations,
             publish=lambda topic, key: feed.publish(topic, key),
-            pinnable=known_repos,
+            access=repo_access,
             background=chat_prewarms,
             start_story=lambda text, repo: begin_story(None, text, repo),
         )
     )
-    app.include_router(pins_router(store, lambda topic, key: feed.publish(topic, key), known_repos))
+    app.include_router(
+        pins_router(store, lambda topic, key: feed.publish(topic, key), repo_access, known_repos)
+    )
+    app.include_router(
+        sources_router(
+            repo_access,
+            sources,
+            lambda topic, key: feed.publish(topic, key),
+            configured=cfg.chat.sources,
+            clock=now,
+        )
+    )
 
     @app.post("/v1/chat/completions")
     async def chat(body: dict[str, Any], request: Request) -> Any:

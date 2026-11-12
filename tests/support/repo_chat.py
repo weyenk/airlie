@@ -16,6 +16,7 @@ from airlie.chat.repo_session import RepoSessions, build_confirm, slug_of
 from airlie.chat.threads import ThreadStore
 from airlie.config import AirlieConfig
 from airlie.manager.core import Manager
+from airlie.sources.access import Access, RepoAccess
 from tests.support.box import FakeBox
 from tests.unit.test_transit import FakePublisher, FakeRunner
 
@@ -26,8 +27,10 @@ __all__ = ["RECIPE", "FakeMirror", "RegisteredBox", "RepoFakes", "cloning"]
 class FakeMirror(Mirror):
     """The mirror's git goes through a recording runner; no fetch, and the recipe is the test's."""
 
-    def __init__(self, root: Path, repo: str, runner: FakeRunner, recipe: str | None) -> None:
-        super().__init__(root, repo, FakePublisher(), run=runner)
+    def __init__(
+        self, root: Path, repo: str, runner: FakeRunner, recipe: str | None, *, app: bool = True
+    ) -> None:
+        super().__init__(root, repo, FakePublisher(app=app), run=runner, local_checkout=None if app else root)
         self.recipe = recipe
         self.refreshes = 0
         self.refresh_gate: asyncio.Event | None = None
@@ -70,6 +73,8 @@ class RepoFakes:
         self.secrets.mkdir(exist_ok=True)
         self.mirror = FakeMirror(tmp_path / "mirrors", "o/r", self.runner, recipe)
         self.publisher = self.mirror.publisher
+        self.extra = FakeMirror(tmp_path / "mirrors", "o/r", self.runner, recipe, app=False)
+        """The mirror of a pinned extra: read from a checkout, never pushed."""
         self.sessions: RepoSessions | None = None
         self.network_check: Callable[[Network], None] = lambda network: None
         """What the sessions ask before a VM is made: raise BoxUnavailable for "softnet is missing"."""
@@ -102,9 +107,25 @@ class RepoFakes:
         """The commit the mirror resolves every ref to."""
         return self.runner.answers["rev-parse"].strip()
 
+    def mirror_for(self, repo: str, access: Access) -> Mirror:
+        return self.mirror if access == "source" else self.extra
+
     def build(
-        self, cfg: AirlieConfig, manager: Manager, threads: ThreadStore, confirmations: Confirmations
+        self,
+        cfg: AirlieConfig,
+        manager: Manager,
+        threads: ThreadStore,
+        confirmations: Confirmations,
+        access: RepoAccess | None = None,
     ) -> RepoSessions:
+        """Over `access` when serve gives one; with none every repository is the person's own, to push too."""
+
+        async def allowed(person: str, repo: str) -> Access | None:
+            return "source"
+
+        async def may_push(person: str, repo: str) -> str | None:
+            return None
+
         images = Images(
             self.box_for, cfg.boxes, secrets=SecretStore(self.secrets), confirm=build_confirm(confirmations)
         )
@@ -113,7 +134,9 @@ class RepoFakes:
             manager,
             images=images,
             confirmations=confirmations,
-            mirror_for=lambda repo: self.mirror,
+            mirror_for=self.mirror_for,
+            authorize=allowed if access is None else access.access,
+            may_push=may_push if access is None else access.may_push,
             box_for=self.box_for,
             threads=threads,
             network_check=lambda network: self.network_check(network),

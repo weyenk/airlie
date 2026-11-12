@@ -57,6 +57,8 @@ class Mirror:
             raise MirrorError("no GitHub App (story.github_app) and no local checkout to read the code from")
         if not self.path.exists():
             await self._create()
+        else:
+            await self._repoint()
         if self.publisher.app is not None:
             self.publisher.prepare(self.path, self.repo)
             await self.publisher.fetch_all(self.path)
@@ -64,15 +66,24 @@ class Mirror:
             refspec = "+refs/heads/*:refs/remotes/origin/*"
             await self.git("fetch", "-q", "--prune", "--refmap=", "origin", refspec)
 
+    def _origin(self) -> str:
+        """Where this mirror fetches from: GitHub with the App, else the local checkout."""
+        if self.publisher.app is not None:
+            return f"https://github.com/{self.repo}.git"
+        assert self.local_checkout is not None  # refresh checked
+        return os.fspath(self.local_checkout)
+
     async def _create(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if self.publisher.app is not None:
-            url = f"https://github.com/{self.repo}.git"
-        else:
-            assert self.local_checkout is not None  # refresh checked
-            url = os.fspath(self.local_checkout)
         await self.run(["git", "init", "-q", "--bare", os.fspath(self.path)], self.path.parent, self.env())
-        await self.git("remote", "add", "origin", url)
+        await self.git("remote", "add", "origin", self._origin())
+
+    async def _repoint(self) -> None:
+        """A mirror made for a local checkout that GitHub now serves (or the other way round) fetches from
+        where it is read now: its `origin` follows."""
+        url = self._origin()
+        if (await self.git("remote", "get-url", "origin")).strip() != url:
+            await self.git("remote", "set-url", "origin", url)
 
     async def resolve(self, ref: str) -> str:
         """The commit `ref` names in the mirror."""
