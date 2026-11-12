@@ -828,3 +828,24 @@ async def test_the_save_checks_the_owner_through_the_store(tmp_path: Path, role:
 
     assert rig.saved() == []  # ThreadNotFound: nothing written for a thread the owner does not hold
     assert rig.finished[0].failed
+
+
+async def test_a_stop_once_the_loop_has_returned_is_a_no_op(tmp_path: Path, role: RoleSpec) -> None:
+    """A Stop that lands while the turn saves and notifies must not cut the save or the hook short."""
+    rig = Rig(tmp_path, role, [Step(reply("done"), words("done"))])
+    handle = TurnHandle()
+    reached: list[str] = []
+
+    async def stop_then_work(summary: TurnSummary) -> None:
+        handle.stop()
+        await asyncio.sleep(0)  # a cancel would land here
+        reached.append("finished")
+
+    rig.hooks.on("on_finish", stop_then_work)
+
+    events = await collect(rig.turn(handle=handle))
+
+    assert reached == ["finished"]
+    assert events[-1] == DONE
+    assert not rig.saved()[1].interrupted
+    assert rig.holder.events[-1][0] == "release"

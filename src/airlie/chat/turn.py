@@ -50,11 +50,19 @@ class TurnHandle:
     def __init__(self) -> None:
         self.stopped = False
         self._driver: asyncio.Task[None] | None = None
+        self._settled = False
 
     def stop(self) -> None:
+        """A no-op once the turn's loop has returned: what remains (the save, the hold's release, `on_finish`)
+        is cleanup that a cancel would cut short."""
+        if self._settled:
+            return
         self.stopped = True
         if self._driver is not None:
             self._driver.cancel()
+
+    def settle(self) -> None:
+        self._settled = True
 
 
 @dataclass
@@ -346,6 +354,10 @@ class _Run:
 
     # --- the turn -------------------------------------------------------------------------------------------
 
+    def settle(self) -> None:
+        if self.handle is not None:
+            self.handle.settle()
+
     async def drive(self) -> None:
         interrupted = failed = False
         stack = AsyncExitStack()
@@ -355,6 +367,7 @@ class _Run:
             self.emit(self.w.start())
             await self.enter_hold(stack)
             await self.loop()
+            self.settle()
             self.emit(self.w.finish(self.finish_usage()))
         except EngineError as e:
             failed = True
@@ -369,6 +382,7 @@ class _Run:
             self.emit(self.w.error(f"{type(e).__name__}: {e}"))
             self.emit(self.w.finish(self.finish_usage()))
         finally:
+            self.settle()  # a Stop from here on would only cut the save or the hold's release short
             try:
                 await self.persist(interrupted=interrupted, failed=failed)
             finally:
