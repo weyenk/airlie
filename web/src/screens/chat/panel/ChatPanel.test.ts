@@ -436,8 +436,32 @@ test("plain chats are not nested under the github section", async () => {
   const plain = w.get('section[aria-label="Plain chats"]');
   expect(github.find('section[aria-label="Plain chats"]').exists()).toBe(false);
   expect(plain.element.closest('section[aria-label="GitHub"]')).toBeNull();
-  expect(github.get("h3").text()).toBe("GitHub");
-  expect(plain.classes()).toContain("border-t");
+  expect(w.get('[data-test="github-footer"]').find('section[aria-label="GitHub"]').exists()).toBe(true);
+});
+
+test("github connect and disconnect sit in the footer after repositories", async () => {
+  panelServer({
+    linked: true,
+    login: "weyenk",
+    githubRepos: [{ repo: "weyenk/airlie", private: true, push: true, url: "" }],
+    pins: ["weyenk/airlie"],
+    threads: [thread("p1", { title: "plain one" }), REPO("r1", "weyenk/airlie", 1, "repo chat")],
+  });
+  const { w } = await open();
+  const html = w.html();
+  expect(html.indexOf('aria-label="Plain chats"')).toBeLessThan(html.indexOf('aria-label="weyenk/airlie"'));
+  expect(html.indexOf('aria-label="weyenk/airlie"')).toBeLessThan(html.indexOf('data-test="github-footer"'));
+  expect(w.get('[data-test="github-footer"]').text()).toContain("@weyenk");
+  expect(w.get('[data-test="github-footer"]').text()).toContain("Disconnect GitHub");
+});
+
+test("unlinked github connect appears in the panel footer", async () => {
+  panelServer();
+  const { w } = await open();
+  const html = w.html();
+  const footer = w.get('[data-test="github-footer"]');
+  expect(footer.text()).toContain("Connect GitHub");
+  expect(html.indexOf('aria-label="Plain chats"')).toBeLessThan(html.indexOf('data-test="github-footer"'));
 });
 
 test("plain chats list shows at most six, newest first", async () => {
