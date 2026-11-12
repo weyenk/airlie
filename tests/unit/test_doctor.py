@@ -348,13 +348,14 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, unknown = project_memory_gb(studio, "main")
-    # 71.7 GB of weights (small, generalist and its MTP head, reviewer, decider-2b, gemma4 and its assistant)
+    # 71.7 GB of weights (small, generalist and its MTP head, reviewer, decider-2b, gemma4: no MTP head since
+    # docs/bench/2026-11-12-gemma-qat-mtp.md, so 0.87 GB less than the 111.0 it was with one)
     # + the build lane's one sequence at the coder's 65.536k × 64 MB/1k + 4 asks at 8.192k, at main's 8-bit KV
     # (8.5/16 of bf16) = 3.3 GB + one sequence on each other engine (reviewer 65.536k × 64 at 8-bit = 2.2,
     # small 16.384k × 144 in bf16 = 2.3, gemma 262.144k × 22 at 8-bit = 3.0) + the caches the autostart
     # mlx-vlm engines set aside (main 8, reviewer 3.5, small 1, gemma 4) + 12 GB reserve
     assert cache_memory_gb(studio.engines["main"]) == 8.0
-    assert (round(projected, 1), unknown) == (111.0, [])
+    assert (round(projected, 1), unknown) == (110.1, [])
     assert projected < studio.memory.wired_limit_mb / 1024  # 124 GB
     monkeypatch.setattr(
         "airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name
@@ -769,14 +770,14 @@ def test_the_pinned_floor_counts_on_demand_engines_separately() -> None:
 
 
 def test_the_pinned_floor_is_the_projection_without_the_on_demand_engines() -> None:
-    """The floor is the 111.0 GB projection minus reviewer's 25.1 GB (19.4 weights + 2.2 KV + 3.5 cache)
-    and small's 6.3 GB (3 + 2.3 + 1), yielding 79.6 GB."""
+    """The floor is the 110.1 GB projection (111.0 less gemma4's 0.87 GB MTP head, now off) minus reviewer's
+    25.1 GB (19.4 weights + 2.2 KV + 3.5 cache) and small's 6.3 GB (3 + 2.3 + 1), yielding 78.7 GB."""
     from airlie.doctor import engine_footprint_gb, pinned_floor_gb, project_memory_gb
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, _ = project_memory_gb(studio, "main")
     floor = pinned_floor_gb(studio)
-    assert round(floor, 1) == 79.6
+    assert round(floor, 1) == 78.7
     assert floor == pytest.approx(
         projected - engine_footprint_gb(studio, "reviewer") - engine_footprint_gb(studio, "small")
     )

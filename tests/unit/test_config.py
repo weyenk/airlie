@@ -363,15 +363,12 @@ def test_committed_config_declares_five_autostart_engines_and_the_bench_engines(
     assert cfg.models["generalist"].tool_call_parser == "qwen3_coder"
     assert cfg.models["reviewer"].tool_call_parser == "atem"
     gemma = cfg.models["gemma4"]
-    assert (gemma.repo, gemma.revision, gemma.mtp_block_size, gemma.tool_call_parser) == (
+    assert (gemma.repo, gemma.revision, gemma.mtp, gemma.mtp_block_size, gemma.tool_call_parser) == (
         "mlx-community/gemma-4-26B-A4B-it-qat-8bit",
         "bedc5c51905d796b192de24567f358b0b1653d2e",
-        4,
+        None,  # MTP off: its QAT assistant decoded slower (docs/bench/2026-11-12-gemma-qat-mtp.md)
+        None,
         "gemma4",
-    )
-    assert (gemma.mtp.repo, gemma.mtp.revision) == (
-        "mlx-community/gemma-4-26B-A4B-it-qat-assistant-bf16",
-        "b24eea3c9bffc4b84ac7219875abd20529ee43b6",
     )
     assert cfg.roles["chat"].model == cfg.roles["design"].model == cfg.roles["ux"].model == "gemma4"
     assert cfg.engine_for_role("chat") == cfg.engine_for_role("design") == "gemma"

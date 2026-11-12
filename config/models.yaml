@@ -24,14 +24,10 @@ models:
     kv_mb_per_1k_tokens: 64
     tool_call_parser: qwen3_coder  # Qwen3.8 writes Qwen3-Coder's XML
     tags: [modern, coder, vision, hybrid-attention]
-  gemma4:                          # Gemma 4 26B-A4B-it QAT 8-bit: chat, design, ux; MTP assistant at B=4 (mlx-vlm Gemma 4 docs)
+  gemma4:                          # Gemma 4 26B-A4B-it QAT 8-bit: chat, design, ux
     repo: mlx-community/gemma-4-26B-A4B-it-qat-8bit   # bf16 (51.6 GB) does not fit beside the studio
     revision: bedc5c51905d796b192de24567f358b0b1653d2e   # 2026-06-05
-    mtp:
-      repo: mlx-community/gemma-4-26B-A4B-it-qat-assistant-bf16   # the QAT body's own assistant, kept bf16
-      revision: b24eea3c9bffc4b84ac7219875abd20529ee43b6   # 2026-06-05
-      estimated_memory_gb: 0.87     # the snapshot's safetensors on the Hub
-    mtp_block_size: 4
+    # no MTP: its QAT assistant decoded slower at 3k and 150k tokens (docs/bench/2026-11-12-gemma-qat-mtp.md)
     estimated_memory_gb: 28.0       # the snapshot's safetensors on the Hub
     # 5 full-attention layers × 2 KV heads × 512 dim = 20 MB/1k in bf16; the 25 sliding layers hold 1024 tokens
     # (0.2 GB a sequence) whatever the length: 22 covers both past ~100k
