@@ -32,14 +32,14 @@ from airlie.tools.protocol import ToolContext
 log = logging.getLogger("airlie.chat.repo_session")
 
 DEFAULT_BASE = "main"
-REPO = re.compile(r"[\w.-]+/[\w.-]+")
+REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/(?!-)[A-Za-z0-9_.-]+")
 _SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _session: contextvars.ContextVar[str] = contextvars.ContextVar("airlie_repo_session", default="")
 """The session whose VM is being prepared: the image build's confirmation is that session's."""
 
 
 def valid_repo(repo: str) -> bool:
-    return REPO.fullmatch(repo) is not None and ".." not in repo
+    return REPO.fullmatch(repo) is not None and ".." not in repo and not repo.endswith("/.")
 
 
 def slug_of(thread_id: str) -> str:
@@ -197,16 +197,23 @@ class RepoSessions:
         if thread.kind != "repository":
             return
         name = f"vm:{thread.id}"
-        if name in {s.name for s in self._manager.status()}:
-            await self._manager.discard(name)
+        chat = self._chats.pop(thread.id, None)  # first: nothing can open this session while its disk goes
         resource = self._resources.pop(thread.id, None)
+        try:
+            if name in {s.name for s in self._manager.status()}:
+                await self._manager.discard(name)
+        except EngineError:  # held or would not stop: the chat stays as it was
+            if chat is not None:
+                self._chats[thread.id] = chat
+            if resource is not None:
+                self._resources[thread.id] = resource
+            raise
         box = resource.box if resource is not None else self._box_for(f"airlie-chat-{slug_of(thread.id)}")
         try:
             if await box.exists():
                 await box.delete()
         except BoxUnavailable:  # no tart: no VM disk can be there
             pass
-        self._chats.pop(thread.id, None)
         self._confirmations.forget(thread.id)
         if thread.repo is not None:
             try:  # the host's copy of the session branch (pushed or not)

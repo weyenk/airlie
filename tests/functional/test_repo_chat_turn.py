@@ -410,3 +410,65 @@ def test_a_plain_chat_still_has_no_repository_tools_and_no_vm(tmp_path: Path) ->
 
     assert tool_names(rig.up.bodies[0]) == {"web_search", "web_fetch", "skill", "todo"}
     assert rig.fakes.boxes == {}
+
+
+# --- fix round 1 ----------------------------------------------------------------------------------------
+
+
+def test_after_a_no_the_next_push_call_is_asked_afresh(tmp_path: Path) -> None:
+    rig = Rig(
+        tmp_path,
+        Call("push_branch", {}),
+        Text("asked"),
+        Call("push_branch", {}),
+        Text("no then"),
+        Call("push_branch", {}),
+        Text("asking again"),
+        Call("push_branch", {}),
+        Text("pushed"),
+    )
+    rig.fakes.script_push()
+    first = rig.post()
+    rig.post(body("no", approvals=[{"id": approval_id(first), "approved": False}]))
+
+    third = rig.post(body("please reconsider"))
+
+    fresh = approval_id(third)
+    assert fresh != approval_id(first) and rig.pushes() == 0
+    fourth = rig.post(body("yes now", approvals=[{"id": fresh, "approved": True}]))
+    assert rig.pushes() == 1 and "tool-approval-request" not in kinds(fourth.text)
+
+
+def test_a_yes_the_turn_did_not_use_does_not_carry_to_a_later_push(tmp_path: Path) -> None:
+    rig = Rig(
+        tmp_path,
+        Call("push_branch", {}),
+        Text("asked"),
+        Text("no push this turn"),
+        Call("push_branch", {}),
+        Text("?"),
+    )
+    rig.fakes.script_push()
+    first = rig.post()
+    rig.post(body("yes", approvals=[{"id": approval_id(first), "approved": True}]))  # the model makes no call
+
+    later = rig.post(body("push now"))
+
+    assert rig.pushes() == 0
+    assert "tool-approval-request" in kinds(later.text)  # asked afresh, not covered by the old yes
+
+
+def test_deleting_a_chat_takes_its_turn_slot_so_a_turn_cannot_start_meanwhile(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, Text("hi"))
+    rig.post()
+    seen: list[bool] = []
+
+    async def spy(thread: Any) -> None:
+        seen.append("t1" in rig.app.state.chat_busy)
+
+    rig.app.state.chat_threads.on_delete(spy)
+
+    assert rig.c.delete("/v1/airlie/chat/threads/t1").status_code == 204
+
+    assert seen == [True]
+    assert "t1" not in rig.app.state.chat_busy  # released once it is gone

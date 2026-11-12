@@ -304,6 +304,7 @@ def chat_router(
             if released:
                 return
             released = True
+            confirmations.end_turn(thread.id)  # a yes lasts as long as the turn it came with
             try:
                 for engine in engines:
                     await engine.stop()
@@ -483,12 +484,14 @@ def chat_router(
         principal = principal_of(request)
         if principal is None:
             return error("not signed in", 401)
-        if thread_id in busy:
+        if busy.take(thread_id) is None:  # the slot is held while it goes: no turn starts on it meanwhile
             return error("this thread has a turn running; wait for it to finish", 409)
         try:
             removed = await threads.remove(thread_id, principal.user_id)
         except EngineError as e:  # its VM could not be deleted (in use): the chat stays
             return error(str(e), 409)
+        finally:
+            busy.release(thread_id)
         if not removed:
             return error("no such thread", 404)
         return Response(status_code=204)

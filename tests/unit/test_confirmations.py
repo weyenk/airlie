@@ -135,7 +135,7 @@ def test_the_confirm_list_is_the_kinds_ask_first(cfg: AirlieConfig) -> None:
     c = Confirmations(changed)
 
     assert c.check("s1", "shell", {"cmd": "ls"}) == "pending"
-    assert c.check("s1", "push_branch", {}) == "allowed"
+    assert c.check("s1", "git", {"cmd": "status"}) == "allowed"
 
 
 def test_a_session_keeps_a_bounded_number_of_requests(cfg: AirlieConfig) -> None:
@@ -260,3 +260,58 @@ def test_guard_wraps_only_the_listed_tools(cfg: AirlieConfig) -> None:
     assert isinstance(registry.get("push_branch"), Confirmed)
     assert registry.get("read_file") is reads
     assert registry.get("push_branch").parameters == Pushy.parameters  # type: ignore[union-attr]
+
+
+# --- fix round 1 ----------------------------------------------------------------------------------------
+
+
+async def test_a_denial_is_spent_by_the_hook_that_reports_it(cfg: AirlieConfig) -> None:
+    c = Confirmations(cfg)
+    hook = before_tool(c)
+    call = ToolCall("call_1", "push_branch", "{}")
+    asked = await hook(turn_ctx(), call)
+    c.approve("s1", [Approval(id=asked.approval_id, approved=False)])
+
+    refused = await hook(turn_ctx(), call)
+    again = await hook(turn_ctx(), ToolCall("call_2", "push_branch", "{}"))
+
+    assert refused is not None and refused.kind == "denied"
+    assert again is not None and again.kind == "pending" and again.approval_id  # the person is asked afresh
+
+
+def test_an_answer_not_spent_in_its_turn_expires_with_it(cfg: AirlieConfig) -> None:
+    c = Confirmations(cfg)
+    yes = c.request("s1", "c1", "push_branch", {})
+    no = c.request("s1", "c2", "open_pr", {"title": "t"})
+    waiting = c.request("s1", "c3", "open_pr", {"title": "later"})
+    c.approve("s1", [Approval(id=yes, approved=True), Approval(id=no, approved=False)])
+
+    c.end_turn("s1")
+
+    assert c.check("s1", "push_branch", {}) == "pending"
+    assert c.check("s1", "open_pr", {"title": "t"}) == "pending"
+    c.approve("s1", [Approval(id=waiting, approved=True)])  # a request still pending survives the turn
+    assert c.check("s1", "open_pr", {"title": "later"}) == "allowed"
+
+
+def test_the_store_is_empty_after_a_turn_that_spent_or_ignored_its_answers(cfg: AirlieConfig) -> None:
+    c = Confirmations(cfg)
+    spent = c.request("s1", "c1", "push_branch", {})
+    ignored = c.request("s1", "c2", "open_pr", {"title": "t"})
+    c.approve("s1", [Approval(id=spent, approved=True), Approval(id=ignored, approved=True)])
+    assert c.check("s1", "push_branch", {}) == "allowed"
+
+    c.end_turn("s1")
+
+    assert len(c) == 0
+
+
+def test_the_push_pr_and_image_gates_stay_on_whatever_the_config_says(cfg: AirlieConfig) -> None:
+    changed = cfg.model_copy(deep=True)
+    changed.chat.kinds.repository.ask_first = []  # a config the validator would have refused
+    c = Confirmations(changed)
+
+    assert [c.check("s1", t, {}) for t in ("push_branch", "open_pr", "build_image")] == ["pending"] * 3
+    registry = guard(ToolRegistry([Pushy()], CTX), c, "s1", "repository")
+    assert isinstance(registry.get("push_branch"), Confirmed)
+    assert c.check("s1", "shell", {"cmd": "ls"}) == "allowed"

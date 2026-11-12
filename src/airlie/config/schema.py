@@ -316,6 +316,9 @@ CHAT_TOOLS = frozenset(
         "skill", "todo", "task", "web_search", "web_fetch", "push_branch", "open_pr",
     }
 )  # fmt: skip
+ALWAYS_ASK = frozenset({"push_branch", "open_pr", "build_image"})
+"""What a repository chat never does without a person's yes, whatever the config lists: pushing, opening a PR
+and building an image with setup secrets."""
 ASK_FIRST_ONLY = frozenset({"build_image"})
 """Names `ask_first` takes that are not tools: a gate on the image build (boxes.images), which needs a yes
 before setup secrets reach a recipe nobody has built."""
@@ -367,6 +370,12 @@ class ChatKindsSpec(Strict):
                     raise ValueError(
                         f"chat.kinds.{kind}.{field} names {', '.join(unknown)}; the chat tools are {known}"
                     )
+        dropped = sorted(ALWAYS_ASK - set(self.repository.ask_first))
+        if dropped:
+            raise ValueError(
+                f"chat.kinds.repository.ask_first must keep {', '.join(dropped)}: "
+                "they never run without a person's yes"
+            )
         held = sorted(
             (set(self.plain.tools) | set(self.plain.ask_first)) & (PLAIN_CHAT_FORBIDDEN | ASK_FIRST_ONLY)
         )

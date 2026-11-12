@@ -356,3 +356,28 @@ async def test_a_mirror_that_cannot_be_read_is_an_engine_error(world: World) -> 
 
     with pytest.raises(MirrorError, match="no checkout"):
         await world.sessions.open(world.thread())
+
+
+@pytest.mark.parametrize("bad", ["./x", "-o/x", "o/-x", "o/.", "o/..", "é/x", "o/é", "o/x\n"])
+def test_a_repo_follows_githubs_name_rule(bad: str) -> None:
+    assert not valid_repo(bad)
+
+
+async def test_deleting_forgets_the_session_before_the_disk_goes(world: World) -> None:
+    thread = world.thread()
+    chat = await world.sessions.open(thread)
+    async with world.sessions.turn(chat, "chat:t1"):
+        pass
+    seen: list[bool] = []
+    box = world.vm()
+    real_delete = box.delete
+
+    async def spying() -> None:
+        seen.append("t1" in world.sessions._chats or "t1" in world.sessions._resources)
+        await real_delete()
+
+    box.delete = spying  # type: ignore[method-assign]
+
+    await world.sessions.delete(thread)
+
+    assert seen == [False]  # a turn that starts now cannot find the session being deleted

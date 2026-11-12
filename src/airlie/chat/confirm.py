@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from airlie.chat.hooks import TurnContext, Verdict
 from airlie.chat.kinds import ChatKind, ask_first
-from airlie.config.schema import AirlieConfig
+from airlie.config.schema import ALWAYS_ASK, AirlieConfig
 from airlie.engine.types import EngineError, ToolCall
 from airlie.tools.jsonargs import parse_tool_args
 from airlie.tools.protocol import Tool, ToolContext, ToolResult
@@ -67,7 +67,10 @@ class Confirmations:
         self._items: dict[str, _Item] = {}
 
     def required(self, tool: str, kind: ChatKind = "repository") -> bool:
-        return tool in ask_first(kind, self._cfg)
+        listed = ask_first(kind, self._cfg)
+        return tool in (
+            listed | ALWAYS_ASK if kind == "repository" else listed
+        )  # the config cannot drop these
 
     def request(self, session_id: str, call_id: str, tool: str, args: Mapping[str, Any]) -> str:
         """Record that `tool` with `args` waits for a yes and return the request's id; the same call asked
@@ -122,6 +125,17 @@ class Confirmations:
             return "allowed" if item.state == "approved" else "denied"
         return "pending"
 
+    def end_turn(self, session_id: str) -> None:
+        """An answer is for the turn whose request body carried it: at that turn's end (however it ended)
+        every answered item the turn did not spend goes. Requests still waiting for an answer stay."""
+        for item_id in [
+            i.id for i in self._items.values() if i.session == session_id and i.state != "pending"
+        ]:
+            del self._items[item_id]
+
+    def __len__(self) -> int:
+        return len(self._items)
+
     def forget(self, session_id: str) -> None:
         for item_id in [i.id for i in self._items.values() if i.session == session_id]:
             del self._items[item_id]
@@ -142,6 +156,9 @@ def before_tool(confirmations: Confirmations) -> Any:
         if answer == "allowed":
             return None
         if answer == "denied":
+            confirmations.check(
+                ctx.thread_id, call.name, args, ctx.kind
+            )  # the no is reported once, then spent
             return Verdict("denied", f"refused: the person said no to this {call.name} call", None, args)
         approval_id = confirmations.request(ctx.thread_id, call.id, call.name, args)
         return Verdict("pending", f"error: {WAITING}", approval_id, args)

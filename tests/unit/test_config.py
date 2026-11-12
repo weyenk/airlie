@@ -1671,20 +1671,28 @@ def test_a_chat_tool_outside_the_known_names_is_refused(tmp_path: Path) -> None:
 
 
 def test_build_image_is_a_gate_to_ask_first_not_a_tool(tmp_path: Path) -> None:
-    gate = {"kinds": {"repository": {"tools": ["skill"], "ask_first": ["build_image"]}}}
-    assert load_config(_chat(tmp_path, gate)).chat.kinds.repository.ask_first == ["build_image"]
+    gate = {
+        "kinds": {"repository": {"tools": ["skill"], "ask_first": ["push_branch", "open_pr", "build_image"]}}
+    }
+    assert load_config(_chat(tmp_path, gate)).chat.kinds.repository.tools == ["skill"]
     with pytest.raises(ConfigError, match="chat.kinds.repository.tools names build_image"):
         load_config(_chat(tmp_path, {"kinds": {"repository": {"tools": ["build_image"]}}}))
     with pytest.raises(ConfigError, match="chat.kinds.plain cannot hold build_image"):
         load_config(_chat(tmp_path, {"kinds": {"plain": {"tools": ["skill"], "ask_first": ["build_image"]}}}))
 
 
+ALWAYS = ["push_branch", "open_pr", "build_image"]
+
+
 def test_a_repository_chat_may_ask_first_before_a_tool(tmp_path: Path) -> None:
     cfg = load_config(
-        _chat(tmp_path, {"kinds": {"repository": {"tools": ["shell", "skill"], "ask_first": ["shell"]}}})
+        _chat(
+            tmp_path,
+            {"kinds": {"repository": {"tools": ["shell", "skill"], "ask_first": ["shell", *ALWAYS]}}},
+        )
     )
     assert cfg.chat.kinds.repository.tools == ["shell", "skill"]
-    assert cfg.chat.kinds.repository.ask_first == ["shell"]
+    assert cfg.chat.kinds.repository.ask_first == ["shell", *ALWAYS]
 
 
 @pytest.mark.parametrize("bad", [0, -1])
@@ -1732,3 +1740,12 @@ def test_chat_task_default_role_must_be_one_a_model_may_choose(tmp_path: Path) -
 def test_chat_task_bounds(tmp_path: Path, bad: dict) -> None:
     with pytest.raises(ConfigError):
         load_config(_chat(tmp_path, {"task": bad}))
+
+
+@pytest.mark.parametrize("missing", ["push_branch", "open_pr", "build_image"])
+def test_a_repository_chat_cannot_drop_a_confirmation_of_push_pr_or_build(
+    tmp_path: Path, missing: str
+) -> None:
+    listed = [n for n in ("push_branch", "open_pr", "build_image") if n != missing]
+    with pytest.raises(ConfigError, match=f"chat.kinds.repository.ask_first must keep {missing}"):
+        load_config(_chat(tmp_path, {"kinds": {"repository": {"tools": ["skill"], "ask_first": listed}}}))
