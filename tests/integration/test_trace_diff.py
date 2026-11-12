@@ -27,7 +27,9 @@ def state_dir(root: Path, name: str, *, outcome: Outcome = "helped", extra_node:
         studio.append({"kind": "node_started", "node": "place"})
     (run / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in studio))
     (run / "trace" / "build" / "prompt.json").write_text(
-        json.dumps({"messages": [{"role": "user", "content": f"build in {state}/wt"}]})
+        json.dumps(
+            {"role": "coder", "attempt": 0, "messages": [{"role": "user", "content": f"build in {state}/wt"}]}
+        )
     )
     ledger = Ledger(state / "supervisor.sqlite")
     row = Intervention("air-1", "01", "r", "s", "coder", "red_streak", (), None, "no answer", "m", 0.0, 0)
@@ -59,3 +61,32 @@ def test_the_command_prints_the_lines_and_exits_one_when_not_clean(tmp_path: Pat
     assert runner.invoke(cli.app, ["bench", "trace-diff", str(a), str(a)]).exit_code == 0
     diff = runner.invoke(cli.app, ["bench", "trace-diff", str(a), str(b)])
     assert diff.exit_code == 1 and "ledger row 0" in diff.output
+
+
+def split_run(state: Path) -> None:
+    """The one studio run's events moved into a second run: the same events and prompts in all."""
+    first = state / "runs" / "20261112-010101-abcd"
+    second = state / "runs" / "20261112-010102-beef"
+    second.mkdir()
+    (second / "events.jsonl").write_text((first / "events.jsonl").read_text())
+    (first / "events.jsonl").write_text("")
+
+
+def test_a_run_split_in_two_is_not_clean(tmp_path: Path) -> None:
+    a = state_dir(tmp_path, "a")
+    b = state_dir(tmp_path, "b")
+    split_run(b)
+    lines = diff_story_runs(a, b).events
+    assert "runs: A has 1 studio runs, B has 2" in lines
+    assert "run 0: A has 1 events, B has 0" in lines
+
+
+def test_a_prompt_for_another_role_or_attempt_or_without_messages_is_not_clean(tmp_path: Path) -> None:
+    a = state_dir(tmp_path, "a")
+    b = state_dir(tmp_path, "b")
+    f = b / "runs" / "20261112-010101-abcd" / "trace" / "build" / "prompt.json"
+    saved = json.loads(f.read_text())
+    f.write_text(json.dumps({**saved, "role": "tester", "attempt": 2}))
+    assert any("role=" in line for line in diff_story_runs(a, b).prompts)
+    f.write_text(json.dumps({"role": "coder", "attempt": 0}))
+    assert any("no messages key" in line for line in diff_story_runs(a, b).prompts)

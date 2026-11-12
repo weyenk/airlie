@@ -5,7 +5,8 @@ A and B are bench state dirs (`observability.state_dir`: `stories/<key>/events.j
 (times, ids, run ids, paths, shas, pytest's clock and colours) are spelled the same on both sides, and the
 node events the composer adds (`node_started`, `node_finished`, `node_skipped`) are dropped, so a driver run
 and a composer run of the same story compare clean when they did the same thing (generic nodes Part 2,
-"Running the same")."""
+"Running the same"). Trace span ids and parent ids are dropped too: they are minted per run and say nothing
+about what the run did."""
 
 from __future__ import annotations
 
@@ -131,21 +132,55 @@ def _story_dir(state: Path) -> Path:
     return found[0]
 
 
+def _runs(state: Path) -> list[Path]:
+    """The studio runs' directories in order (run ids start with their start time)."""
+    return sorted(p for p in (state / "runs").glob("*") if p.is_dir())
+
+
+def _run_events(run: Path, state: Path) -> list[dict[str, Any]]:
+    return [e for e in _jsonl(run / "events.jsonl", state) if e.get("kind") not in NODE_EVENTS]
+
+
+def _run_prompts(run: Path, state: Path) -> list[str]:
+    out = []
+    for f in sorted((run / "trace").rglob("prompt.json")):
+        saved = json.loads(f.read_text())
+        head = f"[role={saved.get('role')} attempt={saved.get('attempt')}]"
+        if "messages" not in saved:
+            out.append(f"{head}\n<no messages key>")
+            continue
+        body = "\n".join(f"[{m.get('role')}] {m.get('content')}" for m in saved["messages"])
+        out.append(_rooted(f"{head}\n{body}", state))
+    return out
+
+
+def _boundaries(a: Path, b: Path) -> tuple[list[str], list[str]]:
+    """Lines (events, prompts) for a different number of studio runs and for each run whose event or prompt
+    count differs, so a run split in two or two merged is never clean."""
+    ra, rb = _runs(a), _runs(b)
+    events, prompts = [], []
+    if len(ra) != len(rb):
+        events.append(f"runs: A has {len(ra)} studio runs, B has {len(rb)}")
+    for i, (x, y) in enumerate(zip(ra, rb, strict=False)):
+        ex, ey = len(_run_events(x, a)), len(_run_events(y, b))
+        if ex != ey:
+            events.append(f"run {i}: A has {ex} events, B has {ey}")
+        px, py = len(_run_prompts(x, a)), len(_run_prompts(y, b))
+        if px != py:
+            prompts.append(f"run {i}: A has {px} prompts, B has {py}")
+    return events, prompts
+
+
 def _events(state: Path) -> list[dict[str, Any]]:
-    """The story's events, then each studio run's in order (run ids start with their start time)."""
+    """The story's events, then each studio run's in order."""
     out = _jsonl(_story_dir(state) / "events.jsonl", state)
-    for f in sorted((state / "runs").glob("*/events.jsonl")):
-        out += _jsonl(f, state)
+    for run in _runs(state):
+        out += _run_events(run, state)
     return out
 
 
 def _prompts(state: Path) -> list[str]:
-    out = []
-    for run in sorted((state / "runs").glob("*")):
-        for f in sorted((run / "trace").rglob("prompt.json")):
-            messages = json.loads(f.read_text()).get("messages", [])
-            out.append(_rooted("\n".join(f"[{m.get('role')}] {m.get('content')}" for m in messages), state))
-    return out
+    return [p for run in _runs(state) for p in _run_prompts(run, state)]
 
 
 def _ledger(state: Path) -> list[tuple[str, str, str]]:
@@ -164,8 +199,9 @@ def _ledger(state: Path) -> list[tuple[str, str, str]]:
 def diff_story_runs(a: Path, b: Path, *, prompts: bool = True) -> TraceDiff:
     """Compare two bench state dirs: events (the story's, then each studio run's, paired by order), the studio
     prompts, and the story's ledger rows."""
+    run_events, run_prompts = _boundaries(a, b)
     return TraceDiff(
-        events=diff_events(_events(a), _events(b)),
-        prompts=diff_prompts(_prompts(a), _prompts(b)) if prompts else [],
+        events=run_events + diff_events(_events(a), _events(b)),
+        prompts=run_prompts + diff_prompts(_prompts(a), _prompts(b)) if prompts else [],
         ledger=diff_ledger(_ledger(a), _ledger(b)),
     )
