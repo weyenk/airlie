@@ -68,6 +68,8 @@ class ToolRegistry:
 
     @classmethod
     def builtin(cls, names: Iterable[str], ctx: ToolContext) -> ToolRegistry:
+        if ctx.box is not None:  # host file tools would read host paths for VM paths: use `boxed`
+            raise ValueError("this context has a box: build its registry with ToolRegistry.boxed")
         tools: list[Tool] = []
         for n in names:
             if n not in BUILTIN:

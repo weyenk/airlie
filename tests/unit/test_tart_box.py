@@ -417,3 +417,14 @@ def test_the_real_runner_keeps_the_partial_output_when_it_times_out() -> None:
 def test_the_real_runner_raises_file_not_found_for_a_missing_binary() -> None:
     with pytest.raises(FileNotFoundError):
         run(RealRunner()(["/nonexistent/tart-binary"], None, 5))
+
+
+async def test_pump_keeps_only_the_first_bytes_up_to_its_limit_and_drains_the_rest() -> None:
+    from airlie.boxes.tart import _pump
+
+    stream = asyncio.StreamReader()
+    stream.feed_data(b"a" * 100)
+    stream.feed_eof()
+    into = bytearray()
+    await _pump(stream, into, limit=10)
+    assert bytes(into) == b"a" * 10

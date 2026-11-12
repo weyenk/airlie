@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,8 @@ class Compute:
     def __init__(self) -> None:
         self.calls = 0
         self._workspace: tempfile.TemporaryDirectory[str] | None = None
+        self.box_workspace = f"{BOX_WORKSPACE}/{uuid.uuid4().hex}"
+        """This conversation's directory in the VM: another conversation's files are not on its path."""
         self.ran: dict[str, int] = {}
         """Each program this conversation ran (its text, stripped) and the call that ran it."""
 
@@ -82,7 +85,7 @@ class Compute:
         self.calls += 1
         self.ran[code.strip()] = self.calls
         if ctx.box is not None:
-            rc, text = await run_python_in_box(code, ctx.box, box_env(ctx.box_env))
+            rc, text = await run_python_in_box(code, ctx.box, box_env(ctx.box_env), self.box_workspace)
         else:
             rc, text = await run_python(code, self.workspace(), sandbox=ctx.sandbox)
         if rc is None:
@@ -92,21 +95,24 @@ class Compute:
 
 
 BOX_WORKSPACE = "/tmp/airlie-compute"
-"""Where a conversation's programs run in the VM, and keep their files (a later call imports them)."""
+"""Under it each conversation's programs run in a directory of their own in the VM, and keep their files
+there (a later call imports them)."""
 
 
 def timed_out() -> str:
     return f"error: the program ran past {TIMEOUT_S:g}s; compute a smaller case or bound the loop"
 
 
-async def run_python_in_box(code: str, box: Box, env: dict[str, str]) -> tuple[int | None, str]:
+async def run_python_in_box(
+    code: str, box: Box, env: dict[str, str], workspace: str = BOX_WORKSPACE
+) -> tuple[int | None, str]:
     """`run_python` in the VM: the VM is the confinement (its network is off by then), so no sandbox. The
     program travels as one argument of `python3 -I -c`, never inside a shell string."""
-    made = await box.exec(["mkdir", "-p", BOX_WORKSPACE], env=env, timeout_s=TIMEOUT_S)
+    made = await box.exec(["mkdir", "-p", workspace], env=env, timeout_s=TIMEOUT_S)
     if made.rc != 0:
         return None, made.output
     command = ["python3", "-I", "-c", f"import sys; sys.path.insert(0, '.')\n{code}"]
-    result = await box.exec(command, env=env, cwd=BOX_WORKSPACE, stdin=None, timeout_s=TIMEOUT_S)
+    result = await box.exec(command, env=env, cwd=workspace, stdin=None, timeout_s=TIMEOUT_S)
     if result.rc is None and "timed out" in result.output:
         return None, timed_out()
     return result.rc, result.output

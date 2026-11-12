@@ -33,11 +33,16 @@ RESOLVER = "192.168.64.1/32"
 the allowed hosts without it) and never when the network is off."""
 
 
-async def _pump(stream: asyncio.StreamReader | None, into: bytearray) -> None:
+OUTPUT_MAX = 4 * 1024 * 1024
+"""The most bytes of one command's stdout or stderr kept: a `yes` or a read of /dev/zero cannot fill the
+host's memory. The rest is read and dropped, so the command is not blocked; its timeout ends it."""
+
+
+async def _pump(stream: asyncio.StreamReader | None, into: bytearray, limit: int = OUTPUT_MAX) -> None:
     if stream is None:
         return
     while chunk := await stream.read(65536):
-        into += chunk
+        into += chunk[: max(limit - len(into), 0)]
 
 
 async def _feed(proc: asyncio.subprocess.Process, data: bytes) -> None:

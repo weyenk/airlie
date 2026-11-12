@@ -32,10 +32,11 @@ def _box(ctx: ToolContext) -> Box:
 def inside(ctx: ToolContext, path: str) -> str:
     """`path` as an absolute path in the VM under the checkout root, or PermissionError. Lexical: `..` is
     folded away before the check, an absolute path is taken as it is, and a likely secret file is refused."""
-    if secret_like(posixpath.basename(path)):
-        raise PermissionError(f"refusing to touch a likely secret file: {path}")
     root = posixpath.normpath(str(ctx.worktree))
     candidate = posixpath.normpath(posixpath.join(root, path))
+    # the name is judged after normalising: `.env/` and `.env/.` are the file `.env`
+    if secret_like(posixpath.basename(candidate)):
+        raise PermissionError(f"refusing to touch a likely secret file: {path}")
     if candidate != root and not candidate.startswith(root.rstrip("/") + "/"):
         raise PermissionError(f"path escapes the worktree: {path}")
     return candidate
@@ -43,7 +44,7 @@ def inside(ctx: ToolContext, path: str) -> str:
 
 async def _read(ctx: ToolContext, path: str) -> str:
     """The text of the file at `path` (already inside), or an OSError saying what `cat` said."""
-    rc, data = await _box(ctx).exec_bytes(["cat", path])
+    rc, data = await _box(ctx).exec_bytes(["cat", path], timeout_s=ctx.shell_timeout_s)
     if rc != 0:
         raise OSError(data.decode("utf-8", "replace").strip() or f"cannot read {path}")
     return data.decode("utf-8", "replace")
@@ -116,6 +117,36 @@ class BoxReadFile:
         return f"{header}\n{fs._cap_lines(numbered, 1, len(lines), body_room)}"
 
 
+async def _too_long_to_rewrite(ctx: ToolContext, path: str, shown: str) -> str | None:
+    """The error that refuses overwriting the file at `path` when it is longer than the context's limit and
+    was in the commit before this session's work (as the host tool: a file made this session is its own to
+    rewrite); None otherwise. A repository with no such commit counts as committed, as on the host."""
+    box, env = _box(ctx), box_env(ctx.box_env)
+    try:
+        n = len((await _read(ctx, path)).splitlines())
+    except OSError:  # nothing there yet
+        return None
+    limit = ctx.write_file_max_overwrite_lines
+    if n <= limit:
+        return None
+    ref = ctx.scope_base or fs.HEAD
+
+    async def vcs_ok(*argv: str) -> bool:
+        result = await box.exec(
+            [fs.GIT, *argv], env=env, cwd=str(ctx.worktree), timeout_s=ctx.shell_timeout_s
+        )
+        return result.rc == 0
+
+    if await vcs_ok("rev-parse", f"{ref}^{{commit}}"):
+        rel = posixpath.relpath(path, posixpath.normpath(str(ctx.worktree)))
+        if not await vcs_ok("cat-file", "-e", f"{ref}:{rel}"):
+            return None
+    return (
+        f"error: {shown} already exists with {n} lines (over {limit}); write_file does not rewrite a file "
+        "that long. Change it with edit_file, or put new tests in a new file named for the feature."
+    )
+
+
 class BoxWriteFile:
     name = fs.WriteFile.name
     distinct_by_arguments = True
@@ -123,8 +154,15 @@ class BoxWriteFile:
     parameters = fs.WriteFile.parameters
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        content = str(args["content"])
+        if ctx.write_max_chars is not None and len(content) > ctx.write_max_chars:
+            too_long = fs.WRITE_TOO_LONG.format(path=args["path"], n=len(content), limit=ctx.write_max_chars)
+            return ToolResult(False, too_long)
         try:
-            await _write(ctx, inside(ctx, str(args["path"])), str(args["content"]))
+            path = inside(ctx, str(args["path"]))
+            if refused := await _too_long_to_rewrite(ctx, path, str(args["path"])):
+                return ToolResult(False, refused)
+            await _write(ctx, path, content)
         except Exception as e:  # noqa: BLE001
             return fs._err(e)
         return ToolResult(True, f"wrote {args['path']} ({len(str(args['content']))} chars)")
@@ -138,6 +176,10 @@ class BoxEditFile:
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         shown, old, new = str(args["path"]), str(args["old"]), str(args["new"])
+        if ctx.write_max_chars is not None and len(new) > ctx.write_max_chars:
+            return ToolResult(
+                False, fs.EDIT_TOO_LONG.format(path=shown, n=len(new), limit=ctx.write_max_chars)
+            )
         try:
             path = inside(ctx, shown)
             text = await _read(ctx, path)
@@ -177,12 +219,13 @@ class BoxListDir:
     parameters = fs.ListDir.parameters
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        box, env = _box(ctx), box_env(ctx.box_env)
         try:
             root = inside(ctx, str(args.get("path") or "."))
+            is_dir = (await box.exec(["test", "-d", root], env=env, timeout_s=ctx.shell_timeout_s)).rc == 0
         except Exception as e:  # noqa: BLE001
             return fs._err(e)
-        box, env = _box(ctx), box_env(ctx.box_env)
-        if (await box.exec(["test", "-d", root], env=env, timeout_s=ctx.shell_timeout_s)).rc != 0:
+        if not is_dir:
             return ToolResult(False, f"error: not a directory: {args.get('path')}")
         prune = ["("]
         for i, name in enumerate(sorted(fs.SKIP_DIRS)):
@@ -215,7 +258,7 @@ class BoxGrep:
             root = inside(ctx, str(args.get("path") or "."))
         except Exception as e:  # noqa: BLE001
             return fs._err(e)
-        argv = ["grep", "-rnIE"]
+        argv = ["grep", "-rnP"]
         argv += [f"--exclude-dir={d}" for d in sorted(fs.SKIP_DIRS)]
         argv += [f"--exclude={g}" for g in SECRET_GLOBS]
         found = await _box(ctx).exec(
@@ -228,11 +271,13 @@ class BoxGrep:
             return ToolResult(False, f"error: {found.output.strip() or 'grep failed'}")
         base = posixpath.normpath(str(ctx.worktree))
         out: list[str] = []
+        last = ""
         for line in found.output.splitlines():
             m = re.match(r"(.+?):(\d+):(.*)", line)
             if m is None or _skipped(base, m.group(1)):
                 continue
+            if len(out) > GREP_MATCHES_MAX and m.group(1) != last:
+                break  # the file that crossed the cap is shown whole, as on the host
+            last = m.group(1)
             out.append(f"{posixpath.relpath(m.group(1), base)}:{m.group(2)}: {m.group(3).strip()}")
-            if len(out) > GREP_MATCHES_MAX:
-                break
         return ToolResult(True, cap("\n".join(out) or "(no matches)", ctx.output_cap_chars))

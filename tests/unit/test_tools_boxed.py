@@ -169,8 +169,9 @@ async def test_write_file_in_a_box_sends_the_content_on_stdin_never_in_the_comma
     box = running()
     nasty = "'; rm -rf / #\n$(reboot)"
     await call(box, "write_file", {"path": "it's $(x).txt", "content": nasty})
-    argv = box.calls[0].argv
-    assert (box.calls[0].stdin, nasty in " ".join(argv), argv[-1]) == (
+    written = box.calls[-1]
+    argv = written.argv
+    assert (written.stdin, nasty in " ".join(argv), argv[-1]) == (
         nasty.encode(),
         False,
         f"{ROOT}/it's $(x).txt",
@@ -278,11 +279,12 @@ async def test_compute_in_a_box_runs_python_there(no_host_process: None) -> None
     box.handlers["python3"] = reply(0, "42\n")
     result = await Compute().run({"code": "print(6*7)"}, boxed(box))
     run = box.calls[-1]
+    assert run.cwd is not None and run.cwd.startswith("/tmp/airlie-compute/")
     assert (result.output, run.argv[:3], run.argv[3].endswith("print(6*7)"), run.cwd, run.env) == (
         "42\n",
         ("python3", "-I", "-c"),
         True,
-        "/tmp/airlie-compute",
+        run.cwd,
         box_env({"CI": "1"}),
     )
 
@@ -331,3 +333,96 @@ def test_boxed_registry_swaps_the_file_tools_and_keeps_the_schemas() -> None:
 def test_boxed_registry_refuses_an_unknown_tool() -> None:
     with pytest.raises(KeyError, match="unknown builtin tool 'nope'"):
         ToolRegistry.boxed(["nope"], boxed(running()))
+
+
+@pytest.mark.parametrize("bad", [".env/", ".env/.", "a/.env/", "id_rsa/."])
+async def test_a_secret_file_spelled_with_a_trailing_slash_or_dot_is_refused(bad: str) -> None:
+    box = running(**{".env": "K=v\n"})
+    result = await call(box, "read_file", {"path": bad})
+    assert (result.ok, box.calls) == (False, [])
+
+
+async def test_grep_in_a_box_uses_perl_regular_expressions_as_the_pattern_is_checked() -> None:
+    box = running()
+    box.handlers["grep"] = reply(1, "")
+    await call(box, "grep", {"pattern": r"\d+(?:a|b)"})
+    assert box.calls[0].argv[1].startswith("-") and "P" in box.calls[0].argv[1]
+
+
+def test_the_host_registry_refuses_a_context_that_has_a_box() -> None:
+    with pytest.raises(ValueError, match="boxed"):
+        ToolRegistry.builtin(["read_file"], boxed(running()))
+
+
+async def test_read_file_in_a_box_is_timeboxed_like_a_command() -> None:
+    box = running(**{"a": "x"})
+    seen: list[float] = []
+    original = box.exec_bytes
+
+    async def spy(argv: Sequence[str], **kw: Any) -> Any:
+        seen.append(kw["timeout_s"])
+        return await original(argv, **kw)
+
+    box.exec_bytes = spy  # type: ignore[method-assign]
+    await call(box, "read_file", {"path": "a"}, shell_timeout_s=9.0)
+    assert seen == [9.0]
+
+
+async def test_write_file_in_a_box_refuses_content_over_the_write_cap() -> None:
+    box = running()
+    result = await call(box, "write_file", {"path": "a", "content": "x" * 11}, write_max_chars=10)
+    assert (result.ok, "over the 10" in result.output, box.calls) == (False, True, [])
+
+
+async def test_edit_file_in_a_box_refuses_new_text_over_the_write_cap() -> None:
+    box = running(**{"a": "x\n"})
+    result = await call(box, "edit_file", {"path": "a", "old": "x", "new": "y" * 11}, write_max_chars=10)
+    assert (result.ok, box.files[f"{ROOT}/a"]) == (False, b"x\n")
+
+
+async def test_write_file_in_a_box_refuses_to_rewrite_a_long_committed_file() -> None:
+    box = running(**{"a.py": "x\n" * 5})
+    box.handlers["git"] = reply(0, "")
+    result = await call(box, "write_file", {"path": "a.py", "content": "y"}, write_file_max_overwrite_lines=3)
+    assert (result.ok, "already exists with 5 lines" in result.output, box.files[f"{ROOT}/a.py"]) == (
+        False,
+        True,
+        b"x\n" * 5,
+    )
+
+
+async def test_write_file_in_a_box_may_rewrite_a_long_file_made_this_session() -> None:
+    box = running(**{"a.py": "x\n" * 5})
+    box.handlers["git"] = lambda b, argv, stdin: ExecResult(1 if argv[1] == "cat-file" else 0, "")
+    result = await call(box, "write_file", {"path": "a.py", "content": "y"}, write_file_max_overwrite_lines=3)
+    assert (result.ok, box.files[f"{ROOT}/a.py"]) == (True, b"y")
+
+
+async def test_compute_in_a_box_keeps_each_conversations_files_in_its_own_directory() -> None:
+    box = running()
+    box.handlers["python3"] = reply(0, "1\n")
+    first, second = Compute(), Compute()
+    await first.run({"code": "print(1)"}, boxed(box))
+    await second.run({"code": "print(1)"}, boxed(box))
+    cwds = [c.cwd for c in box.calls if c.argv[0] == "python3"]
+    assert cwds[0] != cwds[1] and all(str(c).startswith("/tmp/airlie-compute/") for c in cwds)
+
+
+async def test_grep_in_a_box_finishes_the_file_that_crosses_the_match_cap_and_stops() -> None:
+    box = running()
+    lines = [f"{ROOT}/a.py:{i}:x" for i in range(1, 502)] + [f"{ROOT}/a.py:900:x", f"{ROOT}/b.py:1:x"]
+    box.handlers["grep"] = reply(0, "\n".join(lines))
+    result = await call(box, "grep", {"pattern": "x"}, output_cap_chars=10**6)
+    assert (len(result.output.splitlines()), "b.py" in result.output) == (502, False)
+
+
+async def test_list_dir_in_a_box_answers_a_path_with_a_nul_byte_with_an_error() -> None:
+    class Refusing(FakeBox):
+        async def exec(self, argv: Sequence[str], **kw: Any) -> ExecResult:
+            if "\x00" in "".join(argv):
+                raise ValueError("embedded null byte")
+            return await super().exec(argv, **kw)
+
+    box = Refusing("b", state="running")
+    result = await call(box, "list_dir", {"path": "a\x00b"})
+    assert (result.ok, result.output) == (False, "error: embedded null byte")
