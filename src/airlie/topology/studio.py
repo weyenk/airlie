@@ -131,6 +131,8 @@ class SubtaskRun:
     before: str = (
         ""  # the worktree's head when it started: its review diff and its later runs' already_written
     )
+    writes: bool = False
+    """Its role writes the worktree (`_start_subtask`): only a writer is done-checked and reviewed."""
     broke: bool = False
     """A turn of it raised (its result says engine_error): nothing after that turn runs before its
     `subtask_done`, no done-check, review or fix round."""
@@ -509,10 +511,10 @@ class StudioOrchestrator:
         """A routed subtask from its start to its `subtask_done`: its first turn and, for a writer, the
         done-check and the review rounds, all under the write lock."""
         writes = await self._start_subtask(run)
-        async with self._slot(writes):
+        async with self._slot(writes):  # the steps' own bodies: the write lock is not reentrant
             await self._first_turn(run, writes)
             if writes:
-                await self.done_check(run)
+                await self._done_check(run)
                 await self._review_and_fix(run)
         self.close_subtask(run)
 
@@ -531,7 +533,7 @@ class StudioOrchestrator:
         role = self.cfg.roles[run.role]
         run.skill, skill_text = await self._skill(run.subtask, role)
         run.preamble = "\n\n".join(x for x in (self.preamble or "", skill_text) if x)
-        writes = self._writes(role, run.subtask)
+        writes = run.writes = self._writes(role, run.subtask)
         self._handoff("chief", run.subtask.id, "brief", run.subtask.brief)
         for d in run.subtask.depends_on:
             dep = self.runs.get(d)
@@ -595,12 +597,17 @@ class StudioOrchestrator:
     async def done_check(self, run: SubtaskRun) -> None:
         """Step: a coder that stopped 'done' on a brief with acceptance criteria is sent its diff with the
         done-check: a miss it finds is fixed in a short continuation before the reviewer charges a round. An
-        exception is the subtask's engine_error result, never raised."""
+        exception is the subtask's engine_error result, never raised. Under the write lock for a writer."""
+        async with self._slot(run.writes):
+            await self._done_check(run)
+
+    async def _done_check(self, run: SubtaskRun) -> None:
         res = run.result
         assert res is not None and self.worktree is not None
         s = self.cfg.studio
         if (
             run.broke
+            or not run.writes
             or not s.done_check
             or run.role not in s.review.roles  # it stands in for a review round: a role with none has none
             or res.stop_reason != "done"
@@ -643,19 +650,24 @@ class StudioOrchestrator:
         """Review rounds, each with a fix round after it while `wants_fix`."""
         round_no = 0
         while True:
-            review = await self.review_round(run, round_no)
+            review = await self._review_round(run, round_no)
             if review is None or not self.wants_fix(review, round_no):
                 return
-            await self.fix_turn(run, review)
+            await self._fix_turn(run, review)
             round_no += 1
 
     async def review_round(self, run: SubtaskRun, round_no: int) -> Review | None:
         """Step: review round `round_no` of a subtask: its work committed, the diff to the reviewer, the
         verdict on record (trace, `review` event, the hand-off back). None when the role has no review (or
-        the subtask broke); an exception is the subtask's engine_error result, and None."""
+        the subtask broke, or does not write); an exception is the subtask's engine_error result, and None.
+        Under the write lock for a writer (its work is committed)."""
+        async with self._slot(run.writes):
+            return await self._review_round(run, round_no)
+
+    async def _review_round(self, run: SubtaskRun, round_no: int) -> Review | None:
         rv = self.cfg.studio.review
         assert self.worktree is not None and run.result is not None
-        if run.broke or not rv.enabled or run.role not in rv.roles:
+        if run.broke or not run.writes or not rv.enabled or run.role not in rv.roles:
             return None
         try:
             reviewer = Reviewer(self.engine, rv.role, self.cfg.roles[rv.role], self._lookup_tools(rv.role))
@@ -711,7 +723,11 @@ class StudioOrchestrator:
 
     async def fix_turn(self, run: SubtaskRun, review: Review) -> None:
         """Step: the fix round for `review`'s blocking findings, in the subtask's conversation. An exception
-        is its engine_error result, never raised."""
+        is its engine_error result, never raised. Under the write lock for a writer."""
+        async with self._slot(run.writes):
+            await self._fix_turn(run, review)
+
+    async def _fix_turn(self, run: SubtaskRun, review: Review) -> None:
         run.fix_rounds += 1
         self.sink.emit(
             "fix_round", subtask=run.subtask.id, round=run.fix_rounds, blocking=len(review.blocking)
