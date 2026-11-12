@@ -6,7 +6,7 @@ import pytest
 
 from airlie.config import ConfigError
 from airlie.flow import Composer, EndRun, MemoryStore, Registry, Sessions, Stalled, resolve_count
-from airlie.flow.spec import WorkflowSpec, check_workflows
+from airlie.flow.spec import WorkflowSpec, check_workflows, transient_heads
 from airlie.story.asking import StoryBlocked
 from tests.support.studio import cfg_for
 
@@ -566,6 +566,63 @@ async def test_a_node_of_transient_outputs_and_an_every_run_check_run_on_every_r
         "w"
     )
     assert not store.done("mark") and store.done("flag")
+
+
+def _layer_with_a_transient(*, to_flag, flag="flag.{item}"):
+    """A story over one layer whose bundle workflow writes a transient output it does not hand back."""
+    return {
+        "story": {
+            "inputs": ["card", "layers"],
+            "nodes": {"lay": {"type": "bundle", "workflow": "layer", "each": "layers", "inputs": ["layers"]}},
+        },
+        "layer": {
+            "inputs": ["layers"],
+            "outputs": ["built.{item}"],
+            "nodes": {
+                "work": chk(outputs={"built.{item}": "json"}, to=["check"]),
+                "check": chk(outputs={flag: {"format": "bool", "transient": True}}, to=to_flag),
+                "fix": chk(),
+            },
+        },
+    }
+
+
+async def test_a_transient_output_written_inside_a_bundle_item_is_never_saved(tmp_path):
+    from airlie.flow import StateStore
+    from airlie.story.state import StoryState
+    from tests.support.git import repo_with_marker_tests
+    from tests.support.story import text_card
+
+    seen = []
+    wf = _layer_with_a_transient(to_flag=[{"node": "fix", "when": "flag.{item} exists"}])
+    specs = {n: WorkflowSpec.model_validate(w) for n, w in wf.items()}
+    assert check_workflows(specs) == []
+    repo = repo_with_marker_tests(tmp_path)
+    st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    store = StateStore(st, loose={"card": "c", "layers": [{}]}, transient=transient_heads(specs))
+    await composer(tmp_path, wf, {"check": outputs(seen)}, store=store).run("story")
+    assert seen == ["work", "check", "fix"]  # the condition read the transient the check wrote
+    assert store.get("flag.01") == "check"
+    saved = json.loads((tmp_path / "AIR-1" / "state.json").read_text())
+    assert "flag" not in saved.get("artifacts", {}) and "flag.01" not in json.dumps(saved)
+
+
+async def test_a_loop_inside_a_bundle_clears_its_transient_outputs(tmp_path):
+    held = []
+
+    def run(n, c):
+        if n_is_work(n):
+            held.append(c.store.has("flag.01"))
+        return {k: c.node for k in n.outputs}
+
+    def n_is_work(n):
+        return "built.{item}" in n.outputs
+
+    wf = _layer_with_a_transient(to_flag=[{"node": "work", "when": "flag.{item} exists", "loop": {"max": 1}}])
+    store = MemoryStore({"card": "c", "layers": [{}]})
+    await composer(tmp_path, wf, {"check": check_that(run)}, store=store).run("story")
+    assert held == [False, False]  # the send-back cleared the flag before work ran again
+    assert store.get("flag.01") == "check"  # and check wrote it afresh
 
 
 # ---- the node step: events, outputs, sessions, failures, the run's end ----

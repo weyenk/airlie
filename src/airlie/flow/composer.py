@@ -61,7 +61,7 @@ from pydantic import BaseModel
 
 from airlie.flow import conditions
 from airlie.flow.prompt_files import FEEDBACK
-from airlie.flow.spec import Line, NodeSpec, NodeType, WorkflowSpec
+from airlie.flow.spec import Line, NodeSpec, NodeType, WorkflowSpec, transient_heads
 from airlie.flow.store import MEMORY, BundleStore, Sessions, Store
 from airlie.prompts.hub import PromptText
 
@@ -539,8 +539,11 @@ class _Run:
         items = self.items_of(node)
         scope = f"{self.scope}{name}/"
         self.items_run[name] = items
+        transient = transient_heads(self.c.workflows or self.c.cfg.workflows)
         for item in items:
-            view = BundleStore(self.store, workflow=node.workflow, outputs=spec.outputs, item=item)
+            view = BundleStore(
+                self.store, workflow=node.workflow, outputs=spec.outputs, item=item, transient=transient
+            )
             await _Run(self.c, node.workflow, item, view, until=None, bundle=True, scope=scope).go()
         return {}
 

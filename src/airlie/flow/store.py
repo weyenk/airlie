@@ -202,11 +202,21 @@ class StateStore:
 class BundleStore:
     """What one run of a bundle's workflow sees (design: "Bundles and isolation"): the parent's store read by
     name, and written only under the bundle workflow's declared `outputs` (`{item}` filled with the item)
-    and the memory heads (the feedback a loop inside it carries). Any other write is a KeyError naming the
+    and the memory heads (the feedback a loop inside it carries) and the transient heads (held in the parent's
+    run memory, never handed back). Any other write is a KeyError naming the
     bundle. Events, saves and the done set are the parent's."""
 
-    def __init__(self, parent: Store, *, workflow: str, outputs: Collection[str], item: str | None) -> None:
+    def __init__(
+        self,
+        parent: Store,
+        *,
+        workflow: str,
+        outputs: Collection[str],
+        item: str | None,
+        transient: Collection[str] = (),
+    ) -> None:
         self.parent = parent
+        self.transient = frozenset(transient)
         self.workflow = workflow
         self.item = item
         self.outputs = frozenset(o if item is None else o.replace("{item}", item) for o in outputs)
@@ -218,7 +228,8 @@ class BundleStore:
         return self.parent.get(name)
 
     def put(self, name: str, value: Any) -> None:
-        if name not in self.outputs and name.partition(".")[0] not in MEMORY:
+        head = name.partition(".")[0]
+        if name not in self.outputs and head not in MEMORY and head not in self.transient:
             raise KeyError(f"bundle {self.workflow}: '{name}' is not one of its outputs")
         self.parent.put(name, value)
 
