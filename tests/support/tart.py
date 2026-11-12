@@ -7,7 +7,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-Reply = tuple[int | None, bytes]
+Reply = tuple[int | None, bytes, bytes]
+"""(rc, stdout, stderr), as a Runner answers."""
 
 
 @dataclass
@@ -18,8 +19,8 @@ class FakeRunner:
     calls: list[tuple[tuple[str, ...], bytes | None, float]] = field(default_factory=list)
     missing: bool = False
 
-    def reply(self, prefix: Sequence[str], rc: int | None, out: bytes = b"") -> None:
-        self.replies.append((tuple(prefix), (rc, out)))
+    def reply(self, prefix: Sequence[str], rc: int | None, out: bytes = b"", err: bytes = b"") -> None:
+        self.replies.append((tuple(prefix), (rc, out, err)))
 
     async def __call__(self, argv: Sequence[str], stdin: bytes | None, timeout_s: float) -> Reply:
         if self.missing:
@@ -28,7 +29,7 @@ class FakeRunner:
         for prefix, answer in self.replies:
             if tuple(argv[: len(prefix)]) == prefix:
                 return answer() if callable(answer) else answer
-        return 0, b""
+        return 0, b"", b""
 
     def argvs(self) -> list[list[str]]:
         return [list(c[0]) for c in self.calls]
@@ -67,5 +68,17 @@ class FakeSpawner:
         return self.proc
 
 
-async def no_sleep(_: float) -> None:
-    return None
+class Clock:
+    """A fake monotonic clock that only `sleep` (or `advance`) moves."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def now(self) -> float:
+        return self.t
+
+    async def sleep(self, seconds: float) -> None:
+        self.t += seconds
+
+    def advance(self, seconds: float) -> None:
+        self.t += seconds

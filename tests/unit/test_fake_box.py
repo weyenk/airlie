@@ -191,3 +191,20 @@ def test_exec_bytes_scripted_timeout_is_rc_none() -> None:
     box = running_box()
     box.timeouts.add(("git", "bundle"))
     assert run(box.exec_bytes(["git", "bundle"])) == (None, b"")
+
+
+def test_rename_gives_a_stopped_box_its_new_name() -> None:
+    box = FakeBox("tmp")
+    run(box.create("img", cpus=1, memory_gb=1, disk_gb=1))
+    run(box.rename("final"))
+    assert (box.name, box.renamed) == ("final", [("tmp", "final")])
+
+
+def test_rename_refuses_a_missing_or_running_box() -> None:
+    box = FakeBox("tmp")
+    with pytest.raises(BoxUnavailable, match="does not exist"):
+        run(box.rename("x"))
+    run(box.create("img", cpus=1, memory_gb=1, disk_gb=1))
+    run(box.boot(network=Network("open"), timeout_s=1))
+    with pytest.raises(BoxUnavailable, match="running"):
+        run(box.rename("x"))

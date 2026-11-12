@@ -82,7 +82,7 @@ boxes:                             # the VMs repository chats run in (Tart, one 
   setup_timeout_s: 1800
   boot_timeout_s: 120
   network:
-    after_setup: allow_list          # off = host-only
+    after_setup: allow_list          # off = no network at all
     allow_hosts: [pypi.org, files.pythonhosted.org, registry.npmjs.org]
 web:
   search:                          # web_search backend; `task doctor` checks it

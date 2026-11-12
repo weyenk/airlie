@@ -456,8 +456,8 @@ class BoxNetworkSpec(Strict):
 
     after_setup: Literal["off", "allow_list"] = Field(
         default="allow_list",
-        description="off: host-only networking; allow_list: everything blocked except the CIDRs allow_hosts "
-        "resolve to",
+        description="off: no network at all (every address blocked); allow_list: everything blocked except "
+        "the CIDRs allow_hosts resolve to and the resolver",
     )
     allow_hosts: list[str] = Field(
         default_factory=lambda: ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org"],

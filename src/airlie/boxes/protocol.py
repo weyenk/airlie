@@ -17,12 +17,21 @@ class ExecResult(NamedTuple):
 
 class Network(NamedTuple):
     mode: Literal["open", "off", "allow_list"]
+    """off: nothing is reachable (softnet blocks every address); allow_list: only `allow`."""
     allow: tuple[str, ...] = ()
-    """CIDRs reachable in allow_list mode."""
+    """CIDRs or host names reachable in allow_list mode."""
 
 
 class BoxUnavailable(EngineError):
     """The backend cannot be used; the message says why and how to fix it."""
+
+
+class ConfirmationRequired(EngineError):
+    """A step that gives setup secrets to a recipe nobody has built before needs a person's yes."""
+
+    def __init__(self, what: str) -> None:
+        super().__init__(f"confirmation required: {what}")
+        self.what = what
 
 
 class Box(Protocol):
@@ -66,6 +75,10 @@ class Box(Protocol):
 
     async def stop(self) -> None:
         """The disk stays."""
+        ...
+
+    async def rename(self, new_name: str) -> None:
+        """Give the (stopped) disk another name; `name` is the new one afterwards."""
         ...
 
     async def delete(self) -> None: ...

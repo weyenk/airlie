@@ -1,4 +1,5 @@
 import asyncio
+import itertools
 import os
 from collections.abc import Coroutine, Sequence
 from pathlib import Path
@@ -6,11 +7,11 @@ from typing import Any
 
 import pytest
 
-from airlie.boxes.images import ConfirmationRequired, Images, SecretStore
-from airlie.boxes.protocol import ExecResult, Network
+from airlie.boxes.images import Images, SecretStore
+from airlie.boxes.protocol import BoxUnavailable, ConfirmationRequired, ExecResult, Network
 from airlie.boxes.recipe import Recipe, RecipeError
 from airlie.config.schema import BoxesSpec
-from tests.support.box import FakeBox
+from tests.support.box import FakeBox, Handler
 
 SPEC = BoxesSpec(cpus=2, memory_gb=4, disk_gb=20, boot_timeout_s=30, setup_timeout_s=99)
 REPO = "acme/widgets"
@@ -25,8 +26,14 @@ def sh_ok(box: FakeBox, argv: Sequence[str], stdin: bytes | None) -> ExecResult:
 
 
 class Rig:
+    """Boxes by their current name: a rename moves a box to its new name, as the VM's disk does."""
+
     def __init__(self, tmp_path: Path, *, secrets: str | None = None, allow: bool = True) -> None:
-        self.boxes: dict[str, FakeBox] = {}
+        self.all: list[FakeBox] = []
+        self._tokens = itertools.count()
+        self.sh: Handler = sh_ok
+        self.fail_boot: str | None = None
+        self.delete_fails: str | None = None
         self.asked: list[str] = []
         self.allow = allow
         sdir = tmp_path / "secrets"
@@ -35,12 +42,34 @@ class Rig:
             path = sdir / "acme__widgets.env"
             path.write_text(secrets)
             path.chmod(0o600)
-        self.images = Images(self.box_for, SPEC, secrets=SecretStore(sdir), confirm=self.confirm)
+        self.images = Images(
+            self.box_for, SPEC, secrets=SecretStore(sdir), confirm=self.confirm, token=self.token
+        )
 
     def box_for(self, name: str) -> FakeBox:
-        if name not in self.boxes:
-            self.boxes[name] = FakeBox(name, handlers={"sh": sh_ok})
-        return self.boxes[name]
+        for box in self.all:
+            if box.name == name and box.state != "absent":
+                return box
+        box = FakeBox(name, handlers={"sh": lambda b, argv, stdin: self.sh(b, argv, stdin)})
+        box.fail_boot = self.fail_boot
+        if self.delete_fails:
+            box.delete = self._failing_delete  # type: ignore[method-assign]
+        self.all.append(box)
+        return box
+
+    async def _failing_delete(self) -> None:
+        raise BoxUnavailable(self.delete_fails or "")
+
+    def token(self) -> str:
+        return f"t{next(self._tokens)}k"
+
+    def building(self) -> list[FakeBox]:
+        """The boxes an image build used (all of them, whatever became of them)."""
+        return [b for b in self.all if b.created]
+
+    def built(self) -> list[FakeBox]:
+        """The boxes that exist."""
+        return [b for b in self.all if b.state != "absent"]
 
     def confirm(self, what: str) -> bool:
         self.asked.append(what)
@@ -51,7 +80,7 @@ def test_no_setup_uses_the_base_image_without_building(tmp_path: Path) -> None:
     rig = Rig(tmp_path)
     assert run(rig.images.ensure(Recipe(base="img:1"), REPO)) == "img:1"
     assert run(rig.images.ensure(Recipe(), REPO)) == SPEC.image
-    assert rig.boxes == {}
+    assert rig.all == []
 
 
 def test_image_name_is_airlie_env_and_the_key() -> None:
@@ -61,12 +90,20 @@ def test_image_name_is_airlie_env_and_the_key() -> None:
     assert images.image_name(Recipe(setup=("a",))) == f"airlie-env-{Recipe(setup=('a',)).key(SPEC.image)}"
 
 
+def test_the_repository_is_part_of_the_name_of_an_image_built_with_secrets() -> None:
+    recipe = Recipe(base="img:1", setup=("a",))
+    images = Images(FakeBox, SPEC, secrets=SecretStore(Path("/nowhere")), confirm=lambda _: True)
+    a, b = images.image_name(recipe, "acme/widgets"), images.image_name(recipe, "acme/other")
+    assert a != b and a != images.image_name(recipe)
+    assert a.startswith(f"airlie-env-{recipe.key('img:1')}-")
+
+
 def test_setup_builds_once_and_the_second_ensure_reuses_it(tmp_path: Path) -> None:
     rig = Rig(tmp_path)
     recipe = Recipe(base="img:1", setup=("apt-get update", "uv sync"), env={"CI": "1"})
     name = run(rig.images.ensure(recipe, REPO))
-    box = rig.boxes[name]
-    assert name == rig.images.image_name(recipe)
+    (box,) = rig.built()
+    assert name == rig.images.image_name(recipe) == box.name
     assert box.created == [("img:1", 2, 4, 20)]
     assert box.boots == [Network("open")]
     assert box.state == "stopped" and not box.deleted
@@ -78,38 +115,69 @@ def test_setup_builds_once_and_the_second_ensure_reuses_it(tmp_path: Path) -> No
     assert len(box.calls) == 2 and len(box.created) == 1
 
 
+def test_an_image_is_built_under_a_temporary_name_and_renamed_when_done(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    name = run(rig.images.ensure(Recipe(base="i", setup=("x",)), REPO))
+    (box,) = rig.built()
+    assert box.renamed == [(f"{name}-building-t0k", name)]
+    assert box.state == "stopped"  # stopped before the rename: the disk is whole when it gets its name
+
+
+def test_a_half_built_image_is_never_served_as_cached(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    recipe = Recipe(base="i", setup=("ok", "bad"))
+    final = rig.images.image_name(recipe)
+    rig.sh = lambda b, argv, stdin: ExecResult(2, "boom") if b"bad" in (stdin or b"") else ExecResult(0, "")
+    rig.delete_fails = "disk busy"  # the cleanup fails: the partial disk stays
+    with pytest.raises(RecipeError):
+        run(rig.images.ensure(recipe, REPO))
+    (partial,) = rig.built()
+    assert partial.name == f"{final}-building-t0k"  # under its temporary name, never as `final`
+    rig.delete_fails = None
+    rig.sh = sh_ok
+    assert run(rig.images.ensure(recipe, REPO)) == final  # the next ensure builds it properly
+    assert sorted(b.name for b in rig.built()) == sorted([final, partial.name])
+    assert len([b for b in rig.built() if b.name == final]) == 1
+
+
 def test_setup_secrets_reach_the_guest_on_stdin_only(tmp_path: Path) -> None:
     rig = Rig(tmp_path, secrets="# token\nNPM_TOKEN=s3cr3t value\n\nOTHER=a'b\n")
-    name = run(rig.images.ensure(Recipe(base="i", setup=("npm ci",), env={"CI": "1"}), REPO))
-    box = rig.boxes[name]
+    run(rig.images.ensure(Recipe(base="i", setup=("npm ci",), env={"CI": "1"}), REPO))
+    (box,) = rig.built()
     (call,) = box.calls
     assert call.stdin == b"export NPM_TOKEN='s3cr3t value'\nexport OTHER='a'\"'\"'b'\nnpm ci\n"
     seen = [*call.argv, *call.env.values(), *call.env, call.cwd or ""]
     assert not any("s3cr3t" in part or "a'b" in part for part in seen)
     assert "NPM_TOKEN" not in call.env
-    assert not any("s3cr3t" in str(v) for v in (box.created, box.boots, box.files))
+    assert not any("s3cr3t" in str(v) for v in (box.created, box.boots, box.files, box.renamed, box.name))
 
 
-def test_secrets_are_not_part_of_the_key(tmp_path: Path) -> None:
-    (tmp_path / "a").mkdir()
-    (tmp_path / "b").mkdir()
-    with_secrets = Rig(tmp_path / "a", secrets="K=v\n")
-    plain = Rig(tmp_path / "b")
+def test_an_image_built_with_secrets_is_not_shared_with_another_repository(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, secrets="K=v\n")
     recipe = Recipe(base="i", setup=("x",))
-    assert run(with_secrets.images.ensure(recipe, REPO)) == run(plain.images.ensure(recipe, REPO))
+    mine = run(rig.images.ensure(recipe, REPO))
+    other = run(rig.images.ensure(recipe, "acme/other"))  # no secrets of its own: a build of its own
+    assert mine != other and other == rig.images.image_name(recipe)
+    assert len(rig.built()) == 2
+    assert run(rig.images.ensure(recipe, REPO)) == mine  # the same repository reuses its own
+
+
+def test_an_image_built_without_secrets_is_shared_by_repositories(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    recipe = Recipe(base="i", setup=("x",))
+    assert run(rig.images.ensure(recipe, REPO)) == run(rig.images.ensure(recipe, "acme/other"))
+    assert len(rig.built()) == 1
 
 
 def test_a_failed_setup_deletes_the_partial_image(tmp_path: Path) -> None:
     rig = Rig(tmp_path, secrets="TOKEN=hunter2\n")
-    box = rig.box_for(rig.images.image_name(Recipe(base="i", setup=("ok", "bad"))))
 
     def sh(b: FakeBox, argv: Sequence[str], stdin: bytes | None) -> ExecResult:
-        assert stdin is not None
-        if b"bad" in stdin:
+        if b"bad" in (stdin or b""):
             return ExecResult(2, "x" * 3000 + "boom with hunter2 inside")
         return ExecResult(0, "")
 
-    box.handlers["sh"] = sh
+    rig.sh = sh
     with pytest.raises(RecipeError) as err:
         run(rig.images.ensure(Recipe(base="i", setup=("ok", "bad")), REPO))
     message = str(err.value)
@@ -117,27 +185,53 @@ def test_a_failed_setup_deletes_the_partial_image(tmp_path: Path) -> None:
     assert message.endswith("boom with *** inside")
     assert "hunter2" not in message
     assert len(message) < 2200  # the tail, not all the output
+    (box,) = rig.building()
     assert box.deleted and box.state == "absent"
+
+
+def test_short_secrets_are_not_redacted_so_the_tail_stays_readable(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, secrets="A=1\nB=ab\nLONGER=hunter2\n")
+    rig.sh = lambda b, argv, stdin: ExecResult(1, "step 1 of 12 failed: ab hunter2")
+    with pytest.raises(RecipeError) as err:
+        run(rig.images.ensure(Recipe(base="i", setup=("x",)), REPO))
+    assert str(err.value).endswith("step 1 of 12 failed: ab ***")
 
 
 def test_a_setup_that_times_out_deletes_the_partial_image(tmp_path: Path) -> None:
     rig = Rig(tmp_path)
-    recipe = Recipe(base="i", setup=("sleep 9999",))
-    box = rig.box_for(rig.images.image_name(recipe))
-    box.handlers["sh"] = lambda b, a, s: ExecResult(None, "error: command timed out after 99s")
+    rig.sh = lambda b, a, s: ExecResult(None, "error: command timed out after 99s")
     with pytest.raises(RecipeError, match=r"setup failed \(timed out\) at: sleep 9999"):
-        run(rig.images.ensure(recipe, REPO))
-    assert box.deleted
+        run(rig.images.ensure(Recipe(base="i", setup=("sleep 9999",)), REPO))
+    assert rig.building()[0].deleted
 
 
 def test_a_boot_that_fails_deletes_the_partial_image(tmp_path: Path) -> None:
     rig = Rig(tmp_path)
+    rig.fail_boot = "no answer"
+    with pytest.raises(BoxUnavailable, match="no answer"):
+        run(rig.images.ensure(Recipe(base="i", setup=("x",)), REPO))
+    assert rig.building()[0].deleted
+
+
+def test_a_failed_cleanup_does_not_mask_the_setup_error(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    rig.sh = lambda b, a, s: ExecResult(1, "the real failure")
+    rig.delete_fails = "tart delete failed: disk busy"
+    with pytest.raises(RecipeError, match="the real failure") as err:
+        run(rig.images.ensure(Recipe(base="i", setup=("x",)), REPO))
+    assert any("disk busy" in note for note in err.value.__notes__)
+
+
+def test_concurrent_ensures_of_one_image_build_it_once(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
     recipe = Recipe(base="i", setup=("x",))
-    box = rig.box_for(rig.images.image_name(recipe))
-    box.fail_boot = "no answer"
-    with pytest.raises(Exception, match="no answer"):
-        run(rig.images.ensure(recipe, REPO))
-    assert box.deleted
+
+    async def both() -> list[str]:
+        return list(await asyncio.gather(rig.images.ensure(recipe, REPO), rig.images.ensure(recipe, REPO)))
+
+    first, second = run(both())
+    assert first == second
+    assert len(rig.built()) == 1 and len(rig.built()[0].created) == 1
 
 
 def test_a_new_recipe_with_secrets_needs_confirmation(tmp_path: Path) -> None:
@@ -146,14 +240,14 @@ def test_a_new_recipe_with_secrets_needs_confirmation(tmp_path: Path) -> None:
     with pytest.raises(ConfirmationRequired, match="build_image:acme/widgets:"):
         run(rig.images.ensure(recipe, REPO))
     assert rig.asked == [f"build_image:{REPO}:{recipe.key('i')}"]
-    assert rig.boxes[rig.images.image_name(recipe)].created == []  # nothing was built
+    assert rig.built() == []  # nothing was built
 
 
 def test_a_confirmed_build_with_secrets_goes_ahead(tmp_path: Path) -> None:
     rig = Rig(tmp_path, secrets="K=v\n", allow=True)
     recipe = Recipe(base="i", setup=("x",))
-    name = run(rig.images.ensure(recipe, REPO))
-    assert rig.boxes[name].created and rig.asked == [f"build_image:{REPO}:{recipe.key('i')}"]
+    run(rig.images.ensure(recipe, REPO))
+    assert rig.built()[0].created and rig.asked == [f"build_image:{REPO}:{recipe.key('i')}"]
 
 
 def test_no_secrets_means_no_question(tmp_path: Path) -> None:

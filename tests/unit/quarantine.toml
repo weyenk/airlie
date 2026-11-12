@@ -113,3 +113,4 @@
 "tests/unit/test_tools.py::test_shell_timeout" = "clock: a real 0.3 s shell timeout"
 "tests/unit/test_workflows_api.py::test_publishes_of_one_workflow_run_one_at_a_time" = "clock: overlaps publishes with a real 20 ms sleep"
 "tests/unit/test_workflows_api.py::test_publishing_an_unchanged_file_from_the_builder_diffs_only_the_layout_block" = "slow: 820 ms"
+"tests/unit/test_tart_box.py::test_the_real_runner_keeps_the_partial_output_when_it_times_out" = "clock: a real 0.3 s timeout must fire on a real process"

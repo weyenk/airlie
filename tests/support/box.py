@@ -39,6 +39,7 @@ class FakeBox:
     timeouts: set[tuple[str, ...]] = field(default_factory=set)
     """Commands (whole argv) that time out: rc None, as the real box answers."""
     timed_out: list[tuple[tuple[str, ...], float]] = field(default_factory=list)
+    renamed: list[tuple[str, str]] = field(default_factory=list)
     stderr: dict[tuple[str, ...], bytes] = field(default_factory=dict)
     """What `exec_bytes` returns in place of stdout when the command fails."""
 
@@ -104,6 +105,14 @@ class FakeBox:
     async def stop(self) -> None:
         if self.state == "running":
             self.state = "stopped"
+
+    async def rename(self, new_name: str) -> None:
+        if self.state == "absent":
+            raise BoxUnavailable(f"box {self.name} does not exist")
+        if self.state == "running":
+            raise BoxUnavailable(f"box {self.name} is running: stop it before renaming")
+        self.renamed.append((self.name, new_name))
+        self.name = new_name
 
     async def delete(self) -> None:
         self.state = "absent"
