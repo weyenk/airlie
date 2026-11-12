@@ -688,10 +688,25 @@ tasks:
       ENGINE: '{{.E2E_ENGINE | default "container"}}'
     cmds:
       - '{{if eq .ENGINE "container"}}container system start --disable-kernel-install > /dev/null{{else}}true{{end}}'
-      - rm -rf test-results && mkdir -p test-results/e2e
-      # the build's log, not -q: container 1.5.0's quiet build can hang with no output
-      - '{{.ENGINE}} build --progress plain -t airlie-e2e -f ops/e2e/Containerfile . > test-results/build.log 2>&1 || { tail -40 test-results/build.log; exit 1; }'
-      - '{{.ENGINE}} run --rm -v "{{.ROOT_DIR}}/test-results/e2e:/src/test-results" airlie-e2e {{.CLI_ARGS}}'
+      # one run at a time per worktree: a run clears test-results and the build tars it, so a second run waits
+      # for the first (a lock directory in $TMPDIR, keyed by this worktree, holding its pid)
+      - |
+        LOCK="${TMPDIR:-/tmp}/airlie-e2e-$(printf %s "{{.ROOT_DIR}}" | cksum | cut -d' ' -f1).lock"
+        until mkdir "$LOCK" 2>/dev/null; do
+          OWNER=$(cat "$LOCK/pid" 2>/dev/null || true)
+          if [ -n "$OWNER" ] && ! kill -0 "$OWNER" 2>/dev/null; then
+            rm -rf "$LOCK"  # its run is gone (killed)
+            continue
+          fi
+          echo "another test:e2e run is using test-results in this worktree; waiting for it..."
+          sleep 5
+        done
+        sh -c 'echo $PPID' > "$LOCK/pid"  # this task process
+        trap 'rm -rf "$LOCK"' EXIT
+        rm -rf test-results && mkdir -p test-results/e2e .task
+        # the build's log, not -q: container 1.5.0's quiet build can hang with no output
+        {{.ENGINE}} build --progress plain -t airlie-e2e -f ops/e2e/Containerfile . > .task/e2e-build.log 2>&1 || { tail -40 .task/e2e-build.log; exit 1; }
+        {{.ENGINE}} run --rm -v "{{.ROOT_DIR}}/test-results/e2e:/src/test-results" airlie-e2e {{.CLI_ARGS}}
 
   test:journey:
     desc: "Stage 4, behavioural: user-journey tests (tests/journey)"
