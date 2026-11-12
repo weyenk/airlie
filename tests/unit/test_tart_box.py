@@ -183,14 +183,28 @@ def test_exec_timeout_returns_none_rc(tmp_path: Path) -> None:
     assert result == (None, "error: command timed out after 2s")
 
 
-def test_exec_bytes_drops_the_guests_stderr(tmp_path: Path) -> None:
+def test_exec_bytes_keeps_the_guests_stderr_out_of_the_bundle(tmp_path: Path) -> None:
     runner = FakeRunner()
     runner.reply(["tart", "exec"], 0, b"\x00bundle")
     rc, out = run(make(tmp_path, runner).exec_bytes(["git", "bundle", "create", "-", "HEAD"]))
     assert (rc, out) == (0, b"\x00bundle")
     argv = runner.argvs()[0]
     assert argv[3:6] == ["env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin"]
-    assert 'exec "$@" 2>/dev/null' in argv
+    assert 'exec "$@" 2>/tmp/airlie-exec-bytes.err' in argv
+
+
+def test_exec_bytes_returns_the_guests_stderr_when_it_fails(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    runner.reply(["tart", "exec"], 128, b"fatal: bad ref")
+    rc, out = run(make(tmp_path, runner).exec_bytes(["git", "bundle", "create", "-", "HEAD"]))
+    assert (rc, out) == (128, b"fatal: bad ref")
+    assert runner.argvs()[1][-3:] == ["sh", "cat", "/tmp/airlie-exec-bytes.err"]
+
+
+def test_exec_bytes_runs_in_the_given_cwd(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    run(make(tmp_path, runner).exec_bytes(["true"], cwd="/w d"))
+    assert "cd '/w d' && exec \"$@\" 2>/tmp/airlie-exec-bytes.err" in runner.argvs()[0]
 
 
 def test_exists_and_running_read_tart_get(tmp_path: Path) -> None:

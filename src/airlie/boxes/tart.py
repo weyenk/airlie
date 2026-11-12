@@ -25,6 +25,10 @@ LOG_TAIL_CHARS = 2000
 STOP_WAIT_S = 60.0
 
 
+BYTES_STDERR = "/tmp/airlie-exec-bytes.err"
+"""Where exec_bytes keeps the guest command's stderr."""
+
+
 class RealRunner:
     async def __call__(
         self, argv: Sequence[str], stdin: bytes | None, timeout_s: float
@@ -210,7 +214,7 @@ class TartBox:
         self, argv: Sequence[str], env: Mapping[str, str], cwd: str | None, *, stdin: bool, quiet: bool
     ) -> list[str]:
         script = f"cd {shlex.quote(cwd)} && " if cwd else ""
-        script += 'exec "$@"' + (" 2>/dev/null" if quiet else "")
+        script += 'exec "$@"' + (f" 2>{BYTES_STDERR}" if quiet else "")
         # `env -i`: the guest command gets these pairs and nothing else, whatever the host's environment is
         return [
             "exec",
@@ -242,12 +246,23 @@ class TartBox:
         return ExecResult(rc, out.decode("utf-8", "replace"))
 
     async def exec_bytes(
-        self, argv: Sequence[str], *, stdin: bytes | None = None, timeout_s: float = 120.0
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: str | None = None,
+        stdin: bytes | None = None,
+        timeout_s: float = 120.0,
     ) -> tuple[int | None, bytes]:
-        """stdout only: stderr goes to /dev/null in the guest, so it cannot corrupt a bundle."""
+        """stdout only: stderr goes to a file in the guest, so it cannot corrupt a bundle; when the command
+        fails the bytes are that file instead."""
         env = {"PATH": "/usr/local/bin:/usr/bin:/bin"}
-        args = self._exec_args(argv, env, None, stdin=stdin is not None, quiet=True)
-        return await self._tart_run(*args, stdin=stdin, timeout_s=timeout_s)
+        args = self._exec_args(argv, env, cwd, stdin=stdin is not None, quiet=True)
+        rc, out = await self._tart_run(*args, stdin=stdin, timeout_s=timeout_s)
+        if rc == 0:
+            return rc, out
+        read = self._exec_args(["cat", BYTES_STDERR], env, None, stdin=False, quiet=False)
+        _, err = await self._tart_run(*read, timeout_s=30.0)
+        return rc, err
 
     async def stop(self) -> None:
         await self._tart_run("stop", self.name, timeout_s=STOP_WAIT_S + 30)

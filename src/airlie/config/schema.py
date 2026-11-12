@@ -9,7 +9,15 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from airlie.flow.spec import WorkflowSpec, check_workflows
 from airlie.notify.kinds import KINDS, NotificationKind
@@ -428,6 +436,21 @@ class ManagerSpec(Strict):
     lease_ttl_s: float = Field(default=120.0, description="seconds a lease lives without a renewal")
 
 
+_HOST_LABEL = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def _is_hostname(value: str) -> bool:
+    """A DNS name (RFC 1123 labels, lower case, at least two labels, a TLD with a letter): not an IP, a URL,
+    a CIDR or a wildcard."""
+    labels = value.split(".")
+    return (
+        len(value) <= 253
+        and len(labels) >= 2
+        and all(_HOST_LABEL.fullmatch(label) for label in labels)
+        and any(c.isalpha() for c in labels[-1])
+    )
+
+
 class BoxNetworkSpec(Strict):
     """What a repository chat's VM may reach once its setup is done."""
 
@@ -438,8 +461,17 @@ class BoxNetworkSpec(Strict):
     )
     allow_hosts: list[str] = Field(
         default_factory=lambda: ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org"],
-        description="hosts reachable after setup when after_setup is allow_list",
+        description="hosts reachable after setup when after_setup is allow_list (DNS names: no URL, IP, "
+        "CIDR or wildcard)",
     )
+
+    @field_validator("allow_hosts")
+    @classmethod
+    def _hostnames(cls, hosts: list[str]) -> list[str]:
+        for host in hosts:
+            if not _is_hostname(host):
+                raise ValueError(f"allow_hosts entry {host!r} is not a lower-case host name such as pypi.org")
+        return hosts
 
 
 class BoxesSpec(Strict):
@@ -450,11 +482,17 @@ class BoxesSpec(Strict):
         default="ghcr.io/cirruslabs/ubuntu:latest", description="the image a box is cloned from"
     )
     memory_gb: float = Field(default=8.0, gt=0, description="memory of a box")
-    cpus: int = Field(default=4, description="cpus of a box")
-    disk_gb: int = Field(default=40, description="disk of a box")
-    idle_stop_s: float = Field(default=900.0, description="seconds idle before a running box is stopped")
-    setup_timeout_s: float = Field(default=1800.0, description="seconds the repository's setup may take")
-    boot_timeout_s: float = Field(default=120.0, description="seconds a box may take to answer after a start")
+    cpus: int = Field(default=4, gt=0, description="cpus of a box")
+    disk_gb: int = Field(default=40, gt=0, description="disk of a box")
+    idle_stop_s: float = Field(
+        default=900.0, gt=0, description="seconds idle before a running box is stopped"
+    )
+    setup_timeout_s: float = Field(
+        default=1800.0, gt=0, description="seconds the repository's setup may take"
+    )
+    boot_timeout_s: float = Field(
+        default=120.0, gt=0, description="seconds a box may take to answer after a start"
+    )
     network: BoxNetworkSpec = Field(default_factory=BoxNetworkSpec)
 
 

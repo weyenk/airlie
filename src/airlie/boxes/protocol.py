@@ -53,9 +53,15 @@ class Box(Protocol):
     ) -> ExecResult: ...
 
     async def exec_bytes(
-        self, argv: Sequence[str], *, stdin: bytes | None = None, timeout_s: float = 120.0
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: str | None = None,
+        stdin: bytes | None = None,
+        timeout_s: float = 120.0,
     ) -> tuple[int | None, bytes]:
-        """For bundles: stdout only."""
+        """For bundles: stdout only on success; when the command fails (rc not 0, or None) the bytes are its
+        stderr instead, so a failed `git bundle` has a diagnostic."""
         ...
 
     async def stop(self) -> None:
