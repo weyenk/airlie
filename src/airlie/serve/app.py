@@ -41,6 +41,10 @@ from airlie.engine.dialect import (
 from airlie.engine.types import EngineError
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
+from airlie.notify.api import notifications_router
+from airlie.notify.notifier import Notifier
+from airlie.notify.push import PushSender
+from airlie.notify.vapid import application_server_key, load_or_create_vapid
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
 from airlie.serve.bridge.clock import RealClock
@@ -600,6 +604,17 @@ def create_app(
             set_session_cookie(response, request, token, cfg.auth.session_days)
 
     app.include_router(auth_router(store, resolver, cfg.auth, now=now))
+
+    sender: PushSender | None = None
+    public_key: str | None = None
+    if cfg.notifications.contact:
+        key_path = cfg.notifications.vapid_key or cfg.observability.state_dir / "vapid.pem"
+        vapid = load_or_create_vapid(key_path.expanduser())
+        sender = PushSender(vapid, cfg.notifications.contact, client)
+        public_key = application_server_key(vapid)
+    notifier = Notifier(store, sender, cfg.notifications.default_kinds)
+    app.state.notifier = notifier
+    app.include_router(notifications_router(store, notifier, public_key))
 
     uploads = UploadStore(cfg.observability.state_dir.expanduser() / "uploads", cfg.chat.attachments, now=now)
 

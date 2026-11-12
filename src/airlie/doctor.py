@@ -565,6 +565,15 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
                 )
             )
 
+    if cfg.notifications.contact:
+        results.append(CheckResult("notifications", "ok", "push on (contact set)"))
+    else:
+        results.append(
+            CheckResult(
+                "notifications", "warn", "push off: set notifications.contact (mailto:…) in airlie.local.yaml"
+            )
+        )
+
     want = cfg.memory.wired_limit_mb
     have = probe.sysctl_int("iogpu.wired_limit_mb")
     fix = "run: task gpu:limit (sets it now and at every boot)"

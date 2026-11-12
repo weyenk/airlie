@@ -91,6 +91,7 @@ def projected_cfg(tmp_path: Path, est_gb: float) -> AirlieConfig:
             r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 3},
+        "notifications": {"contact": "mailto:noah@example.com"},
     }
     (tmp_path / "p.md").write_text("x")
     (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
@@ -842,3 +843,12 @@ def test_an_overcommit_that_only_everything_resident_causes_is_a_warn(tmp_path: 
     assert row.status == "warn"
     assert "the manager will queue or stop idle engines" in row.detail
     assert rows["engine:memory_floor[teams]"].status == "ok"
+
+
+def test_notifications_row_warns_without_a_contact_and_is_ok_with_one(tmp_path: Path) -> None:
+    cfg = managed(tmp_path)
+    probe = FakeProbe(snapshots={"org/model@r1"})
+    row = by_name(run_checks(cfg, probe))["notifications"]
+    assert row.status == "warn" and "airlie.local.yaml" in row.detail
+    cfg.notifications.contact = "mailto:noah@example.com"
+    assert by_name(run_checks(cfg, probe))["notifications"].status == "ok"
