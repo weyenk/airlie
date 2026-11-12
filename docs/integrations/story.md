@@ -935,6 +935,17 @@ So the tick moves two kinds of issue out of *To Do*:
 
 ## Publishing as a bot
 
+### Repository list and chat (user authorization)
+
+The chat panel can list each person's GitHub repositories through the same App (`chat.sources: [github_app]` in
+`airlie.yaml`). In your clone set **`story.github_app.client_id`** in `airlie.local.yaml` to the App's OAuth client
+id. On the App's settings page turn **Device flow** on (required for Connect GitHub behind Tailscale, with no
+callback URL). Optionally set **`story.github_app.client_secret_file`** to a 0600 file with the client secret so
+unlink revokes the grant on GitHub; without it, refresh still works. Linked user tokens are sealed with
+**`story.github_app.token_key_file`** (default `~/.config/airlie/github-user-tokens.key`; delete it and everyone
+reconnects). Push and pull requests in a repository chat still run as the App's bot (installation tokens below);
+the user's token is only for listing what they can see.
+
 Without an app (`story.github_app.app_id: null`) the publish steps (the trunk fetch, `gh stack init` and `submit`,
 each `gh pr view` and `gh pr edit`) run with your own `gh` login and SSH key: the PRs are yours, and a ruleset that
 lets you merge lets anything holding your login merge too. With `story.github_app.app_id` set, they run as a GitHub
