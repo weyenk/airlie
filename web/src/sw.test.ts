@@ -17,14 +17,16 @@ function fakeCache(initial: Record<string, unknown> = {}) {
   };
 }
 
-function loadWorker(opts: { cache?: ReturnType<typeof fakeCache>; names?: string[]; fetch?: ReturnType<typeof vi.fn> } = {}) {
+function loadWorker(opts: { cache?: ReturnType<typeof fakeCache>; names?: string[]; fetch?: ReturnType<typeof vi.fn>; windows?: unknown[] } = {}) {
   const cache = opts.cache ?? fakeCache();
+  const windows = opts.windows ?? [];
   const handlers: Record<string, Handler> = {};
   const self = {
     location: { origin: ORIGIN },
     addEventListener: (type: string, h: Handler) => (handlers[type] = h),
     skipWaiting: vi.fn(),
-    clients: { claim: vi.fn(async () => undefined) },
+    clients: { claim: vi.fn(async () => undefined), matchAll: vi.fn(async () => windows), openWindow: vi.fn(async () => undefined) },
+    registration: { showNotification: vi.fn(async () => undefined) },
   };
   const caches = {
     open: vi.fn(async () => cache),
@@ -137,4 +139,54 @@ test("activate drops old airlie-shell caches", async () => {
   expect(w.caches.delete).toHaveBeenCalledTimes(1);
   expect(w.caches.delete).toHaveBeenCalledWith("airlie-shell-old");
   expect(w.self.clients.claim).toHaveBeenCalledTimes(1);
+});
+
+function pushEvent(json: () => unknown) {
+  return { data: { json }, ...waitEvent() };
+}
+
+test("a push shows its title, body and page", async () => {
+  const w = loadWorker();
+  const e = pushEvent(() => ({ title: "AIR-9 is blocked", url: "/board/AIR-9", body: "x" }));
+  w.dispatch("push", e);
+  await e.done();
+  expect(w.self.registration.showNotification).toHaveBeenCalledWith("AIR-9 is blocked", {
+    body: "x",
+    data: { url: "/board/AIR-9" },
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+  });
+});
+
+test("a push with no or bad data still shows airlie", async () => {
+  const w = loadWorker();
+  const bad = pushEvent(() => {
+    throw new SyntaxError("not json");
+  });
+  w.dispatch("push", bad);
+  const none = { data: null, ...waitEvent() };
+  w.dispatch("push", none);
+  await Promise.all([bad.done(), none.done()]);
+  expect(w.self.registration.showNotification).toHaveBeenCalledTimes(2);
+  for (const call of w.self.registration.showNotification.mock.calls as unknown[][]) expect(call[0]).toBe("airlie");
+});
+
+test("tapping a notification focuses an open window and sends it to the page", async () => {
+  const win = { focus: vi.fn(async () => undefined), navigate: vi.fn(async () => undefined) };
+  const w = loadWorker({ windows: [win] });
+  const e = { notification: { close: vi.fn(), data: { url: "/board/AIR-9" } }, ...waitEvent() };
+  w.dispatch("notificationclick", e);
+  await e.done();
+  expect(e.notification.close).toHaveBeenCalled();
+  expect(win.focus).toHaveBeenCalled();
+  expect(win.navigate).toHaveBeenCalledWith("/board/AIR-9");
+  expect(w.self.clients.openWindow).not.toHaveBeenCalled();
+});
+
+test("tapping a notification opens a window when none is open", async () => {
+  const w = loadWorker();
+  const e = { notification: { close: vi.fn(), data: { url: "/board/AIR-9" } }, ...waitEvent() };
+  w.dispatch("notificationclick", e);
+  await e.done();
+  expect(w.self.clients.openWindow).toHaveBeenCalledWith("/board/AIR-9");
 });

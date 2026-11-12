@@ -63,3 +63,32 @@ self.addEventListener("fetch", (event) => {
     );
   }
 });
+
+// A push shows a notification; bad or missing data still shows "airlie" rather than nothing (a silent push can
+// get the subscription revoked).
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() || {} : {};
+  } catch {
+    data = {};
+  }
+  const title = typeof data.title === "string" && data.title ? data.title : "airlie";
+  const options = { icon: "/icon-192.png", badge: "/icon-192.png" };
+  if (typeof data.body === "string") options.body = data.body;
+  if (typeof data.url === "string") options.data = { url: data.url };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// A tap opens the page it is about: an open window is focused and sent there, else a new one opens.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || "/";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
+      const open = windows[0];
+      if (!open) return self.clients.openWindow(url);
+      return open.focus().then(() => open.navigate(url));
+    }),
+  );
+});

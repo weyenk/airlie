@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useRoute } from "vue-router";
 import LiveBadge from "./LiveBadge.vue";
+import NotificationsSheet from "./NotificationsSheet.vue";
 import ThemeToggle from "./ThemeToggle.vue";
 import { TABS } from "./tabs";
 import {
@@ -16,6 +17,7 @@ import { useSessionStore } from "@/stores/session";
 
 const route = useRoute();
 const session = useSessionStore();
+const notificationsOpen = ref(false);
 const initials = computed(() => {
   const words = (session.me?.name ?? "").split(/\s+/).filter(Boolean);
   return words.length > 1 ? (words[0][0] + words[words.length - 1][0]).toUpperCase() : (words[0] ?? "?").slice(0, 2).toUpperCase();
@@ -61,8 +63,10 @@ const initials = computed(() => {
         <DropdownMenuLabel>{{ session.me?.name }}</DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuItem class="min-[641px]:hidden" as-child><ThemeToggle /></DropdownMenuItem>
+        <DropdownMenuItem data-test="notifications" @select="notificationsOpen = true">Notifications</DropdownMenuItem>
         <DropdownMenuItem data-test="sign-out" @select="session.signOut()">Sign out</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+    <NotificationsSheet v-model:open="notificationsOpen" />
   </header>
 </template>

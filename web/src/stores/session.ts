@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { ApiError, onUnauthorized, request } from "@/api";
+import { removeThisDevice } from "@/api/notifications";
 import { activeRouter } from "@/router";
 import { useFeedStore } from "./feed";
 
@@ -34,6 +35,7 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   async function signOut(): Promise<void> {
+    await removeThisDevice(); // needs the session, so before the logout
     try {
       await request("/v1/auth/logout", { method: "POST", quiet401: true });
     } catch {
