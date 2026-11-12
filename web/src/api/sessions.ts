@@ -56,6 +56,15 @@ export type EngineData = { engine: string; state: EngineStatus["state"]; detail:
 export type ChatData = { approval: ApprovalData; engine: EngineData; todos: TodoItem[] };
 export type AirlieUIMessage = UIMessage<ChatMeta, ChatData>;
 
+/** What the chat row's status popover shows (`GET .../status`); `since` is epoch seconds, `ahead` and `pushed` are null
+ * when the session has not opened or the host's mirror cannot say. */
+export type SessionStatusData = {
+  vm: { name: string; state: EngineStatus["state"]; detail: string; since: number; memory_gb: number } | null;
+  engine: { name: string; model: string; state: EngineStatus["state"]; footprint_gb: number };
+  memory: { used_gb: number; budget_gb: number; waiting: string | null };
+  branch: { name: string; base: string; ahead: number | null; pushed: boolean | null } | null;
+};
+
 const THREADS = "/v1/airlie/chat/threads";
 
 const repoPath = (repo: string): string => repo.split("/").map(encodeURIComponent).join("/");
@@ -70,6 +79,10 @@ export function createSession(kind: ChatKind, repo?: string, baseRef?: string): 
 
 export function getSession(id: string): Promise<ThreadDetail> {
   return request<ThreadDetail>(`${THREADS}/${encodeURIComponent(id)}`);
+}
+
+export function sessionStatus(id: string): Promise<SessionStatusData> {
+  return request<SessionStatusData>(`${THREADS}/${encodeURIComponent(id)}/status`);
 }
 
 export function deleteSession(id: string): Promise<void> {

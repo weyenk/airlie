@@ -3,7 +3,8 @@ import { computed } from "vue";
 import type { EngineStatus } from "@/api/engines";
 import ProgressBar from "./ProgressBar.vue";
 
-const props = defineProps<{ status: EngineStatus }>();
+/** `label` is the name the line says in place of the resource name (a VM reads "a VM for acme/api"). */
+const props = defineProps<{ status: EngineStatus; label?: string }>();
 
 const gb = (bytes: number) => (bytes / 1e9).toFixed(1);
 
@@ -21,7 +22,8 @@ const percent = computed(() => {
 
 /** What the engine is doing, said for a person; null when there is nothing to say (ready, or idle until asked). */
 const text = computed<string | null>(() => {
-  const { name, state, detail, progress: p } = props.status;
+  const { state, detail, progress: p } = props.status;
+  const name = props.label ?? props.status.name;
   switch (state) {
     case "downloading":
       if (!p || p.total_bytes <= 0) return `Downloading ${name}`;
