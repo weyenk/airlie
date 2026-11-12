@@ -131,7 +131,7 @@ function onLinked(): void {
     <p v-if="(!sessions.loaded || !repositories.loaded) && !sessions.error && !repositories.error" role="status" class="px-2 py-3 text-[13px] text-muted-foreground">Loading chats</p>
 
     <template v-if="sessions.loaded && repositories.loaded">
-      <template v-for="source in repositories.view?.sources ?? []" :key="source.name">
+      <template v-for="source in repositories.view?.sources ?? []" :key="`source-${source.name}`">
         <ConnectSource v-if="!source.linked" :source="source" @linked="onLinked" />
         <section v-else :aria-label="source.title" class="flex flex-col gap-0.5">
           <div class="flex items-center gap-1 px-2 pt-3">
@@ -143,6 +143,33 @@ function onLinked(): void {
             <Button size="xs" variant="link" class="h-auto p-0 text-xs" @click="disconnect(source.name)">Disconnect GitHub</Button>
           </div>
           <p v-if="source.error" role="status" class="px-2 text-xs text-muted-foreground">{{ source.error }}</p>
+        </section>
+      </template>
+    </template>
+
+    <template v-if="sessions.loaded">
+      <section aria-label="Plain chats" class="flex flex-col gap-0.5 border-t border-border pt-2">
+        <div class="flex items-center gap-1 px-2 pt-3">
+          <h3 class="grow text-[11px] font-bold tracking-wider text-muted-foreground uppercase">Chats</h3>
+          <Button variant="ghost" size="icon-xs" aria-label="New chat" @click="create('plain')"><Plus /></Button>
+        </div>
+        <PanelChatRow v-for="s in plainChatsShown" :key="s.id" :session="s" :current="s.id === currentId" @pick="pick(s.id)" @remove="remove(s.id)" />
+        <button
+          v-if="chat.thread.length"
+          type="button"
+          data-test="legacy-row"
+          :aria-current="currentId === LEGACY ? 'page' : undefined"
+          :class="['rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-muted', currentId === LEGACY ? 'bg-muted font-semibold' : '']"
+          @click="pick(LEGACY)"
+        >
+          Legacy chat
+        </button>
+      </section>
+    </template>
+
+    <template v-if="sessions.loaded && repositories.loaded">
+      <template v-for="source in repositories.view?.sources ?? []" :key="`repos-${source.name}`">
+        <template v-if="source.linked">
           <PanelRepository
             v-for="g in groups.pinned.filter((group) => source.repositories.some((r) => r.repo === group.repo))"
             :key="g.repo"
@@ -158,7 +185,7 @@ function onLinked(): void {
           <div class="px-2 pt-2">
             <Button size="sm" variant="outline" data-test="refresh-repos" @click="refreshRepositories">Refresh repositories</Button>
           </div>
-        </section>
+        </template>
       </template>
 
       <PanelRepository
@@ -181,24 +208,6 @@ function onLinked(): void {
       <section v-if="groups.other.length" aria-label="Other repositories" class="flex flex-col gap-0.5">
         <h3 class="px-2 pt-3 text-[11px] font-bold tracking-wider text-muted-foreground uppercase">Other repositories</h3>
         <PanelRepository v-for="g in groups.other" :key="g.repo" :group="g" :current-id="currentId" :pinned="false" @new="(repo) => create('repository', repo)" @pick="pick" @remove="remove" />
-      </section>
-
-      <section aria-label="Plain chats" class="flex flex-col gap-0.5 border-t border-border pt-2">
-        <div class="flex items-center gap-1 px-2 pt-3">
-          <h3 class="grow text-[11px] font-bold tracking-wider text-muted-foreground uppercase">Chats</h3>
-          <Button variant="ghost" size="icon-xs" aria-label="New chat" @click="create('plain')"><Plus /></Button>
-        </div>
-        <PanelChatRow v-for="s in plainChatsShown" :key="s.id" :session="s" :current="s.id === currentId" @pick="pick(s.id)" @remove="remove(s.id)" />
-        <button
-          v-if="chat.thread.length"
-          type="button"
-          data-test="legacy-row"
-          :aria-current="currentId === LEGACY ? 'page' : undefined"
-          :class="['rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-muted', currentId === LEGACY ? 'bg-muted font-semibold' : '']"
-          @click="pick(LEGACY)"
-        >
-          Legacy chat
-        </button>
       </section>
     </template>
   </aside>

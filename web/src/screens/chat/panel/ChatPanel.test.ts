@@ -51,7 +51,9 @@ test("each pinned repository lists its chats, newest first", async () => {
     threads: [REPO("a", "acme/api", 10, "older"), REPO("b", "acme/api", 20, "newer"), REPO("c", "acme/web", 5, "web chat")],
   });
   const { w } = await open();
-  expect(w.findAll("h3").map((h) => h.text()).slice(0, 2)).toEqual(["acme/api", "acme/web"]);
+  const h3s = w.findAll("h3").map((h) => h.text());
+  expect(h3s.indexOf("Chats")).toBeLessThan(h3s.indexOf("acme/api"));
+  expect(h3s.indexOf("Chats")).toBeLessThan(h3s.indexOf("acme/web"));
   expect(rowTitles(w, "acme/api")).toEqual(["newer", "older"]);
   expect(rowTitles(w, "acme/web")).toEqual(["web chat"]);
 });
@@ -405,6 +407,21 @@ test("chats of a repository no longer listed stay under other repositories", asy
   const other = w.get('section[aria-label="Other repositories"]');
   expect(other.text()).toContain("gone/repo");
   expect(other.text()).toContain("orphan chat");
+});
+
+test("plain chats appear before repository headings when both exist", async () => {
+  panelServer({
+    linked: true,
+    login: "weyenk",
+    githubRepos: [{ repo: "weyenk/airlie", private: true, push: true, url: "" }],
+    pins: ["weyenk/airlie"],
+    threads: [thread("p1", { title: "plain one" }), REPO("r1", "weyenk/airlie", 1, "repo chat")],
+  });
+  const { w } = await open();
+  const html = w.html();
+  expect(html.indexOf('aria-label="Plain chats"')).toBeLessThan(html.indexOf('aria-label="weyenk/airlie"'));
+  expect(w.text()).toContain("plain one");
+  expect(w.text()).toContain("repo chat");
 });
 
 test("plain chats are not nested under the github section", async () => {
