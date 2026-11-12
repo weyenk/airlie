@@ -28,6 +28,9 @@ const failed = ref<Error | undefined>();
 
 const extraRepos = computed(() => new Set(repositories.view?.extras ?? []));
 const groups = computed(() => sessions.grouped(repositories.shown));
+/** Plain chats: show the six most recent; older ones are out of scope for this panel. */
+const PLAIN_CHAT_LIMIT = 6;
+const plainChatsShown = computed(() => groups.value.plain.slice(0, PLAIN_CHAT_LIMIT));
 const error = computed(() => failed.value ?? sessions.error ?? pins.error ?? repositories.error);
 const empty = computed(
   () =>
@@ -131,7 +134,10 @@ function onLinked(): void {
       <template v-for="source in repositories.view?.sources ?? []" :key="source.name">
         <ConnectSource v-if="!source.linked" :source="source" @linked="onLinked" />
         <section v-else :aria-label="source.title" class="flex flex-col gap-0.5">
-          <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 pt-3 text-xs text-muted-foreground">
+          <div class="flex items-center gap-1 px-2 pt-3">
+            <h3 class="grow text-[11px] font-bold tracking-wider text-muted-foreground uppercase">{{ source.title }}</h3>
+          </div>
+          <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 text-xs text-muted-foreground">
             <span>GitHub: @{{ source.login }}</span>
             <span aria-hidden="true">·</span>
             <Button size="xs" variant="link" class="h-auto p-0 text-xs" @click="disconnect(source.name)">Disconnect GitHub</Button>
@@ -149,12 +155,11 @@ function onLinked(): void {
             @unpin="unpin"
             @remove="remove"
           />
+          <div class="px-2 pt-2">
+            <Button size="sm" variant="outline" data-test="refresh-repos" @click="refreshRepositories">Refresh repositories</Button>
+          </div>
         </section>
       </template>
-
-      <div class="px-2 pt-2">
-        <Button size="sm" variant="outline" data-test="refresh-repos" @click="refreshRepositories">Refresh repositories</Button>
-      </div>
 
       <PanelRepository
         v-for="g in groups.pinned.filter((group) => extraRepos.has(group.repo))"
@@ -178,12 +183,12 @@ function onLinked(): void {
         <PanelRepository v-for="g in groups.other" :key="g.repo" :group="g" :current-id="currentId" :pinned="false" @new="(repo) => create('repository', repo)" @pick="pick" @remove="remove" />
       </section>
 
-      <section aria-label="Plain chats" class="flex flex-col gap-0.5">
+      <section aria-label="Plain chats" class="flex flex-col gap-0.5 border-t border-border pt-2">
         <div class="flex items-center gap-1 px-2 pt-3">
           <h3 class="grow text-[11px] font-bold tracking-wider text-muted-foreground uppercase">Chats</h3>
           <Button variant="ghost" size="icon-xs" aria-label="New chat" @click="create('plain')"><Plus /></Button>
         </div>
-        <PanelChatRow v-for="s in groups.plain" :key="s.id" :session="s" :current="s.id === currentId" @pick="pick(s.id)" @remove="remove(s.id)" />
+        <PanelChatRow v-for="s in plainChatsShown" :key="s.id" :session="s" :current="s.id === currentId" @pick="pick(s.id)" @remove="remove(s.id)" />
         <button
           v-if="chat.thread.length"
           type="button"

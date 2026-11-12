@@ -406,3 +406,31 @@ test("chats of a repository no longer listed stay under other repositories", asy
   expect(other.text()).toContain("gone/repo");
   expect(other.text()).toContain("orphan chat");
 });
+
+test("plain chats are not nested under the github section", async () => {
+  panelServer({
+    linked: true,
+    login: "weyenk",
+    githubRepos: [{ repo: "weyenk/airlie", private: true, push: true, url: "" }],
+    threads: [thread("p1", { title: "plain one" })],
+  });
+  const { w } = await open();
+  const github = w.get('section[aria-label="GitHub"]');
+  const plain = w.get('section[aria-label="Plain chats"]');
+  expect(github.find('section[aria-label="Plain chats"]').exists()).toBe(false);
+  expect(plain.element.closest('section[aria-label="GitHub"]')).toBeNull();
+  expect(github.get("h3").text()).toBe("GitHub");
+  expect(plain.classes()).toContain("border-t");
+});
+
+test("plain chats list shows at most six, newest first", async () => {
+  const threads = Array.from({ length: 8 }, (_, i) =>
+    thread(`c${i}`, { title: `chat ${i}`, updated: 100 - i, created: 100 - i }),
+  );
+  panelServer({ threads });
+  const { w } = await open();
+  expect(w.findAll('[data-test="chat-row"]')).toHaveLength(6);
+  const titles = rowTitles(w, "Plain chats");
+  expect(titles).toHaveLength(6);
+  expect(titles).toEqual(["chat 0", "chat 1", "chat 2", "chat 3", "chat 4", "chat 5"]);
+});
