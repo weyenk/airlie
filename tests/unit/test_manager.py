@@ -922,11 +922,101 @@ async def test_removing_a_resource_whose_stop_failed_is_refused() -> None:
         m.remove("a")
 
 
-async def test_adding_and_removing_wake_a_waiter() -> None:
+async def test_a_resource_added_during_a_reap_does_not_break_it() -> None:
+    a, b = FakeResource("a", idle_unload_s=1.0), FakeResource("b", idle_unload_s=1.0)
+    m, clock = manager(a, b)
+    async with m.hold("a", "o"), m.hold("b", "o"):
+        pass
+    clock.now += 1.0
+    a.stop_gate = asyncio.Event()
+    sweep = asyncio.create_task(m.reap())
+    await settle()
+    m.add(FakeResource("c"))  # a chat opens while the sweep is inside a's stop
+    a.stop_gate.set()
+    assert await sweep == ["a", "b"]
+    assert [s.name for s in m.status()] == ["a", "b", "c"]
+
+
+async def test_a_resource_removed_during_a_reap_is_skipped() -> None:
+    a, b = FakeResource("a", idle_unload_s=1.0), FakeResource("b", idle_unload_s=1.0)
+    m, clock = manager(a, b)
+    async with m.hold("a", "o"):
+        pass
+    clock.now += 1.0
+    a.stop_gate = asyncio.Event()
+    sweep = asyncio.create_task(m.reap())
+    await settle()
+    m.remove("b")  # b was never started: it can go while the sweep is inside a's stop
+    a.stop_gate.set()
+    assert await sweep == ["a"]
+    assert [s.name for s in m.status()] == ["a"]
+
+
+async def test_removing_a_running_idle_resource_is_refused() -> None:
+    r = FakeResource("a")
+    m, _ = manager(r)
+    async with m.hold("a", "o"):
+        pass
+    with pytest.raises(EngineError, match="a: running"):
+        m.remove("a")
+    assert r.up and [s.name for s in m.status()] == ["a"]
+
+
+async def test_discarding_stops_a_running_resource_forgets_it_and_returns_it() -> None:
+    r = FakeResource("a")
+    m, _ = manager(r)
+    async with m.hold("a", "o"):
+        pass
+    assert await m.discard("a") is r
+    assert not r.up and r.stops == 1 and m.status() == []
+
+
+async def test_discarding_a_stopped_resource_does_not_stop_it() -> None:
+    r = FakeResource("a")
+    m, _ = manager(r)
+    assert await m.discard("a") is r
+    assert r.stops == 0 and m.status() == []
+
+
+async def test_discarding_a_held_resource_is_refused() -> None:
+    r = FakeResource("a")
+    m, _ = manager(r)
+    async with m.hold("a", "o"):
+        with pytest.raises(EngineError, match="a: in use"):
+            await m.discard("a")
+    assert r.up and r.stops == 0
+
+
+async def test_discarding_a_resource_whose_stop_fails_keeps_it_and_says_why() -> None:
+    r = FakeResource("a")
+    m, _ = manager(r)
+    async with m.hold("a", "o"):
+        pass
+    r.stop_error = "stuck"
+    with pytest.raises(EngineError, match="stop failed: stuck"):
+        await m.discard("a")
+    assert state(m, "a").state == "failed"
+
+
+async def test_a_hold_on_an_unknown_name_is_an_engine_error() -> None:
     m, _ = manager()
-    first = m._changed
-    m.add(FakeResource("a"))
-    assert first.is_set() and not m._changed.is_set()
-    second = m._changed
-    m.remove("a")
-    assert second.is_set()
+    with pytest.raises(EngineError, match="vm:gone is not a resource"):
+        async with m.hold("vm:gone", "o"):
+            pass
+
+
+async def test_a_hold_that_waited_on_a_discarded_resource_is_refused() -> None:
+    r = FakeResource("a")
+    m, _ = manager(r)
+    async with m.hold("a", "o"):
+        pass
+    r.stop_gate = asyncio.Event()
+    closing = asyncio.create_task(m.discard("a"))
+    await settle()
+    late = asyncio.create_task(m.hold("a", "chat:2").__aenter__())
+    await settle()
+    r.stop_gate.set()
+    await closing
+    with pytest.raises(EngineError, match="a is not a resource"):
+        await late
+    assert r.starts == 1

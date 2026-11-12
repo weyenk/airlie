@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from airlie.boxes.protocol import Network
+from airlie.boxes.protocol import BoxUnavailable, Network
 from airlie.config.schema import BoxesSpec
 from airlie.engine.types import EngineError
 from airlie.manager.core import Manager, Status
@@ -64,14 +64,55 @@ async def test_a_vm_is_named_and_shown_by_its_session_and_repository() -> None:
     assert (r.name, r.display, r.kind, r.lifecycle) == ("vm:s9", "acme/app VM", "vm", "on_demand")
 
 
-async def test_the_start_reports_preparing_while_the_disk_is_cloned() -> None:
+async def test_the_start_reports_preparing_while_the_disk_is_cloned_then_clears_it() -> None:
     r, _, _ = vm()
     m, _ = manager(r)
-    details: list[str] = []
-    m.watch(lambda s: details.append(s.detail))
+    seen: list[tuple[str, str]] = []
+    m.watch(lambda s: seen.append((s.state, s.detail)))
     async with m.hold(r.name, "o"):
         pass
-    assert "preparing the environment" in details
+    assert ("starting", "preparing the environment") in seen
+    after = seen[seen.index(("starting", "preparing the environment")) + 1 :]
+    assert after[0] == ("starting", "")
+
+
+async def test_an_existing_disk_is_booted_without_a_preparing_report() -> None:
+    box = FakeBox("chat-s1", state="stopped")
+    r, _, wiring = vm(box=box)
+    m, _ = manager(r)
+    seen: list[str] = []
+    m.watch(lambda s: seen.append(s.detail))
+    async with m.hold(r.name, "o"):
+        pass
+    assert "preparing the environment" not in seen and wiring.images == 0 and box.created == []
+
+
+async def test_a_failed_image_build_is_a_failed_status_with_the_reason() -> None:
+    r, box, _ = vm()
+
+    async def broken() -> str:
+        raise EngineError("setup failed at: make")
+
+    r._image = broken
+    m, _ = manager(r)
+    with pytest.raises(EngineError, match="setup failed at: make"):
+        async with m.hold(r.name, "o"):
+            pass
+    assert state(m, r.name).state == "failed" and box.created == []
+
+
+async def test_a_clone_failure_is_a_failed_status_with_the_reason() -> None:
+    r, box, _ = vm()
+
+    async def refuse(*a: object, **k: object) -> None:
+        raise BoxUnavailable("tart is not installed")
+
+    box.create = refuse  # type: ignore[method-assign]
+    m, _ = manager(r)
+    with pytest.raises(EngineError, match="tart is not installed"):
+        async with m.hold(r.name, "o"):
+            pass
+    assert state(m, r.name).detail == "tart is not installed"
 
 
 async def test_footprint_is_the_configured_memory_and_counts_in_the_budget() -> None:

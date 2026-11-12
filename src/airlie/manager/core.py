@@ -99,13 +99,44 @@ class Manager:
 
     def remove(self, name: str) -> None:
         """Forget a resource nobody holds or is starting or stopping; the caller deletes what it owns."""
-        slot = self._slots[name]
+        slot = self._slot(name)
         if slot.holders or slot.lock.locked():
             raise EngineError(f"{name}: in use")
         if slot.stop_failed:
             raise EngineError(f"{name}: {slot.detail}")
+        if slot.state in MEMORY_IN_USE:
+            raise EngineError(f"{name}: running (discard it to stop it first)")
         del self._slots[name]
         self._notify()
+
+    async def discard(self, name: str) -> Resource:
+        """Stop a resource nobody holds if it is running, forget it, and return it so the caller can delete
+        what it owns (a chat's VM disk)."""
+        slot = self._slot(name)
+        if slot.holders:
+            raise EngineError(f"{name}: in use")
+        async with slot.lock:
+            if slot.holders:
+                raise EngineError(f"{name}: in use")
+            if slot.state in MEMORY_IN_USE or slot.stop_failed or await slot.resource.running():
+                self._set(slot, "stopping")
+                try:
+                    await slot.resource.stop()
+                except Exception as e:
+                    slot.stop_failed = True
+                    self._set(slot, "failed", f"stop failed: {e}")
+                    raise EngineError(f"{name}: stop failed: {e}") from e
+                slot.stop_failed = False
+                self._set(slot, "stopped")
+            del self._slots[name]
+        self._notify()
+        return slot.resource
+
+    def _slot(self, name: str) -> _Slot:
+        try:
+            return self._slots[name]
+        except KeyError:
+            raise EngineError(f"{name} is not a resource") from None
 
     # ---- state ----
 
@@ -152,7 +183,7 @@ class Manager:
     def _using_memory(self, excluding: str) -> list[_Slot]:
         return [
             s
-            for n, s in self._slots.items()
+            for n, s in list(self._slots.items())
             if n != excluding and (s.state in MEMORY_IN_USE or s.stop_failed)
         ]
 
@@ -168,7 +199,7 @@ class Manager:
     def _victim(self, excluding: str) -> _Slot | None:
         idle = [
             s
-            for n, s in self._slots.items()
+            for n, s in list(self._slots.items())
             if n != excluding
             and s.state == "ready"
             and not s.holders
@@ -195,7 +226,7 @@ class Manager:
 
     async def _forget_the_dead(self) -> None:
         """A resource whose stop failed counts for memory until it is seen not running."""
-        for slot in self._slots.values():
+        for slot in list(self._slots.values()):
             if slot.stop_failed and not slot.lock.locked() and not await slot.resource.running():
                 slot.stop_failed = False
                 self._set(slot, "stopped")
@@ -249,8 +280,10 @@ class Manager:
 
     @asynccontextmanager
     async def hold(self, name: str, owner: str) -> AsyncIterator[None]:
-        slot = self._slots[name]
+        slot = self._slot(name)
         async with slot.lock:
+            if self._slots.get(name) is not slot:
+                raise EngineError(f"{name} is not a resource")  # discarded while this hold waited its turn
             if slot.stop_failed:
                 if await slot.resource.running():
                     raise EngineError(f"{name}: {slot.detail}")
@@ -274,13 +307,13 @@ class Manager:
             self._notify()
 
     async def adopt(self) -> None:
-        for slot in self._slots.values():
-            if await slot.resource.running():
+        for slot in list(self._slots.values()):
+            if self._slots.get(slot.resource.name) is slot and await slot.resource.running():
                 self._set(slot, "ready")
                 slot.last_used = self._clock.monotonic()
 
     async def start_pinned(self) -> None:
-        for name, slot in self._slots.items():
+        for name, slot in list(self._slots.items()):
             if slot.resource.lifecycle == "pinned" and slot.state != "ready":
                 try:
                     async with self.hold(name, START_OWNER):
@@ -292,8 +325,10 @@ class Manager:
         if self.before_reap is not None:
             await self.before_reap()
         stopped: list[str] = []
-        for name, slot in self._slots.items():
+        for name, slot in list(self._slots.items()):
             r = slot.resource
+            if self._slots.get(name) is not slot:
+                continue  # removed while an earlier stop was awaited
             if r.lifecycle != "on_demand" or slot.state != "ready" or slot.holders or slot.lock.locked():
                 continue
             if self._clock.monotonic() - slot.last_used < r.idle_unload_s:
