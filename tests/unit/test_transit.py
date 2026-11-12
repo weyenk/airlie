@@ -587,3 +587,244 @@ async def test_a_sha256_base_is_accepted(tmp_path: Path) -> None:
         max_bytes=CAP,
     )
     assert result.commits == 0
+
+
+@pytest.mark.parametrize(
+    ("session_id", "suffix"),
+    [("ab12cd34", "ab12cd34"), ("AB-Z9", "ABZ9"), ("a_b.c", "abc"), ("---", "x"), ("", "x")],
+)
+async def test_the_seed_ref_is_named_for_the_session_with_only_letters_and_digits(
+    tmp_path: Path, session_id: str, suffix: str
+) -> None:
+    runner = FakeRunner()
+    await seed(
+        running_box(),
+        mirror_of(tmp_path, runner, FakePublisher()),
+        Recipe(),
+        ref="main",
+        branch=BRANCH,
+        session_id=session_id,
+    )
+
+    ref = f"refs/heads/airlie-seed-{suffix}"
+    git_calls = [a[1:] for a, _, _ in runner.calls]
+    assert git_calls[1] == ["update-ref", ref, TIP]
+    assert git_calls[2][:2] == ["bundle", "create"] and git_calls[2][-1] == ref
+    assert git_calls[3] == ["update-ref", "-d", ref]
+
+
+async def test_the_seed_ref_is_dropped_even_when_the_bundle_cannot_be_cut(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    runner.failures["bundle create"] = "disk full"
+    with pytest.raises(PublishError, match="disk full"):
+        await seed(
+            running_box(),
+            mirror_of(tmp_path, runner, FakePublisher()),
+            Recipe(),
+            ref="main",
+            branch=BRANCH,
+            session_id="s",
+        )
+    assert runner.calls[-1][0][1:] == ["update-ref", "-d", "refs/heads/airlie-seed-s"]
+
+
+async def test_seed_runs_each_vm_step_where_it_belongs_beside_a_workdir_with_a_trailing_slash(
+    tmp_path: Path,
+) -> None:
+    box = running_box()
+    await seed(
+        box,
+        mirror_of(tmp_path, FakeRunner(), FakePublisher()),
+        Recipe(workdir="/home/admin/work/"),
+        ref="main",
+        branch=BRANCH,
+        session_id="s",
+    )
+
+    staging = "/home/admin/work.seed-tmp"
+    assert [(c.argv, c.cwd) for c in box.calls] == [
+        (("test", "-d", "/home/admin/work//.git"), None),
+        (("rm", "-rf", staging), None),
+        (("sh", "-c", "cat > /tmp/in.bundle"), None),
+        (("git", "clone", "-q", "--no-checkout", "/tmp/in.bundle", staging), None),
+        (("git", "remote", "remove", "origin"), staging),
+        (("git", "checkout", "-q", "-b", BRANCH, TIP), staging),
+        (("git", "config", "user.name", "airlie"), staging),
+        (("git", "config", "user.email", "airlie@local"), staging),
+        (("mv", "-T", staging, "/home/admin/work/"), None),
+        (("rm", "-f", "/tmp/in.bundle"), None),
+    ]
+
+
+async def test_harvest_with_no_new_commits_hands_back_the_base_and_cuts_nothing(tmp_path: Path) -> None:
+    runner = runner_with_heads(f"refs/heads/{BRANCH}")
+
+    result = await harvest(
+        vm_with_commits("0"),
+        mirror_of(tmp_path, runner, FakePublisher()),
+        base_sha=BASE,
+        branch=BRANCH,
+        workdir=WORKDIR,
+        max_bytes=CAP,
+    )
+
+    assert result == HarvestResult(0, BASE, False)
+    assert runner.calls == []
+
+
+async def test_harvest_counts_the_new_commits_in_the_workdir_and_names_the_vm_failure(
+    tmp_path: Path,
+) -> None:
+    box = running_box()
+    box.responses[("git", "rev-list", "--count", f"{BASE}..{BRANCH}")] = ExecResult(
+        128, "fatal: bad object\n"
+    )
+    with pytest.raises(TransitError, match="^could not count the new commits in the VM: fatal: bad object$"):
+        await harvest(
+            box,
+            mirror_of(tmp_path, FakeRunner(), FakePublisher()),
+            base_sha=BASE,
+            branch=BRANCH,
+            workdir=WORKDIR,
+            max_bytes=CAP,
+        )
+    assert [c.cwd for c in box.calls] == [WORKDIR]
+
+
+async def test_harvest_cuts_the_bundle_in_the_workdir(tmp_path: Path) -> None:
+    box = vm_with_commits()
+    await harvest(
+        box,
+        mirror_of(tmp_path, runner_with_heads(f"refs/heads/{BRANCH}"), FakePublisher()),
+        base_sha=BASE,
+        branch=BRANCH,
+        workdir=WORKDIR,
+        max_bytes=CAP,
+    )
+    assert [(c.argv[:3], c.cwd) for c in box.calls] == [
+        (("git", "rev-list", "--count"), WORKDIR),
+        (("git", "bundle", "create"), WORKDIR),
+    ]
+
+
+async def test_a_failed_bundle_shows_the_vms_message_with_unreadable_bytes_replaced(tmp_path: Path) -> None:
+    box = vm_with_commits()
+    key = ("git", "bundle", "create", "-", f"{BASE}..{BRANCH}")
+    box.responses[key] = ExecResult(128, "")
+    box.stderr[key] = b"fatal: \xff boom\n"
+    with pytest.raises(TransitError, match="^git bundle failed in the VM: fatal: � boom$"):
+        await harvest(
+            box,
+            mirror_of(tmp_path, FakeRunner(), FakePublisher()),
+            base_sha=BASE,
+            branch=BRANCH,
+            workdir=WORKDIR,
+            max_bytes=CAP,
+        )
+
+
+async def test_a_bundle_with_no_refs_is_refused_and_says_so(tmp_path: Path) -> None:
+    with pytest.raises(
+        TransitError, match=rf"^the VM's bundle holds no refs, not only refs/heads/{BRANCH}: refused$"
+    ):
+        await harvest(
+            vm_with_commits(),
+            mirror_of(tmp_path, runner_with_heads(), FakePublisher()),
+            base_sha=BASE,
+            branch=BRANCH,
+            workdir=WORKDIR,
+            max_bytes=CAP,
+        )
+
+
+async def test_a_bundle_with_other_refs_names_them_in_the_refusal(tmp_path: Path) -> None:
+    with pytest.raises(TransitError, match=r"holds \['refs/heads/main'\], not only"):
+        await harvest(
+            vm_with_commits(),
+            mirror_of(tmp_path, runner_with_heads("refs/heads/main"), FakePublisher()),
+            base_sha=BASE,
+            branch=BRANCH,
+            workdir=WORKDIR,
+            max_bytes=CAP,
+        )
+
+
+async def test_the_host_fetch_is_a_git_command_with_the_bundle_and_one_forced_ref(tmp_path: Path) -> None:
+    runner = runner_with_heads(f"refs/heads/{BRANCH}")
+    await harvested(tmp_path, runner)
+
+    argv = next(a for a, _, _ in runner.calls if FakeRunner.verb(a) == "fetch")
+    assert argv[0] == "git"
+    tail = argv[argv.index("fetch") :]
+    assert tail[:4] == ["fetch", "-q", "--no-tags", "--refmap="]
+    assert tail[4].endswith("out.bundle") and len(tail) == 6
+
+
+def test_a_list_of_exactly_the_limit_is_shown_whole_with_no_remainder_line() -> None:
+    log = tuple(f"c{i} commit" for i in range(SHOWN_COMMITS))
+    paths = tuple(f"f{i}.py" for i in range(SHOWN_PATHS))
+
+    subject = push_subject(BRANCH, HarvestResult(len(log), TIP, False, log, paths))
+
+    assert subject["commits"] == list(log)
+    assert subject["paths"] == list(paths)
+
+
+@pytest.mark.parametrize(
+    "branch",
+    ["main", "airlie/", "airlie/a..b", "airlie/x.lock", "airlie/x.", "airlie/-x", "airlie/a b", "other/x"],
+)
+async def test_only_an_airlie_branch_with_a_safe_name_may_be_pushed_or_opened(
+    tmp_path: Path, branch: str
+) -> None:
+    publisher = FakePublisher()
+    mirror = mirror_of(tmp_path, FakeRunner(), publisher)
+    with pytest.raises(TransitError, match="a chat branch is airlie/<name>"):
+        await push_branch(mirror, publisher, branch=branch, head=TIP)
+    with pytest.raises(TransitError, match="a chat branch is airlie/<name>"):
+        await pushed_head(mirror, branch)
+    assert publisher.events == []
+
+
+@pytest.mark.parametrize("branch", ["airlie/x.LOCK", "airlie/a.b-c_d", "airlie/0", "airlie/chat-ab12cd34"])
+async def test_a_safe_branch_name_is_accepted(tmp_path: Path, branch: str) -> None:
+    publisher = FakePublisher()
+    await push_branch(mirror_of(tmp_path, FakeRunner(), publisher), publisher, branch=branch, head=TIP)
+    assert publisher.events[0][0] == "push_top"
+
+
+async def test_the_push_and_the_pull_request_each_say_how_to_enable_the_app(tmp_path: Path) -> None:
+    publisher = FakePublisher(app=False)
+    mirror = mirror_of(tmp_path, FakeRunner(), publisher)
+    with pytest.raises(TransitError, match="^set story.github_app to push from chat$"):
+        await push_branch(mirror, publisher, branch=BRANCH, head=TIP)
+    with pytest.raises(TransitError, match="^set story.github_app to open a pull request from chat$"):
+        await pushed_head(mirror, BRANCH)
+
+
+async def test_a_branch_that_is_not_in_the_mirror_reads_as_nothing_to_push(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    runner.failures["rev-parse"] = "exit 1"
+    publisher = FakePublisher()
+    with pytest.raises(
+        TransitError, match=rf"^{BRANCH} is at nothing now, not the {TIP} the person approved$"
+    ):
+        await push_branch(mirror_of(tmp_path, runner, publisher), publisher, branch=BRANCH, head=TIP)
+    assert publisher.events == []
+
+
+async def test_a_failed_pull_request_is_a_transit_error_with_the_reason(tmp_path: Path) -> None:
+    class Failing(FakePublisher):
+        async def create_draft(self, wt: Path, branch: str, base: str, title: str) -> None:
+            raise PublishError("gh said no")
+
+    publisher = Failing()
+    with pytest.raises(TransitError, match="^opening the pull request failed: gh said no$"):
+        await open_pr(
+            mirror_of(tmp_path, FakeRunner(), publisher),
+            publisher,
+            branch=BRANCH,
+            base="main",
+            title="t",
+            head=TIP,
+        )
