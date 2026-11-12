@@ -31,7 +31,7 @@ export default defineConfig(({ mode }) => ({
   plugins: [vue(), tailwindcss(), swBuildId()],
   resolve: { alias: { "@": new URL("./src", import.meta.url).pathname } },
   build: {
-    outDir: "../src/airlie/serve/web_next",
+    outDir: process.env.VERCEL ? "dist" : "../src/airlie/serve/web_next",
     emptyOutDir: true,
   },
   server: {
