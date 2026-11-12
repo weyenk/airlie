@@ -13,7 +13,8 @@ to the FakeGitHub of the app (tests/unit/github_helpers.py). Shapes follow GitHu
   GET /user/installations and GET /user/installations/{id}/repositories: per_page up to 100, page, a Link
   header with rel="next", total_count, repositories[].permissions.push
 - revocation: https://docs.github.com/en/rest/apps/oauth-applications
-  DELETE /applications/{client_id}/token with Basic client_id:client_secret, body access_token, 204"""
+  DELETE /applications/{client_id}/grant with Basic client_id:client_secret, body access_token: 204 and
+  every token of that user's grant ends, the refresh token too; 422 for a token that is not valid"""
 
 from __future__ import annotations
 
@@ -61,6 +62,8 @@ class FakeGitHubUser:
     ) -> None:
         self.app, self.client_id, self.client_secret, self.clock = app, client_id, client_secret, clock
         self.device_flow = True  # False: the App's settings leave Device Flow off
+        self.describe: str | None = None  # replaces error_description in a client-credentials error
+        self.forbidden_installations: set[int] = set()  # their repositories answer 403
         self.fail_listing: int | None = None  # a status every GET /user/installations answers with
         self.calls: list[tuple[str, str]] = []
         self.forms: list[dict[str, str]] = []
@@ -115,11 +118,14 @@ class FakeGitHubUser:
         """GitHub answers an OAuth error with 200 and the error in the body."""
         return httpx.Response(200, json={"error": code, "error_description": description, **more})
 
+    def _bad_client(self) -> httpx.Response:
+        return self._error("incorrect_client_credentials", self.describe or BAD_CLIENT)
+
     def _oauth(self, request: httpx.Request, path: str) -> httpx.Response:
         form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
         self.forms.append(form)
         if form.get("client_id") != self.client_id:
-            return self._error("incorrect_client_credentials", BAD_CLIENT)
+            return self._bad_client()
         if path == "/login/device/code":
             return self._device_code()
         if path == "/login/oauth/access_token":
@@ -180,7 +186,7 @@ class FakeGitHubUser:
 
     def _refresh_grant(self, form: dict[str, str]) -> httpx.Response:
         if self.client_secret is not None and form.get("client_secret") != self.client_secret:
-            return self._error("incorrect_client_credentials", BAD_CLIENT)
+            return self._bad_client()
         found = self._refresh.pop(form.get("refresh_token", ""), None)  # a refresh token works once
         if found is None or self.clock() >= found[1]:
             return self._error("bad_refresh_token", "The refresh token passed is incorrect or expired.")
@@ -213,7 +219,7 @@ class FakeGitHubUser:
         return httpx.Response(401, json={"message": "Bad credentials"})
 
     def _api(self, request: httpx.Request, path: str) -> httpx.Response:
-        if request.method == "DELETE" and path == f"/applications/{self.client_id}/token":
+        if request.method == "DELETE" and path == f"/applications/{self.client_id}/grant":
             return self._revoke(request)
         login = self._live(request.headers.get("authorization", "").removeprefix("Bearer "))
         if login is None:
@@ -231,6 +237,10 @@ class FakeGitHubUser:
             ]
             return self._page(request, rows, "installations")
         found = re.fullmatch(r"/user/installations/(\d+)/repositories", path)
+        if found and int(found[1]) in self.forbidden_installations:
+            return httpx.Response(
+                403, json={"message": "Resource protected by organization SAML enforcement."}
+            )
         if found and int(found[1]) in installs:
             rows = [
                 {
@@ -265,7 +275,9 @@ class FakeGitHubUser:
             return self._bad()
         token = json.loads(request.content or b"{}").get("access_token", "")
         if token not in self._access:
-            return httpx.Response(404, json={"message": "Not Found"})
-        del self._access[token]
+            return httpx.Response(422, json={"message": "Validation Failed"})
+        login = self._access[token][0]
+        self._access = {t: v for t, v in self._access.items() if v[0] != login}  # the whole grant ends
+        self._refresh = {t: v for t, v in self._refresh.items() if v[0] != login}
         self.revoked_tokens.append(token)
         return httpx.Response(204)

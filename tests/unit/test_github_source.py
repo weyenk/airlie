@@ -154,11 +154,46 @@ async def test_refresh_sends_the_client_secret_and_gets_a_new_pair(made: Made) -
     assert SECRET not in str(e.value) and first.refresh_token not in str(e.value)
 
 
-async def test_refresh_without_a_client_secret_is_token_refused(made: Made) -> None:
-    source, fake, _ = made(secret=None)
-    with pytest.raises(TokenRefused, match="client_secret_file"):
-        await source.refresh("ghr_whatever")
-    assert fake.calls == []
+async def test_refresh_without_a_client_secret_still_gets_a_new_pair(made: Made) -> None:
+    source, fake, clock = made(secret=None)
+    first = await tokens_for(source, fake, clock)
+    assert first.refresh_token is not None
+    second = await source.refresh(first.refresh_token)
+    assert "client_secret" not in fake.forms[-1]  # a device-flow token needs none (GitHub's refresh docs)
+    assert second.access_token != first.access_token
+
+
+async def test_a_refused_client_secret_names_the_setting_and_not_the_secret(made: Made) -> None:
+    source, fake, clock = made()
+    first = await tokens_for(source, fake, clock)
+    fake.client_secret = "another-secret"
+    assert first.refresh_token is not None
+    with pytest.raises(SourceError, match="client_secret_file") as e:
+        await source.refresh(first.refresh_token)
+    assert SECRET not in str(e.value)
+
+
+async def test_a_client_secret_file_others_can_read_is_refused(made: Made, tmp_path: Path) -> None:
+    source, fake, clock = made()
+    first = await tokens_for(source, fake, clock)
+    (tmp_path / "client-secret").chmod(0o644)
+    assert first.refresh_token is not None
+    with pytest.raises(SourceError, match="chmod 600") as e:
+        await source.refresh(first.refresh_token)
+    assert SECRET not in str(e.value)
+    before = len(fake.calls)
+    await source.revoke(first.access_token)  # best effort: not even tried with a secret others can read
+    assert len(fake.calls) == before
+
+
+async def test_an_error_description_is_masked_and_cut(made: Made) -> None:
+    source, fake, _ = made()
+    code = await source.start_link()
+    fake.describe = f"bad {code.device_code} " + "x" * 500
+    fake.client_id = "another-client"  # GitHub then says incorrect_client_credentials, in its own words
+    with pytest.raises(SourceError, match="incorrect_client_credentials") as e:
+        await source.poll_link(code.device_code)
+    assert code.device_code not in str(e.value) and "***" in str(e.value) and len(str(e.value)) < 400
 
 
 async def test_listing_follows_every_page_of_every_installation(made: Made) -> None:
@@ -188,6 +223,14 @@ async def test_a_401_on_listing_is_token_refused(made: Made) -> None:
         await source.account(got.access_token)
 
 
+async def test_an_installation_that_answers_403_is_skipped(made: Made) -> None:
+    source, fake, clock = made()
+    fake.grant("ada", {1: [("o/a", True)], 2: [("o/b", True)], 3: [("o/c", False)]})
+    fake.forbidden_installations = {2}
+    got = await tokens_for(source, fake, clock)
+    assert [r.repo for r in await source.repositories(got.access_token)] == ["o/a", "o/c"]
+
+
 async def test_a_500_on_listing_is_source_error_without_the_token(made: Made) -> None:
     source, fake, clock = made()
     got = await tokens_for(source, fake, clock)
@@ -201,12 +244,14 @@ async def test_a_500_on_listing_is_source_error_without_the_token(made: Made) ->
 async def test_revoke_deletes_the_grant_with_basic_auth_and_never_raises(made: Made) -> None:
     source, fake, clock = made()
     got = await tokens_for(source, fake, clock)
+    assert got.refresh_token is not None
     await source.revoke(got.access_token)
     assert fake.revoked_tokens == [got.access_token]
     assert not fake.has_access_token(got.access_token)
-    assert fake.calls[-1] == ("DELETE", f"/api/applications/{CLIENT_ID}/token")
-    await source.revoke(got.access_token)  # already gone: 404, nothing raised
-    fake.app.requests.clear()
+    assert fake.calls[-1] == ("DELETE", f"/api/applications/{CLIENT_ID}/grant")
+    with pytest.raises(TokenRefused):  # the grant is gone: its refresh token no longer mints
+        await source.refresh(got.refresh_token)
+    await source.revoke(got.access_token)  # already gone: 422, nothing raised
 
 
 async def test_revoke_survives_a_500_and_a_missing_secret(made: Made, tmp_path: Path) -> None:
@@ -235,6 +280,8 @@ async def test_reaches_is_false_for_a_repository_the_app_is_not_installed_on(mad
     assert await source.reaches("o/r") is True
     assert [r.url.path for r in fake.app.requests].count("/api/repos/o/r/installation") == 1  # cached
     assert await source.reaches("o/other") is False
+    assert await source.reaches("o/other") is False  # a "no" is asked again: it may be installed since
+    assert [r.url.path for r in fake.app.requests].count("/api/repos/o/other/installation") == 2
 
 
 async def test_the_publisher_pushes_as_the_apps_bot(made: Made) -> None:

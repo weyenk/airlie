@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
+import logging
+import os
 import time
 from collections.abc import Callable
 from typing import Any
@@ -30,7 +33,7 @@ from airlie.sources.protocol import (
     TokenRefused,
     UserTokens,
 )
-from airlie.story.github_app import REVOKE_S, GitHubApp, GitHubAppError, _request, api_base
+from airlie.story.github_app import REVOKE_S, GitHubApp, GitHubAppError, api_base, request
 from airlie.story.publish import Publisher
 
 DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
@@ -38,6 +41,7 @@ PAGE = 100
 """per_page: GitHub's most."""
 MAX_PAGES = 100
 """Pages read per listing: 10 000 repositories; more is cut, not looped on."""
+log = logging.getLogger(__name__)
 POLL_S = 5
 SLOWED_S = 10
 _SAID = 200
@@ -51,6 +55,11 @@ def _oauth_base(url: str) -> str:
     except GitHubAppError as e:
         problem = str(e).replace("api_url", "oauth_url")
     raise SourceError(problem)
+
+
+class _Unreachable(SourceError):
+    """GitHub answered 403 or 404: this one thing cannot be read (an organization that enforces SAML SSO, an
+    installation removed since it was listed)."""
 
 
 class GitHubSource:
@@ -105,23 +114,45 @@ class GitHubSource:
         if failure:
             raise SourceError(f"GitHub POST {path}: {failure}")
         assert isinstance(body, dict)
+        said = body.get("error_description")
+        if isinstance(said, str):  # GitHub's own words, with what we sent masked, are all that may be shown
+            for name in ("client_secret", "refresh_token", "device_code"):
+                if form.get(name):
+                    said = said.replace(form[name], "***")
+            body["error_description"] = said
         return body
 
     @staticmethod
-    def _said(body: dict[str, Any]) -> str:
+    def _described(body: dict[str, Any]) -> str:
         text = body.get("error_description") or body.get("error") or "no reason given"
         return str(text)[:_SAID]
 
     def _secret(self) -> str | None:
-        """The client secret from its file, or None when none is set or it cannot be read or is empty."""
+        """The client secret from its file, or None when none is set or it is empty or missing. A file that is
+        a symlink, belongs to someone else or can be read by group or others is a SourceError: it is opened
+        once, without following a link, and checked on that descriptor (as the token key is)."""
         file = self._spec.client_secret_file
         if file is None:
             return None
+        path = file.expanduser()
+        name = "story.github_app.client_secret_file"
+        failure = ""
         try:
-            secret = file.expanduser().read_text().strip()
-        except OSError:
-            return None
-        return secret or None
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError as e:
+            if e.errno != errno.ELOOP:
+                return None
+            failure = f"{name} {path} is a symlink: point the setting at the file"
+        else:
+            with os.fdopen(fd, "rb") as f:
+                st = os.fstat(f.fileno())
+                if st.st_mode & 0o077:
+                    failure = f"{name} {path} can be read by others: chmod 600 {path}"
+                elif st.st_uid != os.geteuid():
+                    failure = f"{name} {path} belongs to another user"
+                else:
+                    return f.read().decode("utf-8", "replace").strip() or None
+        raise SourceError(failure)
 
     def _tokens(self, body: dict[str, Any]) -> UserTokens:
         access = body.get("access_token")
@@ -150,7 +181,7 @@ class GitHubSource:
                     "Device Flow is off for the GitHub App: enable it under the App's settings "
                     "(Optional features, or General, 'Enable Device Flow')"
                 )
-            raise SourceError(f"GitHub refused the device code ({code}): {self._said(body)}")
+            raise SourceError(f"GitHub refused the device code ({code}): {self._described(body)}")
         try:
             return DeviceCode(
                 device_code=str(body["device_code"]),
@@ -182,24 +213,16 @@ class GitHubSource:
             raise LinkDenied("the GitHub authorization was declined")
         if code == "device_flow_disabled":
             raise SourceError("Device Flow is off for the GitHub App: enable it under the App's settings")
-        raise SourceError(f"GitHub refused the authorization ({code}): {self._said(body)}")
+        raise SourceError(f"GitHub refused the authorization ({code}): {self._described(body)}")
 
     async def refresh(self, refresh_token: str) -> UserTokens:
+        """A device-flow token refreshes without the client secret (GitHub's refreshing-user-access-tokens
+        docs); it is sent whenever one is configured."""
         secret = self._secret()
-        if secret is None:
-            raise TokenRefused(
-                "the GitHub token cannot be refreshed: set story.github_app.client_secret_file to the App's "
-                "client secret"
-            )
-        body = await self._form(
-            "login/oauth/access_token",
-            {
-                "client_id": self._client_id,
-                "client_secret": secret,
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-            },
-        )
+        form = {"client_id": self._client_id, "grant_type": "refresh_token", "refresh_token": refresh_token}
+        if secret is not None:
+            form["client_secret"] = secret
+        body = await self._form("login/oauth/access_token", form)
         code = body.get("error")
         if code is None:
             return self._tokens(body)
@@ -209,7 +232,7 @@ class GitHubSource:
             raise SourceError(
                 "GitHub refused the client id or secret: check story.github_app.client_secret_file"
             )
-        raise SourceError(f"GitHub refused the refresh ({code}): {self._said(body)}")
+        raise SourceError(f"GitHub refused the refresh ({code}): {self._described(body)}")
 
     # --- the API -------------------------------------------------------------------------------------
 
@@ -219,15 +242,17 @@ class GitHubSource:
         failure = ""
         r: httpx.Response | None = None
         try:
-            r = await _request(self._spec.api_url, self._transport, "GET", path, token, params=params)
+            r = await request(self._spec.api_url, self._transport, "GET", path, token, params=params)
         except GitHubAppError as e:
             failure = str(e)
         if r is None:
             raise SourceError(failure)
         if r.status_code == 401:
             raise TokenRefused("GitHub refused the person's token: link the account again")
+        if r.status_code in (403, 404):
+            raise _Unreachable(f"GitHub GET {path}: {GitHubApp.said(r, token)}")
         if not r.is_success:
-            raise SourceError(f"GitHub GET {path}: {GitHubApp._said(r, token)}")
+            raise SourceError(f"GitHub GET {path}: {GitHubApp.said(r, token)}")
         return r
 
     @staticmethod
@@ -268,9 +293,14 @@ class GitHubSource:
             iid = installation.get("id")
             if not isinstance(iid, int) or isinstance(iid, bool):
                 continue
-            for item in await self._pages(
-                f"user/installations/{iid}/repositories", "repositories", access_token
-            ):
+            try:
+                items = await self._pages(
+                    f"user/installations/{iid}/repositories", "repositories", access_token
+                )
+            except _Unreachable as e:  # one installation the person cannot read does not hide the others
+                log.warning("GitHub installation %s skipped: %s", iid, e)
+                continue
+            for item in items:
                 name = item.get("full_name")
                 if not isinstance(name, str) or not name:
                     continue
@@ -285,25 +315,28 @@ class GitHubSource:
         return sorted(found.values(), key=lambda r: r.repo.lower())
 
     async def revoke(self, access_token: str) -> None:
-        """DELETE /applications/{client_id}/token with Basic client_id:client_secret. Best effort: nothing is
-        raised when there is no secret, GitHub refuses or does not answer, or it takes more than REVOKE_S; the
-        token is then left to expire in its 8 hours."""
-        secret = self._secret()
-        if secret is None:
-            return
-        with contextlib.suppress(GitHubAppError, TimeoutError):
+        """DELETE /applications/{client_id}/grant with Basic client_id:client_secret: the grant ends, every
+        token of it with it, the refresh token too. Best effort: nothing is raised when there is no usable
+        secret, GitHub refuses or does not answer, or it takes more than REVOKE_S; the tokens are then left to
+        expire (8 hours, 6 months)."""
+        with contextlib.suppress(SourceError, GitHubAppError, TimeoutError):
+            secret = self._secret()
+            if secret is None:
+                return
             async with asyncio.timeout(REVOKE_S):
-                await _request(
+                await request(
                     self._spec.api_url,
                     self._transport,
                     "DELETE",
-                    f"applications/{self._client_id}/token",
+                    f"applications/{self._client_id}/grant",
                     None,
                     auth=(self._client_id, secret),
                     json={"access_token": access_token},
                 )
 
     async def reaches(self, repo: str) -> bool:
+        """The App is installed on `repo`. A yes is kept until serve restarts (an uninstall reads yes until
+        then); a no is asked again each time, so installing the App takes effect at once."""
         failure = ""
         try:
             return await self._app.installation(repo) is not None

@@ -107,7 +107,7 @@ def api_base(url: str) -> str:
     raise GitHubAppError(f"story.github_app.api_url {problem}")  # outside the handler: nothing is chained
 
 
-async def _request(
+async def request(
     api_url: str,
     transport: httpx.AsyncBaseTransport | None,
     method: str,
@@ -144,7 +144,7 @@ async def ping(api_url: str, *, transport: httpx.AsyncBaseTransport | None = Non
     quota, so a beat every few minutes never runs the unauthenticated limit down. Otherwise a GitHubAppError
     says what came back, or that nothing did. A tick asks this before it takes an issue when the publish steps
     run as you; as the bot, it asks the app (GitHubApp.slug)."""
-    r = await _request(api_url, transport, "GET", "rate_limit", None)
+    r = await request(api_url, transport, "GET", "rate_limit", None)
     if not r.is_success:
         raise GitHubAppError(f"GitHub GET rate_limit: {r.status_code} {r.reason_phrase}")
 
@@ -190,11 +190,11 @@ class GitHubApp:
         raise GitHubAppError(f"story.github_app.key_file {self.key_file} {failure}")
 
     async def _call(self, method: str, path: str, bearer: str, **kw: Any) -> httpx.Response:
-        """One request (_request) to the app's api_url, with `bearer` (the JWT, or a token)."""
-        return await _request(self.api_url, self._transport, method, path, bearer, **kw)
+        """One request (request) to the app's api_url, with `bearer` (the JWT, or a token)."""
+        return await request(self.api_url, self._transport, method, path, bearer, **kw)
 
     @staticmethod
-    def _said(r: httpx.Response, bearer: str) -> str:
+    def said(r: httpx.Response, bearer: str) -> str:
         """The status and GitHub's message (cut short, with `bearer` masked), else the reason phrase."""
         try:
             body = r.json()
@@ -208,10 +208,10 @@ class GitHubApp:
         """A reply to the app's JWT that is not a success: a 401 is the app's id or its key."""
         if r.status_code == 401:
             return GitHubAppError(
-                f"GitHub refused the app's JWT ({self._said(r, bearer)}): check that story.github_app.app_id "
+                f"GitHub refused the app's JWT ({self.said(r, bearer)}): check that story.github_app.app_id "
                 f"({self.app_id}) is the app and story.github_app.key_file ({self.key_file}) its private key"
             )
-        return GitHubAppError(f"GitHub {method} {path}: {self._said(r, bearer)}")
+        return GitHubAppError(f"GitHub {method} {path}: {self.said(r, bearer)}")
 
     @staticmethod
     def _json(r: httpx.Response, method: str, path: str) -> dict[str, Any]:
@@ -299,7 +299,7 @@ class GitHubApp:
                 else ""
             )
             raise GitHubAppError(
-                f"the GitHub App {slug} cannot get a token for {repo} with {what} ({self._said(r, bearer)}): "
+                f"the GitHub App {slug} cannot get a token for {repo} with {what} ({self.said(r, bearer)}): "
                 f"give the app those permissions{which}, and add {repo} to its installation at "
                 f"https://github.com/apps/{slug}/installations/new"
             )
@@ -333,7 +333,7 @@ class GitHubApp:
             finally:  # the lookup is all this token was for
                 await self.revoke(bearer)
             if not r.is_success:
-                raise GitHubAppError(f"GitHub GET {path}: {self._said(r, bearer)}")
+                raise GitHubAppError(f"GitHub GET {path}: {self.said(r, bearer)}")
             uid = self._id(self._json(r, "GET", path))
             if uid is None:
                 raise GitHubAppError(f"GitHub GET {path}: {r.status_code}, but the reply has no id")

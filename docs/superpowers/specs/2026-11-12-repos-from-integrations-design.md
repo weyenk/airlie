@@ -69,9 +69,10 @@ access to it. GitHub is the first source behind a seam, so GitLab or Forgejo can
 
 ## Controller calls
 
-1. **Refresh needs the App's client secret.** GitHub's refresh grant takes `client_secret`. New optional
-   `story.github_app.client_secret_file` (0600, like `key_file`). Without it a person reconnects when the 8-hour
-   token expires, and unlink cannot revoke on GitHub.
+1. **Refresh does not need the App's client secret.** A device-flow token refreshes without it (GitHub's
+   refreshing-user-access-tokens docs); it is sent when set. New optional `story.github_app.client_secret_file`
+   (0600, like `key_file`). Without it refresh still works and only revocation is lost: unlink cannot end the
+   grant on GitHub (`DELETE /applications/{client_id}/grant`).
 2. **Config homes.** `client_id`, `client_secret_file`, `token_key_file` and `oauth_url` (default
    `https://github.com`; `http://` only to this machine, for tests) go in `story.github_app`. `chat.sources`
    (default `[]`) and `chat.repo_list_cache_s` (300) in `chat`; `airlie.yaml` sets `sources: [github_app]`.
