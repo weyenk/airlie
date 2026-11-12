@@ -72,6 +72,18 @@ tools:
   output_cap_chars: 20000
   write_file_max_overwrite_lines: 200   # longer existing files change with edit_file, not a rewrite
 mcp: {}                              # name: { command, args, env } — exposed to teams as extra tools
+boxes:                             # the VMs repository chats run in (Tart, one per session)
+  backend: tart
+  image: ghcr.io/cirruslabs/ubuntu:latest
+  memory_gb: 8
+  cpus: 4
+  disk_gb: 40
+  idle_stop_s: 900
+  setup_timeout_s: 1800
+  boot_timeout_s: 120
+  network:
+    after_setup: allow_list          # off = host-only
+    allow_hosts: [pypi.org, files.pythonhosted.org, registry.npmjs.org]
 web:
   search:                          # web_search backend; `task doctor` checks it
     kind: searxng

@@ -428,6 +428,36 @@ class ManagerSpec(Strict):
     lease_ttl_s: float = Field(default=120.0, description="seconds a lease lives without a renewal")
 
 
+class BoxNetworkSpec(Strict):
+    """What a repository chat's VM may reach once its setup is done."""
+
+    after_setup: Literal["off", "allow_list"] = Field(
+        default="allow_list",
+        description="off: host-only networking; allow_list: everything blocked except the CIDRs allow_hosts "
+        "resolve to",
+    )
+    allow_hosts: list[str] = Field(
+        default_factory=lambda: ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org"],
+        description="hosts reachable after setup when after_setup is allow_list",
+    )
+
+
+class BoxesSpec(Strict):
+    """The VMs repository chats run in (one Tart VM per session)."""
+
+    backend: Literal["tart"] = Field(default="tart", description="the VM backend")
+    image: str = Field(
+        default="ghcr.io/cirruslabs/ubuntu:latest", description="the image a box is cloned from"
+    )
+    memory_gb: float = Field(default=8.0, gt=0, description="memory of a box")
+    cpus: int = Field(default=4, description="cpus of a box")
+    disk_gb: int = Field(default=40, description="disk of a box")
+    idle_stop_s: float = Field(default=900.0, description="seconds idle before a running box is stopped")
+    setup_timeout_s: float = Field(default=1800.0, description="seconds the repository's setup may take")
+    boot_timeout_s: float = Field(default=120.0, description="seconds a box may take to answer after a start")
+    network: BoxNetworkSpec = Field(default_factory=BoxNetworkSpec)
+
+
 class BridgeSpec(Strict):
     """Job Bus worker (`task bridge`): outbound HTTPS to the hub, loopback to `task serve`."""
 
@@ -1102,6 +1132,7 @@ class AirlieConfig(Strict):
     lhr: LhrSpec = Field(default_factory=LhrSpec)
     bridge: BridgeSpec = Field(default_factory=BridgeSpec)
     manager: ManagerSpec = Field(default_factory=ManagerSpec)
+    boxes: BoxesSpec = Field(default_factory=BoxesSpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
 
     # ---- cross-reference checks (run by load_config after path resolution) ----
