@@ -13,7 +13,9 @@
     "dev": "vite"
   },
   "dependencies": {
+    "@ai-sdk/vue": "4.0.170",
     "@vueuse/core": "15.0.0",
+    "ai": "7.0.170",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-vue-next": "1.0.0",
