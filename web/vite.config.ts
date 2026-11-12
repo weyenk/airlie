@@ -1,11 +1,31 @@
 import tailwindcss from "@tailwindcss/vite";
 import vue from "@vitejs/plugin-vue";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
+
+// sw.js names its cache after the build: the hash of the built index.html, which names every hashed asset.
+function swBuildId(): Plugin {
+  let outDir = "";
+  return {
+    name: "airlie-sw-build-id",
+    apply: "build",
+    configResolved(config) {
+      outDir = new URL(config.build.outDir + "/", `file://${config.root}/`).pathname;
+    },
+    closeBundle() {
+      const id = createHash("sha256").update(readFileSync(outDir + "index.html")).digest("hex").slice(0, 12);
+      const sw = outDir + "sw.js";
+      writeFileSync(sw, readFileSync(sw, "utf8").replace("__AIRLIE_BUILD__", id));
+    },
+  };
+}
 
 // The build lands inside the Python package, where `airlie serve` serves it at /.
 export default defineConfig(({ mode }) => ({
   base: "/",
-  plugins: [vue(), tailwindcss()],
+  plugins: [vue(), tailwindcss(), swBuildId()],
   resolve: { alias: { "@": new URL("./src", import.meta.url).pathname } },
   build: {
     outDir: "../src/airlie/serve/web_next",
