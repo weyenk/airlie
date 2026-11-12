@@ -160,3 +160,14 @@ def test_every_route_needs_a_sign_in(studio: Studio, method: str, path: str, bod
 
 def test_without_a_contact_the_key_is_null(no_contact: Studio) -> None:
     assert no_contact.admin.get("/v1/notifications").json()["key"] is None
+
+
+def test_an_api_key_or_bootstrap_caller_is_no_person_and_gets_403(tmp_path: Path) -> None:
+    cfg_ = cfg(tmp_path)
+    cfg_.notifications.contact = "mailto:noah@example.com"
+    app = create_app(cfg_, transport=httpx.MockTransport(FakeUpstream()), api_key="k", now=Clock())
+    keyed = TestClient(app, base_url=ORIGIN, headers={"Origin": ORIGIN, "Authorization": "Bearer k"})
+    assert keyed.get("/v1/notifications").status_code == 403
+    assert keyed.post("/v1/notifications/subscriptions", json=SUB).status_code == 403
+    assert keyed.put("/v1/notifications/kinds", json={"chat_reply": False}).status_code == 403
+    assert keyed.post("/v1/notifications/test").status_code == 403

@@ -45,6 +45,11 @@ def notifications_router(
 
     def who(request: Request) -> str:
         principal: Principal = request.state.principal
+        if principal.via not in (
+            "session",
+            "tailscale",
+        ):  # the api key and the bootstrap admin are no one's phone
+            raise HTTPException(403, "notifications belong to a signed-in person, not an API key")
         return principal.user_id
 
     @router.get("")

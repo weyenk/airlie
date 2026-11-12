@@ -155,3 +155,17 @@ def test_a_loser_that_reads_the_key_before_the_winner_finished_writing_waits_for
     monkeypatch.setattr("airlie.notify.vapid.time.sleep", lambda _s: path.write_bytes(pem))
     loser = load_or_create_vapid(path)
     assert application_server_key(loser) == application_server_key(winner)
+
+
+async def test_a_push_has_its_own_short_timeout_whatever_the_clients_is(tmp_path: Path) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(201)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=600.0) as client:
+        sender = PushSender(load_or_create_vapid(tmp_path / "v.pem"), "mailto:noah@example.com", client)
+        await sender.send(_subscription("https://web.push.apple.com/abc"), {"title": "t"})
+    timeout = seen[0].extensions["timeout"]
+    assert timeout["read"] == 10.0 and timeout["connect"] == 10.0

@@ -17,6 +17,8 @@ from airlie.auth.store import PushSubscription
 _TTL_SECONDS = 86400
 _MAX_BODY = 4096  # a push service accepts at least this much; the header and tag are inside it
 _VAPID_LIFETIME_SECONDS = 12 * 3600
+PUSH_TIMEOUT = httpx.Timeout(10.0)
+"""A push service answers in moments; serve's shared client waits minutes for a model."""
 
 
 def _b64url_decode(text: str) -> bytes:
@@ -60,5 +62,5 @@ class PushSender:
             "Urgency": "normal",
         }
         body = encrypt_payload(json.dumps(payload).encode(), sub.p256dh, sub.auth)
-        response = await self._client.post(sub.endpoint, content=body, headers=headers)
+        response = await self._client.post(sub.endpoint, content=body, headers=headers, timeout=PUSH_TIMEOUT)
         return response.status_code
