@@ -384,6 +384,34 @@ def test_a_picture_is_sent_as_an_image_part_and_stays_in_the_history_of_the_next
 # --- failure and the engine ---------------------------------------------------------------------------------
 
 
+def test_an_engine_that_will_not_start_leaves_no_empty_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class WontStart:
+        async def start(self) -> None:
+            raise RuntimeError("engine client could not start")
+
+        async def stop(self) -> None:
+            pass
+
+    monkeypatch.setattr("airlie.cli._http_engine", lambda *a, **k: WontStart())
+    c, _ = client_for(tmp_path)
+    c = TestClient(c.app, raise_server_exceptions=False)
+    assert post(c).status_code == 500
+    assert c.get("/v1/airlie/chat/threads").json() == []
+    assert c.get("/v1/airlie/chat/threads/t1").status_code == 404
+
+
+def test_a_failed_turn_leaves_no_two_user_messages_in_a_row_for_the_next(tmp_path: Path) -> None:
+    c, up = client_for(tmp_path, ScriptedUpstream(Fail(500), Text("fine")))
+    post(c, turn_body("first"))
+    second = {"id": "u2", "role": "user", "parts": [{"type": "text", "text": "second"}]}
+    post(c, {**turn_body(), "messages": [second]})
+    sent = [(m["role"], m["content"]) for m in up.bodies[1]["messages"]]
+    assert [r for r, _ in sent] == ["system", "user"]
+    assert sent[1][1] == "first\n\nsecond"
+
+
 def test_an_engine_failure_is_an_error_chunk_and_the_user_message_is_kept(tmp_path: Path) -> None:
     c, _ = client_for(tmp_path, ScriptedUpstream(Fail(500)))
     r = post(c, turn_body("will fail"))

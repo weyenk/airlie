@@ -155,11 +155,14 @@ class Busy:
 
     def __init__(self) -> None:
         self._turns: dict[str, Running] = {}
+        self._closing = False
 
     def take(self, thread_id: str) -> Running | None:
         if thread_id in self._turns:
             return None
         self._turns[thread_id] = running = Running()
+        if self._closing:  # accepted while the server goes down: it ends as stopped, having saved its message
+            running.handle.stop()
         return running
 
     def __contains__(self, thread_id: str) -> bool:
@@ -170,7 +173,9 @@ class Busy:
 
     def stop_all(self) -> None:
         """Stop every turn in flight (the server is going down): each saves its partial reply as interrupted
-        and frees its thread, so a hung engine cannot hold the shutdown."""
+        and frees its thread, so a hung engine cannot hold the shutdown. A turn taken after this is stopped
+        as it is taken."""
+        self._closing = True
         for turn in list(self._turns.values()):
             turn.handle.stop()
 
@@ -263,6 +268,8 @@ def chat_router(
         try:
             response = await start_turn(body, principal, thread, engine_name, engines, cleanup, turn)
         except BaseException:
+            if not thread.messages:  # a failed start leaves no empty row behind either
+                threads.delete(thread.id, principal.user_id)
             await cleanup()
             raise
         if not isinstance(response, TurnStream):  # refused: nothing streams
