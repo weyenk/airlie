@@ -114,6 +114,7 @@ def test_the_model_is_offered_the_vm_tools_and_the_host_tools(tmp_path: Path) ->
         "push_branch",
         "open_pr",
         "todo",
+        "task",
     } <= tool_names(rig.up.bodies[0])
 
 

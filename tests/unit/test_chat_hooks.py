@@ -485,7 +485,18 @@ async def test_the_audit_record_is_one_exact_line_and_counts_bytes_not_character
 
     [record] = caplog.records
     assert record.name == "airlie.chat.audit"
-    assert record.getMessage() == "thread=t1 call=c1 tool=todo ok=False args_bytes=4 output_bytes=2"
+    assert record.getMessage() == "thread=t1 call=c1 tool=todo ok=False via=- args_bytes=4 output_bytes=2"
+
+
+async def test_the_audit_record_of_a_subagents_call_names_the_task_call_it_ran_under(
+    cfg: AirlieConfig, library: SuperpowersLibrary, caplog: pytest.LogCaptureFixture
+) -> None:
+    hooks = default_hooks(cfg, library, chat_skills={}, uploads_limit=2)
+    with caplog.at_level(logging.INFO, logger="airlie.chat.audit"):
+        await hooks.run("after_tool", ctx(), ToolEvent("w1", "shell", "{}", "ok", True, "task:c9"))
+
+    [record] = caplog.records
+    assert "tool=shell ok=True via=task:c9 " in record.getMessage()
 
 
 async def test_a_failing_hook_is_logged_with_its_name_and_the_traceback(

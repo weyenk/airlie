@@ -17,8 +17,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from airlie.chat.hooks import TurnContext, Verdict
-from airlie.chat.kinds import ChatKind, ask_first
-from airlie.config.schema import ALWAYS_ASK, AirlieConfig
+from airlie.chat.kinds import ChatKind, needs_yes
+from airlie.config.schema import AirlieConfig
 from airlie.engine.types import EngineError, ToolCall
 from airlie.tools.jsonargs import parse_tool_args
 from airlie.tools.protocol import Tool, ToolContext, ToolResult
@@ -67,10 +67,7 @@ class Confirmations:
         self._items: dict[str, _Item] = {}
 
     def required(self, tool: str, kind: ChatKind = "repository") -> bool:
-        listed = ask_first(kind, self._cfg)
-        return tool in (
-            listed | ALWAYS_ASK if kind == "repository" else listed
-        )  # the config cannot drop these
+        return tool in needs_yes(kind, self._cfg)  # the config cannot drop the always-asked ones
 
     def request(self, session_id: str, call_id: str, tool: str, args: Mapping[str, Any]) -> str:
         """Record that `tool` with `args` waits for a yes and return the request's id; the same call asked

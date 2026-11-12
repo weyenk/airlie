@@ -77,6 +77,8 @@ class ToolEvent:
     arguments: str
     output: str
     ok: bool
+    via: str = ""
+    """Set for a call a subagent made: `task:<the task call's id>`."""
 
 
 @dataclass(frozen=True)
@@ -198,11 +200,12 @@ def default_hooks(
 
     async def audit(ctx: TurnContext, ev: ToolEvent) -> None:
         audit_log.info(
-            "thread=%s call=%s tool=%s ok=%s args_bytes=%d output_bytes=%d",
+            "thread=%s call=%s tool=%s ok=%s via=%s args_bytes=%d output_bytes=%d",
             ctx.thread_id,
             ev.call_id,
             ev.name,
             ev.ok,
+            ev.via or "-",
             len(ev.arguments.encode()),
             len(ev.output.encode()),
         )

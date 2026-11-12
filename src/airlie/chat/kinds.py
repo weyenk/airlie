@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal
 
 from airlie.chat.superpowers import SuperpowersLibrary
 from airlie.chat.tools import SkillTool, TodoList, TodoTool
-from airlie.config.schema import CHAT_TOOLS, PLAIN_CHAT_FORBIDDEN, AirlieConfig
+from airlie.config.schema import ALWAYS_ASK, CHAT_TOOLS, PLAIN_CHAT_FORBIDDEN, AirlieConfig
 from airlie.engine.protocol import Engine
 from airlie.skills.library import Skill
 from airlie.tools.protocol import Tool, ToolContext
@@ -32,6 +32,13 @@ class KindUnavailable(Exception):
 def ask_first(kind: ChatKind, cfg: AirlieConfig) -> frozenset[str]:
     spec = cfg.chat.kinds.plain if kind == "plain" else cfg.chat.kinds.repository
     return frozenset(spec.ask_first)
+
+
+def needs_yes(kind: ChatKind, cfg: AirlieConfig) -> frozenset[str]:
+    """What `kind` never runs without a person's yes: its `ask_first`, and for a repository chat the
+    always-asked tools whatever the config lists. The guard and the subagent's tool list both read this."""
+    listed = ask_first(kind, cfg)
+    return listed | ALWAYS_ASK if kind == "repository" else listed
 
 
 def registry_for(
@@ -58,7 +65,8 @@ def registry_for(
         if task_engine_for is not None and "task" in names:
             from airlie.chat.task_tool import Task
 
-            task = Task(cfg, task_engine_for, library=library, chat_skills=skills_extra)
+            candidate = Task(cfg, task_engine_for, library=library, chat_skills=skills_extra)
+            task = candidate if candidate.usable else None  # no role to run it on: no tool
         registry = build_repo_tools(repo, ctx, names, task=task)
     else:
         names = cfg.chat.kinds.plain.tools

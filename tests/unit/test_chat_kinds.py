@@ -128,3 +128,64 @@ def test_ask_first_is_read_from_the_kind_config(cfg: AirlieConfig) -> None:
 
     assert ask_first("plain", changed) == frozenset({"web_fetch"})
     assert ask_first("repository", changed) == frozenset({"shell", "git"})
+
+
+# ---- the task tool in a repository registry ----
+
+
+def _repository(cfg: AirlieConfig, library: SuperpowersLibrary, **kw: Any) -> list[str]:
+    from airlie.tools.protocol import ToolContext
+    from tests.support.box import FakeBox
+
+    ctx = ToolContext(worktree=Path("/w"), box=FakeBox("vm", state="running"))
+    chat: Any = object()  # push_branch and open_pr only keep it
+    reg = registry_for(
+        "repository", cfg, library=library, todos=TodoList(), ctx=ctx, web=WEB, repo=chat, **kw
+    )
+    return reg.names()
+
+
+def test_a_repository_registry_holds_task_when_it_has_an_engine_for_it(
+    cfg: AirlieConfig, library: SuperpowersLibrary
+) -> None:
+    from airlie.engine.fake import FakeEngine
+
+    assert "task" in _repository(cfg, library, task_engine_for=lambda role: FakeEngine({}))
+
+
+def test_a_repository_registry_without_an_engine_for_it_has_no_task(
+    cfg: AirlieConfig, library: SuperpowersLibrary
+) -> None:
+    assert "task" not in _repository(cfg, library)
+
+
+def test_a_repository_registry_has_no_task_when_the_kind_does_not_list_it(
+    cfg: AirlieConfig, library: SuperpowersLibrary
+) -> None:
+    from airlie.engine.fake import FakeEngine
+
+    cfg = cfg.model_copy(deep=True)
+    cfg.chat.kinds.repository.tools = ["read_file", "grep"]
+    assert "task" not in _repository(cfg, library, task_engine_for=lambda role: FakeEngine({}))
+
+
+def test_a_repository_registry_has_no_task_when_no_role_of_it_exists(
+    cfg: AirlieConfig, library: SuperpowersLibrary
+) -> None:
+    from airlie.engine.fake import FakeEngine
+
+    cfg = cfg.model_copy(deep=True)
+    cfg.chat.task.roles = ["nonesuch"]
+    assert "task" not in _repository(cfg, library, task_engine_for=lambda role: FakeEngine({}))
+
+
+@pytest.mark.parametrize("kind", ["plain", "repository"])
+def test_needs_yes_is_the_kinds_ask_first_and_for_a_repository_the_always_asked(
+    cfg: AirlieConfig, kind: str
+) -> None:
+    from airlie.chat.kinds import needs_yes
+
+    cfg = cfg.model_copy(deep=True)
+    cfg.chat.kinds.plain.ask_first = ["todo"]
+    got = needs_yes(kind, cfg)  # type: ignore[arg-type]
+    assert got == (frozenset({"todo"}) if kind == "plain" else {"push_branch", "open_pr", "build_image"})

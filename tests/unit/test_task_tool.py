@@ -3,15 +3,18 @@ role, a FakeBox for the VM and a real Manager over a fake engine resource for th
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from airlie.chat import task_tool
+from airlie.chat.kinds import needs_yes
 from airlie.chat.repo_tools import build_repo_tools
 from airlie.chat.superpowers import SuperpowersLibrary
-from airlie.chat.task_tool import Task, subagent_tools
+from airlie.chat.task_tool import OBSERVER, Task, TaskObserver, subagent_tools
 from airlie.config import AirlieConfig, load_config
 from airlie.engine.fake import FakeEngine, FakeReply
 from airlie.engine.types import ToolCall
@@ -19,7 +22,7 @@ from airlie.manager.client import InProcessHolder, ManagedEngine
 from airlie.manager.core import Manager
 from airlie.serve.bridge.clock import FakeClock
 from airlie.skills.library import prompt_text
-from airlie.tools.protocol import ToolContext
+from airlie.tools.protocol import ToolContext, ToolResult
 from tests.support.box import FakeBox
 from tests.support.serve import FakeEngine as FakeResource
 
@@ -185,10 +188,100 @@ def test_a_role_the_config_lacks_is_not_offered(cfg: AirlieConfig) -> None:
     assert task(cfg, FakeEngine({})).roles == ["coder"]
 
 
-def test_build_repo_tools_registers_task_only_when_named_and_given(cfg: AirlieConfig) -> None:
-    t = task(cfg, FakeEngine({}))
+@pytest.mark.parametrize(
+    ("names", "given", "present"),
+    [(["task", "grep"], True, True), (["grep"], True, False), (["task", "grep"], False, False)],
+)
+def test_build_repo_tools_registers_task_only_when_named_and_given(
+    cfg: AirlieConfig, names: list[str], given: bool, present: bool
+) -> None:
     chat: Any = None  # push_branch and open_pr are not named, so the session is never read
-    ctx = ctx_for(vm())
-    assert "task" in build_repo_tools(chat, ctx, ["task", "grep"], task=t).names()
-    assert "task" not in build_repo_tools(chat, ctx, ["grep"], task=t).names()
-    assert "task" not in build_repo_tools(chat, ctx, ["task", "grep"]).names()
+    registry = build_repo_tools(chat, ctx_for(vm()), names, task=task(cfg, FakeEngine({})) if given else None)
+    assert ("task" in registry.names()) is present
+
+
+def test_a_boxed_tool_named_like_a_forbidden_one_is_still_not_offered(
+    cfg: AirlieConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.tools.fs import ReadFile
+
+    forbidden = ["task", "push_branch", "open_pr", "skill", "todo"]
+    monkeypatch.setattr(task_tool, "BOXED", {**task_tool.BOXED, **{n: ReadFile for n in forbidden}})
+    cfg = cfg.model_copy(deep=True)
+    cfg.chat.kinds.repository.tools = ["read_file", *forbidden]
+    assert subagent_tools(cfg) == ["read_file"]
+
+
+def test_a_tool_the_guard_always_asks_for_is_not_offered_even_if_boxed(
+    cfg: AirlieConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.tools.fs import ReadFile
+
+    monkeypatch.setattr(task_tool, "BOXED", {**task_tool.BOXED, "build_image": ReadFile})
+    cfg = cfg.model_copy(deep=True)
+    cfg.chat.kinds.repository.tools = ["read_file", "build_image"]
+    assert needs_yes("repository", cfg) >= {"push_branch", "open_pr", "build_image"}
+    assert subagent_tools(cfg) == ["read_file"]
+
+
+async def test_a_stop_during_a_subagent_cancels_its_generation_and_releases_its_hold(
+    cfg: AirlieConfig,
+) -> None:
+    resource = FakeResource("main")
+    manager = Manager([resource], budget_gb=100.0, clock=FakeClock())
+    started = asyncio.Event()
+
+    class Hangs(FakeEngine):
+        async def generate(self, req: Any, on_token: Any = None) -> Any:
+            started.set()
+            await asyncio.Event().wait()
+
+    inner = Hangs({})
+    engine = ManagedEngine(inner, "main", InProcessHolder(manager))
+    running = asyncio.create_task(
+        Task(cfg, lambda role: engine).run({"role": "reviewer", "prompt": "review"}, ctx_for(vm()))
+    )
+    await started.wait()
+    assert manager.status()[0].holders == ("role:reviewer",)
+
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    assert manager.status()[0].holders == ()
+    assert len(inner.cancelled) == 1
+
+
+async def test_each_subagent_call_is_reported_to_the_observer(cfg: AirlieConfig) -> None:
+    seen: list[tuple[str, bool]] = []
+
+    async def after_call(call: ToolCall, result: ToolResult) -> None:
+        seen.append((call.id, result.ok))
+
+    engine = FakeEngine({"coder": [call("write_file", path="a", content="x"), FakeReply(text="ok")]})
+    token = OBSERVER.set(TaskObserver(after_call))
+    try:
+        await task(cfg, engine).run({"prompt": "go"}, ctx_for(vm()))
+    finally:
+        OBSERVER.reset(token)
+    assert seen == [("c1", True)]
+
+
+@pytest.mark.parametrize("roles", [[], ["nonesuch"]])
+def test_a_task_with_no_role_the_config_has_is_not_usable(cfg: AirlieConfig, roles: list[str]) -> None:
+    cfg = cfg.model_copy(deep=True)
+    cfg.chat.task.roles = roles
+    assert task(cfg, FakeEngine({})).usable is False
+
+
+def test_a_task_whose_default_role_is_not_offered_is_not_usable(cfg: AirlieConfig) -> None:
+    cfg = cfg.model_copy(deep=True)
+    cfg.chat.task.roles = ["reviewer"]
+    cfg.chat.task.default_role = "coder"
+    assert task(cfg, FakeEngine({})).usable is False
+
+
+def test_the_engines_of_its_roles_are_listed_for_the_status_relay(cfg: AirlieConfig) -> None:
+    assert task(cfg, FakeEngine({})).engines == sorted(
+        {cfg.engine_for_role(r) for r in ["coder", "reviewer", "tester", "architect"]}
+    )

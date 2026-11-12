@@ -24,6 +24,7 @@ import anyio
 from airlie.chat.confirm import NeedsApproval
 from airlie.chat.hooks import Hooks, ToolEvent, TurnContext, TurnSummary, Verdict
 from airlie.chat.stream import StreamWriter
+from airlie.chat.task_tool import OBSERVER, TaskObserver
 from airlie.chat.threads import StoredMessage, Thread, ThreadStore
 from airlie.chat.tools import TodoList
 from airlie.config.schema import RoleSpec
@@ -218,21 +219,29 @@ class _Run:
 
     # --- the hold -------------------------------------------------------------------------------------------
 
+    def emit_status(self, name: str, seen: dict[str, tuple[str, str]], *, quiet_ready: bool = False) -> None:
+        """Relay the manager's status row for engine `name` when it changed since `seen`."""
+        mine = [s for s in self.status() if s.name == name]
+        if not mine or seen.get(name) == (mine[0].state, mine[0].detail):
+            return
+        s = mine[0]
+        first = name not in seen
+        seen[name] = (s.state, s.detail)
+        if quiet_ready and first and s.state in ("ready", "stopped"):
+            return  # an engine already up has nothing to show
+        progress = None if s.progress is None else asdict(s.progress)
+        payload = {"engine": s.name, "state": s.state, "detail": s.detail, "progress": progress}
+        self.emit(self.w.data("engine", payload, transient=True))
+
     async def enter_hold(self, stack: AsyncExitStack) -> None:
         """Take the engine as `chat:{thread}`; while it is not ready, relay the manager's status."""
         owner = f"chat:{self.req.thread.id}"
         enter = asyncio.create_task(stack.enter_async_context(self.holder.hold(self.engine_name, owner)))
-        seen: tuple[str, str] | None = None
+        seen: dict[str, tuple[str, str]] = {}
         try:
             await asyncio.sleep(0)  # an engine already up is held at once: no status to show
             while not enter.done():
-                mine = [s for s in self.status() if s.name == self.engine_name]
-                if mine and (mine[0].state, mine[0].detail) != seen:
-                    s = mine[0]
-                    seen = (s.state, s.detail)
-                    progress = None if s.progress is None else asdict(s.progress)
-                    payload = {"engine": s.name, "state": s.state, "detail": s.detail, "progress": progress}
-                    self.emit(self.w.data("engine", payload, transient=True))
+                self.emit_status(self.engine_name, seen)
                 sleeper = asyncio.create_task(self.clock.sleep(STATUS_EVERY_S))
                 try:
                     await asyncio.wait({enter, sleeper}, return_when=asyncio.FIRST_COMPLETED)
@@ -244,6 +253,35 @@ class _Run:
                 enter.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await enter
+
+    async def relay_task_engines(self, names: list[str]) -> None:
+        """While a `task` call runs: relay the status of the engines its subagent may wait on."""
+        seen: dict[str, tuple[str, str]] = {}
+        while True:
+            for name in names:
+                self.emit_status(name, seen, quiet_ready=True)
+            await self.clock.sleep(STATUS_EVERY_S)
+
+    async def run_registry_call(self, call: ToolCall) -> ToolResult:
+        """`registry.call`; for a `task` call, its subagent's tool calls also reach `after_tool` (the audit
+        log) marked `via`, and the status of the engines it may wait on goes to the client."""
+        if call.name != "task":
+            return await self.registry.call(call)
+        engines: list[str] = list(getattr(self.registry.get("task"), "engines", ()))
+
+        async def after_call(sub: ToolCall, result: ToolResult) -> None:
+            event = ToolEvent(sub.id, sub.name, sub.arguments, result.output, result.ok, f"task:{call.id}")
+            await self.hooks.run("after_tool", self.req.ctx, event)
+
+        token = OBSERVER.set(TaskObserver(after_call))
+        relay = asyncio.create_task(self.relay_task_engines(engines))
+        try:
+            return await self.registry.call(call)
+        finally:
+            OBSERVER.reset(token)
+            relay.cancel()
+            with suppress(asyncio.CancelledError):
+                await relay
 
     # --- one generation -------------------------------------------------------------------------------------
 
@@ -310,7 +348,7 @@ class _Run:
             if verdict is not None:  # refused before it runs: a request for the person's yes, or a no
                 result = ToolResult(False, verdict.message)
             else:
-                result = await self.registry.call(call)  # never runs a call whose arguments do not parse
+                result = await self.run_registry_call(call)  # never runs a call whose arguments do not parse
         except asyncio.CancelledError:  # stopped mid-call: history keeps the call the client saw
             part.update(state="output-error", errorText=STOPPED_RESULT)
             self.parts.append(part)

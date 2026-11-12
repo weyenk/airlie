@@ -1726,6 +1726,9 @@ def test_chat_task_defaults(tmp_path: Path) -> None:
 def test_chat_task_rejects_a_role_that_does_not_exist(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"chat.task names role 'ghost', which is not in roles"):
         load_config(_chat(tmp_path, {"task": {"roles": ["coder", "ghost"]}}))
+
+
+def test_chat_task_rejects_a_default_role_that_does_not_exist(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"chat.task names role 'ghost'"):
         load_config(_chat(tmp_path, {"task": {"default_role": "ghost", "roles": ["coder"]}}))
 
@@ -1733,6 +1736,9 @@ def test_chat_task_rejects_a_role_that_does_not_exist(tmp_path: Path) -> None:
 def test_chat_task_default_role_must_be_one_a_model_may_choose(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"default_role 'judge' is not in chat.task.roles"):
         load_config(_chat(tmp_path, {"task": {"default_role": "judge", "roles": ["coder"]}}))
+
+
+def test_chat_task_accepts_a_narrower_role_list(tmp_path: Path) -> None:
     assert load_config(_chat(tmp_path, {"task": {"roles": ["coder"]}})).chat.task.roles == ["coder"]
 
 
