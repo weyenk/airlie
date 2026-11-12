@@ -913,6 +913,7 @@ def create_app(
             publish=lambda topic, key: feed.publish(topic, key),
             pinnable=known_repos,
             background=chat_prewarms,
+            start_story=lambda text, repo: begin_story(None, text, repo),
         )
     )
     app.include_router(pins_router(store, lambda topic, key: feed.publish(topic, key), known_repos))
@@ -1124,10 +1125,15 @@ def create_app(
 
     @app.post("/v1/airlie/stories", status_code=202)
     async def start_story(req: StoryRequest) -> dict[str, Any]:
-        if (req.card is None) == (req.text is None):
+        return await begin_story(req.card, req.text, req.repo)
+
+    async def begin_story(card: str | None, text: str | None, repo_in: str | None) -> dict[str, Any]:
+        """Start a story job from a board card or a written request (also the chat's Start story): its
+        `job_id` and `kind`, or an HTTPException saying why not."""
+        if (card is None) == (text is None):
             raise HTTPException(400, "pass exactly one of card or text")
-        repo = (req.repo or "").strip() or None  # a blank repo is none, all the way to the story
-        if req.card is not None and repo is not None:
+        repo = (repo_in or "").strip() or None  # a blank repo is none, all the way to the story
+        if card is not None and repo is not None:
             raise HTTPException(422, ISSUE_REPO)
 
         def running(job_id: str) -> bool:
@@ -1135,9 +1141,7 @@ def create_app(
             return job is not None and job.state == "running"
 
         try:
-            job_id, events, work = await make_story(
-                cfg, card=req.card, text=req.text, repo=repo, running=running
-            )
+            job_id, events, work = await make_story(cfg, card=card, text=text, repo=repo, running=running)
         except StoryRunning as e:  # decided before the story is placed: its issue is read, not told or moved
             raise HTTPException(409, str(e)) from e
         except (StorySetupError, BoardError) as e:

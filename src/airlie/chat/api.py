@@ -17,7 +17,7 @@ from typing import Annotated, Any
 
 import anyio
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
@@ -177,17 +177,24 @@ class NewThread(BaseModel):
         return self
 
 
-JobId = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:-]+$")]
+def _said(text: str) -> str:
+    if not text.strip():
+        raise ValueError("the story request is empty")
+    return text
 
 
-class StartedJob(BaseModel):
-    """`POST .../stories/{story}/job`: the job a story card started (`/v1/airlie/stories` answered it), kept
-    on the card's message so a reload shows it started."""
+class StartStory(BaseModel):
+    """`POST .../stories/{story}/start`: the story card's request as the person edited it, and the
+    repository it is for (owner/name, or the path of a checkout)."""
 
     model_config = ConfigDict(extra="forbid")
-    job_id: JobId
-    kind: str = Field(min_length=1, max_length=40)
-    label: str | None = Field(default=None, max_length=200)
+    text: Annotated[str, Field(max_length=20_000), AfterValidator(_said)]
+    repo: str = Field(min_length=1, max_length=500)
+
+
+StartStoryJob = Callable[[str, str], Awaitable[dict[str, Any]]]
+"""Start a story from a written request on a repository: `{job_id, kind}`, or an HTTPException saying why
+not (serve's `POST /v1/airlie/stories`)."""
 
 
 def branch_of(thread_id: str, kind: ChatKind) -> str | None:
@@ -314,15 +321,18 @@ def chat_router(
     publish: Callable[[str, str | None], None] = lambda topic, key: None,
     pinnable: Callable[[], Awaitable[list[str]]] | None = None,
     background: set[asyncio.Task[None]] | None = None,
+    start_story: StartStoryJob | None = None,
 ) -> APIRouter:
     """`publish` is the live feed's: each change to a thread (made, a turn's end, an answer, deleted) sends
     the `chat` hint with no key (the feed reaches every signed-in client: it names no one's chat; each
     refetches its own). `pinnable` lists the repositories a new chat's VM may be started for before its first
-    message; `background` keeps those starts (serve's shutdown and tests wait on them)."""
+    message; `background` keeps those starts (serve's shutdown and tests wait on them). `start_story` starts
+    a story card's story on the board."""
     router = APIRouter()
     background = background if background is not None else set()
     prewarmed: dict[str, list[str]] = {}  # per person: the chats whose VM was started before a message
     prewarms: dict[str, asyncio.Task[None]] = {}  # by chat: its pre-warm while it runs (a delete stops it)
+    starting: set[tuple[str, str]] = set()  # (chat, story card) while its story starts: one start per card
     busy = busy if busy is not None else Busy()
     clock = clock or RealClock()
     confirmations = confirmations if confirmations is not None else Confirmations(cfg)
@@ -791,10 +801,12 @@ def chat_router(
         publish("chat", None)
         return Response(status_code=204)
 
-    @router.post("/v1/airlie/chat/threads/{thread_id}/stories/{story_id}/job", status_code=201)
-    async def story_started(thread_id: str, story_id: str, body: StartedJob, request: Request) -> Any:
-        """The story card `story_id` (a /story reply's `data-story` part) was started: its job is kept as a
-        `data-job` part on the same message, once, so a reload or another device shows the job card."""
+    @router.post("/v1/airlie/chat/threads/{thread_id}/stories/{story_id}/start", status_code=201)
+    async def story_start(thread_id: str, story_id: str, body: StartStory, request: Request) -> Any:
+        """Start the story of card `story_id` (a /story reply's `data-story` part) on the board, once: the
+        card is claimed before the story starts (a second start, from any tab or device, is 409 while it
+        starts and after), and the job the board answered is kept as a `data-job` part on the same message,
+        so a reload shows the job card. A start the board refuses gives the card back to try again."""
         principal = principal_of(request)
         if principal is None:
             return error("not signed in", 401)
@@ -813,13 +825,25 @@ def chat_router(
         if found is None:
             return error("no such story in this chat", 404)
         part_id = f"{story_id}-job"
-        if any(p.get("type") == "data-job" and p.get("id") == part_id for p in found.parts):
+        claim = (thread_id, story_id)
+        if claim in starting or any(
+            p.get("type") == "data-job" and p.get("id") == part_id for p in found.parts
+        ):
             return error("this story was started already", 409)
-        data: dict[str, Any] = {"story": story_id, "job_id": body.job_id, "kind": body.kind}
-        if body.label is not None:
-            data["label"] = body.label
-        part = {"type": "data-job", "id": part_id, "data": data}
-        threads.add_part(thread_id, found.id, part)
+        if start_story is None:
+            return error("stories cannot be started from this server's chat", 503)
+        starting.add(claim)  # no await since the check: the claim and the check are one step
+        try:
+            try:
+                job = await start_story(body.text.strip(), body.repo.strip())
+            except HTTPException as e:  # the board's reason: the card is free to try again
+                return error(str(e.detail), e.status_code)
+            label = f"{body.repo.strip().rstrip('/').rsplit('/', 1)[-1]} · story"
+            data = {"story": story_id, "job_id": str(job["job_id"]), "kind": str(job["kind"]), "label": label}
+            part = {"type": "data-job", "id": part_id, "data": data}
+            threads.add_part(thread_id, found.id, part)
+        finally:
+            starting.discard(claim)
         publish("chat", None)
         return JSONResponse(part, status_code=201)
 
