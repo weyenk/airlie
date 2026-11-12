@@ -10,6 +10,7 @@ TOOLS_OK = {
     "git": "2.45.0",
     "hf": "1.0.0",
     "node": "v26.10.0",
+    "tart": "2.32.1",
 }
 
 
@@ -22,7 +23,9 @@ class FakeProbe(SystemProbe):
         snapshots: set[str] | None = None,
         tools: dict[str, str | None] | None = None,
         mlx_vlm: str | None = "0.7.12",
+        tart_images: list[str] | None = None,
     ) -> None:
+        self._tart_images = ["ghcr.io/cirruslabs/ubuntu:latest"] if tart_images is None else tart_images
         self._wired = wired_mb
         self._ram = ram_gb
         self._snaps = snapshots if snapshots is not None else set()
@@ -40,6 +43,9 @@ class FakeProbe(SystemProbe):
 
     def model_snapshot_dir(self, repo: str, revision: str) -> Path | None:
         return Path(f"/fake/{repo}/{revision}") if f"{repo}@{revision}" in self._snaps else None
+
+    def tart_images(self) -> list[str] | None:
+        return self._tart_images
 
     def tool_version(self, name: str) -> str | None:
         return self._tools.get(name)

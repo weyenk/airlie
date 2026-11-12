@@ -852,3 +852,26 @@ def test_notifications_row_warns_without_a_contact_and_is_ok_with_one(tmp_path: 
     assert row.status == "warn" and "airlie.local.yaml" in row.detail
     cfg.notifications.contact = "mailto:noah@example.com"
     assert by_name(run_checks(cfg, probe))["notifications"].status == "ok"
+
+
+def test_the_tart_row_warns_with_the_install_command_when_tart_is_missing(tmp_path: Path) -> None:
+    probe = FakeProbe(snapshots={"org/model@r1"}, tools={**TOOLS_OK, "tart": None})
+    r = by_name(run_checks(managed(tmp_path), probe))["tart"]
+    assert r.status == "warn"
+    assert "brew install cirruslabs/cli/tart" in r.detail
+    assert "tart pull ghcr.io/cirruslabs/ubuntu:latest" in r.detail
+
+
+def test_the_tart_row_warns_with_the_pull_command_when_the_image_is_missing(tmp_path: Path) -> None:
+    probe = FakeProbe(snapshots={"org/model@r1"}, tart_images=["other"])
+    r = by_name(run_checks(managed(tmp_path), probe))["tart"]
+    assert r.status == "warn"
+    assert r.detail == "default image not pulled; run: tart pull ghcr.io/cirruslabs/ubuntu:latest"
+
+
+def test_the_tart_row_is_ok_with_the_image_pulled_and_notes_secrets_are_per_repository(
+    tmp_path: Path,
+) -> None:
+    r = by_name(run_checks(managed(tmp_path), FakeProbe(snapshots={"org/model@r1"})))["tart"]
+    assert r.status == "ok"
+    assert "per repository, not yet per person" in r.detail

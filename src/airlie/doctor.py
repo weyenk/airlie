@@ -35,6 +35,10 @@ class SystemProbe(Protocol):
     def total_ram_bytes(self) -> int: ...
     def model_snapshot_dir(self, repo: str, revision: str) -> Path | None: ...
     def tool_version(self, name: str) -> str | None: ...
+    def tart_images(self) -> list[str] | None:
+        """The VMs and images `tart list` shows; None when it cannot be asked."""
+        ...
+
     def model_config(self, repo: str, revision: str) -> dict[str, Any] | None: ...
     def http_ok(self, url: str) -> bool: ...
     def http_status(self, url: str, headers: dict[str, str] | None = None) -> int | None:
@@ -149,6 +153,16 @@ class RealProbe:
         except importlib.metadata.PackageNotFoundError:
             return None
 
+    def tart_images(self) -> list[str] | None:
+        exe = shutil.which("tart")
+        if not exe:
+            return None
+        try:
+            out = subprocess.run([exe, "list", "--quiet"], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return out.stdout.split() if out.returncode == 0 else None
+
     def tool_version(self, name: str) -> str | None:
         exe = shutil.which(name)
         if not exe:
@@ -161,6 +175,28 @@ class RealProbe:
             return line[0]
         except (OSError, subprocess.TimeoutExpired):
             return "present"
+
+
+def tart_check(cfg: AirlieConfig, probe: SystemProbe) -> CheckResult:
+    """Repository chats run in Tart VMs: warn (the rest of airlie works without them) when Tart or the default
+    image is missing."""
+    image = cfg.boxes.image
+    if not probe.tool_version("tart"):
+        return CheckResult(
+            "tart",
+            "warn",
+            "Tart not installed (repository chats need it); run: brew install cirruslabs/cli/tart "
+            f"&& tart pull {image}",
+        )
+    images = probe.tart_images()
+    if images is None or image not in images:
+        return CheckResult("tart", "warn", f"default image not pulled; run: tart pull {image}")
+    return CheckResult(
+        "tart",
+        "ok",
+        f"{image} pulled (setup secrets are kept per repository, not yet per person: "
+        "state_dir/boxes/secrets/<owner>__<name>.env, mode 600)",
+    )
 
 
 def web_node_pin(root: Path) -> str:
@@ -538,6 +574,7 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
                 f"tool:{tool}", "ok" if v else "fail", v or f"'{tool}' not on PATH (see README install)"
             )
         )
+    results.append(tart_check(cfg, probe))
     try:
         pin = web_node_pin(root)
     except (OSError, ValueError, KeyError, TypeError) as err:  # no file, not JSON, no engines.node
