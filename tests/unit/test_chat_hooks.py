@@ -266,6 +266,18 @@ async def test_session_start_sets_the_system_prompt(
     assert c.system_prompt == build_system_prompt(cfg, "plain", library, chat_skills, skill="story")
 
 
+async def test_a_failing_session_start_leaves_the_prompt_empty_and_says_why(
+    cfg: AirlieConfig, tmp_path: Path, chat_skills: dict[str, Skill]
+) -> None:
+    broken = SuperpowersLibrary(tmp_path / "nowhere")  # no skills/, so the bootstrap cannot be built
+    hooks = default_hooks(cfg, broken, chat_skills=chat_skills, uploads_limit=2)
+    c = ctx()
+    await hooks.run("session_start", c)
+
+    assert c.system_prompt == ""
+    assert c.prompt_error is not None and "using-superpowers" in c.prompt_error
+
+
 async def test_before_turn_refuses_too_many_attachments(
     cfg: AirlieConfig, library: SuperpowersLibrary, chat_skills: dict[str, Skill]
 ) -> None:

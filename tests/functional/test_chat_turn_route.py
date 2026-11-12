@@ -256,6 +256,37 @@ def test_a_slash_skill_adds_its_body_to_that_turns_prompt(tmp_path: Path) -> Non
     assert "STORY BODY" in up.bodies[0]["messages"][0]["content"]
 
 
+def test_a_damaged_superpowers_tree_makes_every_turn_503_with_the_reason(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg = chat_cfg(tmp_path)
+    (cfg.chat.superpowers.path / "skills" / "brainstorming" / "SKILL.md").write_text("tampered\n")
+    up = ScriptedUpstream()
+    with caplog.at_level("ERROR", logger="airlie.serve.app"):
+        c = TestClient(create_app(cfg, transport=httpx.MockTransport(up)))
+    r = post(c)
+    assert r.status_code == 503
+    assert (
+        "chat is misconfigured" in r.json()["error"] and "changed: skills/brainstorming" in r.json()["error"]
+    )
+    assert up.calls == 0
+    assert c.get("/v1/airlie/chat/threads").json() == []
+    assert "chat is misconfigured" in caplog.text
+
+
+def test_a_system_prompt_that_cannot_be_built_is_503_never_an_empty_prompt(tmp_path: Path) -> None:
+    cfg = chat_cfg(tmp_path)
+    up = ScriptedUpstream()
+    c = TestClient(create_app(cfg, transport=httpx.MockTransport(up)))  # sound at startup ...
+    skill = cfg.chat.superpowers.path / "skills" / "brainstorming" / "SKILL.md"
+    skill.write_text("---\nname: brainstorming\n---\nno description\n")  # ... broken before the turn
+    r = post(c)
+    assert r.status_code == 503 and "chat is misconfigured" in r.json()["error"]
+    assert "no description" in r.json()["error"]
+    assert up.calls == 0
+    assert c.get("/v1/airlie/chat/threads").json() == []
+
+
 def test_too_many_attachments_is_400(tmp_path: Path) -> None:
     c, up = client_for(tmp_path)
     limit = c.get("/v1/airlie/chat/attachments").json()["max_per_message"]

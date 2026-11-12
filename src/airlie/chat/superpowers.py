@@ -92,6 +92,21 @@ def verify_manifest(root: Path) -> list[str]:
     return problems
 
 
+def check_library(root: Path) -> str | None:
+    """Why the library at `root` cannot serve a chat, or None when it can: the manifest holds and the skill
+    listing and the bootstrap text both build. Run once at startup, so a damaged tree is one clear error."""
+    try:
+        problems = verify_manifest(root)
+        if problems:
+            return f"the superpowers tree at {root} does not match its manifest: " + "; ".join(problems[:5])
+        library = SuperpowersLibrary(root)
+        library.listing()
+        library.bootstrap()
+    except Exception as e:
+        return f"the superpowers library at {root} cannot be read: {type(e).__name__}: {e}"
+    return None
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 1:
         print("usage: python -m airlie.chat.superpowers <vendor/superpowers>", file=sys.stderr)

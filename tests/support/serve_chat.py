@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -25,6 +26,9 @@ def superpowers_tree(root: Path) -> Path:
         d.mkdir(parents=True)
         (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {desc}\n---\n{body}\n")
     (root / "airlie-tools.md").write_text("TOOLS MAPPING\n")
+    files = sorted(p for p in root.rglob("*") if p.is_file())
+    lines = [f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(root).as_posix()}" for p in files]
+    (root / "MANIFEST.sha256").write_text("\n".join(lines) + "\n")
     return root
 
 

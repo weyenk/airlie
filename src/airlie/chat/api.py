@@ -211,6 +211,7 @@ def chat_router(
     hooks: Hooks,
     web: Mapping[str, Tool],
     chat_skills: Mapping[str, Skill] | None = None,
+    library_error: str | None = None,
     manager: Manager,
     attach: Attach,
     transport: httpx.AsyncBaseTransport | None = None,
@@ -231,6 +232,8 @@ def chat_router(
             return error("not signed in", 401)
         if "chat" not in cfg.roles:
             return error("the chat role is not configured", 503)
+        if library_error is not None:
+            return error(f"chat is misconfigured: {library_error}", 503)
         try:
             engine_name = cfg.engine_for_role("chat")
         except Exception as e:  # no engine serves the chat role's model
@@ -296,6 +299,9 @@ def chat_router(
             await hooks.run("before_turn", ctx)
         except TurnRefused as e:
             return error(e.message, e.status)
+        if not ctx.system_prompt:  # never run a turn without its instructions
+            reason = ctx.prompt_error or "the system prompt is empty"
+            return error(f"chat is misconfigured: {reason}", 503)
         todos = TodoList.load(thread.todos)
         tool_ctx = ToolContext(
             cfg.observability.state_dir.expanduser(),

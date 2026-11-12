@@ -53,6 +53,7 @@ class TurnContext:
     kind: ChatKind
     session: Principal
     system_prompt: str = ""
+    prompt_error: str | None = None  # why session_start could not build the system prompt
     attachments: int = 0
     skill: str | None = None
 
@@ -154,7 +155,11 @@ def default_hooks(
     hooks = Hooks()
 
     async def session_start(ctx: TurnContext) -> None:
-        ctx.system_prompt = build_system_prompt(cfg, ctx.kind, library, chat_skills, skill=ctx.skill)
+        try:
+            ctx.system_prompt = build_system_prompt(cfg, ctx.kind, library, chat_skills, skill=ctx.skill)
+        except Exception as e:
+            ctx.prompt_error = f"{type(e).__name__}: {e}"
+            raise  # the hook runner logs it; the route refuses a turn that has no prompt
 
     async def guard(ctx: TurnContext) -> None:
         if ctx.attachments > uploads_limit:

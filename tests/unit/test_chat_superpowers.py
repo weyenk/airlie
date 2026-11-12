@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from airlie.chat.superpowers import MANIFEST, SuperpowersLibrary, main, verify_manifest
+from airlie.chat.superpowers import MANIFEST, SuperpowersLibrary, check_library, main, verify_manifest
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -148,3 +148,28 @@ def test_the_committed_vendor_tree_matches_its_manifest() -> None:
 def test_the_committed_bootstrap_is_under_2000_tokens() -> None:
     text = SuperpowersLibrary(ROOT / "vendor" / "superpowers").bootstrap()
     assert "airlie's tools" in text and len(text) / 4 <= 2000, len(text) / 4
+
+
+def test_check_library_passes_a_sound_tree(tree: Path) -> None:
+    _manifest(tree)
+    assert check_library(tree) is None
+
+
+def test_check_library_names_a_changed_file(tree: Path) -> None:
+    _manifest(tree)
+    (tree / "skills" / "alpha" / "SKILL.md").write_text("---\ndescription: x\n---\nedited\n")
+    reason = check_library(tree)
+    assert reason is not None and "changed: skills/alpha/SKILL.md" in reason and str(tree) in reason
+
+
+def test_check_library_reports_a_missing_manifest(tree: Path) -> None:
+    reason = check_library(tree)
+    assert reason is not None and "cannot be read" in reason and MANIFEST in reason
+
+
+def test_check_library_reports_a_skill_that_does_not_parse(tmp_path: Path) -> None:
+    _skill(tmp_path, "using-superpowers", None)  # no description
+    (tmp_path / "airlie-tools.md").write_text("x\n")
+    _manifest(tmp_path)
+    reason = check_library(tmp_path)
+    assert reason is not None and "no description" in reason

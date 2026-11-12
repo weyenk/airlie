@@ -32,7 +32,7 @@ from airlie.board import BoardStore
 from airlie.board.api import board_router
 from airlie.board.model import WorkflowDraft
 from airlie.chat.hooks import UnknownSkill, default_hooks, slash_section
-from airlie.chat.superpowers import SuperpowersLibrary
+from airlie.chat.superpowers import SuperpowersLibrary, check_library
 from airlie.chat.threads import ThreadStore
 from airlie.config import AirlieConfig
 from airlie.engine.dialect import (
@@ -837,6 +837,9 @@ def create_app(
 
     chat_threads = ThreadStore(cfg.observability.state_dir.expanduser() / "chat" / "threads.sqlite")
     superpowers = SuperpowersLibrary(cfg.chat.superpowers.path) if cfg.chat.superpowers.enabled else None
+    library_error = check_library(cfg.chat.superpowers.path) if superpowers is not None else None
+    if library_error is not None:
+        log.error("chat is misconfigured, its turns answer 503: %s", library_error)
     chat_hooks = default_hooks(
         cfg,
         superpowers,
@@ -859,6 +862,7 @@ def create_app(
                 "web_fetch": WebFetch(timeout_s=cfg.web.fetch_timeout_s),
             },
             chat_skills=chat_skills,
+            library_error=library_error,
             manager=manager,
             attach=attach_for,
             transport=transport,
