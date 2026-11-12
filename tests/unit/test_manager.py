@@ -1061,3 +1061,119 @@ async def test_a_cancelled_start_whose_running_check_fails_counts_for_memory() -
         await task
 
     assert state(m, "a").state == "failed" and m._used_gb("other") == r.footprint_gb
+
+
+# ---- survivors of the plan 4 mutation run ----
+
+
+class StartsThenHangs(FakeResource):
+    """A start that has launched the process and then waits: cancelled, the process lives on."""
+
+    async def start(self, report: Report) -> None:
+        self.up = True
+        await asyncio.Event().wait()
+
+
+def watched(m: Manager) -> list[tuple[str, str]]:
+    seen: list[tuple[str, str]] = []
+    m.watch(lambda s: seen.append((s.state, s.detail)))
+    return seen
+
+
+async def test_a_start_cancelled_with_the_process_still_running_says_so() -> None:
+    r = StartsThenHangs("a")
+    m, _ = manager(r)
+    task = asyncio.create_task(_hold(m, "a"))
+    await settle()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert (state(m, "a").state, state(m, "a").detail) == ("failed", "start cancelled with it still running")
+
+
+async def test_discarding_reports_stopping_then_stopped() -> None:
+    r = FakeResource("a")
+    m, _ = manager(r)
+    await _hold(m, "a")
+    seen = watched(m)
+    await m.discard("a")
+    assert [s for s, _ in seen] == ["stopping", "stopped"]
+
+
+async def test_a_resource_whose_discard_stop_failed_cannot_be_removed_and_says_why() -> None:
+    r = FakeResource("a")
+    m, _ = manager(r)
+    await _hold(m, "a")
+    r.stop_error = "stuck"
+    with pytest.raises(EngineError, match="stop failed: stuck"):
+        await m.discard("a")
+    assert state(m, "a").detail == "stop failed: stuck"
+    with pytest.raises(EngineError, match="a: stop failed: stuck"):
+        m.remove("a")
+
+
+async def test_discarding_stops_a_resource_that_was_started_out_of_band() -> None:
+    r = FakeResource("a")
+    r.up = True  # `airlie engine up`: the slot still says stopped
+    m, _ = manager(r)
+    await m.discard("a")
+    assert r.stops == 1 and not r.up
+
+
+async def test_discarding_a_ready_resource_whose_process_exited_still_runs_its_stop() -> None:
+    r = FakeResource("a")
+    m, _ = manager(r)
+    await _hold(m, "a")
+    r.up = False  # it died: the stop cleans up what it left
+    await m.discard("a")
+    assert r.stops == 1
+
+
+async def test_discarding_a_resource_whose_earlier_stop_failed_retries_the_stop_though_it_is_gone() -> None:
+    r = FakeResource("a")
+    m, _ = manager(r)
+    await _hold(m, "a")
+    r.stop_error = "stuck"
+    with pytest.raises(EngineError):
+        await m.discard("a")
+    r.stop_error = None
+    r.up = False
+    assert await m.discard("a") is r
+    assert r.stops == 2
+
+
+async def test_a_hold_that_lands_while_discard_waits_for_the_slot_refuses_the_discard() -> None:
+    r = FakeResource("a")
+    r.gate = asyncio.Event()
+    m, _ = manager(r)
+    release = asyncio.Event()
+
+    async def keep() -> None:
+        async with m.hold("a", "chat:1"):
+            await release.wait()
+
+    holding = asyncio.create_task(keep())
+    await settle()  # the hold has the slot, mid-start, and no holder yet
+    closing = asyncio.create_task(m.discard("a"))
+    await settle()
+    r.gate.set()
+    await settle()
+    with pytest.raises(EngineError, match="^a: in use$"):
+        await closing
+    release.set()
+    await holding
+    assert r.stops == 0 and [s.name for s in m.status()] == ["a"]
+
+
+async def test_reap_goes_on_past_a_resource_discarded_while_an_earlier_stop_was_awaited() -> None:
+    a, b, c = (FakeResource(n, idle_unload_s=60) for n in "abc")
+    m, clock = manager(a, b, c)
+    for n in "abc":
+        await _hold(m, n)
+    clock.now += 60.0
+    a.stop_gate = asyncio.Event()
+    reaping = asyncio.create_task(m.reap())
+    await settle()
+    await m.discard("b")
+    a.stop_gate.set()
+    assert await reaping == ["a", "c"]

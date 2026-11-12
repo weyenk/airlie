@@ -424,3 +424,141 @@ async def test_cancelling_a_shell_call_kills_what_the_command_started(
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 20)  # at once, not when the sleep has run its 30 s out
     assert await eventually(lambda: not running(sleeper))
+
+
+# ---- survivors of the plan 4 mutation run ----
+
+
+async def test_a_command_runs_as_the_leader_of_a_process_group_of_its_own(tmp_path: Path) -> None:
+    """So that killing the group reaches everything the command started, and nothing of airlie's."""
+    r = await run_cmd('echo "$$ $(ps -o pgid= -p $$)"', replace(ctx(tmp_path), sandbox=False), shell=True)
+    pid, group = r.output.split()
+    assert pid == group and int(group) != os.getpgrp()
+
+
+class _Proc:
+    pid = 2**22 + 7  # never a real group: the fake kill below is the only thing that sees it
+    returncode = 0
+
+    async def communicate(self) -> tuple[bytes, None]:
+        return b"", None
+
+
+@pytest.fixture
+def fake_process(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """No real command, a wait that ends as the test says, and a kill that is recorded."""
+    from airlie.tools import shell as shell_mod
+
+    seen: dict[str, Any] = {"timeouts": [], "killed": [], "proc": _Proc(), "outcome": TimeoutError()}
+
+    async def create(*a: Any, **k: Any) -> _Proc:
+        return seen["proc"]
+
+    async def wait_for(awaitable: Any, timeout: float | None = None) -> Any:
+        seen["timeouts"].append(timeout)
+        awaitable.close()
+        raise seen["outcome"]
+
+    async def kill_group(proc: Any) -> None:
+        seen["killed"].append(proc)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", create)
+    monkeypatch.setattr(shell_mod.asyncio, "wait_for", wait_for)
+    monkeypatch.setattr(shell_mod, "kill_group", kill_group)
+    return seen
+
+
+async def test_a_command_is_given_the_contexts_timeout_and_killed_when_it_runs_out(
+    tmp_path: Path, fake_process: dict[str, Any]
+) -> None:
+    c = replace(ctx(tmp_path), sandbox=False, shell_timeout_s=2.5)
+    r = await run_cmd("sleep 9", c, shell=True)
+    assert (r.ok, r.output) == (False, "error: command timed out after 2.5s")
+    assert fake_process["timeouts"] == [2.5] and fake_process["killed"] == [fake_process["proc"]]
+
+
+async def test_a_command_is_killed_when_its_caller_is_cancelled_and_the_cancel_goes_on(
+    tmp_path: Path, fake_process: dict[str, Any]
+) -> None:
+    fake_process["outcome"] = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await run_cmd("sleep 9", replace(ctx(tmp_path), sandbox=False), shell=True)
+    assert fake_process["killed"] == [fake_process["proc"]]
+
+
+async def test_a_step_that_timed_out_is_reported_without_the_command_prefix(
+    tmp_path: Path, fake_process: dict[str, Any]
+) -> None:
+    c = replace(ctx(tmp_path), sandbox=False, shell_timeout_s=1.0)
+    r = await run_steps(["sleep 9"], c)
+    assert r.output.splitlines()[1:] == ["[1/1] FAIL (timed out after 1s): sleep 9"]
+
+
+async def test_a_step_that_could_not_start_says_why_without_the_error_prefix(tmp_path: Path) -> None:
+    missing = tmp_path / "gone"
+    c = replace(ctx(tmp_path), sandbox=False, worktree=missing)
+    r = await run_steps(["echo hi"], c)
+    assert r.output.splitlines()[1].startswith("[1/1] FAIL (") and "error: " not in r.output.splitlines()[1]
+    assert r.output.splitlines()[1].endswith("): echo hi")
+
+
+async def test_a_failed_step_shows_the_whole_of_its_failure_line_and_the_gate_still_goes_on(
+    tmp_path: Path, fake_process: dict[str, Any]
+) -> None:
+    c = replace(ctx(tmp_path), sandbox=False, shell_timeout_s=1.0)
+    r = await run_steps(["a", "b"], c)
+    assert r.ok is False
+    assert r.output.splitlines() == [
+        "0 of 2 gate commands pass; failed: [1/2], [2/2]",
+        "[1/2] FAIL (timed out after 1s): a",
+        "[2/2] FAIL (timed out after 1s): b",
+    ]
+
+
+def _repo_with_a_new_test(path: Path) -> str:
+    import subprocess
+
+    path.mkdir(exist_ok=True)
+
+    def git(*args: str) -> str:
+        done = subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return done.stdout.strip()
+
+    git("init", "-q")
+    (path / "a.txt").write_text("a\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+    return git("rev-parse", "HEAD")
+
+
+async def test_run_tests_in_a_layer_runs_the_gate_scoped_to_the_layers_own_test_files(tmp_path: Path) -> None:
+    from airlie.tools.shell import RunTests
+
+    base = _repo_with_a_new_test(tmp_path / "wt")
+    (tmp_path / "wt" / "test_new.py").write_text("def test_x(): pass\n")
+    c = replace(ctx(tmp_path), sandbox=False, test_steps=("echo gate",), scope_base=base)
+    r = await RunTests().run({}, c)
+    assert r.ok
+    assert r.output == (
+        "scoped to your 1 test file(s); the pipeline runs the whole suite after review\n"
+        "1 of 1 gate commands pass\n"
+        "[1/1] PASS: echo gate\n"
+        "gate"
+    )
+
+
+async def test_run_tests_in_a_layer_with_no_test_file_yet_asks_for_the_tests_first(tmp_path: Path) -> None:
+    from airlie.tools.shell import RunTests
+
+    base = _repo_with_a_new_test(tmp_path / "wt")
+    c = replace(ctx(tmp_path), sandbox=False, test_steps=("echo gate",), scope_base=base)
+    r = await RunTests().run({}, c)
+    assert r.ok is False and r.output.endswith(
+        "no test file of yours to run yet: write the layer's tests first."
+    )

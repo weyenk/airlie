@@ -426,3 +426,48 @@ async def test_list_dir_in_a_box_answers_a_path_with_a_nul_byte_with_an_error() 
     box = Refusing("b", state="running")
     result = await call(box, "list_dir", {"path": "a\x00b"})
     assert (result.ok, result.output) == (False, "error: embedded null byte")
+
+
+# ---- survivors of the plan 4 mutation run ----
+
+
+async def test_a_boxed_step_is_sent_to_the_box_as_a_group_that_reports_where_it_ended(
+    no_host_process: None,
+) -> None:
+    box = running()
+    box.handlers["/bin/sh"] = steps_handler([(0, "", ROOT)])
+    await RunTests().run({}, boxed(box, test_steps=("cd sub && ls",)))
+    script = box.calls[0].argv[2]
+    assert script.startswith("{ cd sub && ls\n}\n") and WHERE in script and script.endswith("exit $rc")
+
+
+async def test_a_boxed_step_whose_output_looks_like_the_marker_still_ends_where_the_last_marker_says(
+    no_host_process: None,
+) -> None:
+    box = running()
+    fake = f"before\n{WHERE} /elsewhere\nafter"
+    box.handlers["/bin/sh"] = steps_handler([(1, fake, f"{ROOT}/sub"), (0, "", ROOT)])
+    result = await RunTests().run({}, boxed(box, test_steps=("one", "two")))
+    assert [c.cwd for c in box.calls] == [ROOT, f"{ROOT}/sub"]
+    assert result.output.splitlines()[1:5] == [
+        "[1/2] FAIL (exit 1): one",
+        "before",
+        f"{WHERE} /elsewhere",
+        "after",
+    ]
+
+
+async def test_run_tests_in_a_box_with_no_recipe_tests_fails_with_a_false_result(
+    no_host_process: None,
+) -> None:
+    result = await RunTests().run({}, boxed(running()))
+    assert result.ok is False
+
+
+async def test_a_command_run_for_a_given_directory_in_a_box_runs_there(no_host_process: None) -> None:
+    from airlie.tools.shell import _run
+
+    box = running()
+    box.handlers["/bin/sh"] = reply(0, "")
+    await _run("ls", boxed(box), shell=True, cwd=Path(f"{ROOT}/sub"))
+    assert box.calls[0].cwd == f"{ROOT}/sub"

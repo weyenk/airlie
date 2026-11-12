@@ -90,7 +90,7 @@ async def _run_in_box(
         argv,
         env=box_env(ctx.box_env),
         cwd=str(cwd or ctx.worktree),
-        stdin=None,
+        stdin=None,  # pragma: no mutate  (the Box default)
         timeout_s=ctx.shell_timeout_s,
     )
     return result.rc, result.output

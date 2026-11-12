@@ -127,7 +127,7 @@ class Manager:
                     slot.stop_failed = True
                     self._set(slot, "failed", f"stop failed: {e}")
                     raise EngineError(f"{name}: stop failed: {e}") from e
-                slot.stop_failed = False
+                slot.stop_failed = False  # pragma: no mutate  (the slot is deleted next: nothing reads it)
                 self._set(slot, "stopped")
             del self._slots[name]
         self._notify()
@@ -236,7 +236,7 @@ class Manager:
         """A resource whose stop failed counts for memory until it is seen not running."""
         for slot in list(self._slots.values()):
             if slot.stop_failed and not slot.lock.locked() and not await slot.resource.running():
-                slot.stop_failed = False
+                slot.stop_failed = False  # pragma: no mutate  (None and False are both falsy)
                 self._set(slot, "stopped")
 
     async def _wait_for_change(self, deadline: float, name: str) -> None:
@@ -295,7 +295,7 @@ class Manager:
             self._notify()
             raise
         self._set(slot, "ready")
-        slot.last_used = self._clock.monotonic()
+        slot.last_used = self._clock.monotonic()  # pragma: no mutate  (the hold resets it on release)
 
     @asynccontextmanager
     async def hold(self, name: str, owner: str) -> AsyncIterator[None]:
