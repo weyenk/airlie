@@ -4,6 +4,7 @@ FakeBox, a recording runner for the host's git and a recording publisher; no rea
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -248,6 +249,48 @@ async def test_harvest_fetches_the_bundle_with_fsck_and_no_hooks(tmp_path: Path)
     assert (result.commits, result.sha, result.changes_workflows) == (2, TIP, False)
 
 
+async def test_harvest_lands_the_bundle_in_a_scratch_repository_on_the_mirrors_objects(
+    tmp_path: Path,
+) -> None:
+    runner = runner_with_heads(f"refs/heads/{BRANCH}")
+    mirror = mirror_of(tmp_path, runner, FakePublisher())
+    seen: list[tuple[list[str], str]] = []
+
+    async def spy(args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+        if FakeRunner.verb(args) == "fetch" and cwd != mirror.path:
+            assert os.listdir(cwd) == ["objects"]  # by name as written: APFS would open OBJECTS too
+            info = cwd / "objects" / "info"
+            seen.append((os.listdir(cwd / "objects"), (info / "alternates").read_text()))
+            assert os.listdir(info) == ["alternates"]
+        return await runner(args, cwd, env)
+
+    mirror.run = spy
+    await harvest(vm_with_commits(), mirror, base_sha=BASE, branch=BRANCH, workdir=WORKDIR, max_bytes=CAP)
+
+    assert seen == [(["info"], f"{(mirror.path / 'objects').resolve()}\n")]
+    init = next(a for a, _, _ in runner.calls if FakeRunner.verb(a) == "init")
+    assert init[:2] == ["git", "init"] and "--object-format=sha1" in init
+
+
+async def test_harvest_makes_the_scratch_repository_in_the_base_commits_object_format(tmp_path: Path) -> None:
+    base = "c" * 64
+    box = running_box()
+    box.responses[("git", "rev-list", "--count", f"{base}..{BRANCH}")] = ExecResult(0, "1\n")
+    box.responses[("git", "bundle", "create", "-", f"{base}..{BRANCH}")] = ExecResult(0, "VM-BUNDLE")
+    runner = runner_with_heads(f"refs/heads/{BRANCH}")
+    await harvest(
+        box,
+        mirror_of(tmp_path, runner, FakePublisher()),
+        base_sha=base,
+        branch=BRANCH,
+        workdir=WORKDIR,
+        max_bytes=CAP,
+    )
+
+    init = next(a for a, _, _ in runner.calls if FakeRunner.verb(a) == "init")
+    assert "--object-format=sha256" in init
+
+
 async def test_harvest_reads_the_bundle_the_vm_made(tmp_path: Path) -> None:
     runner = runner_with_heads(f"refs/heads/{BRANCH}")
     seen: list[bytes] = []
@@ -303,6 +346,8 @@ async def test_harvest_sees_a_rename_out_of_the_workflows_directory(tmp_path: Pa
     assert set(result.paths) == {".github/workflows/ci.yml", "docs/ci.yml"}
     diff = next(a for a, _, _ in runner.calls if FakeRunner.verb(a) == "diff")
     assert {"--name-status", "-M"} <= set(diff)
+    names = next(a for a, _, _ in runner.calls if FakeRunner.verb(a) == "log" and "--name-only" in a)
+    assert "--no-renames" in names  # a rename's old side too, in every commit of the range
 
 
 async def test_harvest_sees_a_workflow_added_and_removed_inside_the_range(tmp_path: Path) -> None:
