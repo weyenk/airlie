@@ -8,14 +8,14 @@ Open `a.html`, `b.html`, `c.html` side by side. Each has a Desktop section (1280
 
 ## The directions
 
-| | A. Sidebar, one column | B. Rail and panel | C. Header switcher |
-|---|---|---|---|
-| Layout | Fixed left sidebar: pinned repo with its chats and a New chat under it, then Chats; Board, Workflows, Metrics, Admin at its foot. One slim header row over a single thread column. | Narrow icon rail (repo avatar, chats, board, workflows, metrics, admin) and a slide-out chat list panel beside the thread. Header has a status chip that opens a popover. | No persistent navigation. A switcher in the header (repo / chat) opens a popover listing pins and chats. Top bar keeps Board, Workflows, Metrics, Admin. Thread uses the full width. |
-| How you move | Pick a chat in the sidebar; sections are always one click away. | Rail for where you are, panel for which chat; the panel can close. | One control to change chat or repo; everything else gets out of the way. |
-| Header and status | Title, repo, branch, model, context meter, status chip in one row. | Same facts; the chip opens a popover with VM, engine, context, memory, branch. | A second slim row under the top bar: switcher left, branch, model, context, status right. |
-| On a phone | Sidebar becomes a drawer behind a menu button; header drops branch, model, context to a second line. Costs one tap to change chat. | Rail becomes a bottom tab bar, the panel a slide-over, the status popover a sheet. Closest parity with desktop; costs 56 px of height for the tab bar. | Switcher becomes a sheet; the top bar's sections fold into a menu. Least chrome, but Board and friends are two taps away. |
-| Spec parts shown | Chat list and pins (sidebar), status and context (header), tool detail (hover card / sheet), permission, plan, states. | Same, with the status popover (VM, engine, memory) as a first-class surface. | Same, with the switcher as the one place for pins, new chat and pin a repository. |
-| Width for the thread | 1280 minus 252 px sidebar | 1280 minus 56 rail minus 268 panel (more when closed) | Full width |
+| | A. Sidebar, one column | B. Rail and panel | C. Header switcher | B2. Top nav and panel |
+|---|---|---|---|---|
+| Layout | Fixed left sidebar: pinned repo with its chats and a New chat under it, then Chats; Board, Workflows, Metrics, Admin at its foot. One slim header row over a single thread column. | Narrow icon rail (repo avatar, chats, board, workflows, metrics, admin) and a slide-out chat list panel beside the thread. Header has a status chip that opens a popover. | No persistent navigation. A switcher in the header (repo / chat) opens a popover listing pins and chats. Top bar keeps Board, Workflows, Metrics, Admin. Thread uses the full width. | The app's current top bar stays (brand, Chat / Board / Workflows / Metrics / Admin tabs, Live, theme, avatar). Under it B's closable chat list panel and the thread; no icon rail. |
+| How you move | Pick a chat in the sidebar; sections are always one click away. | Rail for where you are, panel for which chat; the panel can close. | One control to change chat or repo; everything else gets out of the way. | Top tabs for the section, panel for the chat; the panel closes from its X or a button in the chat row. |
+| Header and status | Title, repo, branch, model, context meter, status chip in one row. | Same facts; the chip opens a popover with VM, engine, context, memory, branch. | A second slim row under the top bar: switcher left, branch, model, context, status right. | B's slim row (title, repo, branch, model, context) and the status chip with its popover. |
+| On a phone | Sidebar becomes a drawer behind a menu button; header drops branch, model, context to a second line. Costs one tap to change chat. | Rail becomes a bottom tab bar, the panel a slide-over, the status popover a sheet. Closest parity with desktop; costs 56 px of height for the tab bar. | Switcher becomes a sheet; the top bar's sections fold into a menu. Least chrome, but Board and friends are two taps away. | As the app does today: tabs move to a 64 px bottom tab bar, the theme toggle into the avatar menu; the panel is a slide-over from the chat row. |
+| Spec parts shown | Chat list and pins (sidebar), status and context (header), tool detail (hover card / sheet), permission, plan, states. | Same, with the status popover (VM, engine, memory) as a first-class surface. | Same, with the switcher as the one place for pins, new chat and pin a repository. | Same as B. |
+| Width for the thread | 1280 minus 252 px sidebar | 1280 minus 56 rail minus 268 panel (more when closed) | Full width | 1280 minus 268 px panel (more when closed); 56 px top bar over it. |
 
 ## What you are choosing between
 
@@ -42,6 +42,14 @@ Taken with Playwright (Chromium) at 1280 px for the desktop frame and 375 px for
 ![B phone, dark](shots/b-phone.png)
 ![B phone, light](shots/b-phone-light.png)
 ![B states](shots/b-states.png)
+
+### B2. Top nav and panel
+The top bar is copied from `web/src/components/TopBar.vue` (with `TabBar.vue` for the phone, `tabs.ts` for the items and `AppShell.vue` for how they sit). On a phone, at 640 px and below, the tabs leave the top bar for a fixed 64 px bottom tab bar and the theme toggle moves into the avatar menu.
+![B2 desktop, dark](shots/b2-desktop.png)
+![B2 desktop, light](shots/b2-desktop-light.png)
+![B2 phone, dark](shots/b2-phone.png)
+![B2 phone, light](shots/b2-phone-light.png)
+![B2 states](shots/b2-states.png)
 
 ### C. Header switcher
 ![C desktop, dark](shots/c-desktop.png)
