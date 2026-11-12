@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -42,10 +43,15 @@ its disk is lost."""
 HOST_ENV = ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "TART_HOME")
 """The host variables a `tart` process gets: what it needs to find itself and its VMs, and nothing of serve's
 own (keys, tokens). The `TART_REGISTRY_*` ones (a private registry's credentials) go with them."""
-RESOLVER = "192.168.64.1/32"
-"""The vmnet gateway, which is the guest's DNS resolver. Allowed in allow_list mode (the guest cannot look up
-the allowed hosts without it) and never when the network is off. Softnet allows it on every port, not only
-DNS: a host service bound to 0.0.0.0 answers the guest there (README, Repository chats)."""
+HOSTS_BEGIN = "# BEGIN airlie allow_list"
+HOSTS_END = "# END airlie allow_list"
+HOSTS_SCRIPT = (
+    f'f=/etc/hosts; t=$(mktemp) && sed "/^{HOSTS_BEGIN}$/,/^{HOSTS_END}$/d" "$f" > "$t" && cat >> "$t" '
+    '&& cat "$t" > "$f"; rc=$?; rm -f "$t"; exit $rc'
+)
+"""Run as root in the guest with the block on stdin: drops the old airlie block, appends the new one."""
+_LABEL = r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+HOST_NAME = re.compile(rf"^{_LABEL}(\.{_LABEL})*$")
 
 
 def tart_env() -> dict[str, str]:
@@ -195,6 +201,7 @@ class TartBox:
         self._sleep = sleep
         self._now = now
         self._proc: Spawned | None = None
+        self._hosts: dict[str, list[str]] = {}  # allowed names -> addresses, as resolved for the last boot
 
     async def _tart_run(
         self, *args: str, stdin: bytes | None = None, timeout_s: float = 120.0, limit: int = OUTPUT_MAX
@@ -243,22 +250,54 @@ class TartBox:
 
     async def _network_flags(self, network: Network) -> list[str]:
         """open: none. off: softnet blocks every IPv4 address (not `--net-host`: it reaches the host's own
-        services on every interface). allow_list: the same block, then the allowed hosts' addresses and the
-        resolver, so the guest can look the hosts up. Softnet filters IPv4 only and sends no IPv6 itself
-        (it lets a guest send "to globally routable IPv4 addresses"), so IPv6 is not a way out."""
+        services on every interface). allow_list: the same block, then the allowed hosts' addresses and
+        nothing else: no resolver and no gateway (each boot's /29 gives the gateway another address), so the
+        guest finds the names in its /etc/hosts, written after boot from this same resolution. Softnet
+        filters IPv4 only and sends no IPv6 itself (it lets a guest send "to globally routable IPv4
+        addresses"), so IPv6 is not a way out."""
         if network.mode == "open":
             return []
         flags = ["--net-softnet-block=0.0.0.0/0"]
         if network.mode == "off":
             return flags
         cidrs: list[str] = []
+        self._hosts = {}
         for entry in network.allow:  # a CIDR as it is, a host name resolved
-            for cidr in [entry] if "/" in entry else await self._resolve(entry):
+            if "/" in entry:
+                found = [entry]
+            else:
+                if not HOST_NAME.match(entry):
+                    raise BoxUnavailable(f"allowed host {entry!r} is not a valid host name")
+                try:
+                    found = await self._resolve(entry)
+                except Exception as e:  # a name that does not resolve is said, not dropped
+                    raise BoxUnavailable(f"allowed host {entry} did not resolve: {e!r}") from e
+                if not found:
+                    raise BoxUnavailable(f"allowed host {entry} did not resolve: no IPv4 address")
+                self._hosts[entry] = found
+            for cidr in found:
                 if cidr not in cidrs:
                     cidrs.append(cidr)
-        if RESOLVER not in cidrs:
-            cidrs.append(RESOLVER)
-        return [*flags, f"--net-softnet-allow={','.join(cidrs)}"]
+        return [*flags, f"--net-softnet-allow={','.join(cidrs)}"] if cidrs else flags
+
+    async def _write_hosts(self) -> None:
+        """The resolved names into the guest's /etc/hosts between airlie's marker lines (replaced, never
+        appended to). IPv4 only: the guest has no global IPv6, softnet filters IPv4 only. A CDN that rotates
+        its addresses mid-session needs a VM restart (a new resolution)."""
+        lines = [f"{c.split('/')[0]} {host}" for host, found in self._hosts.items() for c in found]
+        if not lines:
+            return
+        block = "\n".join([HOSTS_BEGIN, *lines, HOSTS_END]) + "\n"
+        res = await self.exec(
+            ["sudo", "-n", "sh", "-c", HOSTS_SCRIPT],
+            env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
+            stdin=block.encode(),
+            timeout_s=30.0,
+        )
+        if res.rc != 0:
+            raise BoxUnavailable(
+                f"could not write the allowed hosts into {self.name}'s /etc/hosts: {res.output}"
+            )
 
     def _log_tail(self) -> str:
         try:
@@ -274,6 +313,8 @@ class TartBox:
             raise BackendMissing(INSTALL_HINT) from e
         try:
             await self._answering(proc, timeout_s)
+            if network.mode == "allow_list":
+                await self._write_hosts()
         except BaseException:  # failed, timed out or cancelled (a Stop): no `tart run` outlives its boot
             self._proc = None
             await proc.kill()

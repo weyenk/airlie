@@ -121,3 +121,14 @@ Scripted against the real `TartBox` and `Images.ensure` (env image with `python3
   the ceiling), so the 111-119 GB estimate from the earlier run still holds with room.
 - Cleaned up: `airlie-chat-live4`, `airlie-chat-live8` and `airlie-env-21b20b887fc4` deleted; `tart list` shows
   `airlie-searxng` and the ubuntu images only.
+
+## Fix for check 3 (allow_list DNS)
+
+`allow_list` no longer allows a resolver or the gateway (the gateway is a different /29 host each boot, and every
+port on it, SSH included, answered the guest when it was allowed). The host resolves each allowed name to IPv4
+/32 CIDRs at VM start, passes only those to softnet, and after boot writes the same name/address pairs into the
+guest's `/etc/hosts` between `# BEGIN airlie allow_list` and `# END airlie allow_list` (replaced on every boot,
+written as root with `sudo -n`, the block on stdin). A name that does not resolve fails the boot and names the
+host. IPv4 only. A CDN that rotates addresses mid-session needs a VM restart. Not rerun live yet: boot with
+`Network("allow_list", ("pypi.org", "files.pythonhosted.org"))`, then `pip download --no-deps six` and
+`curl -m 10 https://example.com` (must fail), and check `/etc/hosts` has one block.

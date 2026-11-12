@@ -67,20 +67,84 @@ def test_boot_with_an_allow_list_blocks_everything_else(tmp_path: Path) -> None:
         "run",
         "--no-graphics",
         "--net-softnet-block=0.0.0.0/0",
-        "--net-softnet-allow=151.101.0.223/32,151.101.64.223/32,10.0.0.0/8,104.16.0.1/32,192.168.64.1/32",
+        "--net-softnet-allow=151.101.0.223/32,151.101.64.223/32,10.0.0.0/8,104.16.0.1/32",
         "airlie-chat-ab12",
     ]
     assert log == tmp_path / "airlie-chat-ab12.log"
 
 
-def test_an_empty_allow_list_reaches_only_the_resolver(tmp_path: Path) -> None:
+def test_an_empty_allow_list_reaches_nothing(tmp_path: Path) -> None:
+    spawner, runner = FakeSpawner(), FakeRunner()
+    run(make(tmp_path, runner, spawner).boot(network=Network("allow_list"), timeout_s=5))
+    assert spawner.spawned[0][0][3:] == ["--net-softnet-block=0.0.0.0/0", "airlie-chat-ab12"]
+    assert not [a for a in runner.argvs() if "sudo" in a]
+
+
+def _hosts_writes(runner: FakeRunner) -> list[bytes]:
+    return [stdin for argv, stdin, _ in runner.calls if "sudo" in argv and stdin is not None]
+
+
+def test_allow_list_never_allows_a_gateway_or_private_range(tmp_path: Path) -> None:
     spawner = FakeSpawner()
-    run(make(tmp_path, FakeRunner(), spawner).boot(network=Network("allow_list"), timeout_s=5))
-    assert spawner.spawned[0][0][3:] == [
-        "--net-softnet-block=0.0.0.0/0",
-        "--net-softnet-allow=192.168.64.1/32",
-        "airlie-chat-ab12",
+    net = Network("allow_list", ("pypi.org", "npm.test"))
+    run(make(tmp_path, FakeRunner(), spawner).boot(network=net, timeout_s=5))
+    allow = next(a for a in spawner.spawned[0][0] if a.startswith("--net-softnet-allow=")).split("=", 1)[1]
+    assert allow.split(",") == ["151.101.0.223/32", "151.101.64.223/32", "104.16.0.1/32"]
+
+
+def test_allow_list_writes_the_resolved_pairs_into_the_guests_hosts_after_boot(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    net = Network("allow_list", ("pypi.org", "10.0.0.0/8", "npm.test"))
+    run(make(tmp_path, runner).boot(network=net, timeout_s=5))
+    assert _hosts_writes(runner) == [
+        b"# BEGIN airlie allow_list\n151.101.0.223 pypi.org\n151.101.64.223 pypi.org\n"
+        b"104.16.0.1 npm.test\n# END airlie allow_list\n"
     ]
+    argv = next(a for a in runner.argvs() if "sudo" in a)
+    assert "pypi.org" not in " ".join(argv)  # the names travel on stdin, never in the command
+
+
+def test_a_second_boot_replaces_the_block_not_appends(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    box = make(tmp_path, runner)
+    net = Network("allow_list", ("npm.test",))
+    run(box.boot(network=net, timeout_s=5))
+    run(box.boot(network=net, timeout_s=5))
+    first, second = _hosts_writes(runner)
+    assert first == second
+    script = next(a for a in runner.argvs() if "sudo" in a)[-1]
+    assert "sed" in script and "BEGIN airlie allow_list" in script and ">> /etc/hosts" not in script
+
+
+def test_a_host_that_does_not_resolve_is_reported(tmp_path: Path) -> None:
+    spawner = FakeSpawner()
+    with pytest.raises(BoxUnavailable, match="allowed host nope.test did not resolve"):
+        run(
+            make(tmp_path, FakeRunner(), spawner).boot(
+                network=Network("allow_list", ("nope.test",)), timeout_s=5
+            )
+        )
+    assert not spawner.spawned
+
+
+def test_an_invalid_host_name_never_reaches_the_guest(tmp_path: Path) -> None:
+    with pytest.raises(BoxUnavailable, match="not a valid host name"):
+        run(make(tmp_path, FakeRunner()).boot(network=Network("allow_list", ("a b;rm",)), timeout_s=5))
+
+
+def test_off_and_open_write_no_hosts(tmp_path: Path) -> None:
+    for mode in ("off", "open"):
+        runner = FakeRunner()
+        run(make(tmp_path, runner).boot(network=Network(mode, ("pypi.org",)), timeout_s=5))  # type: ignore[arg-type]
+        assert _hosts_writes(runner) == []
+
+
+def test_a_failed_hosts_write_fails_the_boot_and_kills_tart(tmp_path: Path) -> None:
+    runner, spawner = FakeRunner(), FakeSpawner()
+    runner.reply(["tart", "exec", "-i"], 1, b"", b"sudo: a password is required")
+    with pytest.raises(BoxUnavailable, match="/etc/hosts: .*password"):
+        run(make(tmp_path, runner, spawner).boot(network=Network("allow_list", ("npm.test",)), timeout_s=5))
+    assert spawner.proc.killed
 
 
 def test_boot_with_network_off_blocks_everything_and_never_uses_net_host(tmp_path: Path) -> None:

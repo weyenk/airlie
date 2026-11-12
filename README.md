@@ -367,11 +367,12 @@ command; it needs macOS 26 or later; there is no `softnet install`).
   disk with them (a `~/.npmrc` token, a logged-in registry) stays in the cached image and in every chat cloned
   from it: such an image is named per repository and never shared, but a chat's model can read it.
 - **Network.** Open during setup. After it, `boxes.network.after_setup` is `allow_list` (default: only
-  `boxes.network.allow_hosts`, resolved to addresses at each start, plus DNS) or `off`. A CDN whose addresses
-  rotate can fail an install mid-chat. In `allow_list` the vmnet gateway, `192.168.64.1`, is allowed on every
-  port, not only DNS: a host service listening on all interfaces (sshd, a container's published port) answers
-  the VM there. `task serve` listens on 127.0.0.1 only, so it is not one of them; keep other services on
-  127.0.0.1 too.
+  `boxes.network.allow_hosts`, resolved to IPv4 addresses at each start) or `off`. In `allow_list` the VM reaches only those addresses:
+  no DNS server and no gateway (so the host's sshd or a container's published port is not reachable). The host
+  writes the resolved name and address pairs into the guest's `/etc/hosts` after boot, between airlie's marker
+  lines (replaced each boot), so the names resolve there. A name that does not resolve fails the start and is
+  named. A CDN whose addresses rotate mid-session needs a VM restart (a new resolution); it can fail an install
+  until then. IPv6 is not used (the guest has no global IPv6 address).
 - **Code in, branch out.** The host puts the checkout in and takes commits out as a git bundle over `tart exec`
   (no shared folder). A bundle over `boxes.bundle_max_mb` (default 512) is refused. The VM holds no token and no
   remote; the host pushes with the GitHub App.
