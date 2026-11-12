@@ -90,6 +90,8 @@ Claude Code does without a GitHub remote), and how the client pulls a run's bran
   **only while setup runs** (Codex's rule). No secret that can push or merge is ever accepted.
 - **Network:** off during the agent phase by default, with an allow list for package registries. *The survey's
   security section sets the details.*
+- **As built for chat:** repository chats use the `.airlie/environment.json` recipe with a `test` list added; see
+  the README's "Repository chats".
 
 ### Who gets in: per-person keys over Tailscale
 

@@ -338,6 +338,39 @@ caller that must wait gets the reason (shown in the chat strip and the Admin Eng
 - The `manager:` block tunes it: `margin_gb`, `start_timeout_s`, `wait_timeout_s`, `reap_every_s`, `lease_ttl_s`.
 - `task doctor` projects the pinned set as the floor and every resident engine on top of it against the wired limit.
 
+## Repository chats
+
+A repository chat works on a checkout inside its own Tart VM, one VM per chat. The model's tools (`shell`,
+`run_tests`, file edits, `compute`) run in the VM, never on the host. There is no host fallback: when Tart is
+missing or the VM cannot start, the chat says so and stops. Install Tart with
+`brew install cirruslabs/cli/tart`.
+
+- **Image.** `boxes.image` (default `ghcr.io/cirruslabs/ubuntu:latest`; `tart pull` it once). A repository with
+  a recipe that has `setup` is built once into a cached image, `airlie-env-<key>`, and every chat clones from it.
+  The key covers the base, the setup lines and the variable names.
+- **Recipe.** `.airlie/environment.json` in the repository (see
+  [`docs/integrations/environment.example.json`](docs/integrations/environment.example.json)). Keys: `base` (image,
+  default `boxes.image`), `setup` (shell lines run once with the network open), `env` (variables of every
+  command; the values are in git, so no secrets), `test` (what `run_tests` runs; without it `run_tests` says how
+  to add it) and `workdir` (default `/home/admin/work`). An unknown key is an error that names it.
+- **Secrets.** Setup secrets stay on the host in `<state_dir>/boxes/secrets/<owner>__<name>.env`, `KEY=VALUE`
+  lines, mode 600 (a file others can read is refused). They reach the VM only while setup runs, on stdin, and are
+  not in the cached key. Building an image while secrets exist asks first (`build_image`).
+- **Network.** Open during setup. After it, `boxes.network.after_setup` is `allow_list` (default: only
+  `boxes.network.allow_hosts`, resolved to addresses at each start, plus DNS) or `off`. A CDN whose addresses
+  rotate can fail an install mid-chat.
+- **Code in, branch out.** The host puts the checkout in and takes commits out as a git bundle over `tart exec`
+  (no shared folder). A bundle over `boxes.bundle_max_mb` (default 512) is refused. The VM holds no token and no
+  remote; the host pushes with the GitHub App.
+- **Always asks.** `push_branch`, `open_pr` and `build_image` need a person's yes whatever the config says: the
+  server holds the call until the chat's approval arrives, a no is spent once, and a yes that goes unused expires
+  with its turn. `chat.kinds.repository.ask_first` may add tools, but a config that drops these three fails to load.
+- **`task` tool.** A fresh-context subagent on one of `chat.task.roles` (default `coder`, `reviewer`, `tester`,
+  `architect`), in the same VM, holding its engine through the manager. It has no `task`, push or PR tool.
+- **`boxes:` keys.** `backend`, `image`, `memory_gb` (8), `cpus` (4), `disk_gb` (40), `idle_stop_s` (900; the VM
+  stops, its disk stays), `setup_timeout_s`, `boot_timeout_s`, `bundle_max_mb`, `network`. Deleting the chat
+  deletes the VM. A running VM counts its `memory_gb` in `task doctor`.
+
 ## Learning to Share
 
 Used by the experimental `teams` topology (and off under `single`). After every step a team's (action,
