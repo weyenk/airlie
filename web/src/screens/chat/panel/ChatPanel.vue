@@ -8,10 +8,11 @@ import PinPicker from "./PinPicker.vue";
 import EmptyState from "@/components/EmptyState.vue";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/composables/useConfirm";
 import { usePins } from "@/stores/pins";
 import { useSessions } from "@/stores/sessions";
 
-defineProps<{ currentId: string | null }>();
+const props = defineProps<{ currentId: string | null }>();
 const emit = defineEmits<{ pick: [id: string]; close: [] }>();
 
 const router = useRouter();
@@ -35,6 +36,28 @@ async function create(kind: "plain" | "repository", repo?: string): Promise<void
   } catch (e) {
     failed.value = e instanceof Error ? e : new Error(String(e));
   }
+}
+
+// the chats as the panel lists them, top to bottom
+const flat = computed(() => [...groups.value.pinned, ...groups.value.other].flatMap((g) => g.sessions).concat(groups.value.plain));
+
+async function remove(id: string): Promise<void> {
+  const row = sessions.rows.find((r) => r.id === id);
+  const ok = await useConfirm().confirm(`Delete "${row?.title || "New chat"}"? Its messages and its VM branch go with it.`, {
+    title: "Delete this chat?",
+    confirmLabel: "Delete",
+  });
+  if (!ok) return;
+  failed.value = undefined;
+  const order = flat.value.map((r) => r.id);
+  const next = order[order.indexOf(id) + 1] ?? order[order.indexOf(id) - 1];
+  try {
+    await sessions.remove(id);
+  } catch (e) {
+    failed.value = e instanceof Error ? e : new Error(String(e));
+    return;
+  }
+  if (id === props.currentId) void router.push(next ? `/chat/${encodeURIComponent(next)}` : "/");
 }
 
 async function unpin(repo: string): Promise<void> {
@@ -76,6 +99,7 @@ function retry(): void {
         @new="(repo) => create('repository', repo)"
         @pick="pick"
         @unpin="unpin"
+        @remove="remove"
       />
       <EmptyState v-if="empty" text="Pin a repository to start a chat in a VM" />
     </template>
@@ -84,7 +108,7 @@ function retry(): void {
     <template v-if="sessions.loaded">
       <section v-if="groups.other.length" aria-label="Other repositories" class="flex flex-col gap-0.5">
         <h3 class="px-2 pt-3 text-[11px] font-bold tracking-wider text-muted-foreground uppercase">Other repositories</h3>
-        <PanelRepository v-for="g in groups.other" :key="g.repo" :group="g" :current-id="currentId" :pinned="false" @new="(repo) => create('repository', repo)" @pick="pick" />
+        <PanelRepository v-for="g in groups.other" :key="g.repo" :group="g" :current-id="currentId" :pinned="false" @new="(repo) => create('repository', repo)" @pick="pick" @remove="remove" />
       </section>
 
       <section aria-label="Plain chats" class="flex flex-col gap-0.5">
@@ -92,7 +116,7 @@ function retry(): void {
           <h3 class="grow text-[11px] font-bold tracking-wider text-muted-foreground uppercase">Chats</h3>
           <Button variant="ghost" size="icon-xs" aria-label="New chat" @click="create('plain')"><Plus /></Button>
         </div>
-        <PanelChatRow v-for="s in groups.plain" :key="s.id" :session="s" :current="s.id === currentId" @click="pick(s.id)" />
+        <PanelChatRow v-for="s in groups.plain" :key="s.id" :session="s" :current="s.id === currentId" @pick="pick(s.id)" @remove="remove(s.id)" />
       </section>
     </template>
   </aside>

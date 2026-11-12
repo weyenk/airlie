@@ -34,7 +34,7 @@ describe("on a desktop", () => {
     const { w } = await open();
     expect(w.text()).toContain("the thread");
     expect(w.get('aside[aria-label="Chats"]').text()).toContain("first chat");
-    expect(w.get('[aria-current="page"]').text()).toBe("first chat");
+    expect(w.get('[aria-current="page"]').text()).toContain("first chat");
   });
 
   test("close hides the panel and the chat rows button brings it back", async () => {
@@ -54,6 +54,13 @@ describe("on a desktop", () => {
     expect(w.find("aside").exists()).toBe(false);
   });
 
+  test("a resize to a phone width never opens the slide-over", async () => {
+    await open();
+    stubWindowWidth(375);
+    await flushPromises();
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
   test("the last chat opened is remembered for this browser", async () => {
     const { r } = await open("/chat/c2");
     expect(localStorage.getItem("airlie.chat.last")).toBe("c2");
@@ -64,6 +71,15 @@ describe("on a desktop", () => {
 
 describe("on a phone (375 px)", () => {
   beforeEach(() => stubWindowWidth(375));
+
+  test("a panel collapsed on the desktop does not stop the slide-over opening, and opening it leaves that choice alone", async () => {
+    localStorage.setItem("airlie.chat.panel", "closed");
+    await open();
+    named("Show chats")!.click();
+    await flushPromises();
+    expect(document.body.querySelector('[role="dialog"] aside')).not.toBeNull();
+    expect(localStorage.getItem("airlie.chat.panel")).toBe("closed");
+  });
 
   test("the panel is closed until the chat rows button opens it", async () => {
     const { w } = await open();
@@ -108,7 +124,7 @@ describe("on a phone (375 px)", () => {
     const { r } = await open();
     named("Show chats")!.click();
     await flushPromises();
-    named("second chat")!.click();
+    [...document.body.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent?.startsWith("second chat"))!.click();
     await flushPromises();
     expect(r.currentRoute.value.fullPath).toBe("/chat/c2");
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();

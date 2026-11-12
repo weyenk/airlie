@@ -5,10 +5,6 @@ export const PANEL = "airlie.chat.panel";
 /** The width at or below which the app is the phone layout (TabBar's breakpoint). */
 export const PHONE_QUERY = "(max-width: 640px)";
 
-export function onPhone(): boolean {
-  return window.matchMedia?.(PHONE_QUERY).matches ?? false;
-}
-
 function remembered(): boolean {
   try {
     return localStorage.getItem(PANEL) !== "closed";
@@ -17,19 +13,24 @@ function remembered(): boolean {
   }
 }
 
-/** Whether the chat panel is open: on a desktop remembered per browser (default open); on a phone closed until asked. */
+/** The chat panel's two states, kept apart so a resize never carries one over to the other: on a desktop the panel
+ * is open or collapsed (remembered per browser, default open); on a phone the slide-over is closed until asked. */
 export const useChatPanel = defineStore("chatPanel", () => {
-  const open = ref(onPhone() ? false : remembered());
+  const desktopOpen = ref(remembered());
+  const phoneOpen = ref(false);
 
-  function toggle(): void {
-    open.value = !open.value;
-    if (onPhone()) return;
+  function toggleDesktop(): void {
+    desktopOpen.value = !desktopOpen.value;
     try {
-      localStorage.setItem(PANEL, open.value ? "open" : "closed");
+      localStorage.setItem(PANEL, desktopOpen.value ? "open" : "closed");
     } catch {
       // blocked storage: the choice lasts for this page load
     }
   }
 
-  return { open, toggle };
+  function togglePhone(): void {
+    phoneOpen.value = !phoneOpen.value;
+  }
+
+  return { desktopOpen, phoneOpen, toggleDesktop, togglePhone };
 });

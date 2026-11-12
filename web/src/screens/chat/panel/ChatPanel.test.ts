@@ -2,6 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { createMemoryHistory, createRouter } from "vue-router";
 import ChatPanel from "./ChatPanel.vue";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import type { Change, FeedState } from "@/feed";
 import { useFeedStore } from "@/stores/feed";
 import { panelServer, thread } from "@/test-utils/chat-panel";
@@ -24,12 +25,15 @@ async function open(currentId: string | null = null) {
   setActivePinia(createPinia());
   useFeedStore().start();
   const r = router();
+  confirmDialog = mount(ConfirmDialog, { attachTo: document.body });
   const w = mount(ChatPanel, { props: { currentId }, global: { plugins: [r] }, attachTo: document.body }); // a form submits only when it is in the document
   await flushPromises();
   return { w, r };
 }
 
+let confirmDialog: ReturnType<typeof mount> | undefined;
 afterEach(() => {
+  confirmDialog?.unmount(); // one dialog for the app: a stale one would answer the next question
   document.body.innerHTML = "";
   vi.unstubAllGlobals();
 });
@@ -39,7 +43,7 @@ const REPO = (id: string, repo: string, updated: number, title = "") =>
 
 const button = (w: Awaited<ReturnType<typeof open>>["w"], name: string) => w.findAll("button").find((b) => b.attributes("aria-label") === name || b.text() === name)!;
 const rowTitles = (w: Awaited<ReturnType<typeof open>>["w"], group: string) =>
-  w.get(`section[aria-label="${group}"]`).findAll("button:not([aria-label]) > span:first-child").map((t) => t.text());
+  w.get(`section[aria-label="${group}"]`).findAll("button:not([aria-label]) > span:first-child > span:first-child").map((t) => t.text());
 
 test("each pinned repository lists its chats, newest first", async () => {
   panelServer({
@@ -149,13 +153,13 @@ test("the current chat is marked current", async () => {
   const { w } = await open("c2");
   const current = w.findAll('[aria-current="page"]');
   expect(current).toHaveLength(1);
-  expect(current[0].text()).toBe("two");
+  expect(current[0].text()).toContain("two");
 });
 
 test("picking a chat opens it", async () => {
   panelServer({ threads: [thread("c1", { title: "one" })] });
   const { w, r } = await open();
-  await w.findAll("button").find((b) => b.text() === "one")!.trigger("click");
+  await w.findAll("button").find((b) => b.text().startsWith("one"))!.trigger("click");
   await flushPromises();
   expect(r.currentRoute.value.fullPath).toBe("/chat/c1");
   expect(w.emitted("pick")).toEqual([["c1"]]);
@@ -168,6 +172,59 @@ test("a chat hint refetches the list", async () => {
   feed.opts?.onChange({ topic: "chat", key: null });
   await flushPromises();
   expect(w.text()).toContain("from another device");
+});
+
+async function deleteChat(w: Awaited<ReturnType<typeof open>>["w"], title: string, confirm = true) {
+  const row = w.findAll('[data-test="chat-row"]').find((r) => r.text().includes(title))!;
+  await row.get('[aria-label="Chat actions"]').trigger("keydown", { key: "Enter" });
+  await flushPromises();
+  [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Delete")!.click();
+  await flushPromises();
+  document.body.querySelector<HTMLElement>(confirm ? "[data-confirm-ok]" : "[data-confirm-cancel]")!.click();
+  await flushPromises();
+}
+
+test("deleting a chat asks in the page, deletes it and refetches the list", async () => {
+  const server = panelServer({ threads: [thread("c1", { title: "one", updated: 2 }), thread("c2", { title: "two", updated: 1 })] });
+  const { w } = await open();
+  await deleteChat(w, "two");
+  expect(server.calls).toContainEqual({ method: "DELETE", url: "/v1/airlie/chat/threads/c2", body: undefined });
+  expect(w.text()).not.toContain("two");
+  expect(w.text()).toContain("one");
+});
+
+test("cancelling the delete question keeps the chat", async () => {
+  const server = panelServer({ threads: [thread("c1", { title: "one" })] });
+  const { w } = await open();
+  await deleteChat(w, "one", false);
+  expect(server.calls.some((c) => c.method === "DELETE")).toBe(false);
+  expect(w.text()).toContain("one");
+});
+
+test("deleting the open chat opens the next chat", async () => {
+  panelServer({ threads: [thread("c1", { title: "one", updated: 2 }), thread("c2", { title: "two", updated: 1 })] });
+  const { w, r } = await open("c1");
+  await r.push("/chat/c1");
+  await deleteChat(w, "one");
+  expect(r.currentRoute.value.fullPath).toBe("/chat/c2");
+});
+
+test("deleting the only chat that is open goes to the chat start", async () => {
+  panelServer({ threads: [thread("c1", { title: "one" })] });
+  const { w, r } = await open("c1");
+  await r.push("/chat/c1");
+  await deleteChat(w, "one");
+  expect(r.currentRoute.value.fullPath).toBe("/");
+});
+
+test("deleting a chat whose turn is running shows the reason and keeps the row", async () => {
+  panelServer({ threads: [thread("c1", { title: "one" })], running: new Set(["c1"]) });
+  const { w, r } = await open("c1");
+  await r.push("/chat/c1");
+  await deleteChat(w, "one");
+  expect(w.get('[role="alert"]').text()).toContain("a turn is running; stop it first");
+  expect(w.text()).toContain("one");
+  expect(r.currentRoute.value.fullPath).toBe("/chat/c1");
 });
 
 test("the close button asks to close", async () => {
