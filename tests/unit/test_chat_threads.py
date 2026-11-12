@@ -210,3 +210,103 @@ def test_delete_of_another_owners_thread_is_false_and_leaves_it(store: ThreadSto
     assert store.delete("t1", "mallory") is False
 
     assert len(store.get("t1", "noah").messages) == 1
+
+
+def test_a_blank_first_text_part_is_skipped_for_the_next_real_one(store: ThreadStore) -> None:
+    store.open("t1", "noah", "plain")
+    parts: list[dict[str, Any]] = [
+        {"type": "text", "text": "   "},
+        {"type": "text"},
+        {"type": "text", "text": "real"},
+    ]
+    store.append("t1", StoredMessage("u1", "user", parts, 1.0))
+
+    assert store.get("t1", "noah").title == "real"
+
+
+def test_a_message_with_no_text_leaves_the_title_empty_and_a_later_one_sets_it(store: ThreadStore) -> None:
+    store.open("t1", "noah", "plain")
+    store.append("t1", StoredMessage("u0", "user", [{"type": "airlie_upload", "upload": "a"}], 1.0))
+    assert store.get("t1", "noah").title == ""
+
+    store.append("t1", msg("u1", text="later"))
+    store.append("t1", msg("u2", text="latest"))
+
+    assert store.get("t1", "noah").title == "later"
+
+
+def test_the_database_directory_is_made_with_its_parents_and_may_already_exist(
+    tmp_path: Path, clock: Clock
+) -> None:
+    deep = tmp_path / "a" / "b" / "threads.db"
+    first = ThreadStore(deep, now=clock)
+    second = ThreadStore(deep, now=clock)  # the directory is already there
+    first.close()
+    second.close()
+
+    assert deep.exists()
+
+
+def test_the_connection_may_be_used_from_another_thread(store: ThreadStore) -> None:
+    import threading
+
+    seen: list[str] = []
+
+    def work() -> None:
+        seen.append(store.open("t1", "noah", "plain").id)
+
+    t = threading.Thread(target=work)
+    t.start()
+    t.join()
+
+    assert seen == ["t1"]
+
+
+def test_the_store_is_in_wal_mode_with_foreign_keys_on(store: ThreadStore) -> None:
+    assert store.conn.execute("pragma journal_mode").fetchone()[0] == "wal"
+    assert store.conn.execute("pragma foreign_keys").fetchone()[0] == 1
+
+
+def test_a_missing_thread_is_not_found_by_its_id(store: ThreadStore) -> None:
+    with pytest.raises(ThreadNotFound) as e:
+        store.get("t9", "noah")
+
+    assert e.value.args == ("t9",)
+
+
+def test_a_failed_append_rolls_back_and_leaves_the_store_usable(store: ThreadStore) -> None:
+    with pytest.raises(sqlite3.IntegrityError):  # no such thread: the foreign key refuses it
+        store.append("missing", msg("m0"))
+    store.open("t1", "noah", "plain")
+    store.append("t1", msg("m1"))
+
+    assert [m.id for m in store.get("t1", "noah").messages] == ["m1"]
+    assert not store.conn.in_transaction
+
+
+def test_an_append_is_committed_for_another_connection(db: Path, store: ThreadStore) -> None:
+    store.open("t1", "noah", "plain")
+    store.append("t1", msg("m1", usage={"n": 1}))
+
+    with sqlite3.connect(db) as other:
+        rows = other.execute("select id, role, usage, interrupted from messages").fetchall()
+
+    assert rows == [("m1", "user", '{"n": 1}', 0)]
+
+
+def test_delete_is_false_for_another_owner_and_keeps_the_thread(store: ThreadStore) -> None:
+    store.open("t1", "noah", "plain")
+
+    assert store.delete("t1", "mallory") is False
+    assert store.delete("nope", "noah") is False
+    assert store.get("t1", "noah").id == "t1"
+
+
+def test_list_of_nobody_is_empty_and_a_summary_has_every_field(store: ThreadStore, clock: Clock) -> None:
+    assert store.list("noah") == []
+    store.open("t1", "noah", "plain")
+    store.append("t1", msg("m1", text="hello"))
+
+    [s] = store.list("noah")
+
+    assert (s.id, s.title, s.kind, s.updated) == ("t1", "hello", "plain", clock.t)
