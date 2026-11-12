@@ -77,3 +77,47 @@ under its new key (26.2 s). The VM and the env image were deleted afterwards.
 - 6: rerun after the fix wave: PASS, three times, with no manual sync. Each trial wrote a file in the work dir,
   stopped through `TartBox.stop`, booted again: the clone, history (`9d4c710 add sub`) and every earlier file
   were intact each time. `delete` then removed the VM from `tart list`.
+
+## Softnet rerun (2026-11-12, softnet 0.25.0 installed and SUID, HEAD 113634ee)
+
+Scripted against the real `TartBox` and `Images.ensure` (env image with `python3-pip` and `curl`), allow list
+`pypi.org`, `files.pythonhosted.org`. Serve was not restarted and no engine was stopped.
+
+- 3: FAIL, one BUG. With `allow_list` as `TartBox` builds it, the guest cannot resolve any name: `pip download`
+  and `curl` both fail with "Resolving timed out", so the allow list is unusable. Cause: under softnet the guest
+  does not sit on `192.168.64.1`. Each boot gets its own random /29 (seen: `10.26.85.112/29`, `172.28.91.224/29`,
+  `172.26.236.176/29`, `192.168.80.208/29`, `192.168.98.80/29`), and the gateway, which is also the DHCP-given
+  DNS server (`resolvectl`: `DNS Servers: <gateway>`), is that /29's first host. `RESOLVER = "192.168.64.1/32"`
+  (tart.py:45, appended at tart.py:259) therefore allows nothing the guest needs. `off` and `allow_list` look
+  alike from inside. Repro: boot with `Network("allow_list", ("pypi.org", "files.pythonhosted.org"))`, run
+  `curl -m 10 https://pypi.org` in the guest.
+  - With the private ranges added to the allow list for the trial (`10.0.0.0/8`, `172.16.0.0/12`; the
+    192.168 range was not tried and would also be needed), everything else behaves as designed: `pip download
+    --no-deps six` fetched `six-1.17.0-py2.py3-none-any.whl`, `curl https://pypi.org/simple/six/` gave 200,
+    `curl -m 10 https://example.com` failed with "Connection timed out" (it resolved to 104.20.23.154 and
+    172.66.147.243, blocked). The guest's lookups of the two hosts returned the same four Fastly addresses
+    (151.101.{0,64,128,192}.223) that the host resolved before and after the run: no rotation seen in the
+    minutes of the run. The stock image's pip is old (no `--break-system-packages`; not needed).
+  - What answers on the gateway in `allow_list` (with the private ranges allowed, gateway = the guest's
+    default route): port 22 OPEN (the host's sshd, Remote Login), port 53 OPEN, 80, 8090 and 8888 refused.
+    Serve listens on 127.0.0.1 only, so it is not reachable; the host's SSH is. In `allow_list` as built, with
+    the gateway not allowed, every port on it timed out.
+  - `off`: `pip download` and `curl` both fail; the real gateway (22, 53, 80, 8090, 8888) does not answer (all
+    timeouts); nothing answers on the README's `192.168.64.1` either (it is not on the guest's network).
+  - IPv6: the guest has no global IPv6 address; `curl -6 https://[2606:4700:4700::1111]/` fails at once
+    ("Couldn't connect") in every mode, and `getent ahostsv6 pypi.org` answers only when DNS works.
+- 7: NOT RUN. Serve's HTTP API answers 401 "not signed in" to an unauthenticated request, and there is no
+  fresh-install bootstrap path on this serve (principal.py: loopback bootstrap only without users or an API
+  key). A sign-in needs the admin API key (the auto-mode classifier refused reading it from the launchd
+  environment) or a passkey session cookie from Noah. Needed to run it: `Authorization: Bearer <key>` or the
+  `airlie_session` cookie, then `POST /v1/airlie/chat/turn` with `kind: "repository"`,
+  `repo: "<owner>/airlie-live-check"` and a throwaway checkout at `~/git/airlie-live-check` (nothing was created).
+  The softnet gate itself now passes (the doctor `softnet` row is ok), but check 3's bug means a repository
+  chat in `allow_list` would boot a VM with no DNS.
+- 8: PARTIAL. Gemma healthy (`engine:gemma:health` ok); a VM at the default spec (4 cpus, 8 GB, 40 GB) booted
+  from the env image and idle. The doctor has no resident-total row that includes a VM: its rows are
+  `memory_projection` 85-95 GB and `memory_floor` 79-88 GB against the 124 GB wired limit, unchanged with the VM
+  up. The VM's measured cost: the Virtualization process RSS went from 0.83 GB to 1.33 GB (+0.5 GB idle; 8 GB is
+  the ceiling), so the 111-119 GB estimate from the earlier run still holds with room.
+- Cleaned up: `airlie-chat-live4`, `airlie-chat-live8` and `airlie-env-21b20b887fc4` deleted; `tart list` shows
+  `airlie-searxng` and the ubuntu images only.
