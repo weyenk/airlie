@@ -14,6 +14,7 @@ from airlie.tools.protocol import ToolContext, ToolResult
 TodoStatus = Literal["pending", "in_progress", "done"]
 TODO_STATUSES: tuple[str, ...] = get_args(TodoStatus)
 MAX_TODOS = 50
+MAX_TODO_TEXT = 500
 _MARK = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]"}
 
 
@@ -51,6 +52,8 @@ def parse_item(r: object, n: int) -> TodoItem | str:
     status = r.get("status")
     if not text:
         return f"error: item {n} has empty text"
+    if len(text) > MAX_TODO_TEXT:
+        return f"error: item {n} text is over {MAX_TODO_TEXT} characters"
     if status not in TODO_STATUSES:
         return f"error: item {n} has status {status!r}; use one of {', '.join(TODO_STATUSES)}"
     return TodoItem(str(r.get("id") or n), text, cast(TodoStatus, status))
@@ -104,7 +107,7 @@ class TodoTool:
     name = "todo"
     description = (
         "Keep your checklist for this conversation. Send the whole list every call (it replaces the last); "
-        f"at most one item in_progress, at most {MAX_TODOS} items."
+        f"at most one item in_progress, at most {MAX_TODOS} items, each text up to {MAX_TODO_TEXT} characters."
     )
     parameters = {
         "type": "object",

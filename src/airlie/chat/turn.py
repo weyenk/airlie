@@ -94,6 +94,15 @@ def _tool_part_call(part: dict[str, Any]) -> ToolCall:
     )
 
 
+def _fold_users(a: Message, b: Message) -> Message:
+    def parts_of(m: Message) -> tuple[ContentPart, ...]:
+        return m.parts or (ContentPart("text", text=m.content),)
+
+    content = "\n\n".join(c for c in (a.content, b.content) if c)
+    parts = (*parts_of(a), *parts_of(b)) if a.parts or b.parts else None
+    return Message(role="user", content=content, parts=parts)
+
+
 def history_messages(
     messages: list[StoredMessage], user_parts: Mapping[str, tuple[ContentPart, ...]] | None = None
 ) -> list[Message]:
@@ -104,7 +113,11 @@ def history_messages(
         if m.role == "user":
             msg = _user_message(m, user_parts or {})
             if msg.content or msg.parts:
-                out.append(msg)
+                if out and out[-1].role == "user":
+                    # the turn before saved no reply (it failed, or only reasoned): fold, so roles alternate
+                    out[-1] = _fold_users(out[-1], msg)
+                else:
+                    out.append(msg)
             continue
         buffer = ""
         for part in m.parts:
@@ -196,8 +209,7 @@ class _Run:
         thread, user = self.req.thread, self.req.user_message
         return [
             Message(role="system", content=self.req.ctx.system_prompt),
-            *history_messages(thread.messages, self.req.user_parts),
-            _user_message(user, self.req.user_parts),
+            *history_messages([*thread.messages, user], self.req.user_parts),
         ]
 
     # --- the hold -------------------------------------------------------------------------------------------
@@ -362,9 +374,11 @@ class _Run:
         interrupted = failed = False
         stack = AsyncExitStack()
         try:
-            if self.handle is not None and self.handle.stopped:  # a Stop that came before the turn began
+            self.emit(
+                self.w.start()
+            )  # first, so a Stop before the turn began still ends a stream that opened
+            if self.handle is not None and self.handle.stopped:
                 raise asyncio.CancelledError
-            self.emit(self.w.start())
             await self.enter_hold(stack)
             await self.loop()
             self.settle()

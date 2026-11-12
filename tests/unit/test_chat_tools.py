@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from airlie.chat.superpowers import SuperpowersLibrary
-from airlie.chat.tools import MAX_TODOS, SkillTool, TodoItem, TodoList, TodoTool
+from airlie.chat.tools import MAX_TODO_TEXT, MAX_TODOS, SkillTool, TodoItem, TodoList, TodoTool
 from airlie.skills.library import Skill
 from airlie.tools.protocol import ToolContext
 
@@ -248,3 +248,25 @@ async def test_a_todo_row_that_is_not_an_object_names_its_position() -> None:
     result = await TodoTool(TodoList()).run({"items": [{"text": "a", "status": "pending"}, "x"]}, CTX)
 
     assert result.output == "error: item 2 must be an object with id, text and status"
+
+
+async def test_a_todo_item_over_the_text_cap_is_refused_and_the_list_is_kept() -> None:
+    todos = TodoList()
+    await TodoTool(todos).run({"items": [{"text": "keep", "status": "pending"}]}, CTX)
+    long = "x" * (MAX_TODO_TEXT + 1)
+    result = await TodoTool(todos).run({"items": [{"text": long, "status": "pending"}]}, CTX)
+
+    assert (result.ok, result.output) == (False, f"error: item 1 text is over {MAX_TODO_TEXT} characters")
+    assert [i.text for i in todos.items()] == ["keep"]
+
+
+async def test_a_todo_item_at_the_text_cap_is_accepted() -> None:
+    result = await TodoTool(TodoList()).run({"items": [{"text": "x" * MAX_TODO_TEXT, "status": "done"}]}, CTX)
+
+    assert result.ok
+
+
+def test_a_stored_row_over_the_cap_is_skipped_on_load() -> None:
+    rows = [{"id": "a", "text": "x" * (MAX_TODO_TEXT + 1), "status": "pending"}]
+
+    assert TodoList.load(rows).items() == []

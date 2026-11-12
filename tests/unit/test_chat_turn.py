@@ -584,6 +584,12 @@ async def test_a_stop_before_the_turn_begins_saves_the_message_interrupted(
     events = await collect(rig.turn(handle=handle))
 
     assert events[-1] == DONE
+    assert types(events) == [
+        "start",
+        "start-step",
+        "finish-step",
+        "finish",
+    ]  # a stream that opened, then ended
     assert [m.role for m in rig.saved()] == ["user"]
     assert rig.finished[0].interrupted
     assert rig.engine.requests == []
@@ -755,16 +761,43 @@ def test_history_is_replayed_with_tool_calls_and_without_reasoning() -> None:
     ]
 
 
+def test_a_reasoning_only_reply_leaves_no_two_user_messages_in_a_row() -> None:
+    stored = [
+        StoredMessage("u1", "user", [{"type": "text", "text": "one"}], 1.0),
+        StoredMessage("a1", "assistant", [{"type": "reasoning", "text": "only thoughts"}], 2.0, None, True),
+        StoredMessage("u2", "user", [{"type": "text", "text": "two"}], 3.0),
+    ]
+
+    assert history_messages(stored) == [Message(role="user", content="one\n\ntwo")]
+
+
+def test_user_messages_with_attachments_fold_into_one_with_all_their_parts() -> None:
+    stored = [
+        StoredMessage("u1", "user", [{"type": "text", "text": "see"}, {"type": "airlie_upload"}], 1.0),
+        StoredMessage("u2", "user", [{"type": "text", "text": "and"}], 2.0),
+    ]
+    pic = (ContentPart("text", text="see"), ContentPart("image_url", url="data:image/png;base64,AA"))
+
+    got = history_messages(stored, {"u1": pic})
+
+    assert got == [Message(role="user", content="see\n\nand", parts=(*pic, ContentPart("text", text="and")))]
+
+
 def test_a_user_message_with_resolved_attachments_goes_to_the_model_as_its_parts() -> None:
     stored = [
         StoredMessage("u1", "user", [{"type": "text", "text": "see"}, {"type": "airlie_upload"}], 1.0),
+        StoredMessage("a1", "assistant", [{"type": "text", "text": "ok"}], 1.5),
         StoredMessage("u2", "user", [{"type": "text", "text": "plain"}], 2.0),
     ]
     parts = (ContentPart("text", text="see"), ContentPart("image_url", url="data:image/png;base64,AA"))
 
     got = history_messages(stored, {"u1": parts})
 
-    assert got == [Message(role="user", content="see", parts=parts), Message(role="user", content="plain")]
+    assert got == [
+        Message(role="user", content="see", parts=parts),
+        Message(role="assistant", content="ok"),
+        Message(role="user", content="plain"),
+    ]
 
 
 async def test_a_second_turn_sends_the_stored_history_to_the_model(tmp_path: Path, role: RoleSpec) -> None:
