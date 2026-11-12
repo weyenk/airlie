@@ -6,7 +6,8 @@ import ChatPanel from "./ChatPanel.vue";
 import PanelSlideOver from "./PanelSlideOver.vue";
 import type { ThreadRow } from "@/api/sessions";
 import ChatHeader from "@/screens/chat/ChatHeader.vue";
-import { PHONE_QUERY, useChatPanel } from "@/stores/chatPanel";
+import { PHONE_QUERY } from "@/lib/breakpoints";
+import { useChatPanel } from "@/stores/chatPanel";
 import { LEGACY, rememberChat, useSessions } from "@/stores/sessions";
 
 /** The chat screen's frame under the top bar: the panel at the left on a desktop, a slide-over on a phone, and the

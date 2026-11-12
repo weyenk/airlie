@@ -4,6 +4,7 @@ import { ApiError, onUnauthorized, request } from "@/api";
 import { removeThisDevice } from "@/api/notifications";
 import { activeRouter } from "@/router";
 import { useFeedStore } from "./feed";
+import { rememberChat } from "./sessions";
 import { useTurns } from "./turns";
 
 export type Me = { user_id?: string; name: string; role: "admin" | "member"; via: string };
@@ -30,6 +31,7 @@ export const useSessionStore = defineStore("session", () => {
     me.value = null;
     useFeedStore().stop();
     useTurns().reset();
+    rememberChat(null); // the next person on this browser does not open this one's chat
     const router = activeRouter();
     const here = router?.currentRoute.value;
     if (!router || !here || here.meta.public) return;

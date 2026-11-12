@@ -47,12 +47,15 @@ const subject = computed(() => {
 });
 
 const refused = computed(() => turns.refused(props.sessionId, props.approval.id));
+/** The turn that asked is still replying: the server takes the answer once it has finished. */
+const streaming = computed(() => ["submitted", "streaming"].includes(turns.status(props.sessionId)));
 const answered = computed(() => {
   if (props.approval.answer) return props.approval.answer;
   return pressed.value && !busy.value && turns.status(props.sessionId) !== "error" ? pressed.value : null;
 });
 
 async function answer(approved: boolean): Promise<void> {
+  if (streaming.value) return;
   pressed.value = approved ? "approved" : "denied";
   busy.value = true;
   try {
@@ -74,16 +77,17 @@ async function answer(approved: boolean): Promise<void> {
           <li v-for="c in commits" :key="c" class="[overflow-wrap:anywhere]">{{ c }}</li>
         </ul>
       </div>
-      <p v-if="refused" role="alert" class="m-0 w-full text-xs text-danger-foreground">{{ refused }}</p>
-      <p v-else-if="approval.answer === 'failed'" role="status" class="m-0 text-xs font-medium text-danger-foreground">
+      <p v-if="approval.answer === 'failed'" role="status" class="m-0 text-xs font-medium text-danger-foreground">
         The approved call failed<template v-if="approval.error">: {{ approval.error }}</template>
       </p>
       <p v-else-if="answered" role="status" class="m-0 text-xs font-semibold">{{ answered === "approved" ? "Approved" : "Denied" }}</p>
       <p v-else-if="approval.expired" role="status" class="m-0 text-xs text-muted-foreground">This request expired; ask again</p>
-      <div v-else class="flex flex-none gap-2">
-        <button type="button" :disabled="busy" class="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50" @click="answer(true)">Approve</button>
-        <button type="button" :disabled="busy" class="rounded-md border border-border bg-card px-3 py-1.5 text-xs font-semibold hover:bg-row-hover disabled:opacity-50" @click="answer(false)">Deny</button>
+      <div v-else class="flex flex-none items-center gap-2 max-[640px]:flex-wrap">
+        <span v-if="streaming" data-wait class="text-xs text-muted-foreground">Answer when the reply ends</span>
+        <button type="button" :disabled="busy || streaming" class="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50" @click="answer(true)">Approve</button>
+        <button type="button" :disabled="busy || streaming" class="rounded-md border border-border bg-card px-3 py-1.5 text-xs font-semibold hover:bg-row-hover disabled:opacity-50" @click="answer(false)">Deny</button>
       </div>
     </div>
+    <p v-if="refused && !approval.answer && !approval.expired" role="alert" class="m-0 mt-1.5 text-xs text-danger-foreground">{{ refused }}</p>
   </section>
 </template>

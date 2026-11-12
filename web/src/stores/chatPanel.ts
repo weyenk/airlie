@@ -2,8 +2,6 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 
 export const PANEL = "airlie.chat.panel";
-/** The width at or below which the app is the phone layout (TabBar's breakpoint). */
-export const PHONE_QUERY = "(max-width: 640px)";
 
 function remembered(): boolean {
   try {

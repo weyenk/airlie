@@ -53,7 +53,14 @@ export type ThreadDetail = ThreadRow & { todos: TodoItem[]; messages: StoredMess
 export type ChatMeta = { usage?: Usage; interrupted?: boolean; created?: number };
 /** The `data-engine` payload: the manager's row for the engine or VM the turn waits for (`engine` is its name). */
 export type EngineData = { engine: string; state: EngineStatus["state"]; detail: string; progress: EngineStatus["progress"] };
-export type ChatData = { approval: ApprovalData; engine: EngineData; todos: TodoItem[] };
+/** The `data-story` payload: a /story reply as the story card's request. */
+export type StoryData = { text: string };
+/** A job a story card started (`/v1/airlie/stories` answered `job_id` and `kind`). */
+export type StartedJob = { job_id: string; kind: string; label?: string };
+/** The `data-job` payload: the job the story card `story` started, kept on its message. */
+export type JobData = StartedJob & { story: string };
+export type JobPart = { type: "data-job"; id: string; data: JobData };
+export type ChatData = { approval: ApprovalData; engine: EngineData; todos: TodoItem[]; story: StoryData; job: JobData };
 export type AirlieUIMessage = UIMessage<ChatMeta, ChatData>;
 
 /** What the chat row's status popover shows (`GET .../status`); `since` is epoch seconds, `ahead` and `pushed` are null
@@ -94,6 +101,11 @@ export function deleteSession(id: string): Promise<void> {
 
 export function stopSession(id: string): Promise<void> {
   return request<void>(`${THREADS}/${encodeURIComponent(id)}/stop`, { method: "POST" });
+}
+
+/** Keep the job a story card started on the card's message (a reload shows it started); answers the saved part. */
+export function saveStoryJob(id: string, story: string, job: StartedJob): Promise<JobPart> {
+  return request<JobPart>(`${THREADS}/${encodeURIComponent(id)}/stories/${encodeURIComponent(story)}/job`, { method: "POST", body: job });
 }
 
 export async function listPins(): Promise<string[]> {

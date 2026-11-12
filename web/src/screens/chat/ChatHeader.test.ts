@@ -67,15 +67,19 @@ test("the panel button toggles the panel and says so", async () => {
   expect(button.attributes("aria-expanded")).toBe("false");
 });
 
-test("on a phone the row keeps the title and the chip", async () => {
+test("on a phone the row keeps the title and the chip, with the branch, model and context on a line under it", async () => {
   stubWindowWidth(500);
-  statusServer({ engines: [engine(), vmRow()] });
+  const server = statusServer({ engines: [engine(), vmRow()], messages: [message("m1", "assistant", [{ type: "text", text: "hi" }])] });
+  server.messages[0].usage = { prompt_tokens: 100_000, completion_tokens: 18_000, cached_tokens: 0, max_context: 262_144 };
+  await openChat();
   const w = await show(ROW);
   expect(w.get("h1").text()).toBe("hi");
   expect(w.find("[data-status-chip]").exists()).toBe(true);
   expect(w.find("[data-repo]").exists()).toBe(false);
-  expect(w.find("[data-branch]").exists()).toBe(false);
-  expect(w.text()).not.toContain("Gemma");
+  const line = w.get("[data-phone-line]");
+  expect(line.get("[data-branch]").text()).toBe("airlie/chat-abc");
+  expect(line.text()).toContain("Gemma 4");
+  expect(line.text()).toContain("118k / 262k");
   await w.get('button[aria-label="Show chats"]').trigger("click");
   expect(useChatPanel().phoneOpen).toBe(true);
 });

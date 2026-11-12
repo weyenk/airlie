@@ -5,7 +5,7 @@ import EmptyState from "@/components/EmptyState.vue";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import { Button } from "@/components/ui/button";
 import { useChatStore } from "@/stores/chat";
-import { LEGACY, useSessions } from "@/stores/sessions";
+import { LEGACY, rememberChat, useSessions } from "@/stores/sessions";
 import { useTurns } from "@/stores/turns";
 import Composer from "./chat/Composer.vue";
 import PanelLayout from "./chat/panel/PanelLayout.vue";
@@ -30,7 +30,21 @@ const id = computed(() => (typeof route.params.session === "string" ? route.para
 const legacy = computed(() => id.value === LEGACY);
 const row = computed(() => (id.value ? (sessions.rows.find((r) => r.id === id.value) ?? null) : null));
 const gone = computed(() => !!id.value && !legacy.value && sessions.loaded && !row.value);
-const messages = computed(() => (row.value ? turns.chatFor(row.value).messages : []));
+// the open chat's Chat is made here, once its row is known; the computeds below only read it
+watch(row, (r) => r && turns.chatFor(r), { immediate: true });
+const messages = computed(() => (row.value ? turns.messagesOf(row.value.id) : []));
+
+// `/` opened the chat this browser remembered, and it is gone (deleted on another device): forget it and open the
+// newest instead of saying it no longer exists
+watch(
+  gone,
+  (isGone) => {
+    if (!isGone || route.redirectedFrom?.path !== "/") return;
+    rememberChat(null);
+    void router.replace("/");
+  },
+  { immediate: true },
+);
 
 async function open(): Promise<void> {
   if (id.value || !sessions.loaded || failed.value) return;

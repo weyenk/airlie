@@ -1,21 +1,23 @@
 <script setup lang="ts">
 import type { ToolUIPart } from "ai";
 import { computed } from "vue";
-import type { AirlieUIMessage, ApprovalData, TodoItem } from "@/api/sessions";
+import type { AirlieUIMessage, ApprovalData, JobData, StoryData, TodoItem } from "@/api/sessions";
 import SafeMarkdown from "@/components/SafeMarkdown.vue";
 import type { Attachment, ChatItem } from "@/stores/chat";
 import { useTurns } from "@/stores/turns";
 import Bubble from "../Bubble.vue";
+import JobCard from "../JobCard.vue";
 import CutLine from "./CutLine.vue";
 import PermissionPrompt from "./PermissionPrompt.vue";
 import ReasoningBlock from "./ReasoningBlock.vue";
+import StoryCard from "./StoryCard.vue";
 import TodoList from "./TodoList.vue";
 import ToolBlock from "./ToolBlock.vue";
 import WaitingLine from "./WaitingLine.vue";
 
 /**
  * One message of the thread, one component per part: text as safe markdown, reasoning, tool calls, the plan, a
- * permission prompt. A part this screen does not know renders nothing. The newest message of the session also
+ * permission prompt, a /story reply's story card (or the job it started). A part this screen does not know renders nothing. The newest message of the session also
  * carries the engine line and the cut line, under the turn they belong to.
  */
 const props = defineProps<{ message: AirlieUIMessage; sessionId: string; last: boolean }>();
@@ -31,6 +33,13 @@ const interrupted = computed(() => props.message.metadata?.interrupted === true)
 const newestTodos = computed(() => parts.value.map((p) => p.type).lastIndexOf("data-todos"));
 
 const isTool = (p: Loose): boolean => p.type.startsWith("tool-");
+
+/** A /story reply ends with its story card (`data-story`): the card holds the reply's last step, so that text is not shown twice. */
+const storyAt = computed(() => parts.value.findIndex((p) => p.type === "data-story"));
+const lastStep = computed(() => parts.value.map((p) => p.type).lastIndexOf("step-start"));
+const inCard = (p: Loose, i: number): boolean => p.type === "text" && storyAt.value > i && i > lastStep.value;
+/** The job a story card started, kept on the message: the card shows as that job from then on. */
+const jobOf = (storyId: unknown): Loose | undefined => parts.value.find((p) => p.type === "data-job" && (p.data as JobData).story === storyId);
 
 /** The prompt's data with the person's answer, which a live thread holds on the call (the saved part gets it on a reload). */
 function approvalOf(p: Loose): ApprovalData {
@@ -73,7 +82,11 @@ const cut = computed(() => props.last && !busy.value && !waiting.value && (turns
     <Bubble v-if="message.role === 'user'" :item="mine" />
     <template v-else>
       <template v-for="(p, i) in parts" :key="i">
-        <SafeMarkdown v-if="p.type === 'text'" :text="String(p.text ?? '')" />
+        <SafeMarkdown v-if="p.type === 'text' && !inCard(p, i)" :text="String(p.text ?? '')" />
+        <template v-else-if="p.type === 'data-story'">
+          <JobCard v-if="jobOf(p.id)" :job="jobOf(p.id)!.data as JobData" />
+          <StoryCard v-else :session-id="sessionId" :message-id="message.id" :story-id="String(p.id)" :text="(p.data as StoryData).text" />
+        </template>
         <ReasoningBlock v-else-if="p.type === 'reasoning'" :text="String(p.text ?? '')" :streaming="p.state === 'streaming'" />
         <ToolBlock v-else-if="isTool(p)" :part="p as unknown as ToolUIPart" :interrupted="interrupted" />
         <TodoList v-else-if="p.type === 'data-todos' && i === newestTodos" :items="p.data as TodoItem[]" />

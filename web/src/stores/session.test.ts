@@ -43,6 +43,12 @@ test("signOut still logs out when removing the device fails", async () => {
   expect(calls).toContain("POST /v1/auth/logout");
 });
 
+test("signing out forgets the chat this browser had open, so the next person does not land on it", () => {
+  localStorage.setItem("airlie.chat.last", "chat-of-pat");
+  useSessionStore().signedOut();
+  expect(localStorage.getItem("airlie.chat.last")).toBeNull();
+});
+
 test("signOut without a subscription only logs out", async () => {
   const f = vi.fn(async () => new Response(null, { status: 204 }));
   vi.stubGlobal("fetch", f);

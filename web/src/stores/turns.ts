@@ -16,6 +16,8 @@ import { useFeedStore } from "./feed";
 
 const TURN = "/v1/airlie/chat/turn";
 export const INTERRUPTED = "interrupted: the connection was cut before this call finished";
+/** How long a refused answer's reason stays on its prompt (the buttons stay beside it). */
+export const REFUSED_MS = 6000;
 
 type Approval = { id: string; approved: boolean };
 
@@ -39,6 +41,8 @@ type SessionState = {
   engineAt: number;
   todos: TodoItem[];
   refused: Record<string, string>;
+  /** The settle loop after a cut, while it runs (a second Reconnect joins it). */
+  settling: Promise<void> | null;
 };
 
 function rowOfEngine(data: EngineData): EngineStatus {
@@ -118,8 +122,20 @@ export const useTurns = defineStore("turns", () => {
     return detail;
   }
 
-  /** After a cut: read the saved thread, and while the server still runs the turn wait for its `chat` hint and read again. */
-  async function settle(id: string): Promise<void> {
+  /** After a cut: read the saved thread, and while the server still runs the turn wait for its `chat` hint and read
+   * again. One loop per session: a call while it runs joins it. */
+  function settle(id: string): Promise<void> {
+    const s = sessions[id];
+    if (!s) return Promise.resolve();
+    if (s.settling) return s.settling;
+    const running = settleLoop(id).finally(() => {
+      if (sessions[id] === s) s.settling = null;
+    });
+    s.settling = running;
+    return running;
+  }
+
+  async function settleLoop(id: string): Promise<void> {
     for (;;) {
       let detail: ThreadDetail | undefined;
       try {
@@ -201,6 +217,7 @@ export const useTurns = defineStore("turns", () => {
       engineAt: 0,
       todos: [],
       refused: {},
+      settling: null,
     };
     const s = sessions[session.id];
     const chat = new Chat<AirlieUIMessage>({
@@ -270,17 +287,45 @@ export const useTurns = defineStore("turns", () => {
     await chat.regenerate();
   }
 
-  /** Answer a permission prompt: no new message, the answer alone; the reply streams onto the asked message. */
+  const refusals = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /** The server refused an answer: its reason shows beside the prompt's buttons for a while, then goes. */
+  function refuse(id: string, s: SessionState, approvalId: string, reason: string): void {
+    s.refused[approvalId] = reason;
+    const key = `${id}\n${approvalId}`;
+    clearTimeout(refusals.get(key));
+    refusals.set(
+      key,
+      setTimeout(() => {
+        refusals.delete(key);
+        delete s.refused[approvalId];
+      }, REFUSED_MS),
+    );
+  }
+
+  /** Answer a permission prompt: no new message, the answer alone; the reply streams onto the asked message. While
+   * the asking turn still streams there is nothing to answer yet (the server would refuse it): it does nothing, and
+   * that stream's state is left as it is. */
   async function answer(id: string, approvalId: string, approved: boolean): Promise<void> {
     const { chat, s } = existing(id);
+    if (busy(chat)) return;
     begin(s);
     delete s.refused[approvalId];
     await chat.addToolApprovalResponse({ id: approvalId, approved });
     await chat.sendMessage(undefined, { body: { approvals: [{ id: approvalId, approved }] satisfies Approval[] } });
     if (chat.status === "error" && chat.error instanceof ApiError && chat.error.status === 409) {
-      s.refused[approvalId] = chat.error.message;
+      refuse(id, s, approvalId, chat.error.message);
       await load(id).catch(() => undefined); // the saved thread says whether the prompt still waits
     }
+  }
+
+  /** A part the server saved on a message (a started story's job): shown at once, as a reload would show it. */
+  function addPart(id: string, messageId: string, part: { type: string; id?: string; data: unknown }): void {
+    const chat = chats.get(id);
+    if (!chat) return;
+    chat.messages = chat.messages.map((m) =>
+      m.id === messageId ? { ...m, parts: [...m.parts, part as unknown as AirlieUIMessage["parts"][number]] } : m,
+    );
   }
 
   /** Drop a session's Chat and state (it was deleted, or the person signed out). */
@@ -324,6 +369,11 @@ export const useTurns = defineStore("turns", () => {
       for (const id of [...chats.keys()]) forget(id);
     },
     reload,
+    /** The session's messages, without making its Chat (empty until `chatFor` has). */
+    messagesOf: (id: string): AirlieUIMessage[] => (sessions[id] ? (chats.get(id)?.messages ?? []) : []),
+    /** The session's chat row, once `chatFor` has made its Chat. */
+    rowOf: (id: string): ThreadRow | null => sessions[id]?.row ?? null,
+    addPart,
     send,
     stop,
     retry,
@@ -338,6 +388,8 @@ export const useTurns = defineStore("turns", () => {
     running: (id: string): boolean => sessions[id]?.running ?? false,
     /** After a cut: read the saved thread, and while the server still runs the turn wait for it and read again. */
     reconnect: settle,
+    /** A Reconnect's wait for the saved reply is running. */
+    settling: (id: string): boolean => !!sessions[id]?.settling,
     /** The answer to an answer that the server refused (409), shown on the prompt. */
     refused: (id: string, approvalId: string): string | null => sessions[id]?.refused[approvalId] ?? null,
     todos: (id: string): TodoItem[] => sessions[id]?.todos ?? [],

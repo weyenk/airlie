@@ -11,7 +11,14 @@ const turns = useTurns();
     <span class="text-muted-foreground">{{ running ? "Stream cut. The turn kept running on the server and is saved" : "Cut off" }}</span>
     <div class="flex gap-2 text-xs font-semibold">
       <template v-if="running">
-        <button type="button" class="rounded-md border border-border px-2.5 py-1 hover:bg-row-hover" @click="turns.reconnect(sessionId)">Reconnect</button>
+        <button
+          type="button"
+          :disabled="turns.settling(sessionId)"
+          class="rounded-md border border-border px-2.5 py-1 hover:bg-row-hover disabled:opacity-50"
+          @click="turns.reconnect(sessionId)"
+        >
+          Reconnect
+        </button>
         <button type="button" class="rounded-md border border-border px-2.5 py-1 hover:bg-row-hover" @click="turns.stop(sessionId)">Stop turn</button>
       </template>
       <button v-else type="button" class="rounded-md border border-border px-2.5 py-1 hover:bg-row-hover" @click="turns.retry(sessionId)">Retry</button>

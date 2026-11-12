@@ -25,6 +25,15 @@ test("a cut turn the server still runs offers reconnect and stop turn", async ()
   expect(server.calls.some((c) => c.url.endsWith("/stop") && c.method === "POST")).toBe(true);
 });
 
+test("reconnect is disabled while it waits for the saved reply", async () => {
+  const { w, server } = await show(true);
+  server.detail = { ...server.detail, running: true };
+  await button(w, "Reconnect").trigger("click");
+  await flushPromises();
+  expect(button(w, "Reconnect").attributes("disabled")).toBeDefined();
+  expect(button(w, "Stop turn").attributes("disabled")).toBeUndefined();
+});
+
 test("a cut reply shows cut off with retry", async () => {
   const { w, server } = await show(false);
   expect(w.text()).toContain("Cut off");

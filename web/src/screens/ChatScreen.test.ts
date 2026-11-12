@@ -77,6 +77,55 @@ test("with chats but none remembered, slash opens the newest", async () => {
   expect(server.calls.some((c) => c.method === "POST")).toBe(false);
 });
 
+test("a remembered chat that is gone opens the newest instead, and is forgotten", async () => {
+  localStorage.setItem("airlie.chat.last", "deleted-on-the-phone");
+  const { w, router } = await open("/");
+  await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe("/chat/r1"));
+  expect(w.text()).not.toContain("This chat no longer exists.");
+  expect(localStorage.getItem("airlie.chat.last")).toBe("r1");
+});
+
+test("the conversation log is busy while a reply streams, so a screen reader waits for the whole reply", async () => {
+  const stream = openStream();
+  server.turn = () => stream.response;
+  const { w } = await open("/chat/c1");
+  const log = () => w.get("[role=log]");
+  expect(log().attributes("aria-busy")).toBe("false");
+  await say(w, "hello");
+  stream.push({ type: "start", messageId: "a1" }, { type: "start-step" }, ...textChunks("t1", "An"));
+  await vi.waitFor(() => expect(log().attributes("aria-busy")).toBe("true"));
+  stream.push({ type: "finish-step" }, { type: "finish", messageMetadata: {} });
+  stream.end();
+  await vi.waitFor(() => expect(log().attributes("aria-busy")).toBe("false"));
+});
+
+test("/story's reply is a story card; Start story starts it, and a reload shows the started job", async () => {
+  const STORY = "Add a New chat button\n\nDone when a click empties it.";
+  server.turn = (body) => {
+    // the server saves the reply with its story part, as the turn route does
+    server.messages.r1 = [
+      message("u1", "user", [{ type: "text", text: "a new chat button" }]),
+      message("a1", "assistant", [{ type: "text", text: STORY }, { type: "data-story", id: "story-1", data: { text: STORY } }]),
+    ];
+    expect(body.skill).toBe("story");
+    return streamResponse(turnChunks("a1", [...textChunks("t1", STORY), { type: "data-story", id: "story-1", data: { text: STORY } }]));
+  };
+  const { w } = await open("/chat/r1");
+  await say(w, "/story a new chat button");
+  await vi.waitFor(() => expect(w.find("[data-story-card]").exists()).toBe(true));
+  expect((w.get("input[aria-label=Repository]").element as HTMLInputElement).value).toBe("acme/api");
+  await w.get("[data-start]").trigger("click");
+  await flushPromises();
+  expect(server.calls.find((c) => c.url === "/v1/airlie/stories")?.body).toEqual({ text: STORY, repo: "acme/api" });
+  expect(w.find("[data-story-card]").exists()).toBe(false);
+  expect(w.get("[data-card]").text()).toContain("api · story");
+  w.unmount();
+
+  const again = await open("/chat/r1"); // a reload reads the saved thread
+  await vi.waitFor(() => expect(again.w.find("[data-card]").exists()).toBe(true));
+  expect(again.w.find("[data-story-card]").exists()).toBe(false);
+});
+
 test("a chat that is gone says so and offers a new one", async () => {
   const { w } = await open("/chat/nope");
   expect(w.text()).toContain("This chat no longer exists.");

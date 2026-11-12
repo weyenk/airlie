@@ -1,7 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import type { ApprovalData } from "@/api/sessions";
 import { openChat, message, ROW, startThread } from "@/test-utils/thread";
-import { streamResponse, textChunks, turnChunks } from "@/test-utils/ui-stream";
+import { openStream, streamResponse, textChunks, turnChunks } from "@/test-utils/ui-stream";
 import PermissionPrompt from "./PermissionPrompt.vue";
 
 const PUSH: ApprovalData = {
@@ -89,7 +89,37 @@ test("a refused answer shows the servers reason", async () => {
   await button(w, "Approve").trigger("click");
   await flushPromises();
   expect(w.text()).toContain("no permission request of this chat waits for that answer");
-  expect(w.findAll("button")).toHaveLength(0);
+  expect(button(w, "Approve").attributes("disabled")).toBeUndefined(); // beside the buttons, never instead of them
+  expect(button(w, "Deny").attributes("disabled")).toBeUndefined();
+});
+
+test("while the asking turn still streams the buttons wait, and are enabled when it finishes", async () => {
+  const server = startThread([]);
+  const stream = openStream();
+  server.turn = () => stream.response;
+  const turns = await openChat();
+  const sent = turns.send(ROW.id, { text: "push it" });
+  stream.push(
+    { type: "start", messageId: "a1" },
+    { type: "start-step" },
+    { type: "data-approval", id: "ap1", data: PUSH },
+    ...textChunks("t1", "I need your OK"),
+  );
+  await vi.waitFor(() => expect(turns.status(ROW.id)).toBe("streaming"));
+  const w = mount(PermissionPrompt, { props: { sessionId: ROW.id, approval: PUSH } });
+
+  expect(button(w, "Approve").attributes("disabled")).toBeDefined();
+  expect(button(w, "Deny").attributes("disabled")).toBeDefined();
+  expect(w.text()).toContain("Answer when the reply ends");
+  await button(w, "Approve").trigger("click");
+  expect(server.calls.filter((c) => c.url === "/v1/airlie/chat/turn")).toHaveLength(1);
+
+  stream.push({ type: "finish-step" }, { type: "finish", messageMetadata: {} });
+  stream.end();
+  await sent;
+  await flushPromises();
+  expect(button(w, "Approve").attributes("disabled")).toBeUndefined();
+  expect(w.text()).not.toContain("Answer when the reply ends");
 });
 
 test("an expired request shows no buttons", async () => {
