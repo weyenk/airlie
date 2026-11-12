@@ -174,6 +174,9 @@ enrolled = [
 # is caught, or whose line no longer matches, is reported as stale. Entries are inline tables in this array:
 equivalent = [
     # { mutant = "airlie.x.xǁC.f__mutmut_3", line = "+    return None", reason = "..." },
+    { mutant = "airlie.chat.confirm.x_before_tool__mutmut_55", line = "approval_id = confirmations.request(ctx.thread_id, None, call.name, args)", reason = "request never stores or reads call_id: any value gives the same request" },
+    { mutant = "airlie.chat.confirm.x_digest_of__mutmut_5", line = "canonical = json.dumps(args, sort_keys=True, separators=(\",\", \":\"), ensure_ascii=None)", reason = "None and False are both falsy: json.dumps reads either as not escaping non-ASCII" },
+    { mutant = "airlie.chat.confirm.x_guard__mutmut_12", line = "subjects[name] = cast(None, tool).subject", reason = "typing.cast returns its value unchanged at run time; only the type checker reads its first argument" },
     { mutant = "airlie.manager.core.xǁManagerǁ_stop__mutmut_17", line = "slot.stop_failed = None", reason = "None and False are both falsy: every reader tests the flag's truth only" },
     { mutant = "airlie.manager.core.xǁManagerǁ_forget_the_dead__mutmut_5", line = "slot.stop_failed = None", reason = "None and False are both falsy: every reader tests the flag's truth only" },
     { mutant = "airlie.manager.core.xǁManagerǁ_make_room__mutmut_7", line = "if self._used_gb(None) + need <= self._budget_gb:", reason = "the slot being made room for is never in use or stop_failed when this runs, so excluding it changes no sum" },

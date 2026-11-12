@@ -392,3 +392,155 @@ def test_the_push_pr_and_image_gates_stay_on_whatever_the_config_says(cfg: Airli
     registry = guard(ToolRegistry([Pushy()], CTX), c, "s1", "repository")
     assert isinstance(registry.get("push_branch"), Confirmed)
     assert c.check("s1", "shell", {"cmd": "ls"}) == "allowed"
+
+
+# --- mutation strengthening: the digest, the refusal's shape, a kind other than repository ----------------
+
+
+def test_the_digest_is_the_sha256_of_the_compact_sorted_unescaped_json() -> None:
+    import hashlib
+
+    from airlie.chat.confirm import digest_of
+
+    expected = hashlib.sha256('{"a":"é","b":[1,2],"c":{"x":1,"y":2}}'.encode()).hexdigest()
+
+    assert digest_of({"c": {"y": 2, "x": 1}, "b": [1, 2], "a": "é"}) == expected
+
+
+async def test_a_refusal_names_the_call_and_carries_what_was_asked_about(cfg: AirlieConfig) -> None:
+    c = Confirmations(cfg)
+    hook = before_tool(c)
+    call = ToolCall("call_1", "open_pr", '{"title": "t"}')
+    asked = await hook(turn_ctx(), call)
+    assert asked is not None and asked.approval_id
+    c.approve("s1", [Approval(id=asked.approval_id, approved=False)])
+
+    refused = await hook(turn_ctx(), call)
+
+    assert refused is not None and refused.kind == "denied"
+    assert refused.message == "refused: the person said no to this open_pr call"
+    assert refused.arguments == {"title": "t"}
+
+
+async def test_a_request_tells_the_model_to_wait_and_carries_what_was_asked_about(cfg: AirlieConfig) -> None:
+    from airlie.chat.confirm import WAITING
+
+    verdict = await before_tool(Confirmations(cfg))(turn_ctx(), ToolCall("1", "open_pr", '{"title": "t"}'))
+
+    assert verdict is not None and verdict.kind == "pending"
+    assert verdict.message == f"error: {WAITING}"
+    assert verdict.arguments == {"title": "t"}
+
+
+async def test_a_subject_that_cannot_be_read_is_reported_as_a_denial(cfg: AirlieConfig) -> None:
+    from airlie.engine.types import EngineError
+
+    class NothingToPush(Pushy):
+        async def subject(self, args: dict[str, Any]) -> dict[str, Any]:
+            raise EngineError("nothing to push")
+
+        async def run_approved(
+            self, args: dict[str, Any], subject: dict[str, Any], ctx: ToolContext
+        ) -> ToolResult:
+            raise AssertionError("not reached")
+
+    c = Confirmations(cfg)
+    guard(ToolRegistry([NothingToPush()], CTX), c, "s1", "repository")
+
+    verdict = await before_tool(c)(turn_ctx(), ToolCall("1", "push_branch", "{}"))
+
+    assert verdict is not None and verdict.kind == "denied" and verdict.message == "error: nothing to push"
+
+
+def plain_cfg(cfg: AirlieConfig) -> AirlieConfig:
+    changed = cfg.model_copy(deep=True)
+    changed.chat.kinds.plain.ask_first = ["web_fetch"]
+    return changed
+
+
+def plain_ctx() -> TurnContext:
+    return TurnContext("s1", "noah", "plain", None)  # type: ignore[arg-type]
+
+
+class Fetchy(Pushy):
+    name = "web_fetch"
+
+
+async def test_the_hook_asks_by_the_kind_of_the_chat_it_runs_in(cfg: AirlieConfig) -> None:
+    c = Confirmations(plain_cfg(cfg))
+    hook = before_tool(c)
+    call = ToolCall("1", "web_fetch", '{"url": "x"}')
+
+    asked = await hook(plain_ctx(), call)
+    assert asked is not None and asked.kind == "pending" and asked.approval_id
+    c.approve("s1", [Approval(id=asked.approval_id, approved=True)])
+    assert await hook(plain_ctx(), call) is None  # a yes, seen by the plain chat's list
+    assert await hook(plain_ctx(), ToolCall("2", "push_branch", "{}")) is None  # not a plain chat's tool
+
+
+async def test_a_denial_in_a_plain_chat_is_reported_once_then_asked_afresh(cfg: AirlieConfig) -> None:
+    c = Confirmations(plain_cfg(cfg))
+    hook = before_tool(c)
+    call = ToolCall("1", "web_fetch", '{"url": "x"}')
+    asked = await hook(plain_ctx(), call)
+    assert asked is not None and asked.approval_id
+    c.approve("s1", [Approval(id=asked.approval_id, approved=False)])
+
+    refused = await hook(plain_ctx(), call)
+    again = await hook(plain_ctx(), call)
+
+    assert refused is not None and refused.kind == "denied"
+    assert again is not None and again.kind == "pending"
+
+
+async def test_guard_wraps_the_tools_of_the_kind_it_is_given(cfg: AirlieConfig) -> None:
+    c = Confirmations(plain_cfg(cfg))
+    inner = Fetchy()
+    registry = guard(ToolRegistry([inner, Pushy()], CTX), c, "s1", "plain")
+
+    assert isinstance(registry.get("web_fetch"), Confirmed)
+    assert not isinstance(registry.get("push_branch"), Confirmed)  # a repository chat's, not this one's
+    result = await registry.call(ToolCall("1", "web_fetch", "{}"))
+    assert not result.ok and "approval" in result.output and inner.runs == 0
+    asked = c.request("s1", "2", "web_fetch", {})
+    c.approve("s1", [Approval(id=asked, approved=True)])
+    assert (await registry.call(ToolCall("3", "web_fetch", "{}"))).ok and inner.runs == 1
+
+
+async def test_a_tool_with_a_subject_but_no_approved_run_is_asked_about_by_its_arguments(
+    cfg: AirlieConfig,
+) -> None:
+    class HalfSubject(Pushy):
+        async def subject(self, args: dict[str, Any]) -> dict[str, Any]:
+            return {"not": "the arguments"}
+
+    c = Confirmations(cfg)
+    inner = HalfSubject()
+    registry = guard(ToolRegistry([inner], CTX), c, "s1", "repository")
+
+    verdict = await before_tool(c)(turn_ctx(), ToolCall("1", "push_branch", '{"a": 1}'))
+    assert verdict is not None and verdict.arguments == {"a": 1} and verdict.approval_id
+    c.approve("s1", [Approval(id=verdict.approval_id, approved=True)])
+    result = await registry.call(ToolCall("2", "push_branch", '{"a": 1}'))
+
+    assert result.ok and inner.runs == 1
+
+
+async def test_a_tool_with_an_approved_run_but_no_subject_is_asked_about_by_its_arguments(
+    cfg: AirlieConfig,
+) -> None:
+    class HalfSubject(Pushy):
+        async def run_approved(
+            self, args: dict[str, Any], subject: dict[str, Any], ctx: ToolContext
+        ) -> ToolResult:
+            raise AssertionError("not reached")
+
+    c = Confirmations(cfg)
+    inner = HalfSubject()
+    registry = guard(ToolRegistry([inner], CTX), c, "s1", "repository")
+
+    verdict = await before_tool(c)(turn_ctx(), ToolCall("1", "push_branch", '{"a": 1}'))
+    assert verdict is not None and verdict.arguments == {"a": 1} and verdict.approval_id
+    c.approve("s1", [Approval(id=verdict.approval_id, approved=True)])
+
+    assert (await registry.call(ToolCall("2", "push_branch", '{"a": 1}'))).ok and inner.runs == 1

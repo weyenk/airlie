@@ -469,3 +469,170 @@ async def test_shutdown_stops_every_running_chat_vm_and_keeps_its_disk(world: Wo
     vm = world.vm()
     assert vm.state == "stopped" and not vm.deleted
     assert [(s.name, s.state) for s in world.manager.status()] == [("vm:t1", "stopped")]
+
+
+# --- the serve wiring -----------------------------------------------------------------------------------
+
+
+class Wired:
+    """`default_repo_sessions` over a config that keeps its state and its checkouts under tmp_path."""
+
+    def __init__(self, tmp_path: Path, cfg: AirlieConfig, monkeypatch: pytest.MonkeyPatch, *, app: object):
+        from airlie.chat.repo_session import default_repo_sessions
+
+        self.cfg = cfg.model_copy(deep=True)
+        self.state = tmp_path / "state"
+        self.repos = tmp_path / "repos"
+        self.cfg.observability.state_dir = self.state
+        self.cfg.story.repos_root = self.repos
+        self.cfg.story.remote = "upstream"
+        monkeypatch.setattr("airlie.story.factory.github_app", lambda c: app if c is self.cfg else None)
+        self.manager = Manager([], budget_gb=100.0, clock=FakeClock())
+        self.threads = ThreadStore(tmp_path / "threads.db")
+        self.confirmations = Confirmations(self.cfg)
+        self.sessions = default_repo_sessions(self.cfg, self.manager, self.threads, self.confirmations)
+
+
+@pytest.fixture
+def wired(tmp_path: Path, cfg: AirlieConfig, monkeypatch: pytest.MonkeyPatch) -> Wired:
+    return Wired(tmp_path, cfg, monkeypatch, app=None)
+
+
+def test_the_serve_wiring_gives_each_vm_a_tart_box_that_logs_under_the_state_dir(wired: Wired) -> None:
+    from airlie.boxes.tart import TartBox
+
+    box = wired.sessions._box_for("airlie-chat-abc")
+    again = wired.sessions._box_for("airlie-chat-def")  # the log directory already being there is fine
+
+    assert isinstance(box, TartBox) and box.name == "airlie-chat-abc" and again.name == "airlie-chat-def"
+    assert (wired.state / "boxes" / "logs").is_dir()
+    assert box._log == wired.state / "boxes" / "logs" / "airlie-chat-abc.log"
+
+
+def test_the_serve_wiring_hands_the_sessions_what_it_was_given(wired: Wired) -> None:
+    s = wired.sessions
+
+    assert s._cfg is wired.cfg and s._manager is wired.manager
+    assert s._confirmations is wired.confirmations and s._threads is wired.threads
+    assert s._images._spec is wired.cfg.boxes
+    assert s._images._box_for("x").name == "x"
+
+
+def test_the_image_build_reads_its_setup_secrets_from_the_state_dir(wired: Wired) -> None:
+    secrets = wired.state / "boxes" / "secrets"
+    secrets.mkdir(parents=True)
+    (secrets / "o__r.env").write_text("TOKEN=hunter2hunter2\n")
+    (secrets / "o__r.env").chmod(0o600)
+
+    assert wired.sessions._images._secrets.for_repo("o/r") == {"TOKEN": "hunter2hunter2"}
+    assert wired.sessions._images._secrets._dir == secrets  # not another spelling of it
+
+
+def test_an_image_build_is_confirmed_by_the_yes_of_the_session_it_runs_for(wired: Wired) -> None:
+    from airlie.chat.repo_session import _session
+
+    confirm = wired.sessions._images._confirm
+    asked = wired.confirmations.request("t1", "", "build_image", {"key": "k"})
+    wired.confirmations.approve("t1", [Approval(id=asked, approved=True)])
+
+    assert confirm("k") is False  # no session is preparing a VM
+    token = _session.set("t1")
+    try:
+        assert confirm("other") is False
+        assert confirm("k") is True
+        assert confirm("k") is False  # spent
+    finally:
+        _session.reset(token)
+
+
+def test_a_filtered_network_needs_softnet_and_an_open_one_does_not(
+    tmp_path: Path, cfg: AirlieConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.boxes.protocol import Network
+    from airlie.boxes.tart import SOFTNET_HINT
+
+    monkeypatch.setattr("airlie.boxes.tart.softnet_installed", lambda: False)
+    missing = Wired(tmp_path / "a", cfg, monkeypatch, app=None).sessions._network_check
+    monkeypatch.setattr("airlie.boxes.tart.softnet_installed", lambda: True)
+    present = Wired(tmp_path / "b", cfg, monkeypatch, app=None).sessions._network_check
+
+    with pytest.raises(BoxUnavailable) as off:
+        missing(Network("off"))
+    with pytest.raises(BoxUnavailable, match="softnet"):
+        missing(Network("allow_list", ("github.com",)))
+    missing(Network("open"))  # nothing to filter: no softnet needed
+    present(Network("off"))
+    present(Network("allow_list", ("github.com",)))
+    assert str(off.value) == SOFTNET_HINT
+
+
+def test_a_repository_mirror_lives_under_the_state_dir_with_its_own_single_publisher(wired: Wired) -> None:
+    from airlie.story.publish import run_cmd
+
+    (wired.repos / "r").mkdir(parents=True)
+    (wired.repos / "q").mkdir()
+
+    mirror = wired.sessions._mirror_for("o/r")
+    other = wired.sessions._mirror_for("o/q")
+
+    assert wired.sessions._mirror_for("o/r") is mirror
+    assert mirror.path == wired.state / "chat" / "mirrors" / "o__r"
+    assert mirror.run is run_cmd and mirror.local_checkout == wired.repos / "r"
+    assert (mirror.publisher.remote, mirror.publisher.publish) == ("upstream", "single")
+    assert mirror.publisher is not other.publisher and mirror.publisher.app is None
+    assert not mirror.can_push
+
+
+def test_a_repository_without_a_checkout_and_without_the_app_cannot_be_mirrored(wired: Wired) -> None:
+    with pytest.raises(MirrorError) as e:
+        wired.sessions._mirror_for("o/r")
+
+    assert f"no checkout of o/r in {wired.repos}" in str(e.value)
+    assert "clone it there" in str(e.value)
+
+
+def test_with_the_app_a_repository_is_mirrored_without_a_local_checkout(
+    tmp_path: Path, cfg: AirlieConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = object()
+    w = Wired(tmp_path, cfg, monkeypatch, app=app)
+
+    mirror = w.sessions._mirror_for("o/r")
+
+    assert mirror.local_checkout is None and mirror.publisher.app is app and mirror.can_push
+
+
+def test_the_mirror_of_a_repository_is_made_once_and_checked_out_by_its_own_name() -> None:
+    from airlie.chat.repo_session import repo_mirrors
+    from tests.unit.test_transit import FakePublisher, FakeRunner
+
+    runner = FakeRunner()
+    publishers: list[FakePublisher] = []
+    asked: list[str] = []
+
+    def publisher() -> FakePublisher:
+        publishers.append(FakePublisher())
+        return publishers[-1]
+
+    def local_checkout(repo: str) -> Path | None:
+        asked.append(repo)
+        return Path("/checkouts") / repo
+
+    mirror_for = repo_mirrors(Path("/m"), publisher, run=runner, local_checkout=local_checkout)  # type: ignore[arg-type]
+
+    a, b = mirror_for("o/a"), mirror_for("o/b")
+
+    assert mirror_for("o/a") is a and mirror_for("o/b") is b
+    assert (a.repo, a.path, a.run, a.publisher) == ("o/a", Path("/m/o__a"), runner, publishers[0])
+    assert b.publisher is publishers[1] and len(publishers) == 2
+    assert asked == ["o/a", "o/b"]
+    assert (a.local_checkout, b.local_checkout) == (Path("/checkouts/o/a"), Path("/checkouts/o/b"))
+
+
+def test_a_mirror_has_no_local_checkout_unless_asked_for_one() -> None:
+    from airlie.chat.repo_session import repo_mirrors
+    from tests.unit.test_transit import FakePublisher, FakeRunner
+
+    mirror_for = repo_mirrors(Path("/m"), FakePublisher, run=FakeRunner())  # type: ignore[arg-type]
+
+    assert mirror_for("o/a").local_checkout is None
