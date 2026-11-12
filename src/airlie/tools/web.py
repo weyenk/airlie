@@ -15,13 +15,26 @@ import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 from typing import Any, Protocol
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 
 from airlie.tools.protocol import ToolContext, ToolResult
 
 UNTRUSTED_MARKER = "[untrusted web text]"
 MAX_REDIRECT_HOPS = 5
 TAILNET = ipaddress.ip_network("100.64.0.0/10")
+NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _embedded_v4(a: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """The IPv4 address an IPv6 one carries: `::ffff:a.b.c.d`, NAT64 `64:ff9b::/96` or 6to4 `2002::/16`.
+    A gateway turns these back into IPv4, so they are held to the same rules."""
+    if a.ipv4_mapped is not None:
+        return a.ipv4_mapped
+    if a in NAT64:
+        return ipaddress.IPv4Address(int(a) & 0xFFFFFFFF)
+    if a.sixtofour is not None:
+        return a.sixtofour
+    return None
 
 
 def check_address(ip: str) -> str | None:
@@ -29,6 +42,8 @@ def check_address(ip: str) -> str | None:
 
     Order matters: 100.64.0.0/10 (tailnet) is also private, so it must be checked first."""
     a = ipaddress.ip_address(ip)
+    if isinstance(a, ipaddress.IPv6Address) and (inner := _embedded_v4(a)) is not None:
+        a = inner
     if a.is_loopback:
         return "refused: loopback address"
     if a in TAILNET:
@@ -37,6 +52,8 @@ def check_address(ip: str) -> str | None:
         return "refused: link-local address"
     if a.is_private:
         return "refused: private address"
+    if not a.is_global:  # multicast, reserved, and the rest of what is not the public internet
+        return "refused: non-public address"
     return None
 
 
@@ -283,6 +300,7 @@ class WebFetch:
                 location = resp.headers.get("location")
                 if not location:
                     return ToolResult(False, "error: redirect without a location")
+                location = urljoin(current, location)  # a Location may be relative to the page
                 target = urlsplit(location)
                 if target.scheme not in ("http", "https"):
                     return ToolResult(False, "refused: only http and https")

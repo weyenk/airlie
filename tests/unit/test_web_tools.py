@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from airlie.tools.web import WebFetch, check_address
 from tests.support.tools import ctx
 from tests.support.web_tools import FakeClient, FakeResolver, FakeResponse
@@ -114,3 +116,52 @@ def test_check_address_reports_tailnet_before_private() -> None:
     assert check_address("127.0.0.1") == "refused: loopback address"
     assert check_address("169.254.10.1") == "refused: link-local address"
     assert check_address("93.184.216.34") is None
+
+
+@pytest.mark.parametrize(
+    ("ip", "refusal"),
+    [
+        ("::ffff:127.0.0.1", "refused: loopback address"),  # an IPv4 loopback written as IPv6
+        ("::ffff:10.0.0.5", "refused: private address"),
+        ("::ffff:100.64.0.9", "refused: tailnet address"),
+        ("64:ff9b::7f00:1", "refused: loopback address"),  # NAT64 around 127.0.0.1
+        ("2002:0a00:0005::1", "refused: private address"),  # 6to4 around 10.0.0.5
+        ("fd00::1", "refused: private address"),  # ULA
+        ("::1", "refused: loopback address"),
+        ("0.0.0.0", "refused: private address"),
+        ("::", "refused: private address"),
+        ("224.0.0.1", "refused: non-public address"),  # multicast
+        ("240.0.0.1", "refused: non-public address"),  # reserved
+    ],
+)
+def test_check_address_refuses_every_form_of_a_non_public_address(ip: str, refusal: str) -> None:
+    assert check_address(ip) == refusal
+
+
+def test_check_address_allows_a_public_ipv6_address() -> None:
+    assert check_address("2606:4700:4700::1111") is None
+
+
+async def test_a_relative_redirect_is_followed_on_the_same_host(tmp_path: Path) -> None:
+    client = FakeClient(
+        responses=[
+            FakeResponse(302, {"location": "/moved"}, b"", "http://public.example/start"),
+            FakeResponse(200, {"content-type": "text/plain"}, b"arrived", "http://public.example/moved"),
+        ]
+    )
+    resolver = FakeResolver({"public.example": ["93.184.216.34"]})
+    r = await fetch(client, resolver).run({"url": "http://public.example/start"}, ctx(tmp_path))
+    assert r.ok and "arrived" in r.output
+    assert client.requests == ["http://public.example/start", "http://public.example/moved"]
+
+
+async def test_a_redirect_to_a_host_that_resolves_to_loopback_is_refused(tmp_path: Path) -> None:
+    client = FakeClient(
+        responses=[FakeResponse(301, {"location": "https://rebind.example/"}, b"", "http://a.example/")]
+    )
+    resolver = FakeResolver(
+        {"a.example": ["93.184.216.34"], "rebind.example": ["93.184.216.35", "127.0.0.1"]}
+    )
+    r = await fetch(client, resolver).run({"url": "http://a.example/"}, ctx(tmp_path))
+    assert not r.ok and "refused: loopback address" in r.output
+    assert client.requests == ["http://a.example/"]
