@@ -12,6 +12,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from airlie.flow.spec import WorkflowSpec, check_workflows
+from airlie.notify.kinds import KINDS, NotificationKind
 
 
 class Strict(BaseModel):
@@ -517,6 +518,22 @@ class ObservabilitySpec(Strict):
     retain_days: int = 14
 
 
+class NotificationsSpec(Strict):
+    """Web Push to installed phones and desktops."""
+
+    contact: str | None = Field(
+        default=None,
+        pattern=r"^(mailto:|https://)\S+$",
+        description="who a push service may reach about this server: mailto:... or https://... (VAPID sub)",
+    )
+    vapid_key: Path | None = Field(
+        default=None, description="the VAPID private key (default: observability.state_dir/vapid.pem)"
+    )
+    default_kinds: list[NotificationKind] = Field(
+        default_factory=lambda: list(KINDS), description="kinds a person hears until they set their own"
+    )
+
+
 class AuthSpec(Strict):
     """Who may use `task serve` as a person (docs/superpowers/plans/2026-10-17-sign-in.md)."""
 
@@ -993,6 +1010,7 @@ class AirlieConfig(Strict):
     aggregator: AggregatorSpec = Field(default_factory=AggregatorSpec)
     observability: ObservabilitySpec = Field(default_factory=ObservabilitySpec)
     auth: AuthSpec = Field(default_factory=AuthSpec)
+    notifications: NotificationsSpec = Field(default_factory=NotificationsSpec)
     memory: MemorySpec = Field(default_factory=MemorySpec)
     repo_map: RepoMapSpec = Field(default_factory=RepoMapSpec)
     topology: TopologySpec = Field(default_factory=TopologySpec)

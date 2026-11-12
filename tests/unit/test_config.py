@@ -1029,6 +1029,26 @@ def test_auth_refuses_zero_session_days(tmp_path: Path) -> None:
         load_config(write(tmp_path, data))
 
 
+def test_notifications_defaults_name_every_kind_and_no_contact_or_key(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, MINIMAL))
+    assert cfg.notifications.contact is None
+    assert cfg.notifications.vapid_key is None
+    assert cfg.notifications.default_kinds == [
+        "chat_reply",
+        "model_ready",
+        "confirmation",
+        "story_blocked",
+        "story_published",
+        "story_mockups",
+    ]
+
+
+def test_notifications_refuses_an_unknown_default_kind(tmp_path: Path) -> None:
+    data = {**MINIMAL, "notifications": {"default_kinds": ["weather"]}}
+    with pytest.raises(ConfigError, match="notifications.default_kinds"):
+        load_config(write(tmp_path, data))
+
+
 def test_a_role_without_on_context_full_defaults_to_stop(tmp_path: Path) -> None:
     role = load_config(write(tmp_path, MINIMAL)).roles["coder"]
     assert role.on_context_full == "stop"

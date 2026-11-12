@@ -37,6 +37,8 @@ dependencies = [
     "opencv-python>=4.10 ; sys_platform == 'darwin'",
     "opencv-python-headless>=4.10 ; sys_platform == 'linux'",
     "huggingface-hub>=2.2",
+    "py-vapid>=1.9.6",
+    "http-ece>=1.2.1",
 ]
 
 [project.scripts]
