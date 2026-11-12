@@ -866,7 +866,22 @@ def test_the_tart_row_warns_with_the_pull_command_when_the_image_is_missing(tmp_
     probe = FakeProbe(snapshots={"org/model@r1"}, tart_images=["other"])
     r = by_name(run_checks(managed(tmp_path), probe))["tart"]
     assert r.status == "warn"
-    assert r.detail == "default image not pulled; run: tart pull ghcr.io/cirruslabs/ubuntu:latest"
+    assert r.detail == (
+        "default image not pulled; run: tart pull ghcr.io/cirruslabs/ubuntu:latest (else a chat's first "
+        "start downloads it, several GB, with no progress shown)"
+    )
+
+
+def test_the_softnet_row_warns_with_its_install_line_when_a_filtered_network_needs_it(tmp_path: Path) -> None:
+    probe = FakeProbe(snapshots={"org/model@r1"}, tools={**TOOLS_OK, "softnet": None})
+    r = by_name(run_checks(managed(tmp_path), probe))["softnet"]
+    assert r.status == "warn"
+    assert "brew install cirruslabs/cli/softnet && sudo softnet install" in r.detail
+
+
+def test_the_softnet_row_is_ok_when_softnet_is_installed(tmp_path: Path) -> None:
+    r = by_name(run_checks(managed(tmp_path), FakeProbe(snapshots={"org/model@r1"})))["softnet"]
+    assert r.status == "ok"
 
 
 def test_the_tart_row_is_ok_with_the_image_pulled_and_notes_secrets_are_per_repository(

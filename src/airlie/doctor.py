@@ -190,12 +190,29 @@ def tart_check(cfg: AirlieConfig, probe: SystemProbe) -> CheckResult:
         )
     images = probe.tart_images()
     if images is None or image not in images:
-        return CheckResult("tart", "warn", f"default image not pulled; run: tart pull {image}")
+        return CheckResult(
+            "tart",
+            "warn",
+            f"default image not pulled; run: tart pull {image} (else a chat's first start downloads it, "
+            "several GB, with no progress shown)",
+        )
     return CheckResult(
         "tart",
         "ok",
         f"{image} pulled (setup secrets are kept per repository, not yet per person: "
         "state_dir/boxes/secrets/<owner>__<name>.env, mode 600)",
+    )
+
+
+def softnet_check(cfg: AirlieConfig, probe: SystemProbe) -> CheckResult:
+    """A chat VM's network after setup (boxes.network.after_setup: allow_list or off) is filtered by softnet,
+    which Tart runs: without it the VM cannot boot, and a repository chat is refused (409) with this line."""
+    from airlie.boxes.tart import SOFTNET_HINT
+
+    if not probe.tool_version("softnet"):
+        return CheckResult("softnet", "warn", SOFTNET_HINT)
+    return CheckResult(
+        "softnet", "ok", f"installed: chat VMs boot with network {cfg.boxes.network.after_setup} after setup"
     )
 
 
@@ -575,6 +592,7 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
             )
         )
     results.append(tart_check(cfg, probe))
+    results.append(softnet_check(cfg, probe))
     try:
         pin = web_node_pin(root)
     except (OSError, ValueError, KeyError, TypeError) as err:  # no file, not JSON, no engines.node

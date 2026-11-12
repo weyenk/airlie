@@ -11,6 +11,7 @@ TOOLS_OK = {
     "hf": "1.0.0",
     "node": "v26.10.0",
     "tart": "2.32.1",
+    "softnet": "present (/opt/homebrew/bin/softnet)",
 }
 
 

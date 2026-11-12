@@ -343,33 +343,51 @@ caller that must wait gets the reason (shown in the chat strip and the Admin Eng
 A repository chat works on a checkout inside its own Tart VM, one VM per chat. The model's tools (`shell`,
 `run_tests`, file edits, `compute`) run in the VM, never on the host. There is no host fallback: when Tart is
 missing or the VM cannot start, the chat says so and stops. Install Tart with
-`brew install cirruslabs/cli/tart`.
+`brew install cirruslabs/cli/tart`, and softnet, which filters the VM's network after setup (`allow_list` and
+`off` both need it; without it a repository chat is refused with this line, and `task doctor` has a `softnet`
+row): `brew install cirruslabs/cli/softnet && sudo softnet install` (the second step needs your password).
 
-- **Image.** `boxes.image` (default `ghcr.io/cirruslabs/ubuntu:latest`; `tart pull` it once). A repository with
-  a recipe that has `setup` is built once into a cached image, `airlie-env-<key>`, and every chat clones from it.
-  The key covers the base, the setup lines and the variable names.
+- **Image.** `boxes.image` (default `ghcr.io/cirruslabs/ubuntu:latest`; `tart pull` it once, or a chat's first
+  start downloads it, several GB, with no progress shown). A repository with a recipe that has `setup` is built
+  once into a cached image, `airlie-env-<key>`, and every chat clones from it. The key covers the base, the setup
+  lines and the variables (names and values). A `:latest` base is keyed by its name: a moved tag reuses the
+  cached image until the recipe changes.
 - **Recipe.** `.airlie/environment.json` in the repository (see
-  [`docs/integrations/environment.example.json`](docs/integrations/environment.example.json)). Keys: `base` (image,
-  default `boxes.image`), `setup` (shell lines run once with the network open), `env` (variables of every
-  command; the values are in git, so no secrets), `test` (what `run_tests` runs; without it `run_tests` says how
-  to add it) and `workdir` (default `/home/admin/work`). An unknown key is an error that names it.
+  [`docs/integrations/environment.example.json`](docs/integrations/environment.example.json)). Keys: `base` (a
+  registry image, `host/name[:tag]`, or `boxes.image`; never a local VM, so a recipe cannot start from another
+  repository's cached image or another chat's disk), `setup` (shell lines run once with the network open), `env`
+  (variables of every command; the values are in git, so no secrets), `test` (what `run_tests` runs; without it
+  `run_tests` says how to add it) and `workdir` (default `/home/admin/work`). An unknown key is an error that
+  names it.
 - **Secrets.** Setup secrets stay on the host in `<state_dir>/boxes/secrets/<owner>__<name>.env`, `KEY=VALUE`
   lines, mode 600 (a file others can read is refused). They reach the VM only while setup runs, on stdin, and are
-  not in the cached key. Building an image while secrets exist asks first (`build_image`).
+  not in the cached key. Building an image while secrets exist asks first (`build_image`). What setup writes to
+  disk with them (a `~/.npmrc` token, a logged-in registry) stays in the cached image and in every chat cloned
+  from it: such an image is named per repository and never shared, but a chat's model can read it.
 - **Network.** Open during setup. After it, `boxes.network.after_setup` is `allow_list` (default: only
   `boxes.network.allow_hosts`, resolved to addresses at each start, plus DNS) or `off`. A CDN whose addresses
-  rotate can fail an install mid-chat.
+  rotate can fail an install mid-chat. In `allow_list` the vmnet gateway, `192.168.64.1`, is allowed on every
+  port, not only DNS: a host service listening on all interfaces (sshd, a container's published port) answers
+  the VM there. `task serve` listens on 127.0.0.1 only, so it is not one of them; keep other services on
+  127.0.0.1 too.
 - **Code in, branch out.** The host puts the checkout in and takes commits out as a git bundle over `tart exec`
   (no shared folder). A bundle over `boxes.bundle_max_mb` (default 512) is refused. The VM holds no token and no
   remote; the host pushes with the GitHub App.
 - **Always asks.** `push_branch`, `open_pr` and `build_image` need a person's yes whatever the config says: the
   server holds the call until the chat's approval arrives, a no is spent once, and a yes that goes unused expires
   with its turn. `chat.kinds.repository.ask_first` may add tools, but a config that drops these three fails to load.
+  A push is asked about after its commits are out of the VM: the request names the branch, the head commit, the
+  commits and the changed paths, and says when they touch `.github/workflows/` (then the push's token may change
+  workflows). The yes is for that head; a commit made after it is asked about again. `open_pr` is asked about
+  with its title, branch and the head that was pushed.
 - **`task` tool.** A fresh-context subagent on one of `chat.task.roles` (default `coder`, `reviewer`, `tester`,
   `architect`), in the same VM, holding its engine through the manager. It has no `task`, push or PR tool.
 - **`boxes:` keys.** `backend`, `image`, `memory_gb` (8), `cpus` (4), `disk_gb` (40), `idle_stop_s` (900; the VM
   stops, its disk stays), `setup_timeout_s`, `boot_timeout_s`, `bundle_max_mb`, `network`. Deleting the chat
-  deletes the VM. A running VM counts its `memory_gb` in `task doctor`.
+  deletes the VM; when `tart delete` fails the chat stays and the delete says which VM, so no disk is left
+  without a chat. A running VM counts its `memory_gb` in `task doctor`. While a VM starts, the chat shows why it
+  waits ("building image", "starting VM", "waiting for memory: ..."). Serve's shutdown stops the chat VMs (the
+  disks stay), and a VM is synced before every stop, so the clone survives it.
 
 ## Learning to Share
 

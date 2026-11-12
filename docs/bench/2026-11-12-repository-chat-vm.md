@@ -48,3 +48,14 @@ repository with a two-test pytest suite and a recipe (`setup`: apt install pytho
    in `Images._build` has the same exposure).
 7. Needs serve on this branch - after the final review.
 8. Needs serve on this branch - after the final review.
+
+## After the final review (fix wave)
+
+- 3, when rerun: the vmnet gateway `192.168.64.1` is allowed on every port in `allow_list` (the guest's DNS
+  resolver is there), so also record what answers on it from the guest (`nc -z 192.168.64.1 22`, and any port a
+  container publishes on all interfaces). Serve itself listens on 127.0.0.1 only. A repository chat now refuses
+  to open (409) without softnet on PATH, with the install line, and `task doctor` has a `softnet` row.
+- 6's bug is fixed: `TartBox.stop` runs `sync` in the guest (best effort, 20 s) before `tart stop`, and the image
+  build syncs before it saves the image (a failed sync fails the build). Rerun 6 without the workaround.
+- The early-exit message (3's note) is fixed: a `tart run` that ends before the guest answers says
+  `tart run exited (rc N)` with its log tail, not "did not answer within 120s".
