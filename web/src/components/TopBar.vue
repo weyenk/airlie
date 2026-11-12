@@ -24,7 +24,7 @@ const initials = computed(() => {
 
 <template>
   <header
-    class="sticky top-0 z-[2] flex h-(--header-h) items-center gap-3.5 border-b border-border bg-bar px-5 max-[640px]:px-4"
+    class="sticky top-0 z-[2] flex h-[calc(var(--header-h)+env(safe-area-inset-top))] items-center pt-[env(safe-area-inset-top)] gap-3.5 border-b border-border bg-bar px-5 max-[640px]:px-4"
   >
     <RouterLink to="/" class="inline-flex items-center gap-2.5 text-base font-bold">
       <img src="/logo.png" alt="" width="28" height="28" class="size-7 rounded-full border border-border object-cover" />
