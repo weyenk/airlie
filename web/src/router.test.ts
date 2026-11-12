@@ -135,6 +135,50 @@ test("the feed stops when a public page is visited after sign-in", async () => {
   expect(feed.state).toBe("connecting");
 });
 
+test("chat session routes light the chat tab", async () => {
+  fakeFetch("signed-in");
+  const router = createAppRouter(createMemoryHistory("/"));
+  await router.push("/chat/chat-1");
+  expect(router.currentRoute.value.name).toBe("chat-session");
+  expect(router.currentRoute.value.params.session).toBe("chat-1");
+  expect(router.currentRoute.value.meta.tab).toBe("chat");
+  await router.push("/chat");
+  expect(router.currentRoute.value.meta.tab).toBe("chat");
+});
+
+describe("the chat address", () => {
+  afterEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  test("slash opens the last chat of this browser", async () => {
+    fakeFetch("signed-in");
+    localStorage.setItem("airlie.chat.last", "chat-7");
+    const router = createAppRouter(createMemoryHistory("/"));
+    await router.push("/");
+    expect(router.currentRoute.value.fullPath).toBe("/chat/chat-7");
+  });
+
+  test("slash with no chat remembered starts a fresh chat", async () => {
+    fakeFetch("signed-in");
+    const router = createAppRouter(createMemoryHistory("/"));
+    await router.push("/");
+    expect(router.currentRoute.value.fullPath).toBe("/");
+    expect(router.currentRoute.value.meta.tab).toBe("chat");
+  });
+
+  test("slash still opens when storage is blocked", async () => {
+    fakeFetch("signed-in");
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    const router = createAppRouter(createMemoryHistory("/"));
+    await router.push("/");
+    expect(router.currentRoute.value.fullPath).toBe("/");
+  });
+});
+
 test("the feed answering 401 signs the session out", async () => {
   vi.stubGlobal(
     "fetch",
