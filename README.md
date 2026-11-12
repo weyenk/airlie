@@ -17,6 +17,42 @@ Ask what's running, how airlie works, or type `/` for commands such as `/story`.
   <img src="docs/readme/chat.png" alt="Chat: ask airlie or type / for commands" width="720" />
 </p>
 
+The Chat screen still talks to `/v1/chat/completions`; it moves to the turn route below with the chat redesign.
+
+#### The chat turn route
+
+`POST /v1/airlie/chat/turn` runs one chat turn on the `chat` role and streams it as an AI SDK UI message stream
+(SSE, header `x-vercel-ai-ui-message-stream: v1`, ending `data: [DONE]`). Body: `{"id": "<thread id>", "kind":
+"plain", "messages": [{"role": "user", "parts": [{"type": "text", "text": "…"}]}], "skill": "<optional>"}`. The
+server keeps the conversation, so only the newest user message is read (its `text` parts and `file` parts naming
+`/v1/airlie/uploads/<id>`); the rest of `messages` and any `tools` list are ignored. The stream carries the
+standard chunks (`start`, `start-step`, `text-*`, `reasoning-*`, `tool-input-*`, `tool-output-*`, `finish-step`,
+`finish`, `error`) plus `data-engine` status parts ("Starting gemma…" while the manager brings the engine up).
+`finish` carries `messageMetadata.usage` with `prompt_tokens` and `max_context`, the context readout.
+
+| Route | Does |
+| --- | --- |
+| `POST /v1/airlie/chat/turn` | one turn; 401 not signed in, 400 a refused body (an unknown kind, no user message) or too many attachments, 404 a thread that is not yours, 409 the thread already has a turn running, 503 no `chat` role or engine; a `before_turn` guardrail may refuse with its own status |
+| `GET /v1/airlie/chat/threads[?kind=]` | your threads, newest first |
+| `GET /v1/airlie/chat/threads/{id}` | one thread with its messages and todos; 404 |
+| `DELETE /v1/airlie/chat/threads/{id}` | 204; 409 while a turn is running; 404 |
+| `POST /v1/airlie/chat/threads/{id}/stop` | cancels the running turn and saves the partial reply as `interrupted`; 204 (also when nothing is running); 404 |
+
+A client that disconnects does not stop the turn: it finishes, is saved to the thread and notifies `on_finish`.
+Stop is the explicit call above. Threads live on the server (sqlite, per signed-in person), so a reload or another
+device reads the same conversation.
+
+Only the `plain` kind exists (`repository` answers 400 until plan 4). A plain chat has no repository: its tools are
+`web_search` and `web_fetch` (when the web tools are configured), `skill` and `todo`; there is no file or shell
+tool. `chat.kinds.<kind>.tools` names them (`ask_first` marks tools to confirm), and `chat.max_steps` caps the
+tool rounds in a turn.
+
+The session prompt carries the [superpowers](https://github.com/obra/superpowers) bootstrap, and `skill` loads any
+of its skills (`brainstorming`, `writing-plans`, …) on demand. They are vendored at 7.0.0 in `vendor/superpowers/`
+(`chat.superpowers.enabled`, `chat.superpowers.path`), copied byte for byte and never edited; `airlie-tools.md`
+there is airlie's own tool mapping. `vendor/superpowers/PIN.md` records the pin. `task superpowers:verify` checks
+the tree against `MANIFEST.sha256`; to update, re-copy a newer release, edit `PIN.md` and regenerate the manifest.
+
 ### Board
 
 The local board (initiative → epic → story → subtask) with columns from To do through Done. Create a card when you want something on the line; open one for its acceptance criteria, the layer that ran, and the comments the agents leave.
@@ -108,7 +144,7 @@ open the account menu, choose Notifications, tap Turn on notifications and allow
 installed app). Tick the kinds you want (`notifications.default_kinds` sets what is on until you choose). Today the
 Studio sends a push when a story, epic or initiative is blocked, when a story is published for review, when mockups
 are ready to pick, and for Send a test; a chat reply, a model or VM ready and something needing your OK are marked
-"coming soon" (chat replies come with the chat turn route, model/VM ready and confirmations later). Notifications
+"coming soon" (chat replies come with the chat redesign, model/VM ready and confirmations later). Notifications
 belong to a signed-in person, so an API key cannot set them up. The Studio POSTs each push to the phone's push service, so it needs outbound internet;
 `notifications.push_hosts` lists the services a browser may subscribe through (Apple, Google, Mozilla, Windows by
 default). The VAPID key is made when serve starts with `notifications.contact` set, in
