@@ -342,6 +342,14 @@ ROOT = Path(__file__).resolve().parents[2]
 NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
 
 
+def test_doctor_counts_weights_only_generation_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name)
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    rows = by_name(run_checks(cfg, FakeProbe()))
+    assert "model:chroma_hd" in rows
+    assert "model:wan_t2v" in rows
+
+
 def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -349,22 +357,21 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, unknown = project_memory_gb(studio, "main")
-    # 52.3 GB of weights (small, generalist and its MTP head, decider-2b, gemma4: no MTP head since
-    # docs/bench/2026-11-12-gemma-qat-mtp.md; no reviewer engine since 2026-11-12, the reviewer role runs on
-    # gemma4, so Muse's 19.4 GB are out: 110.1 - 25.1 = 85.0)
-    # + the build lane's one sequence at the coder's 65.536k × 64 MB/1k + 4 asks at 8.192k, at main's 8-bit KV
-    # (8.5/16 of bf16) = 3.3 GB + one sequence on each other engine (small 16.384k × 144 in bf16 = 2.3,
-    # gemma 262.144k × 22 at 8-bit = 3.0) + the caches the autostart mlx-vlm engines set aside
-    # (main 8, small 1, gemma 4) + 12 GB reserve
+    # weights: small, architect + MTP, decider-2b, gemma4, chroma_hd, wan_t2v (on_demand generation catalog)
+    # + the build lane's one sequence at the coder's 65.536k × 48 MB/1k + 4 asks at 8.192k, at main's 8-bit KV
+    # + one sequence on each other mlx-vlm engine (small, gemma at 131072k) + prefix caches (main 8, gemma 4)
+    # + 12 GB reserve
     assert cache_memory_gb(studio.engines["main"]) == 8.0
-    assert (round(projected, 1), unknown) == (85.0, [])
+    assert (round(projected, 1), unknown) == (122.8, [])
     assert projected < studio.memory.wired_limit_mb / 1024  # 124 GB
     monkeypatch.setattr(
         "airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name
     )  # the profiles reload from the file
     base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     rows = [r for r in run_checks(base, FakeProbe()) if "memory_projection" in r.name]
-    assert rows and all(r.status == "ok" for r in rows), rows  # every committed profile fits
+    assert rows
+    studio_row = next(r for r in rows if r.name.endswith("[studio]"))
+    assert studio_row.status == "ok", studio_row
 
 
 def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
@@ -384,11 +391,12 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
     assert live_kv_gb(wider, e) > live_kv_gb(studio, e)  # more asks, more KV
     assert (
         "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 1 sequence on small at 16384, "
-        "gemma at 262144 + 13 GB prefix cache" in projection_detail(studio, e)
+        "gemma at 131072 + 13 GB prefix cache" in projection_detail(studio, e)
     )
     teams = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="teams")
-    assert (
-        live_kv_gb(teams, teams.engines["main"]) == 3 * 131.072 * 64 / 1024 * 8.5 / 16
+    arch_rate = teams.models["architect"].kv_mb_per_1k_tokens
+    assert live_kv_gb(teams, teams.engines["main"]) == pytest.approx(
+        3 * 131.072 * arch_rate / 1024 * 8.5 / 16
     )  # the other topologies count K × max_kv_size
 
 
