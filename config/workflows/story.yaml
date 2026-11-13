@@ -2,7 +2,7 @@
 # the node it names, a `when` is a condition on it, and a node whose every line in died is skipped (with all
 # below it that nothing else reaches). Design: docs/superpowers/specs/2026-11-08-nodes-are-config-design.md
 # ("The story workflow rewritten", D10-D20). refine, layers (the plan in rounds) and the layer's drafts stay
-# named catalog operations until Part 2 makes them model nodes; the survey is an ask from its prompt file.
+# named catalog operations until Part 2 makes them model nodes; the survey is a model node (protocol ask).
 workflows:
   story:
     type: story
@@ -67,7 +67,8 @@ workflows:
         outputs: {story: json}
         to: [costed_refine]
       survey:  # runs beside refine; a survey that fails is no notes, and the story goes on
-        type: ask
+        type: model
+        protocol: ask
         role: architect
         prompt: prompt:story-survey
         inputs: [request]

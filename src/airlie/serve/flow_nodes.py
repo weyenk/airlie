@@ -11,7 +11,7 @@ from typing import Any
 from airlie.flow.spec import NodeSpec, TeamRole, WorkflowSpec
 from airlie.serve.flow_parts import Shape, card, job, shaped, step_row, tag
 
-_MODEL = frozenset({"ask", "conversation", "write", "meeting"})
+_MODEL = frozenset({"model", "ask", "conversation", "write", "meeting"})
 _KINDS = ("node_started", "node_finished", "node_skipped")
 Key = tuple[str, str, str | None]
 """Whose events: workflow, node, each-item (None outside a bundle)."""

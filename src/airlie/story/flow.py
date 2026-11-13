@@ -32,13 +32,10 @@ from airlie.flow.runners import (
     Hold,
     Opening,
     Session,
-    ask_runner,
     check_runner,
-    conversation_runner,
     converse,
     gate_runner,
-    meeting_runner,
-    write_runner,
+    model_runner,
 )
 from airlie.flow.spec import NodeType, transient_heads
 from airlie.flow.store import Sessions, StateStore
@@ -1197,11 +1194,22 @@ def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeT
         await pipe._agree(st, card, *_planned(ctx), hold, opening=opening)
         return {"agreement": st.agreement, "story": st.story, "layers": st.layers}
 
+    model = functools.partial(
+        model_runner,
+        asker=pipe.asker,
+        st=st,
+        seat=seated,
+        ask=pipe._ask,
+        agree=agree,
+        **pipe._meeting_parts(st),
+        roles=ROLES,
+    )
     return {
-        "ask": functools.partial(ask_runner, asker=pipe.asker, st=st, seat=seated, ask=pipe._ask),
-        "conversation": functools.partial(conversation_runner, asker=pipe.asker, st=st, seat=seated),
-        "write": functools.partial(write_runner, asker=pipe.asker, st=st, seat=seated),
-        "meeting": functools.partial(meeting_runner, agree=agree, roles=ROLES, **pipe._meeting_parts(st)),
+        "model": model,
+        "ask": model,
+        "conversation": model,
+        "write": model,
+        "meeting": model,
         "check": check_runner,
         "gate": gate_runner,  # the review (`story.finish`), which ends the run
         "team": functools.partial(team_runner, asker=pipe.asker, st=st, seat=seated),
