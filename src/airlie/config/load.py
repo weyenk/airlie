@@ -243,6 +243,11 @@ def load_config(
     if local.is_file():
         data = deep_merge(data, _read_yaml(local))
     data = apply_profile(data, topology)
+    models = data.get("models")
+    if isinstance(models, dict) and "generalist" in models:
+        raise ConfigError(
+            "config invalid:\n  models.generalist: renamed to architect; replace the key with architect"
+        )
     try:
         cfg = AirlieConfig.model_validate(data)
     except ValidationError as e:
