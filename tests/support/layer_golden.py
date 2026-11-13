@@ -217,7 +217,7 @@ GOLDEN_STORY_LAYER = [
         "kind": "layer_start",
         "layer": "01",
         "branch": "add-avatar-upload-01-mul",
-        "base": "origin/master",
+        "base": "origin/main",
         "base_sha": "<sha>",
         "attempt": 1,
     },
