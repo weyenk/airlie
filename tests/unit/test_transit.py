@@ -27,6 +27,7 @@ from airlie.boxes.transit import (
     seed,
 )
 from airlie.story.publish import Publisher, PublishError
+from airlie.subproc import empty_global_gitconfig
 from tests.support.box import FakeBox
 
 BASE = "a" * 40
@@ -602,9 +603,10 @@ async def test_the_hosts_git_inherits_no_git_variable(
     assert not {k for k in env if k.startswith("GIT_")} & {
         "GIT_DIR",
         "GIT_WORK_TREE",
-        "GIT_CONFIG_GLOBAL",
         "GIT_EXEC_PATH",
     }
+    assert env["GIT_CONFIG_GLOBAL"] == os.fspath(empty_global_gitconfig())
+    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
     assert env["GIT_TERMINAL_PROMPT"] == "0"  # airlie's own switches stay
     assert env["GIT_CONFIG_COUNT"]
 

@@ -1213,14 +1213,15 @@ ELSEWHERE = (
         ),
     ],
 )
-async def test_check_as_the_bot_names_a_rule_of_yours_that_sends_github_over_ssh(
+async def test_check_as_the_bot_ignores_your_global_ssh_url_rules(
     tmp_path: Path, own_git: Path, rule: str, said: str
 ) -> None:
-    """A common global rule: the bot's git reads your global configuration too, and cannot use SSH."""
+    """A common global rule: bot git uses an empty global config, so your insteadOf never reaches it."""
     own_git.write_text(rule)
     repo = repo_on_github(tmp_path, URL)
     found = await Publisher(run=Recorded(), app=fake_app(tmp_path, FakeGitHub())).check(repo)
-    assert f"the remote 'origin' would {said}, not https://github.com/o/r: {ELSEWHERE}" in found.problems
+    assert f"the remote 'origin' would {said}, not https://github.com/o/r: {ELSEWHERE}" not in found.problems
+    assert found.problems == []
 
 
 async def test_check_as_the_bot_names_a_pushurl_a_model_planted(tmp_path: Path, own_git: Path) -> None:
