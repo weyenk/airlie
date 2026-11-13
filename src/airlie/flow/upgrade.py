@@ -22,7 +22,31 @@ from airlie.flow.spec import old_schema_problems
 if TYPE_CHECKING:
     from airlie.flow.catalog import Catalog
 
-__all__ = ["upgrade_v1"]
+_LEGACY_PROTOCOLS = frozenset({"ask", "conversation", "write", "meeting"})
+
+__all__ = ["upgrade_topology_types", "upgrade_v1"]
+
+
+def upgrade_topology_types(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Legacy ask/conversation/write/meeting nodes become `model` + `protocol`. No `nodes`: copy as-is."""
+    out = dict(data)
+    raw_nodes = out.get("nodes")
+    if not isinstance(raw_nodes, Mapping):
+        return out
+    nodes: dict[str, Any] = {}
+    for name, node in raw_nodes.items():
+        if not isinstance(node, Mapping):
+            nodes[str(name)] = node
+            continue
+        n = dict(node)
+        kind = n.get("type")
+        if isinstance(kind, str) and kind in _LEGACY_PROTOCOLS:
+            n["type"] = "model"
+            n["protocol"] = kind
+        nodes[str(name)] = n
+    out["nodes"] = nodes
+    return out
+
 
 _MODEL_TYPES = ("ask", "conversation", "write", "meeting", "team")
 _CODE_ON_MODEL = ("parse", "after", "done", "turn", "run", "args")

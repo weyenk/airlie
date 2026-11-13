@@ -18,7 +18,7 @@ from airlie import cli
 from airlie.board import BoardStore
 from airlie.config import load_config
 from airlie.flow.spec import WorkflowSpec
-from airlie.flow.upgrade import upgrade_v1
+from airlie.flow.upgrade import upgrade_topology_types, upgrade_v1
 from airlie.serve.app import create_app
 from airlie.serve.workflows_api import workflows_router
 from airlie.story import factory
@@ -106,6 +106,18 @@ def test_a_current_mapping_passes_through_unchanged() -> None:
     data = yaml.safe_load(MINI)["workflows"]["mini"]
     out, problems = upgrade_v1(data)
     assert out == data and out is not data and problems == []
+
+
+def test_upgrade_topology_types_rewrites_legacy_model_nodes() -> None:
+    data = {
+        "nodes": {
+            "a": {"type": "ask", "role": "architect", "prompt": "p"},
+            "b": {"type": "check", "run": "story.intake"},
+        }
+    }
+    out = upgrade_topology_types(data)
+    assert out["nodes"]["a"] == {"type": "model", "protocol": "ask", "role": "architect", "prompt": "p"}
+    assert out["nodes"]["b"] == data["nodes"]["b"]
 
 
 def test_the_listed_order_and_next_become_lines_loose_becomes_inputs_and_start_goes() -> None:

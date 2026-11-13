@@ -1,4 +1,5 @@
 // vite.config.ts runs in Node, but the app takes no @types/node: name just the three calls its sw.js stamp makes.
+declare const process: { env: Record<string, string | undefined> };
 declare module "node:crypto" {
   export function createHash(algorithm: string): { update(data: Uint8Array): { digest(encoding: "hex"): string } };
 }

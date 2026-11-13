@@ -5,10 +5,10 @@ test("the node types in their shapes, then the bundles by name", () => {
   const w = mount(Palette, { props: { bundles: ["layer", "fix"] } });
   const types = w.findAll("[data-palette-type]");
   // schema v2: no parallel or each box; a bundle box comes from the bundles below
-  expect(types.map((t) => t.attributes("data-palette-type"))).toEqual(["ask", "conversation", "write", "meeting", "team", "check", "gate"]);
+  expect(types.map((t) => t.attributes("data-palette-type"))).toEqual(["model", "team", "check", "gate"]);
   expect(w.get("[data-palette-type=check]").attributes("data-shape")).toBe("code");
   expect(w.get("[data-palette-type=gate]").attributes("data-shape")).toBe("gate");
-  expect(w.get("[data-palette-type=ask]").attributes("data-shape")).toBe("model");
+  expect(w.get("[data-palette-type=model]").attributes("data-shape")).toBe("model");
   expect(w.findAll("[data-bundle]").map((b) => b.text())).toEqual(["layer", "fix"]);
 });
 

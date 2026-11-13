@@ -6,6 +6,7 @@ import type { NodeType } from "./graph";
 export type Shape = "model" | "code" | "gate" | "bundle";
 
 export const SHAPE: Record<NodeType, Shape> = {
+  model: "model",
   ask: "model",
   conversation: "model",
   write: "model",

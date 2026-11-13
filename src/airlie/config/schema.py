@@ -1252,7 +1252,7 @@ class AirlieConfig(Strict):
         from airlie.story.flow import STORY_CATALOG
 
         problems: list[str] = []
-        problems.extend(check_workflows(self.workflows, catalog=STORY_CATALOG))
+        problems.extend(check_workflows(self.workflows, catalog=STORY_CATALOG, deprecations=False))
         if self.story.composer:  # fail at load, not when the first story reaches the composer
             problems += [
                 f"story.composer is on but workflows.{name} is missing"

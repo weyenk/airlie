@@ -1,5 +1,5 @@
 import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
-import { connect, emptyGraph, fromWorkflow } from "./graph";
+import { connect, emptyGraph, fromWorkflow, normalizeTopologyTypes } from "./graph";
 import { autoLayout } from "./layout";
 import { parseWorkflow, toYaml } from "./yaml";
 
@@ -71,7 +71,7 @@ test.each([
   const after = parseWorkflow(toYaml(graph));
   expect(after.name).toBe(before.name);
   expect(Object.keys(after.spec.nodes)).toEqual(Object.keys(before.spec.nodes));
-  expect(after.spec.nodes).toEqual(before.spec.nodes);
+  expect(after.spec.nodes).toEqual(normalizeTopologyTypes(before.spec).nodes);
   expect(after.spec.type ?? null).toBe(before.spec.type ?? null);
   expect(after.spec.inputs).toEqual(before.spec.inputs);
   expect(after.spec.outputs).toEqual(before.spec.outputs);

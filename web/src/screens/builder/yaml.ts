@@ -2,7 +2,7 @@
 // back as the file the canvas would save, shaped like the shipped config/workflows/*.yaml. Pure: no Vue.
 import { Document, isMap, isScalar, isSeq, parse, visit } from "yaml";
 import type { YAMLMap } from "yaml";
-import { hasMax, isNodeType, toWorkflow } from "./graph";
+import { hasMax, isNodeType, normalizeTopologyTypes, toWorkflow } from "./graph";
 import type { Graph, Layout, WorkflowSpec } from "./graph";
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -72,11 +72,12 @@ const FLOW_MAPS = new Set(["outputs", "args", "events", "role"]);
  * on one line; a `to` list holding a condition or a loop goes a line per entry. */
 export function toYaml(graph: Graph): string {
   const { spec, layout } = toWorkflow(graph);
+  const normalized = normalizeTopologyTypes(spec);
   const wf: Record<string, unknown> = {
-    ...(spec.type ? { type: spec.type } : {}),
-    ...(spec.inputs.length ? { inputs: spec.inputs } : {}),
-    ...(spec.outputs.length ? { outputs: spec.outputs } : {}),
-    nodes: spec.nodes,
+    ...(normalized.type ? { type: normalized.type } : {}),
+    ...(normalized.inputs.length ? { inputs: normalized.inputs } : {}),
+    ...(normalized.outputs.length ? { outputs: normalized.outputs } : {}),
+    nodes: normalized.nodes,
     layout,
   };
 

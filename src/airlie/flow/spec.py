@@ -22,7 +22,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ASSIGNMENT",
+    "DEPRECATED_NODE_TYPES",
     "MEETINGS",
+    "Protocol",
     "RESERVED",
     "Format",
     "Layout",
@@ -34,11 +36,24 @@ __all__ = [
     "TeamRole",
     "WorkflowSpec",
     "check_workflows",
+    "node_protocol",
     "reserved_output",
     "transient_heads",
 ]  # Format and Strict are re-exported from outputs
 
-NodeType = Literal["ask", "conversation", "write", "meeting", "team", "check", "gate", "bundle"]
+NodeType = Literal[
+    "model",
+    "ask",
+    "conversation",
+    "write",
+    "meeting",
+    "team",
+    "check",
+    "gate",
+    "bundle",
+]
+Protocol = Literal["ask", "conversation", "write", "meeting"]
+DEPRECATED_NODE_TYPES = frozenset({"ask", "conversation", "write", "meeting"})
 
 RESERVED = ("path", "artifacts", "workflow", "nodes_done")
 """Names of the story state's own bookkeeping that no node output may take: `path` (where the state lives,
@@ -131,6 +146,7 @@ class TeamRole(Strict):
 
 class NodeSpec(Strict):
     type: NodeType
+    protocol: Protocol | None = None  # required when type is model; forbidden on other types
     role: str | list[str] | TeamRole | None = None
     prompt: str | None = None  # the text, or "prompt:<id>" for a prompt file
     turn: str | None = None  # a conversation's turn text
@@ -178,18 +194,39 @@ class WorkflowSpec(Strict):
         return data
 
 
-_MODEL_TYPES = ("ask", "conversation", "write", "meeting", "team")
+_MODEL_TYPES = ("model", "ask", "conversation", "write", "meeting", "team")
 _CODE_FIELDS = ("run", "args", "workflow", "each")
-_MODEL_FIELDS = ("prompt", "turn", "worker", "session", "workers")
+_MODEL_FIELDS = ("prompt", "turn", "worker", "session", "workers", "protocol")
 
 
 def _set(node: NodeSpec, names: tuple[str, ...]) -> list[str]:
     return [f for f in names if getattr(node, f) not in (None, {}, [])]
 
 
+def node_protocol(node: NodeSpec) -> Protocol | None:
+    """Protocol a model node runs: its `protocol`, or the legacy type when that names one."""
+    if node.type == "model":
+        return node.protocol
+    if node.type in DEPRECATED_NODE_TYPES:
+        return node.type  # type: ignore[return-value]
+    return None
+
+
 def _requirements(node: NodeSpec) -> str | None:
     """The per-type message for a node missing a field its type needs, else None."""
     t = node.type
+    if t == "model":
+        if node.protocol is None:
+            return "model needs protocol"
+        proto = node.protocol
+        if proto in ("ask", "conversation", "write"):
+            return (
+                None
+                if isinstance(node.role, str) and node.role and node.prompt
+                else f"model with protocol {proto} needs role and prompt"
+            )
+        ok = isinstance(node.role, list) and node.role and node.prompt
+        return None if ok else "model with protocol meeting needs role (a list) and prompt"
     if t in ("ask", "conversation", "write"):
         return (
             None if isinstance(node.role, str) and node.role and node.prompt else f"{t} needs role and prompt"
@@ -209,6 +246,8 @@ def _wrong_fields(node: NodeSpec) -> str | None:
     """A model node that names code, or a check/gate that takes model fields, else None."""
     if node.type in _MODEL_TYPES and (code := _set(node, _CODE_FIELDS)):
         return f"{node.type} names code ({', '.join(code)}); a model node is configuration only"
+    if node.type != "model" and node.protocol is not None:
+        return f"{node.type} must not set protocol; only type model uses protocol"
     if node.type in ("check", "gate") and (model := _set(node, _MODEL_FIELDS)):
         return f"{node.type} takes no model fields ({', '.join(model)})"
     return None
@@ -381,15 +420,16 @@ def _condition_problems(n: NodeSpec, heads: set[str]) -> list[str]:
 
 def _meeting_problems(n: NodeSpec) -> list[str]:
     """A meeting whose seats or inputs are no protocol's (`MEETINGS`): checked once its role is a list."""
-    if n.type != "meeting" or not isinstance(n.role, list):
+    kind = node_protocol(n)
+    if kind != "meeting" or not isinstance(n.role, list):
         return []
-    for proto in MEETINGS:
-        if tuple(n.role) == proto["roles"] and set(proto["inputs"]) <= set(n.inputs):
+    for entry in MEETINGS:
+        if tuple(n.role) == entry["roles"] and set(entry["inputs"]) <= set(n.inputs):
             return []
-    (proto,) = MEETINGS
+    (entry,) = MEETINGS
     return [
-        f"a meeting runs the amigos protocol: role must be {_listed(proto['roles'], sort=False)} and inputs "
-        f"include {', '.join(proto['inputs'])}"
+        f"a meeting runs the amigos protocol: role must be {_listed(entry['roles'], sort=False)} and inputs "
+        f"include {', '.join(entry['inputs'])}"
     ]
 
 
@@ -480,6 +520,7 @@ def check_workflows(
     *,
     prompts: Collection[str] = (),
     catalog: Catalog | None = None,
+    deprecations: bool = True,
 ) -> list[str]:
     """Return one problem string per mistake: "workflow <w>: node <n>: <what>". Empty means consistent.
     `prompts` are the ids of the prompt files the drafts carry, beside the hub's rules, that a node's
@@ -500,6 +541,8 @@ def check_workflows(
         closing = _closing_lines(w)
         for nname, n in w.nodes.items():
             found: list[str] = []
+            if deprecations and n.type in DEPRECATED_NODE_TYPES:
+                found.append(f"type {n.type} is deprecated; use model with protocol {n.type}")
             if (missing := _requirements(n)) is not None:
                 found.append(missing)
             if (wrong := _wrong_fields(n)) is not None:

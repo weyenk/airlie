@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import CatalogPicker from "./CatalogPicker.vue";
 import { formatSentence, outputSpecs, specValue } from "./fields";
-import { inputsOf, readable, renameNode, renameOutput } from "./graph";
+import { PROTOCOLS, inputsOf, protocolOf, readable, renameNode, renameOutput } from "./graph";
 import type { GNode, Graph, NodeSpec, OutputSpec } from "./graph";
 import OutputsEditor from "./OutputsEditor.vue";
 import { promptFieldsOf } from "./promptFile";
@@ -36,7 +36,9 @@ const emit = defineEmits<{
 
 const spec = computed(() => props.node.spec);
 const type = computed(() => props.node.type);
-const isModel = computed(() => ["ask", "conversation", "write", "team", "meeting"].includes(type.value));
+const proto = computed(() => protocolOf(type.value, spec.value));
+const isModel = computed(() => proto.value !== null || type.value === "team");
+const isMeeting = computed(() => type.value === "meeting" || proto.value === "meeting");
 const isCode = computed(() => type.value === "check" || type.value === "gate");
 const text = (v: unknown): string => (typeof v === "string" ? v : typeof v === "number" ? String(v) : "");
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -81,9 +83,9 @@ function rename(e: Event) {
 
 // inputs: what the box may read (the workflow's inputs, the other boxes' outputs), and anything it reads already
 const inputs = computed(() => inputsOf(spec.value));
-const readableNames = computed(() => [...new Set([...readable(props.graph, props.node.id), ...inputs.value, ...(type.value === "meeting" ? (meeting.value?.inputs ?? []) : [])])]);
+const readableNames = computed(() => [...new Set([...readable(props.graph, props.node.id), ...inputs.value, ...(isMeeting.value ? (meeting.value?.inputs ?? []) : [])])]);
 /** A meeting's input the protocol fixes: listed, it cannot be unchecked (the protocol reads it). */
-const fixedInput = (name: string) => type.value === "meeting" && (meeting.value?.inputs ?? []).includes(name);
+const fixedInput = (name: string) => isMeeting.value && (meeting.value?.inputs ?? []).includes(name);
 function toggleInput(name: string, on: boolean) {
   const next = on ? [...inputs.value.filter((n) => n !== name), name] : inputs.value.filter((n) => n !== name);
   set("inputs", next);
@@ -351,7 +353,7 @@ const label = "text-muted-foreground";
                   <Button type="button" size="xs" variant="ghost" data-prompt-use-file @click="fileMode = true">Use a prompt file…</Button>
                 </template>
               </PromptText>
-              <PromptText v-if="type === 'conversation' || type === 'meeting'" field="turn" :label="type === 'meeting' ? 'turn (optional)' : 'turn'" :value="text(spec.turn)" :names="inputs" @commit="(t) => setTextValue('turn', t)" />
+              <PromptText v-if="proto === 'conversation' || isMeeting" field="turn" :label="isMeeting ? 'turn (optional)' : 'turn'" :value="text(spec.turn)" :names="inputs" @commit="(t) => setTextValue('turn', t)" />
               <PromptText v-if="type === 'team'" field="worker" label="worker (each worker's brief)" :value="text(spec.worker)" :names="[...inputs, 'assignment']" @commit="(t) => setTextValue('worker', t)" />
             </template>
 
@@ -402,7 +404,13 @@ const label = "text-muted-foreground";
 
           <!-- the side column: everything else the type reads -->
           <section class="flex min-h-0 flex-col gap-3 sm:overflow-y-auto sm:pr-1">
-            <label v-if="['ask', 'conversation', 'write'].includes(type)" data-form-field="role" class="flex flex-col gap-1">
+            <label v-if="type === 'model'" data-form-field="protocol" class="flex flex-col gap-1">
+              <span :class="label">protocol</span>
+              <select data-input="protocol" :value="text(spec.protocol) || 'ask'" :class="control" @change="set('protocol', valueOf($event))">
+                <option v-for="p in PROTOCOLS" :key="p" :value="p">{{ p }}</option>
+              </select>
+            </label>
+            <label v-if="proto === 'ask' || proto === 'conversation' || proto === 'write'" data-form-field="role" class="flex flex-col gap-1">
               <span :class="label">role</span>
               <select data-input="role" :value="role" :class="control" @change="set('role', valueOf($event))">
                 <option value="">pick a role</option>
@@ -418,7 +426,7 @@ const label = "text-muted-foreground";
                 </select>
               </label>
             </div>
-            <fieldset v-if="type === 'meeting'" data-meeting-fixed data-form-field="role" class="flex flex-col gap-1 rounded-md border border-border p-2">
+            <fieldset v-if="isMeeting" data-meeting-fixed data-form-field="role" class="flex flex-col gap-1 rounded-md border border-border p-2">
               <legend :class="[label, 'mb-1']">seats (the protocol's are fixed)</legend>
               <div class="flex flex-wrap gap-x-3 gap-y-1 font-mono text-xs">
                 <label v-for="r in roleChoices" :key="r" class="inline-flex items-center gap-1.5">
@@ -437,7 +445,7 @@ const label = "text-muted-foreground";
               <Button v-if="unseated.length" type="button" size="xs" variant="outline" data-meeting-seat class="self-start" @click="seat">Add the protocol's {{ unseated.join(", ") }}</Button>
             </fieldset>
 
-            <label v-if="['ask', 'conversation', 'write'].includes(type)" data-form-field="session" class="flex flex-col gap-1">
+            <label v-if="proto === 'conversation' || proto === 'write'" data-form-field="session" class="flex flex-col gap-1">
               <span :class="label">session (continue a conversation)</span>
               <select data-input="session" :value="text(spec.session)" :disabled="!sessionChoices.length && !text(spec.session)" :class="control" @change="set('session', valueOf($event) || undefined)">
                 <option value="">a new one</option>
@@ -445,7 +453,7 @@ const label = "text-muted-foreground";
               </select>
               <span v-if="sessionReason" data-session-reason class="text-xs text-muted-foreground">{{ sessionReason }}</span>
             </label>
-            <label v-if="type === 'write'" data-form-field="advisor" class="flex flex-col gap-1">
+            <label v-if="proto === 'write'" data-form-field="advisor" class="flex flex-col gap-1">
               <span :class="label">advisor</span>
               <input data-input="advisor" :value="text(spec.advisor)" :class="[control, 'font-mono']" @change="setText('advisor', $event)" />
             </label>

@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 from airlie.flow.composer import FAIL_KEY, EndRun, RunContext, resolve_count
 from airlie.flow.outputs import OutputSpec, parse_output
 from airlie.flow.render import prompt_source, render
-from airlie.flow.spec import NodeSpec
+from airlie.flow.spec import NodeSpec, node_protocol
 from airlie.story.asking import Asker, Recorder, Say, StoryBlocked, Writes
 from airlie.story.model import NotActionable, StoryError
 
@@ -483,6 +483,44 @@ async def meeting_runner(
     hold = Hold(meeting, ctx.cfg, tools, on_turn, before_turn, state, turn)
     out = await agree(ctx, hold, opening)
     return {name: out[name] for name in node.outputs if name in out}
+
+
+async def model_runner(
+    node: NodeSpec,
+    ctx: RunContext,
+    *,
+    asker: Asker,
+    st: Recorder,
+    seat: Seat = str,
+    ask: Callable[..., Awaitable[str]] | None = None,
+    agree: Agree | None = None,
+    meeting: Any = None,
+    tools: Callable[[Path], Callable[[str], ToolRegistry]] | None = None,
+    on_turn: Callable[[], OnTurn] | None = None,
+    before_turn: Callable[[], Callable[[], Awaitable[Any]] | None] = lambda: None,
+    roles: Collection[str] | None = None,
+) -> Mapping[str, Any]:
+    """A unified model node: dispatch on `protocol` (or legacy type) to the existing per-protocol runners."""
+    proto = node_protocol(node)
+    if proto is None:
+        raise ValueError(f"model node '{ctx.node}' has no protocol")
+    if proto == "ask":
+        return await ask_runner(node, ctx, asker=asker, st=st, seat=seat, ask=ask)
+    if proto == "conversation":
+        return await conversation_runner(node, ctx, asker=asker, st=st, seat=seat)
+    if proto == "write":
+        return await write_runner(node, ctx, asker=asker, st=st, seat=seat)
+    assert agree is not None and meeting is not None and tools is not None and on_turn is not None
+    return await meeting_runner(
+        node,
+        ctx,
+        agree=agree,
+        meeting=meeting,
+        tools=tools,
+        on_turn=on_turn,
+        before_turn=before_turn,
+        roles=roles,
+    )
 
 
 async def _maybe(result: Any) -> Any:

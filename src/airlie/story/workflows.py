@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from airlie.flow.prompt_files import PREFIX, parse_draft_prompts
 from airlie.flow.spec import NodeSpec, WorkflowSpec, check_workflows
-from airlie.flow.upgrade import upgrade_v1
+from airlie.flow.upgrade import upgrade_topology_types, upgrade_v1
 from airlie.prompts.hub import PromptError
 from airlie.prompts.hub import load as hub_prompts
 from airlie.story.board import Card, note
@@ -101,6 +101,7 @@ def upgraded_draft(name: str, text: str) -> tuple[WorkflowSpec, list[str]]:
     A draft that does not parse or validate is a WorkflowError."""
     _, body = draft_body(text, name)
     data, problems = upgrade_v1(body, catalog=_catalog())
+    data = upgrade_topology_types(data)
     try:
         spec = WorkflowSpec.model_validate(data)
     except ValidationError as e:
@@ -145,6 +146,7 @@ def resolve_workflows(
     *,
     prompts: DraftPrompts | None = None,
     own: bool = False,
+    deprecations: bool = False,
 ) -> dict[str, WorkflowSpec]:
     """Workflow `name` and the bundles it calls through its `bundle` nodes, transitively: each from the repo's
     workflows first, else from the drafts (name -> YAML text), and checked together. Nothing else is read,
@@ -178,7 +180,9 @@ def resolve_workflows(
         texts = parse_draft_prompts(closure_prompts(prompts, from_drafts))
     except PromptError as e:
         raise WorkflowError(f"draft workflow {name!r}: prompt file {e}") from None
-    if problems := upgrade + check_workflows(specs, prompts=texts, catalog=_catalog()):
+    if problems := upgrade + check_workflows(
+        specs, prompts=texts, catalog=_catalog(), deprecations=deprecations
+    ):
         raise WorkflowError("; ".join(problems))
     return specs
 
@@ -205,7 +209,7 @@ def workflow_problems(
     """What stops workflow `name` resolving (`resolve_workflows`), as the builder shows it: [] or the one
     WorkflowError's message."""
     try:
-        resolve_workflows(cfg, drafts, name, prompts=prompts, own=own)
+        resolve_workflows(cfg, drafts, name, prompts=prompts, own=own, deprecations=True)
     except WorkflowError as e:
         return [str(e)]
     return []

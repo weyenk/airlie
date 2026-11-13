@@ -195,6 +195,7 @@ test("addNode gives each type its default fields, names it <type>-N and puts it 
   expect(g.nodes.at(-1)).toMatchObject({ id: "check-1", type: "check", spec: { run: "", inputs: [], outputs: {} }, x: 480, y: 0, placed: true });
   expect(g.edges).toEqual(small().edges);
   const blank = (type: Parameters<typeof addNode>[1]) => specOf(addNode(emptyGraph("w"), type, 0, 0), `${type}-1`);
+  expect(blank("model")).toEqual({ protocol: "ask", role: "", prompt: "", inputs: [], outputs: {} });
   expect(blank("ask")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });
   expect(blank("conversation")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });
   expect(blank("write")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });

@@ -10,7 +10,7 @@ def wf(**nodes):
 
 
 def ask(role="product", **kw):
-    return NodeSpec(type="ask", role=role, prompt="p", **kw)
+    return NodeSpec(type="model", protocol="ask", role=role, prompt="p", **kw)
 
 
 def check(**kw):
@@ -19,6 +19,7 @@ def check(**kw):
 
 def test_each_type_requires_its_fields():
     w = wf(
+        m0=NodeSpec(type="model"),
         a=NodeSpec(type="ask"),
         c=NodeSpec(type="conversation", role="architect"),
         wr=NodeSpec(type="write", prompt="p"),
@@ -29,6 +30,8 @@ def test_each_type_requires_its_fields():
         b=NodeSpec(type="bundle"),
     )
     problems = check_workflows({"w": w})
+    assert "workflow w: node m0: model needs protocol" in problems
+    assert "workflow w: node a: type ask is deprecated; use model with protocol ask" in problems
     assert "workflow w: node a: ask needs role and prompt" in problems
     assert "workflow w: node c: conversation needs role and prompt" in problems
     assert "workflow w: node wr: write needs role and prompt" in problems
@@ -37,7 +40,24 @@ def test_each_type_requires_its_fields():
     assert "workflow w: node k: check needs run" in problems
     assert "workflow w: node g: gate needs run" in problems
     assert "workflow w: node b: bundle needs workflow" in problems
-    assert len(problems) == 8
+    assert len(problems) == 13
+
+
+def test_a_model_node_needs_protocol_and_per_protocol_fields():
+    problems = check_workflows({"w": wf(a=NodeSpec(type="model", protocol="ask"))})
+    assert problems == ["workflow w: node a: model with protocol ask needs role and prompt"]
+    meeting = NodeSpec(
+        type="model",
+        protocol="meeting",
+        role=["product", "architect", "tester"],
+        prompt="p",
+        inputs=["story", "layers"],
+    )
+    w = WorkflowSpec(inputs=["story", "layers"], nodes={"m": meeting})
+    assert check_workflows({"w": w}) == []
+    assert check_workflows({"w": wf(b=NodeSpec(type="check", protocol="ask", run="r"))}) == [
+        "workflow w: node b: check must not set protocol; only type model uses protocol"
+    ]
 
 
 def test_a_model_node_may_name_no_code():
@@ -48,6 +68,7 @@ def test_a_model_node_may_name_no_code():
     )
     problems = check_workflows({"w": w})
     assert problems == [
+        "workflow w: node b: type ask is deprecated; use model with protocol ask",
         "workflow w: node b: ask names code (run, args); a model node is configuration only",
         "workflow w: node c: check takes no model fields (prompt, turn, session, workers)",
     ]
@@ -124,7 +145,8 @@ def test_a_session_line_is_only_between_two_nodes_of_the_same_role():
     def build(second_role):
         return wf(
             drafts=NodeSpec(
-                type="conversation",
+                type="model",
+                protocol="conversation",
                 role="architect",
                 prompt="p",
                 outputs={"drafts_session": "session"},
@@ -136,7 +158,8 @@ def test_a_session_line_is_only_between_two_nodes_of_the_same_role():
     assert check_workflows({"w": build("architect")}) == []
     by_field = wf(
         drafts=NodeSpec(
-            type="conversation",
+            type="model",
+            protocol="conversation",
             role="architect",
             prompt="p",
             outputs={"drafts_session": "session"},
@@ -459,7 +482,15 @@ def test_a_meeting_names_the_amigos_roles_in_order_and_reads_the_story_and_the_l
         "a meeting runs the amigos protocol: role must be [product, architect, tester] "
         "and inputs include story, layers"
     )
-    assert check_workflows({"w": w}) == [f"workflow w: node {n}: {rule}" for n in ("order", "short", "blind")]
+    assert check_workflows({"w": w}) == [
+        "workflow w: node ok: type meeting is deprecated; use model with protocol meeting",
+        "workflow w: node order: type meeting is deprecated; use model with protocol meeting",
+        f"workflow w: node order: {rule}",
+        "workflow w: node short: type meeting is deprecated; use model with protocol meeting",
+        f"workflow w: node short: {rule}",
+        "workflow w: node blind: type meeting is deprecated; use model with protocol meeting",
+        f"workflow w: node blind: {rule}",
+    ]
 
 
 def test_rule_nine_holds_an_outputs_format_to_the_catalogs():
@@ -486,7 +517,8 @@ def test_a_prompt_file_reads_only_the_nodes_own_inputs_not_the_workflows():
         nodes={"a": NodeSpec(type="ask", role="product", prompt="prompt:note", inputs=["card"])},
     )
     assert check_workflows({"w": w}, prompts={"note": note}) == [
-        "workflow w: node a: prompt file 'note' reads 'repo', which is not an input of the node"
+        "workflow w: node a: type ask is deprecated; use model with protocol ask",
+        "workflow w: node a: prompt file 'note' reads 'repo', which is not an input of the node",
     ]
 
 

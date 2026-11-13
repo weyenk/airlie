@@ -154,3 +154,14 @@ def test_a_non_streamed_chat_completion_waits_900_s_for_the_engine(tmp_path: Pat
     r, up = post(tmp_path, model="base")
     assert r.status_code == 200
     assert up.requests[0].extensions["timeout"]["read"] == 900.0
+
+
+def test_a_streamed_chat_completion_waits_900_s_for_the_engine(tmp_path: Path) -> None:
+    """OpenCode and other clients stream: the upstream read must match the non-streamed 900 s cap."""
+    up = FakeUpstream()
+    with TestClient(create_app(chat_cfg(tmp_path), transport=httpx.MockTransport(up))).stream(
+        "POST", "/v1/chat/completions", json={**ASK, "model": "base", "stream": True}
+    ) as r:
+        assert r.status_code == 200
+        b"".join(r.iter_bytes())
+    assert up.requests[0].extensions["timeout"]["read"] == 900.0

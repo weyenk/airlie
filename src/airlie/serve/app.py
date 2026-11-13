@@ -492,8 +492,10 @@ def _workflow_publisher(cfg: AirlieConfig) -> Callable[[WorkflowDraft], Awaitabl
 
 
 CHAT_COMPLETIONS_READ_TIMEOUT_S = 900.0
-"""How long a non-streamed `/v1/chat/completions` waits on the engine. It sends no bytes until the reply is
-whole, so a long thinking reply outlasts the shared client's 600 s; the bridge's llm jobs
+"""How long `/v1/chat/completions` waits on the engine (stream and non-stream). Non-streamed sends no bytes
+until the reply is whole, so a long thinking reply outlasts the shared client's 600 s default; streamed
+replies used the same default before this constant was applied on the streaming upstream request. The
+bridge's llm jobs
 (`bridge.llm.timeout_s`) wait as long as this. Every other upstream call keeps 600 s."""
 
 
@@ -1084,7 +1086,13 @@ def create_app(
         out: dict[str, Any], base: str, headers: dict[str, str], holding: AsyncExitStack
     ) -> Any:
         if out.get("stream"):
-            req = client.build_request("POST", f"{base}/chat/completions", json=out, headers=headers)
+            req = client.build_request(
+                "POST",
+                f"{base}/chat/completions",
+                json=out,
+                headers=headers,
+                timeout=httpx.Timeout(600.0, connect=10.0, read=CHAT_COMPLETIONS_READ_TIMEOUT_S),
+            )
             resp = await client.send(req, stream=True)
 
             async def gen() -> AsyncIterator[bytes]:

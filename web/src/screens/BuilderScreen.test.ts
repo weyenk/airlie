@@ -122,7 +122,8 @@ test("a click on a box selects it; its card's Edit opens its fields in the modal
   await flushPromises();
   const modal = document.body.querySelector("[data-node-modal]")!;
   expect((modal.querySelector("input[data-input=id]") as HTMLInputElement).value).toBe("survey");
-  expect(modal.querySelector("[data-node-type]")!.textContent).toBe("ask");
+  expect(modal.querySelector("[data-node-type]")!.textContent).toBe("model");
+  expect((modal.querySelector("select[data-input=protocol]") as HTMLSelectElement).value).toBe("ask");
   expect((modal.querySelector("select[data-input=role]") as HTMLSelectElement).value).toBe("architect");
   expect((modal.querySelector("[data-input-name=request]") as HTMLInputElement).checked).toBe(true); // v2: the survey reads the request
   expect((modal.querySelector("select[data-input=prompt-file]") as HTMLSelectElement).value).toBe("prompt:story-survey"); // the story names a prompt file

@@ -54,6 +54,8 @@ export type MeetingDef = { roles: string[]; inputs: string[] };
 export type Catalog = {
   roles: string[];
   types: string[];
+  /** Legacy node types still loadable; prefer `model` + `protocol`. */
+  deprecated_types?: string[];
   formats: string[];
   kinds: string[];
   checks: CheckDef[];
@@ -61,7 +63,16 @@ export type Catalog = {
   prompt_files: string[];
 };
 
-export const EMPTY_CATALOG: Catalog = { roles: [], types: [], formats: [], kinds: [], checks: [], meetings: [], prompt_files: [] };
+export const EMPTY_CATALOG: Catalog = {
+  roles: [],
+  types: [],
+  deprecated_types: [],
+  formats: [],
+  kinds: [],
+  checks: [],
+  meetings: [],
+  prompt_files: [],
+};
 
 export type DraftBody = { type: string | null; yaml: string; prompts: Record<string, string> };
 

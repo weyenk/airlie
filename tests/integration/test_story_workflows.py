@@ -117,7 +117,9 @@ def test_a_file_wins_over_a_draft_of_the_same_name() -> None:
     prompts = {"story": {"mini-note": "not a rule file"}}
     specs = resolve_workflows(cfg, {"story": edit}, "story", prompts=prompts)
     assert specs["story"] == cfg.workflows["story"] and set(specs) == {"story", "layer"}
-    assert workflow_problems(cfg, {"story": "workflows: [1"}, "story", prompts=prompts) == []
+    assert workflow_problems(cfg, {"story": "workflows: [1"}, "story", prompts=prompts) == [
+        "workflow story: node amigos: type meeting is deprecated; use model with protocol meeting"
+    ]
 
 
 def test_a_draft_must_hold_its_one_workflow() -> None:

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { GNode } from "./graph";
+import { protocolOf } from "./graph";
 import { SHAPE_CLASS, shapeOf } from "./shapes";
 
 /** One node on the canvas, in its type's shape; the canvas sets where it sits. A box validation found wrong is
@@ -13,7 +14,11 @@ const text = (v: unknown): string => (Array.isArray(v) ? v.join(", ") : typeof v
 /** The second line: a model step's type and role, a check's callable, a bundle's list. */
 const sub = computed(() => {
   const s = props.node.spec;
-  if (shape.value === "model") return [props.node.type, text(s.role)].filter(Boolean).join(" · ");
+  if (shape.value === "model") {
+    const proto = protocolOf(props.node.type, s);
+    const kind = proto && (props.node.type === "model" || proto !== props.node.type) ? `${props.node.type} (${proto})` : props.node.type;
+    return [kind, text(s.role)].filter(Boolean).join(" · ");
+  }
   if (shape.value === "code" || shape.value === "gate") return text(s.run);
   return s.each ? `for each ${text(s.each)}` : "";
 });

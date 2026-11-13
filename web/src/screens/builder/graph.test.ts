@@ -14,7 +14,7 @@ const line = (g: Graph, from: string, to: string) => g.edges.filter((e) => e.fro
 const lines = (g: Graph) => g.edges.map((e) => `${e.from}>${e.to}`);
 
 test("the node types are schema v2's: no parallel or each, a team and a bundle", () => {
-  expect(NODE_TYPES).toEqual(["ask", "conversation", "write", "meeting", "team", "check", "gate", "bundle"]);
+  expect(NODE_TYPES).toEqual(["model", "ask", "conversation", "write", "meeting", "team", "check", "gate", "bundle"]);
   expect(KINDS).toEqual(["text", "number", "bool", "list of …", "one of …"]);
 });
 
@@ -71,6 +71,11 @@ test("a condition is the line's when; two lines out of one node are two edges", 
   ]);
   expect(line(g, "gate", "request")).toHaveLength(1);
   expect(line(g, "gate", "story_card")).toHaveLength(1);
+});
+
+test("the survey node is a model with protocol ask", () => {
+  const n = graphOf(STORY_YAML).nodes.find((x) => x.id === "survey");
+  expect(n).toMatchObject({ type: "model", spec: { protocol: "ask", role: "architect", prompt: "prompt:story-survey" } });
 });
 
 test("build_layers is a bundle node naming its workflow and the list it runs over", () => {
