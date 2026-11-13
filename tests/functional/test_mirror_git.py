@@ -210,6 +210,32 @@ def no_url_rewrites(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
+async def test_mirror_fetch_ignores_host_global_https_to_ssh_instead_of(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bot mirror refresh still uses HTTPS when the process inherits a global insteadOf to SSH."""
+    rules = tmp_path / "gitconfig"
+    rules.write_text('[url "git@github.com:"]\n\tinsteadOf = https://github.com/\n')
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(rules))
+    monkeypatch.delenv("GIT_CONFIG_NOSYSTEM", raising=False)
+    source = local_checkout(tmp_path)
+    github = FakeGitHub(installed=("o/r",))
+    gh = ScriptedPublishRunner()
+    mirrors = repo_mirrors(
+        tmp_path / "mirrors",
+        lambda: Publisher(run=gh, app=fake_app(tmp_path, github), publish="single"),
+        run=run_cmd,
+        local_checkout=lambda repo: source,
+    )
+    mirror = mirrors("o/r", "source")
+
+    await mirror.refresh()
+
+    assert git(mirror.path, "config", "--get", "remote.origin.url") == "https://github.com/o/r.git"
+    assert any(p.endswith("/access_tokens") for p in github.asked("POST"))
+    assert [c[0][:2] for c in gh.calls if c[0][0] == "git"][-1] == ["git", "fetch"]
+
+
 async def test_a_github_repository_is_fetched_through_the_app_not_the_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

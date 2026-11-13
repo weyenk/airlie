@@ -64,6 +64,7 @@ DRAIN_S = 5.0
 """How long `kill_group` reads what a killed command left in its pipes."""
 
 _gh_dir: Path | None = None
+_git_global: Path | None = None
 
 
 def _remove(pid: int, path: Path) -> None:
@@ -79,6 +80,28 @@ def gh_config_dir() -> Path:
         _gh_dir = Path(tempfile.mkdtemp(prefix="airlie-gh-"))
         atexit.register(_remove, os.getpid(), _gh_dir)
     return _gh_dir
+
+
+def empty_global_gitconfig() -> Path:
+    """An empty global git configuration file, made once per process. Bot mirror and publish steps read no
+    url.insteadOf or pushInsteadOf from the person's system or global files."""
+    global _git_global
+    if _git_global is None or not _git_global.is_file():
+        fd, name = tempfile.mkstemp(prefix="airlie-git-global-", suffix=".config")
+        os.close(fd)
+        _git_global = Path(name)
+        atexit.register(_git_global.unlink, True)
+    return _git_global
+
+
+def isolate_git_user_config(env: Mapping[str, str]) -> dict[str, str]:
+    """`env` with no git configuration from the person's machine: an empty global file (GIT_CONFIG_GLOBAL),
+    no system file (GIT_CONFIG_NOSYSTEM), and no GIT_CONFIG_SYSTEM override from the environment."""
+    out = dict(env)
+    out.pop("GIT_CONFIG_SYSTEM", None)
+    out["GIT_CONFIG_NOSYSTEM"] = "1"
+    out["GIT_CONFIG_GLOBAL"] = os.fspath(empty_global_gitconfig())
+    return out
 
 
 def with_git_config(env: Mapping[str, str], pairs: Iterable[tuple[str, str]]) -> dict[str, str]:

@@ -12,7 +12,7 @@ from pathlib import Path
 from airlie.boxes.recipe import RECIPE_PATH
 from airlie.engine.types import EngineError
 from airlie.story.publish import Publisher, PublishError, Runner
-from airlie.subproc import NO_PROMPTS, agent_env, without_hooks
+from airlie.subproc import NO_PROMPTS, agent_env, isolate_git_user_config, without_hooks
 
 
 class MirrorError(EngineError):
@@ -45,7 +45,7 @@ class Mirror:
         no GIT_* variable of the process's own (GIT_DIR, GIT_CONFIG_GLOBAL, GIT_EXEC_PATH ... point git
         elsewhere); the no-prompt switches are re-added."""
         env = {k: v for k, v in agent_env().items() if not k.startswith("GIT_")}
-        return without_hooks({**env, **NO_PROMPTS})
+        return isolate_git_user_config(without_hooks({**env, **NO_PROMPTS}))
 
     async def git(self, *args: str) -> str:
         return await self.run(["git", *args], self.path, self.env())
@@ -61,7 +61,10 @@ class Mirror:
             await self._repoint()
         if self.publisher.app is not None:
             self.publisher.prepare(self.path, self.repo)
-            await self.publisher.fetch_all(self.path)
+            try:
+                await self.publisher.fetch_all(self.path)
+            except PublishError as e:
+                raise MirrorError(str(e)) from None
         else:
             refspec = "+refs/heads/*:refs/remotes/origin/*"
             await self.git("fetch", "-q", "--prune", "--refmap=", "origin", refspec)

@@ -49,6 +49,7 @@ from airlie.serve.bridge.clock import Clock, RealClock
 from airlie.serve.uploads import TooManyAttachments
 from airlie.skills.library import Skill
 from airlie.sources.access import RepoAccess
+from airlie.story.publish import PublishError
 from airlie.tools.protocol import Tool, ToolContext
 
 log = logging.getLogger("airlie.chat.api")
@@ -504,7 +505,7 @@ def chat_router(
                 return error(str(e), 409)
             except NoAccess as e:  # lost between the check above and the open
                 return error(str(e), 403)
-            except EngineError as e:  # the repository or its recipe cannot be read
+            except (EngineError, PublishError) as e:  # the repository or its recipe cannot be read
                 return error(str(e), 422)
             tool_ctx = repo_sessions.tool_context(chat)
         else:

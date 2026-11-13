@@ -28,7 +28,15 @@ from pathlib import Path
 from typing import NamedTuple
 
 from airlie.story.github_app import GitHubApp, GitHubAppError, masked, repo_slug
-from airlie.subproc import NO_PROMPTS, agent_env, kill_group, started, with_git_config, without_hooks
+from airlie.subproc import (
+    NO_PROMPTS,
+    agent_env,
+    isolate_git_user_config,
+    kill_group,
+    started,
+    with_git_config,
+    without_hooks,
+)
 from airlie.teams.worktree import remote_url
 
 Runner = Callable[[list[str], Path, Mapping[str, str]], Awaitable[str]]
@@ -185,7 +193,7 @@ def bot_env(
             "GIT_ALLOW_PROTOCOL": "https",
         }
     )
-    return with_git_config(without_hooks(env), [*BOT_GIT, *_pins(remote, urls)])
+    return isolate_git_user_config(with_git_config(without_hooks(env), [*BOT_GIT, *_pins(remote, urls)]))
 
 
 def effective_urls(cwd: Path, remote: str, env: Mapping[str, str]) -> tuple[list[str], list[str]]:
