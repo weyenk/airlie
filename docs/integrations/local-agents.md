@@ -192,6 +192,29 @@ Not from that check, but what the rules leave:
   starts its agents without your credentials, and publishes as the bot when `story.github_app.app_id` is set
   (`story.md`, *Publishing as a bot*). *What stops a merge*, above, says what the rules do and do not stop.
 
+### `interrupted` and `Continuing after restart` (OpenCode 2.x)
+
+OpenCode shows **`interrupted`** when a turn's execution claim is lost mid-stream, then may inject
+**`Continuing after restart`** while it resumes (`SessionRestart` in the OpenCode binary: that string is
+OpenCode-only, not airlie). That resume path is meant for an **OpenCode shared-service restart**
+(`opencode serve --service`), not for airlie stopping an engine.
+
+To see which side broke on the next repro:
+
+1. **OpenCode service** — `ps -p "$(pgrep -f 'opencode serve --service')" -o lstart,etime` (a new `STARTED`
+   time at the interrupt means the daemon restarted). OpenCode **v2.0.29** here.
+2. **airlie serve / gemma** — `~/.local/state/airlie/serve.log` (client `POST /v1/chat/completions`) and
+   `~/.local/state/airlie/engines/gemma/server.log` (`Request failed` / `stream_closed_before_completion` means
+   the HTTP client dropped while gemma was still decoding).
+3. **After the instrumentation branch** — `serve.log` also gets `chat_completions_stream_end` at **INFO** when a
+   proxied stream ends abnormally (`end_reason` is `upstream_eof`, `upstream_error`, `client_disconnect`, or
+   `client_eof`; a normal OpenAI stream logs at **DEBUG** with `end_reason=clean` and `saw_done=True`).
+
+If the OpenCode service PID is stable but gemma logs `stream_closed_before_completion`, airlie finished proxying
+but the **client** (OpenCode) closed first — OpenCode may still label the turn `interrupted` and auto-resume.
+If gemma completes with `finish_reason=stop` and serve returns 200 with no abnormal `chat_completions_stream_end`,
+the cut happened **above** airlie (OpenCode client or service recovery).
+
 ## Claude Code
 
 Verified 2026-10-14 (Claude Code 2.1.285, vllm-mlx 0.5.0): a print-mode task that creates a file, reads it
