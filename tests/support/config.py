@@ -16,6 +16,8 @@ MINIMAL: dict = {
         "judge": {"prompt": "prompts/roles/judge.md", "model": "team"},
         "aggregator": {"prompt": "prompts/roles/aggregator.md", "model": "team"},
     },
+    "teams": {"role": "coder"},
+    "chat": {"task": {"default_role": "coder", "roles": ["coder"]}},
 }
 
 

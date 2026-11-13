@@ -57,11 +57,13 @@ engines:
     kind: weights_only
     model: chroma_hd
     lifecycle: on_demand
+    autostart: false
     idle_unload_s: 300
   wan:
     kind: weights_only
     model: wan_t2v
     lifecycle: on_demand
+    autostart: false
     idle_unload_s: 300
 
 

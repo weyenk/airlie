@@ -775,7 +775,7 @@ class RouterSpec(Strict):
 class ReviewSpec(Strict):
     enabled: bool = True
     role: str = "reviewer"
-    roles: list[str] = Field(default_factory=lambda: ["coder", "security"])
+    roles: list[str] = Field(default_factory=lambda: ["architect", "security"])
     rounds: int = Field(
         default=1, ge=0, description="fix rounds after request_changes with a blocking finding"
     )

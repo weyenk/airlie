@@ -1,28 +1,5 @@
 # ---- Roles --------------------------------------------------------------------------------------------------------
 roles:
-  coder:                           # the team agent: ReAct loop with repo tools
-    prompt: prompts/roles/coder.md
-    model: architect
-    max_context: 65536
-    max_tokens: 10240                # the answer alone (no thinking): room for a whole-file write (HDS-5)
-    thinking: false                  # 2026-10-18: the architect's brief is the plan. A thinking coder (Qwen3.8) ran its
-                                     # budget out re-deliberating the brief every step and read instead of writing
-                                     # (AIR-7, AIR-28: 10 of 21 steps at the cap); its fast steps were the ones where
-                                     # it did not think
-    nudge_stuck: true              # told once to do something else when it repeats an action, not stopped
-    green_before_done: true        # told once to go on when it answers with run_tests failing (AIR-5 layer 02)
-    think_when_red: true           # thinks only while its last run_tests failed (and may only write then): roman 2026-10-28
-    thinking_budget: 4096          # rewrote the same wrong file three times red; at 2048 every red step was cut and read
-    write_schedule:                # a test written by a quarter of its steps, code by three quarters,
-      tests: 0.25                  # else told once, then write-only tools (AIR-28: it read 21 of 40 steps)
-      code: 0.75
-    sampling:                      # low temp; 1.05 guards against repetition collapse
-      temperature: 0.3
-      top_p: 0.8
-      top_k: 20
-      min_p: 0.0
-      presence_penalty: 0.0
-      repetition_penalty: 1.05
   summarizer:                      # LTS summary keys (15–20 words), stateless
     prompt: prompts/roles/summarizer.md
     model: small
@@ -120,7 +97,7 @@ roles:
     model: architect
     tools: [read_file, write_file, edit_file, list_dir, grep, shell, run_tests, git, compute]
     max_context: 131072
-    max_tokens: 10240
+    max_tokens: 12288                  # 4096 thinking_budget + 8192 answer headroom on package turns; build uses less
     thinking: true
     thinking_budget: 4096
     answer_after_cuts: 3
@@ -139,20 +116,6 @@ roles:
       min_p: 0.0
       presence_penalty: 0.0
       repetition_penalty: 1.05
-  tester:                          # P2 (2026-10-24): the third amigo and the package critic; reads, never writes. On the generalist since 2026-10-26 (Noah): on Muse it lost the meeting's thread in runs 6, 8 and 10 on airlie-sandbox (empty turns, the opening echoed, its own proof never posted); the layer's reviewer stays on Muse
-    prompt: prompts/roles/tester.md
-    model: architect
-    tools: [read_file, list_dir, grep, compute]
-    skills: skills/qa
-    max_context: 131072
-    max_tokens: 8192
-    thinking: false
-    sampling:
-      temperature: 0.2
-      top_p: 0.9
-      top_k: 20
-      min_p: 0.0
-      presence_penalty: 0.0
   product:
     prompt: prompts/roles/product.md
     model: gemma4
