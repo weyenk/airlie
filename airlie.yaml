@@ -17,7 +17,7 @@ engines:
   main:                            # the team model; its MTP head rides as the draft model
     kind: mlx_vlm
     port: 8080
-    model: generalist
+    model: architect
     max_num_seqs: 16               # docs/wiki/build-spec/02 §1
     max_kv_size: 131072
     kv_bits: 8
@@ -46,7 +46,7 @@ engines:
     port: 8084
     model: gemma4
     max_num_seqs: 8
-    max_kv_size: 262144
+    max_kv_size: 131072
     kv_bits: 8
     prefill_step_size: 2048
     prefix_cache: true              # same as main; mlx-vlm Gemma 4 MTP docs do not disable APC (issue #1471 is DFlash/EAGLE)
@@ -296,7 +296,7 @@ line:
 #   heartbeat_s: 60                  # keeps a running job's hub lease alive (hub LEASE_SECONDS, default 300)
 #   kinds: [studio, llm]
 #   llm:                             # the llm kind: a raw catalog model, the job's persona is the only system text
-#     model: generalist
+#     model: architect
 #     max_tokens: 16384              # caps thinking plus answer; must exceed thinking_budget
 #     thinking: true
 #     thinking_budget: 8192
