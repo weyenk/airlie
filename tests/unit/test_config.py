@@ -177,11 +177,49 @@ def test_committed_coder_has_room_for_a_large_edit() -> None:
     assert (cfg.roles["coder"].thinking, cfg.roles["coder"].max_tokens) == (False, 10240)
 
 
+def test_architect_catalog_replaces_generalist() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert "generalist" not in cfg.models
+    arch = cfg.models["architect"]
+    assert arch.repo == "sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
+    assert arch.revision == "668f31bcc56bf9400e64c9463445eee47597c2d9"
+    assert arch.mtp is not None
+    assert arch.mtp.repo == "sh0wie/Qwen3.8-Flash-Next-MTP-Drafter-MLX-bf16"
+    assert arch.mtp.revision == "be6e2bc325d41ac7858b99269a96c495349b494d"
+    assert arch.tool_call_parser == "qwen3_coder"
+    assert {"architect"} <= {n for n, m in cfg.models.items() if m.bench}
+
+
+def test_main_engine_serves_architect() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert cfg.engines["main"].models == ["architect"]
+    assert cfg.engines["main"].port == 8080
+    assert cfg.engines["main"].max_kv_size == 131072
+    assert cfg.engines["main"].served_name("architect").endswith(
+        "models--sh0wie--Qwen3.8-Flash-Next-REAP-288-MLX-4bit/snapshots/"
+        f"{cfg.models['architect'].revision}"
+    )
+
+
+def test_gemma_chat_context_is_128k() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert cfg.engines["gemma"].max_kv_size == 131072
+    assert cfg.roles["chat"].max_context == 131072
+
+
+def test_studio_roles_use_architect_and_product_on_gemma() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    for name in ("chief", "lhr", "architect", "docs", "research", "security", "aggregator"):
+        assert cfg.roles[name].model == "architect", name
+    assert cfg.roles["product"].model == "gemma4"
+    assert "generalist" not in cfg.models
+
+
 def test_committed_default_config_is_valid() -> None:
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")  # never the person's own
     assert {"coder", "summarizer", "judge", "aggregator"} <= set(cfg.roles)
-    assert {"generalist"} <= {n for n, m in cfg.models.items() if m.bench}
+    assert {"architect"} <= {n for n, m in cfg.models.items() if m.bench}
     assert cfg.engines["main"].kind == "mlx_vlm"
     for name, m in cfg.models.items():
         assert m.revision, f"models.{name} must pin a revision"
@@ -332,7 +370,7 @@ def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_w
     assert (architect.thinking, architect.thinking_budget, architect.max_tokens) == (True, 2048, 24576)
     assert (architect.answer_after_cuts, architect.last_turn_thinking) == (3, False)
     coder = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"]
-    assert (coder.model, coder.thinking, coder.max_tokens) == ("generalist", False, 10240)  # no thinking
+    assert (coder.model, coder.thinking, coder.max_tokens) == ("architect", False, 10240)  # no thinking
 
 
 def test_committed_config_declares_four_autostart_engines_and_the_bench_engines() -> None:
@@ -346,7 +384,7 @@ def test_committed_config_declares_four_autostart_engines_and_the_bench_engines(
     }
     autostart = [n for n, e in cfg.engines.items() if e.autostart]
     assert autostart == ["main", "small", "decision", "gemma"]
-    assert cfg.engines["main"].models == ["generalist"] and cfg.engines["main"].port == 8080
+    assert cfg.engines["main"].models == ["architect"] and cfg.engines["main"].port == 8080
     assert [n for n, e in cfg.engines.items() if e.decision] == ["decision"]
     assert cfg.engines["decision"].port == 8081 and cfg.router.model == "decider_2b"  # the 4b gate's pick
     decider = cfg.models["decider_2b"]
@@ -356,10 +394,13 @@ def test_committed_config_declares_four_autostart_engines_and_the_bench_engines(
     )
     assert (
         cfg.engines["main"]
-        .served_name("generalist")
-        .endswith(f"models--mlx-community--Qwen3.8-27B-4bit/snapshots/{cfg.models['generalist'].revision}")
+        .served_name("architect")
+        .endswith(
+            f"models--sh0wie--Qwen3.8-Flash-Next-REAP-288-MLX-4bit/snapshots/"
+            f"{cfg.models['architect'].revision}"
+        )
     )  # the HF-cache snapshot: the exact --model string
-    assert cfg.models["generalist"].tool_call_parser == "qwen3_coder"
+    assert cfg.models["architect"].tool_call_parser == "qwen3_coder"
     assert cfg.models["reviewer"].tool_call_parser == "atem"
     gemma = cfg.models["gemma4"]
     assert (gemma.repo, gemma.revision, gemma.mtp, gemma.mtp_block_size, gemma.tool_call_parser) == (
@@ -387,7 +428,7 @@ def test_catalog_kv_constants_follow_each_models_attention_geometry() -> None:
     Qwen2.5-32B, four times what its 16 full-attention layers hold, and the number had already shrunk a
     profile's KV."""
     models = load_config(ROOT / "airlie.yaml", NO_LOCAL).models
-    assert models["generalist"].kv_mb_per_1k_tokens == 64  # 16 full-attention layers × 4 heads × 256 dim
+    assert models["architect"].kv_mb_per_1k_tokens == 48  # Flash-Next hybrid; tighten after doctor documents layers
     assert models["small"].kv_mb_per_1k_tokens == 144  # 36 layers × 8 heads × 128 dim
     # 5 full-attention layers × 2 heads × 512 dim = 20, + the 25 sliding layers' fixed 1024-token window
     assert models["gemma4"].kv_mb_per_1k_tokens == 22
@@ -1120,13 +1161,12 @@ def test_the_committed_coder_has_a_write_schedule_and_a_schedule_must_put_tests_
         load_config(write(tmp_path, bad))
 
 
-def test_the_tester_is_a_read_only_critic_on_the_generalist() -> None:
+def test_the_tester_is_a_read_only_critic_on_the_architect() -> None:
     """P2 (2026-10-24): the tester no longer writes tests; it is the third amigo and the package critic, with
-    the QA guidelines and read tools. On the generalist since 2026-10-26 (Noah): on the reviewer's model
-    (Muse) it lost the meeting's thread on airlie-sandbox; the layer's reviewer moved to Gemma 2026-11-12."""
+    the QA guidelines and read tools. On the architect model since the Flash-Next swap (2026-11-13)."""
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     tester = cfg.roles["tester"]
-    assert tester.model == "generalist" != cfg.roles["reviewer"].model and not tester.thinking
+    assert tester.model == "architect" != cfg.roles["reviewer"].model and not tester.thinking
     assert tester.tools == ["read_file", "list_dir", "grep", "compute"]  # compute writes nothing (bundle 6)
     assert not MUTATING_TOOLS & set(tester.tools)
     assert tester.skills is not None and tester.skills.name == "qa"
@@ -1570,10 +1610,6 @@ def test_hf_snapshot_dir_honours_an_explicit_cache(tmp_path: Path) -> None:
     assert got == tmp_path / "elsewhere" / "models--mlx-community--Qwen3.8-27B-4bit" / "snapshots" / "abc123"
 
 
-def test_gemma_serves_chat_at_262k() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    assert cfg.engines["gemma"].max_kv_size == 262144
-    assert cfg.roles["chat"].max_context == 262144
 
 
 # ---- engine lifecycles and the manager ----
@@ -1756,11 +1792,11 @@ def test_a_repository_chat_cannot_drop_a_confirmation_of_push_pr_or_build(
 
 
 def test_the_reviewer_is_a_different_lab_than_the_coder_and_runs_on_a_served_engine() -> None:
-    """Noah 2026-11-12: the reviewer (and the supervisor) run on gemma4 (Google), the coder on the generalist
-    (Qwen): a different lab on purpose, with no second model in memory; the Muse catalog entry stays."""
+    """Noah 2026-11-12: the reviewer (and the supervisor) run on gemma4 (Google), the coder on the architect
+    (Qwen Flash-Next): a different lab on purpose, with no second model in memory; the Muse catalog entry stays."""
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     assert cfg.roles["reviewer"].model == cfg.roles["supervisor"].model == "gemma4"
-    assert "Qwen" in cfg.models["generalist"].repo and "gemma" in cfg.models["gemma4"].repo.lower()
+    assert "Qwen" in cfg.models["architect"].repo and "gemma" in cfg.models["gemma4"].repo.lower()
     assert "reviewer" not in cfg.engines and "reviewer" in cfg.models
 
 
