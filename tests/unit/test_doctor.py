@@ -362,7 +362,7 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
     # + one sequence on each other mlx-vlm engine (small, gemma at 131072k) + prefix caches (main 8, gemma 4)
     # + 12 GB reserve
     assert cache_memory_gb(studio.engines["main"]) == 8.0
-    assert (round(projected, 1), unknown) == (122.8, [])
+    assert (round(projected, 1), unknown) == (124.5, [])
     assert projected < studio.memory.wired_limit_mb / 1024  # 124 GB
     monkeypatch.setattr(
         "airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name
@@ -381,7 +381,7 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     e = studio.engines["main"]
-    build = studio.roles["coder"]
+    build = studio.roles[studio.story.build_role]
     rate = studio.models[build.model].kv_mb_per_1k_tokens
     assert round(live_kv_gb(studio, e), 3) == round(
         (build.max_context / 1000 * rate / 1024 + 4 * 8192 / 1000 * rate / 1024) * 8.5 / 16, 3
@@ -390,7 +390,7 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
     wider.line.fanout = 8
     assert live_kv_gb(wider, e) > live_kv_gb(studio, e)  # more asks, more KV
     assert (
-        "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 1 sequence on small at 16384, "
+        f"the build lane's 1 sequence at {build.max_context} + 4 asks at 8192 + 1 sequence on small at 16384, "
         "gemma at 131072 + 13 GB prefix cache" in projection_detail(studio, e)
     )
     teams = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="teams")

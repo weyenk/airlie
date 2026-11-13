@@ -117,8 +117,8 @@ chat:
     history_images: 4
     history_videos: 1
   task:                            # the repository chat's `task` tool: a fresh-context subagent in the session's VM
-    default_role: coder
-    roles: [coder, reviewer, tester, architect]
+    default_role: architect
+    roles: [architect, reviewer, product]
     max_steps: 30
     max_depth: 1
   sources: [github_app]            # the panel's repositories come from each person's linked GitHub account (device flow)
@@ -179,7 +179,7 @@ scheduler:
   starvation_ms: 30000
 teams:                             # k: 1 = single agent (bench 2026-10-13); spec: k: 3
   k: 1
-  role: coder
+  role: architect
   orchestrator: native
   max_steps: 40
   token_budget: 200000
@@ -219,6 +219,7 @@ observability:
 # repository's AGENTS.md "## Test gate". Personal settings go in airlie.local.yaml.
 story:
   topology: studio                 # the profile story runs load (start the engines with `task restart`)
+  build_role: architect
   trunk: main                      # the stack's base branch
   publish: single                  # one draft PR on the top layer's branch; stack = one per layer, the schema default
   max_layers: 5

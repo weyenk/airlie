@@ -397,9 +397,9 @@ class ChatKindsSpec(Strict):
 class ChatTaskSpec(Strict):
     """The repository chat's `task` tool: a fresh-context subagent on a chosen role, in the session's VM."""
 
-    default_role: str = Field(default="coder", description="the role a task runs on when it names none")
+    default_role: str = Field(default="architect", description="the role a task runs on when it names none")
     roles: list[str] = Field(
-        default_factory=lambda: ["coder", "reviewer", "tester", "architect"],
+        default_factory=lambda: ["architect", "reviewer", "product"],
         min_length=1,
         description="the roles a model may choose for a task",
     )
@@ -681,7 +681,7 @@ class SchedulerSpec(Strict):
 
 class TeamsSpec(Strict):
     k: int = Field(default=3, ge=1)
-    role: str = "coder"
+    role: str = "architect"
     orchestrator: Literal["autogen", "native"] = Field(
         default="native",
         description="native = built-in ReAct loop (default since 2026-10-13); autogen = spec 01 §2",
@@ -1114,7 +1114,7 @@ class StorySpec(Strict):
     )
     product_role: str = "product"
     architect_role: str = "architect"
-    build_role: str = "coder"
+    build_role: str = "architect"
     package_attempts: int = Field(
         default=2,
         ge=1,

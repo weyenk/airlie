@@ -215,6 +215,19 @@ def test_studio_roles_use_architect_and_product_on_gemma() -> None:
     assert "generalist" not in cfg.models
 
 
+def test_architect_is_build_role_with_coder_behaviors() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert cfg.story.build_role == "architect"
+    assert cfg.teams.role == "architect"
+    assert cfg.chat.task.default_role == "architect"
+    arch = cfg.roles["architect"]
+    tools = set(arch.tools or cfg.tools.builtin)
+    assert "write_file" in tools and "run_tests" in tools
+    assert arch.green_before_done is True
+    assert arch.think_when_red is True
+    assert arch.write_schedule is not None
+
+
 def test_generation_models_catalog_and_weights_engines() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     chroma = cfg.models["chroma_hd"]
