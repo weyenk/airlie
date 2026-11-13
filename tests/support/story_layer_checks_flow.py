@@ -95,7 +95,7 @@ def calc_repo(tmp_path: Path, gate: tuple[str, ...] = (), base_test: str = "asse
     (repo / "tests" / "test_base.py").write_text(
         f"from calc import add\n\n\ndef test_add():\n    {base_test}\n"
     )
-    git(repo, "init", "-q")
+    git(repo, "init", "-q", "-b", "main")
     git(repo, "add", "-A")
     git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
     return repo
