@@ -4,6 +4,7 @@ the role→served-model mapping; /v1/airlie/run launches a team run."""
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -515,6 +516,26 @@ class IdlessToolStream:
         ]
         body = "".join(f"data: {json.dumps(f)}\n\n" for f in frames) + "data: [DONE]\n\n"
         return httpx.Response(200, content=body.encode(), headers={"content-type": "text/event-stream"})
+
+
+def test_a_truncated_upstream_stream_logs_an_abnormal_end(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    def answer(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+            headers={"content-type": "text/event-stream"},
+        )
+
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(answer))
+    body = {"model": "base", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
+    with caplog.at_level(logging.INFO, logger="airlie.serve.app"), TestClient(app) as c:
+        assert c.post("/v1/chat/completions", json=body).status_code == 200
+    assert any(
+        "chat_completions_stream_end" in r.message and "end_reason=upstream_eof" in r.message
+        for r in caplog.records
+    )
 
 
 def test_streamed_tool_calls_always_carry_an_id_and_type(tmp_path: Path) -> None:

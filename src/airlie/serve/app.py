@@ -14,6 +14,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, ExitStack
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -251,18 +252,75 @@ async def release(holding: AsyncExitStack) -> None:
     await asyncio.shield(holding.aclose())
 
 
+@dataclass
+class ChatStreamEnd:
+    """One proxied streamed `/v1/chat/completions` reply (logged once when the hold is released)."""
+
+    engine: str
+    model: str
+    holder: str
+    reason: str = "in_progress"
+    detail: str = ""
+    saw_done: bool = False
+    frames: int = 0
+    logged: bool = field(default=False, repr=False)
+
+
+def _finish_chat_stream_end(note: ChatStreamEnd) -> None:
+    if note.logged:
+        return
+    note.logged = True
+    clean = note.reason == "clean" and note.saw_done
+    msg = "chat_completions_stream_end engine=%s model=%s holder=%s end_reason=%s saw_done=%s frames=%s%s"
+    args: tuple[Any, ...] = (
+        note.engine,
+        note.model,
+        note.holder,
+        note.reason,
+        note.saw_done,
+        note.frames,
+        f" detail={note.detail}" if note.detail else "",
+    )
+    if clean:
+        log.debug(msg, *args)
+        return
+    log.info(msg, *args)
+
+
 class HeldStream(StreamingResponse):
     """A streamed reply that owns the engine hold behind it and releases it however the response ends, also
     when the body generator never started (a client that dropped as the headers went out)."""
 
-    def __init__(self, content: AsyncIterator[bytes], holding: AsyncExitStack, **kw: Any) -> None:
+    def __init__(
+        self,
+        content: AsyncIterator[bytes],
+        holding: AsyncExitStack,
+        *,
+        stream_end: ChatStreamEnd | None = None,
+        **kw: Any,
+    ) -> None:
         super().__init__(content, **kw)
         self.holding = holding
+        self.stream_end = stream_end
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        note = self.stream_end
         try:
             await super().__call__(scope, receive, send)
+            if note is not None and note.reason == "in_progress":
+                note.reason = "clean" if note.saw_done else "client_eof"
+        except asyncio.CancelledError:
+            if note is not None:
+                note.reason = "client_disconnect"
+            raise
+        except Exception as exc:
+            if note is not None:
+                note.reason = "response_error"
+                note.detail = type(exc).__name__
+            raise
         finally:
+            if note is not None:
+                _finish_chat_stream_end(note)
             await release(self.holding)
 
 
@@ -1070,11 +1128,14 @@ def create_app(
             return _no_call_stops(_gen_to_chat_completion(res, name))
         holding = AsyncExitStack()  # the role's engine, held (and started if need be) for the upstream call
         engine_name = cfg.engine_for_model(proxy_model)
+        holder = f"chat:{uuid.uuid4().hex}"
         reply: Any = None
         try:
             if engine_name in managed:
-                await holding.enter_async_context(manager.hold(engine_name, f"chat:{uuid.uuid4().hex}"))
-            reply = await upstream_chat(out, base, headers, holding)
+                await holding.enter_async_context(manager.hold(engine_name, holder))
+            reply = await upstream_chat(
+                out, base, headers, holding, engine=engine_name, proxy_model=proxy_model, holder=holder
+            )
             return reply
         except EngineError as e:
             return engine_failed(engine_name, e)
@@ -1083,7 +1144,14 @@ def create_app(
                 await release(holding)
 
     async def upstream_chat(
-        out: dict[str, Any], base: str, headers: dict[str, str], holding: AsyncExitStack
+        out: dict[str, Any],
+        base: str,
+        headers: dict[str, str],
+        holding: AsyncExitStack,
+        *,
+        engine: str = "",
+        proxy_model: str = "",
+        holder: str = "",
     ) -> Any:
         if out.get("stream"):
             req = client.build_request(
@@ -1094,6 +1162,7 @@ def create_app(
                 timeout=httpx.Timeout(600.0, connect=10.0, read=CHAT_COMPLETIONS_READ_TIMEOUT_S),
             )
             resp = await client.send(req, stream=True)
+            stream_end = ChatStreamEnd(engine=engine, model=proxy_model, holder=holder)
 
             async def gen() -> AsyncIterator[bytes]:
                 repair = ToolCallStreamRepair()
@@ -1103,16 +1172,34 @@ def create_app(
                         buf += chunk
                         while b"\n\n" in buf:
                             frame, buf = buf.split(b"\n\n", 1)
+                            stream_end.frames += 1
+                            if b"data: [DONE]" in frame or frame.strip() == b"data: [DONE]":
+                                stream_end.saw_done = True
                             yield repair.frame(frame) + b"\n\n"
                     if buf:
+                        stream_end.frames += 1
+                        if b"data: [DONE]" in buf:
+                            stream_end.saw_done = True
                         yield repair.frame(buf)
+                    if stream_end.reason == "in_progress":
+                        stream_end.reason = "clean" if stream_end.saw_done else "upstream_eof"
+                except httpx.HTTPError as exc:
+                    stream_end.reason = "upstream_error"
+                    stream_end.detail = type(exc).__name__
+                    raise
                 finally:
                     try:
                         await resp.aclose()
                     finally:
                         await release(holding)
 
-            return HeldStream(gen(), holding, status_code=resp.status_code, media_type="text/event-stream")
+            return HeldStream(
+                gen(),
+                holding,
+                stream_end=stream_end,
+                status_code=resp.status_code,
+                media_type="text/event-stream",
+            )
         r = await client.post(
             f"{base}/chat/completions",
             json=out,
