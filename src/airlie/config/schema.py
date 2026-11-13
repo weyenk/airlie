@@ -101,7 +101,7 @@ class ModelSpec(Strict):
 class EngineSpec(Strict):
     """An inference endpoint. `mlx_vlm` is a process airlie manages; `openai_http` is any external server."""
 
-    kind: Literal["mlx_vlm", "openai_http"]
+    kind: Literal["mlx_vlm", "openai_http", "weights_only"]
     models: list[str] = Field(default_factory=list, description="catalog names this engine serves")
     model: str | None = Field(
         default=None, description="one-model spelling of `models` (what an mlx_vlm engine serves)"
@@ -158,6 +158,10 @@ class EngineSpec(Strict):
     def _derive_or_require_base_url(self) -> EngineSpec:
         if not self.models:
             raise ValueError("an engine needs model or models")
+        if self.kind == "weights_only":
+            if len(self.models) != 1:
+                raise ValueError("engines of kind 'weights_only' serve exactly one model")
+            return self
         if self.kind == "openai_http" and not self.base_url:
             raise ValueError("engines of kind 'openai_http' need a base_url (e.g. http://127.0.0.1:8080/v1)")
         if self.kind == "mlx_vlm" and self.served_names:

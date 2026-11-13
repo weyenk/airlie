@@ -215,6 +215,23 @@ def test_studio_roles_use_architect_and_product_on_gemma() -> None:
     assert "generalist" not in cfg.models
 
 
+def test_generation_models_catalog_and_weights_engines() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    chroma = cfg.models["chroma_hd"]
+    assert chroma.repo == "tillknuesting/chroma1-hd-mlx"
+    assert chroma.revision == "0b794d9391239d85530d2db3b4091b8b093d1af6"
+    wan = cfg.models["wan_t2v"]
+    assert wan.repo == "PocketAiHub/Wan2.2-T2V-A14B-MLX"
+    assert wan.revision == "86bfc9847512a9eb66886388b8b92ba81e0b6729"
+    assert cfg.engines["chroma"].kind == "weights_only"
+    assert cfg.engines["chroma"].lifecycle == "on_demand"
+    assert cfg.engines["chroma"].models == ["chroma_hd"]
+    assert cfg.engines["wan"].kind == "weights_only"
+    assert cfg.engines["wan"].models == ["wan_t2v"]
+    load_check = cfg.validate_references()
+    assert not load_check, load_check
+
+
 def test_committed_default_config_is_valid() -> None:
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")  # never the person's own
