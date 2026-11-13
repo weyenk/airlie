@@ -271,10 +271,7 @@ def _finish_chat_stream_end(note: ChatStreamEnd) -> None:
         return
     note.logged = True
     clean = note.reason == "clean" and note.saw_done
-    msg = (
-        "chat_completions_stream_end engine=%s model=%s holder=%s end_reason=%s "
-        "saw_done=%s frames=%s%s"
-    )
+    msg = "chat_completions_stream_end engine=%s model=%s holder=%s end_reason=%s saw_done=%s frames=%s%s"
     args: tuple[Any, ...] = (
         note.engine,
         note.model,
