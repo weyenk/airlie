@@ -2,7 +2,7 @@
 roles:
   coder:                           # the team agent: ReAct loop with repo tools
     prompt: prompts/roles/coder.md
-    model: generalist
+    model: architect
     max_context: 65536
     max_tokens: 10240                # the answer alone (no thinking): room for a whole-file write (HDS-5)
     thinking: false                  # 2026-10-18: the architect's brief is the plan. A thinking coder (Qwen3.8) ran its
@@ -64,7 +64,7 @@ roles:
   # (HDS-3, 2026-10-15). These roles use 16384 over a budget of 8192, which leaves up to 8192 tokens for the answer.
   chief:
     prompt: prompts/roles/chief.md
-    model: generalist
+    model: architect
     tools: [web_search, web_fetch]
     max_steps: 4
     max_context: 131072
@@ -83,7 +83,7 @@ roles:
     model: gemma4
     tools: []
     vision: true
-    max_context: 262144
+    max_context: 131072
     max_tokens: 16384
     thinking: true
     thinking_budget: 8192
@@ -95,7 +95,7 @@ roles:
       presence_penalty: 0.0
   lhr:                             # LHR authoring via lhr-office (Chat /lhr-publish only; not a chat model name)
     prompt: prompts/roles/lhr.md
-    model: generalist
+    model: architect
     tools:
       - lhr_create_draft
       - lhr_update_section
@@ -117,7 +117,7 @@ roles:
       presence_penalty: 0.0
   architect:
     prompt: prompts/roles/architect.md
-    model: generalist
+    model: architect
     tools: [read_file, list_dir, grep, compute]
     max_context: 131072
     # 16384 until 2026-11-01: AIR-47 layer 02's package (8 tests added to test_story_pipeline.py, 40k chars of
@@ -144,7 +144,7 @@ roles:
       presence_penalty: 0.0
   tester:                          # P2 (2026-10-24): the third amigo and the package critic; reads, never writes. On the generalist since 2026-10-26 (Noah): on Muse it lost the meeting's thread in runs 6, 8 and 10 on airlie-sandbox (empty turns, the opening echoed, its own proof never posted); the layer's reviewer stays on Muse
     prompt: prompts/roles/tester.md
-    model: generalist
+    model: architect
     tools: [read_file, list_dir, grep, compute]
     skills: skills/qa
     max_context: 131072
@@ -158,7 +158,7 @@ roles:
       presence_penalty: 0.0
   product:
     prompt: prompts/roles/product.md
-    model: generalist
+    model: gemma4
     tools: [read_file, list_dir, compute]
     max_tokens: 8192                # an epic set is longer than a story (the specs phase, 2026-10-25)
     max_context: 131072             # the imagining conversation holds the consultations
@@ -200,7 +200,7 @@ roles:
       presence_penalty: 0.0
   docs:
     prompt: prompts/roles/docs.md
-    model: generalist
+    model: architect
     tools: [read_file, list_dir, grep]
     max_tokens: 4096
     thinking: false
@@ -213,7 +213,7 @@ roles:
       presence_penalty: 0.0
   research:
     prompt: prompts/roles/research.md
-    model: generalist
+    model: architect
     tools: [read_file, list_dir, grep, search_knowledge, web_search, web_fetch]
     knowledge: knowledge/research
     max_tokens: 16384
@@ -228,7 +228,7 @@ roles:
       presence_penalty: 0.0
   security:
     prompt: prompts/roles/security.md
-    model: generalist
+    model: architect
     tools: [read_file, list_dir, grep]
     max_tokens: 4096
     thinking: false
@@ -270,7 +270,7 @@ roles:
       presence_penalty: 0.0
   aggregator:                      # spec 01 §4 step 9: combines team outputs into the final verified answer
     prompt: prompts/roles/aggregator.md
-    model: generalist
+    model: architect
     max_context: 65536
     max_tokens: 4096
     thinking: false
