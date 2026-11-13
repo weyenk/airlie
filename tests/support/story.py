@@ -361,10 +361,7 @@ def card_of_epic(key: str, ps: PlannedStory, after: tuple[str, ...] = ()) -> Car
     return Card(key, key, key, ps.title, render_story_card(ps, HEADER, after), None, (), labels)
 
 
-MEETING_ROLES = {
-    **STORY_ROLES,
-    "tester": ("---\nsummary: Proof planning\n---\n# tester", ["read_file", "list_dir"]),
-}
+MEETING_ROLES = STORY_ROLES
 
 MEETING = {"amigos": {"enabled": True}}
 
@@ -493,6 +490,9 @@ def replay_meeting(
 
 EASY_MEETING = {
     "product": [spoken("Reworded nothing.", block(REWORDED_STORY), AGREE_V), spoken("ok", AGREE_V)],
-    "architect": [spoken("Files named.", block(AGREED_SPLIT), AGREE_V), spoken("ok", AGREE_V)],
-    "tester": [spoken("The proof.", block(AGREED_PROOF), AGREE_V)],
+    "architect": [
+        spoken("Files named.", block(AGREED_SPLIT), AGREE_V),
+        spoken("The proof.", block(AGREED_PROOF), AGREE_V),
+        spoken("ok", AGREE_V),
+    ],
 }

@@ -234,6 +234,13 @@ def test_coder_and_tester_roles_removed() -> None:
     assert "tester" not in cfg.roles
 
 
+def test_pipeline_package_critic_uses_architect() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert "tester" not in cfg.roles
+    arch = cfg.roles["architect"]
+    assert arch.skills is not None and cfg.story.architect_role == "architect"
+
+
 def test_generation_models_catalog_and_weights_engines() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     chroma = cfg.models["chroma_hd"]

@@ -95,6 +95,7 @@ roles:
   architect:
     prompt: prompts/roles/architect.md
     model: architect
+    skills: skills/qa
     tools: [read_file, write_file, edit_file, list_dir, grep, shell, run_tests, git, compute]
     max_context: 131072
     max_tokens: 12288                  # 4096 thinking_budget + 8192 answer headroom on package turns; build uses less

@@ -1109,10 +1109,10 @@ class StoryPipeline:
         return layers
 
     async def _routed_guideline(self, st: StoryState, story: Story) -> Skill | None:
-        """The tester's testing guideline Kev routes for the story (the studio's `_skill`, reused): None when
-        the tester role has no guideline library, the router has no answer, or it fails (a missing guideline
+        """The architect's testing guideline Kev routes for the story (the studio's `_skill`, reused): None when
+        the architect role has no guideline library, the router has no answer, or it fails (a missing guideline
         is never a reason to stop)."""
-        spec = self.cfg.roles.get("tester")
+        spec = self.cfg.roles.get(self.s.architect_role)
         skills = load_skills(spec.skills) if spec is not None and spec.skills is not None else []
         if not skills:
             return None
@@ -1283,16 +1283,11 @@ class StoryPipeline:
         if st.done("layers") or not self.s.amigos.enabled:
             return agree_plain(st, story, layers)
         keep_refined(st, story, layers)
-        tester = self.cfg.roles.get("tester")
-        if tester is None:
-            raise StoryBlocked(
-                "story.amigos is on, but the config has no 'tester' role for the meeting: add the role "
-                "(config/roles.yaml) or set story.amigos.enabled to false"
-            )
         base = await self._base(st)
         sha = base["sha"]
         routed = await self._routed_guideline(st, story)
-        found = conventions(self.repo, sha, tester.skills, routed)
+        arch = self.cfg.roles[self.s.architect_role]
+        found = conventions(self.repo, sha, arch.skills, routed)
         opening = opening_message(
             story,
             layers,
@@ -2040,10 +2035,10 @@ class StoryPipeline:
         return Agreement.from_dict(st.agreement).proof_for(layer.slug) if st.agreement else ()
 
     def _conventions_text(self, base_sha: str) -> str:
-        """The tester's view of the repository at `base_sha`, for the critic and a proof revision (the
+        """The architect's view of the repository at `base_sha`, for the critic and a proof revision (the
         guideline the router chose for the meeting is not carried: the summaries are)."""
-        tester = self.cfg.roles.get("tester")
-        found = conventions(self.repo, base_sha, tester.skills if tester is not None else None, None)
+        arch = self.cfg.roles.get(self.s.architect_role)
+        found = conventions(self.repo, base_sha, arch.skills if arch is not None else None, None)
         return conventions_text(found, self.commands)
 
     def _with_tests(self, st: StoryState, base_sha: str, tests: Mapping[str, str]) -> str:
@@ -2074,8 +2069,8 @@ class StoryPipeline:
         proof: tuple[ProofTest, ...],
         drafting: Session | None = None,
     ) -> Package | ProofChange | Satisfied:
-        """The tester critic's turn on a package (D9), when the layer has an agreed proof: one read-only ask
-        of the tester role at the base with the test files, the layer's proof and the conventions. An
+        """The architect critic's turn on a package (D9), when the layer has an agreed proof: one read-only ask
+        of the architect role at the base with the test files, the layer's proof and the conventions. An
         objection is the architect's one revision (`package-fix` after the objections); a critic that cannot
         be read, or does not finish, is no objection (an event says so): the mechanical checks follow
         either way. Events: amigos_critic, and an amigos_objection (source "package") per objection."""
@@ -2117,7 +2112,7 @@ class StoryPipeline:
         try:
             at = at or self._with_tests(st, base_sha, package.tests)
             objections = parse_critic_verdict(
-                await self._ask(st, "critic", "tester", brief, at=at, steps=CRITIC_STEPS)
+                await self._ask(st, "critic", self.s.architect_role, brief, at=at, steps=CRITIC_STEPS)
             )
         except (StoryError, StoryBlocked) as e:
             st.emit("amigos_critic_unreadable", layer=nn, reason=_cap(str(e), 300))
@@ -2141,7 +2136,7 @@ class StoryPipeline:
         said = Said()
         told = "\n".join(
             [
-                "The tester read your tests against the agreed proof and objects:",
+                "The architect read your tests against the agreed proof and objects:",
                 *(
                     f"- {o.about}: {o.claim}" + (f" Suggested: {o.suggest}" if o.suggest else "")
                     for o in objections
@@ -2162,13 +2157,13 @@ class StoryPipeline:
         change: ProofChange,
         replan: bool,
     ) -> Story:
-        """The architect found layer `i`'s agreed proof wrong (D12): the tester revises that layer's tests in
-        one fresh ask (the contract of the meeting's proof, this layer only, the architect's reasons as data),
+        """The architect found layer `i`'s agreed proof wrong (D12): it revises that layer's tests in
+        one fresh ask (the contract of the meeting's proof, this layer only, its reasons as data),
         parsed against the whole agreement; the stored agreement takes the new tests. When it found criteria
-        false, product rewords them first (`_revise_criteria`) and the tester revises against the new story.
+        false, product rewords them first (`_revise_criteria`) and the architect revises against the new story.
         When the layer is being re-planned after a red gate, a `gate_red` lesson records `proof_revised`.
         The story as it now stands is returned. StoryError when there is no agreed proof to change;
-        StoryBlocked when product or the tester gives no usable revision."""
+        StoryBlocked when product or the architect gives no usable revision."""
         nn, layer = f"{i + 1:02d}", layers[i]
         if st.agreement is None or not self._layer_proof(st, layer):
             raise StoryError("this layer has no agreed proof to change: write its package from its criteria")
@@ -2177,9 +2172,9 @@ class StoryPipeline:
         agreement = Agreement.from_dict(st.agreement)
         mine = agreement.proof_for(layer.slug)
         others = [t.to_dict() for t in agreement.proof if t.layer != layer.slug]
-        tester = self.cfg.roles["tester"]
+        arch = self.cfg.roles[self.s.architect_role]
         levels = test_levels(self.repo, base_sha)
-        guidelines = {g.name for g in conventions(self.repo, base_sha, tester.skills, None).guidelines}
+        guidelines = {g.name for g in conventions(self.repo, base_sha, arch.skills, None).guidelines}
 
         def parse(text: str) -> tuple[ProofTest, ...]:
             obj = extract_json_block(text)
@@ -2210,7 +2205,7 @@ class StoryPipeline:
         proof = await self._usable(
             st,
             "proof",
-            "tester",
+            self.s.architect_role,
             "proof revision",
             lambda feedback: proof_revision_brief(story, layer, mine, reasons, conventions_text_, feedback),
             parse,
