@@ -2,9 +2,9 @@
 # Spec 01 §1 names Llama-3.3-70B-Instruct-4bit or Qwen2.5-32B-Instruct-4bit for the base-model slot. Noah 2026-10-12:
 # a modern model for the same slot is fine as long as it stays configurable and benchmarkable; the spec's two left the
 # catalog with the mlx-vlm engine (design 2026-11-08), never benched.
-# The team model is `generalist` (Qwen3.8-27B, hybrid attention): the engine's hybrid prefix cache (engine/patches/
-# hybrid_prefix_cache.py) keeps a resumed turn from re-prefilling its whole prompt. Qwen3-Coder was dropped as the
-# team model (Noah 2026-10-18: AIR-5 showed its 6-bit fidelity too low for the speed).
+# The team model is `architect` (Qwen3.8-Flash-Next REAP, hybrid attention): the engine's hybrid prefix cache
+# (engine/patches/hybrid_prefix_cache.py) keeps a resumed turn from re-prefilling its whole prompt.
+# Qwen3-Coder was dropped as the team model (Noah 2026-10-18: AIR-5 showed its 6-bit fidelity too low for the speed).
 # To swap the team model: change `roles.coder.model`.
 models:
   small:
@@ -12,18 +12,18 @@ models:
     revision: 4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25   # 2025-04-28
     estimated_memory_gb: 3
     kv_mb_per_1k_tokens: 144
-  generalist:                      # Qwen3.8-27B: the team model (coder, security, aggregator) and the chief; vision; hybrid attention
-    repo: mlx-community/Qwen3.8-27B-4bit
-    label: Qwen 3.8
-    revision: 10c35caafbb80f7dc6a7a432cdd11af10a6d4818   # 2026-09-14
-    mtp:                           # its MTP head (BF16, 0.85 GB; the 4-bit build drops it): speculative decoding,
-      repo: mlx-community/Qwen3.8-27B-MTP-bf16                # the same output distribution, faster decode
-      revision: 9b1e8ab2bcfd157956a4d85927310de551fcdab1   # 2026-08-14
-      estimated_memory_gb: 0.85
+  architect:                       # Qwen3.8-Flash-Next REAP (team/coding model; same name as the role)
+    repo: sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit
+    label: Qwen 3.8 Flash Next
+    revision: 668f31bcc56bf9400e64c9463445eee47597c2d9   # 2026-11-13
+    mtp:
+      repo: sh0wie/Qwen3.8-Flash-Next-MTP-Drafter-MLX-bf16
+      revision: be6e2bc325d41ac7858b99269a96c495349b494d   # 2026-11-13
+      estimated_memory_gb: 0.6
     bench: true
-    estimated_memory_gb: 16.1
-    kv_mb_per_1k_tokens: 64
-    tool_call_parser: qwen3_coder  # Qwen3.8 writes Qwen3-Coder's XML
+    estimated_memory_gb: 10.5      # REAP 4-bit MoE; `task doctor` warns if pull differs — re-measure after first pull
+    kv_mb_per_1k_tokens: 48        # Flash-Next hybrid; tighten after doctor documents actual layers
+    tool_call_parser: qwen3_coder
     tags: [modern, coder, vision, hybrid-attention]
   gemma4:                          # Gemma 4 26B-A4B-it QAT 8-bit: chat, design, ux
     label: Gemma 4
