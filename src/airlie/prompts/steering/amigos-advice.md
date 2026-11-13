@@ -1,6 +1,6 @@
 ---
 kind: steering
-roles: [product, architect, tester]
+roles: [product, architect]
 when: The meeting's checker finds the parts sound but has advice (an ADVISORY finding, such as proof_sampled); it follows "no findings".
 governs:
   agreement.advice: owner-decides
