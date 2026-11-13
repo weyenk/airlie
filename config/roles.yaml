@@ -240,7 +240,7 @@ roles:
       min_p: 0.0
       presence_penalty: 0.0
       repetition_penalty: 1.05
-  reviewer:                        # on Gemma since 2026-11-12 (Noah): a different lab than the coder's Qwen, already resident, so no second model in memory; Muse stays defined as the `reviewer` model
+  reviewer:                        # on Gemma since 2026-11-12 (Noah): a different lab than the coder's Qwen, already resident, so no second model in memory
     prompt: prompts/roles/reviewer.md
     model: gemma4
     tools: [web_search, web_fetch]

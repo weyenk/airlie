@@ -401,7 +401,6 @@ def test_committed_config_declares_four_autostart_engines_and_the_bench_engines(
         )
     )  # the HF-cache snapshot: the exact --model string
     assert cfg.models["architect"].tool_call_parser == "qwen3_coder"
-    assert cfg.models["reviewer"].tool_call_parser == "atem"
     gemma = cfg.models["gemma4"]
     assert (gemma.repo, gemma.revision, gemma.mtp, gemma.mtp_block_size, gemma.tool_call_parser) == (
         "mlx-community/gemma-4-26B-A4B-it-qat-8bit",
@@ -1793,11 +1792,11 @@ def test_a_repository_chat_cannot_drop_a_confirmation_of_push_pr_or_build(
 
 def test_the_reviewer_is_a_different_lab_than_the_coder_and_runs_on_a_served_engine() -> None:
     """Noah 2026-11-12: the reviewer (and the supervisor) run on gemma4 (Google), the coder on the architect
-    (Qwen Flash-Next): a different lab on purpose, with no second model in memory; the Muse catalog entry stays."""
+    (Qwen Flash-Next): a different lab on purpose, with no second model in memory; Muse catalog dropped 2026-11-13."""
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     assert cfg.roles["reviewer"].model == cfg.roles["supervisor"].model == "gemma4"
     assert "Qwen" in cfg.models["architect"].repo and "gemma" in cfg.models["gemma4"].repo.lower()
-    assert "reviewer" not in cfg.engines and "reviewer" in cfg.models
+    assert "reviewer" not in cfg.engines and "reviewer" not in cfg.models
 
 
 def test_github_app_source_needs_an_app_id(tmp_path: Path) -> None:

@@ -36,13 +36,6 @@ models:
     kv_mb_per_1k_tokens: 22
     tool_call_parser: gemma4
     tags: [modern, vision, chat]
-  reviewer:                        # Muse Glimmer 30B (Meta, Apache 2.0): not served by default since 2026-11-12; the reviewer role is on gemma4
-    repo: mlx-community/Muse-Glimmer-30B-4bit
-    revision: 3e7677d7a40d348a3daba263a2b1c0aa41910710   # 2026-08-10
-    estimated_memory_gb: 19.4
-    kv_mb_per_1k_tokens: 64        # 2 KV heads × 128 dim × 52 layers, 3/4 of them sliding-window
-    tool_call_parser: atem         # mlx-vlm's name for Muse's tool-call format
-    tags: [modern, vision, reviewer]
   decider_2b:                      # the decision model (router, decide tool) on mlx-vlm's /v1/decisions
     repo: nativ-community/decider-2b   # the repo mlx-vlm documents; Mapika/decider-2b fails to load on 0.7.12 and
                                        # clef-flash-4bit is no decision model there. LiquidAI/d1-3B is the documented
