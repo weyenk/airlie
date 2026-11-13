@@ -6,10 +6,10 @@ from typing import Any
 
 GOOD: dict[str, Any] = {
     "category": "missing_import",
-    "owner": "tester",
+    "owner": "architect",
     "diagnosis": "Path is not imported.",
     "evidence": ["NameError: name 'Path' is not defined"],
     "message": "Import Path, then edit.",
-    "would_route_to": "tester",
+    "would_route_to": "architect",
     "fix_if_attempt": None,
 }

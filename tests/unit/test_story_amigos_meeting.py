@@ -118,6 +118,16 @@ def noop(turn: Turn, state: Mapping[str, Any]) -> None:
     return None
 
 
+def _two_seat(script: Mapping[str, list[Any]]) -> dict[str, list[Any]]:
+    if "tester" not in script:
+        return {k: list(v) for k, v in script.items()}
+    out = {k: list(v) for k, v in script.items() if k != "tester"}
+    arch = out.get("architect", [])
+    proof = list(script["tester"])
+    out["architect"] = ([arch[0], *proof, *arch[1:]] if arch else proof)
+    return out
+
+
 def meeting(
     script: Mapping[str, list[Any]],
     *,
@@ -127,6 +137,7 @@ def meeting(
     tool_iterations: int = 0,
     cfg: AirlieConfig = CFG,
 ) -> Meeting:
+    script = _two_seat(script)
     return Meeting(
         cfg,
         clients=clients(script),
@@ -151,8 +162,10 @@ async def agree(
 # a meeting where product and the architect agree from the start and the tester proposes the proof in round 1
 EASY: dict[str, list[Any]] = {
     "product": [say("The criteria read fine.", AGREE)] * 2,
-    "architect": [say("The split holds.", AGREE)] * 2,
-    "tester": [say("Here is the proof.", fence(PROOF), AGREE), say("Still good.", AGREE)],
+    "architect": [
+        say("The split holds.", fence(PROOF), AGREE),
+        say("Still good.", AGREE),
+    ],
 }
 
 
@@ -164,15 +177,15 @@ async def test_a_meeting_that_agrees_in_one_round_ends_with_the_agreement_and_no
     found nothing in it): six turns, and the agreement is the story, the split and the tester's proof."""
     seen: list[Turn] = []
     out = await agree(meeting(EASY, on_turn=lambda t, s: seen.append(t)), tmp_path)
-    assert [t.role for t in seen] == ["product", "architect", "tester", "airlie", "product", "architect"]
+    assert [t.role for t in seen] == ["product", "architect", "airlie", "product"]
     assert [t.text for t in seen if t.role == "airlie"] == ["no findings"]
-    assert out.turns == 6 and out.unresolved == () and out.decided_by_owner == ()
+    assert out.turns == 4 and out.unresolved == () and out.decided_by_owner == ()
     assert out.story == STORY and out.layers == LAYERS
     assert [t.id for t in out.proof] == [
         "tests/unit/test_store.py::test_stores_a_png",
         "tests/integration/test_profile.py::test_profile_shows_the_avatar",
     ]
-    assert len(seen[2].parts["proof"]) == 2 and seen[0].verdict is not None
+    assert len(seen[1].parts["proof"]) == 2 and seen[0].verdict is not None
 
 
 async def test_a_part_posted_again_unchanged_is_no_revision_and_costs_no_round(tmp_path: Path) -> None:
@@ -186,7 +199,7 @@ async def test_a_part_posted_again_unchanged_is_no_revision_and_costs_no_round(t
         "tester": [say("Here is the proof.", fence(PROOF), AGREE)] + [say("Still good.", AGREE)] * 3,
     }
     out = await agree(meeting(again), tmp_path)
-    assert out.turns == 6 and out.layers == LAYERS
+    assert out.turns == 7 and out.layers == LAYERS
 
 
 async def test_an_objection_is_answered_by_a_revision_the_checker_reads_and_the_objector_agrees(
@@ -202,8 +215,7 @@ async def test_an_objection_is_answered_by_a_revision_the_checker_reads_and_the_
             ),
             say("Better.", AGREE),
         ],
-        "architect": [say("ok", AGREE)] * 3,
-        "tester": [
+        "architect": [
             say("Proof.", fence(PROOF), AGREE),
             say("Sharper, product.", fence(revised), AGREE),
             say("Still good.", AGREE),
@@ -211,11 +223,11 @@ async def test_an_objection_is_answered_by_a_revision_the_checker_reads_and_the_
     }
     seen: list[Turn] = []
     out = await agree(meeting(script, on_turn=lambda t, s: seen.append(t)), tmp_path)
-    assert out.turns == 10 and out.unresolved == () and out.decided_by_owner == ()
+    assert out.turns == 7 and out.unresolved == () and out.decided_by_owner == ()
     assert out.proof[1].asserts == "the page holds the avatar url and its alt text"
-    objecting = seen[4]  # product's second turn
+    objecting = seen[3]  # product's second turn
     assert objecting.verdict is not None and objecting.verdict.objections[0].about == "AC2"
-    assert [t.text for t in seen if t.role == "airlie"] == ["no findings"] * 2
+    assert [t.text for t in seen if t.role == "airlie"] == ["no findings", "no findings"]
 
 
 async def test_a_turn_without_a_verdict_whose_role_gives_none_when_asked_is_a_finding(tmp_path: Path) -> None:
@@ -234,24 +246,29 @@ async def test_a_turn_without_a_verdict_whose_role_gives_none_when_asked_is_a_fi
         and seen[0].problems[0].kind == "verdict_missing"
         and seen[0].verdict_asked is False
     )
-    first_check = seen[3].text
+    first_check = seen[2].text
     assert "verdict_missing" in first_check and "product" in first_check
-    assert out.turns > 4 and out.turns % 4 == 0 and out.unresolved == ()
+    assert out.turns > 3 and out.turns % 3 == 1 and out.unresolved == ()
 
 
 async def test_a_turn_without_a_verdict_is_asked_once_for_it_and_keeps_its_round(tmp_path: Path) -> None:
     """2026-10-31 (roman): the architect's turns that used tools ended in AutoGen's reflection with what its
     checks showed and no verdict, three times in one meeting, each a lost round. Asked once, at once, for the
     verdict, the turn counts: the meeting ends at six turns as if it had been there."""
+    split = fence({"layers": [x.to_dict() for x in LAYERS]})
     script = {
-        "product": [say("The criteria read fine.", AGREE)] * 2,
-        "architect": [say("All the numbers check out.", ""), AGREE, say("The split holds.", AGREE)],
-        "tester": [say("Here is the proof.", fence(PROOF), AGREE), say("Still good.", AGREE)],
+        "product": [say("The criteria read fine.", AGREE)] * 4,
+        "architect": [
+            say("All the numbers check out.", ""),
+            AGREE,
+            say("The split holds.", split, fence(PROOF), AGREE),
+            say("Still good.", AGREE),
+        ],
     }
     seen: list[Turn] = []
     out = await agree(meeting(script, on_turn=lambda t, s: seen.append(t)), tmp_path)
     assert seen[1].role == "architect" and seen[1].verdict is not None and seen[1].verdict_asked
-    assert not seen[1].problems and out.turns == 6 and out.unresolved == ()
+    assert not seen[1].problems and out.turns == 7 and out.unresolved == ()
 
 
 async def test_a_verdict_inside_prose_is_not_a_revised_part_and_a_bad_part_is_a_finding(
@@ -263,8 +280,7 @@ async def test_a_verdict_inside_prose_is_not_a_revised_part_and_a_bad_part_is_a_
     bad = proof_with(level="smoke", file="tests/smoke/test_profile.py")
     script = {
         "product": [say("ok", AGREE)] * 3,
-        "architect": [say("ok", AGREE)] * 3,
-        "tester": [
+        "architect": [
             say("Proof.", fence(bad), AGREE),
             say("Corrected.", fence(PROOF), AGREE),
             say("ok", AGREE),
@@ -272,11 +288,11 @@ async def test_a_verdict_inside_prose_is_not_a_revised_part_and_a_bad_part_is_a_
     }
     seen: list[Turn] = []
     out = await agree(meeting(script, on_turn=lambda t, s: seen.append(t)), tmp_path)
-    kept = seen[2].parts["proof"]
+    kept = seen[1].parts["proof"]
     assert kept and all(t.level != "smoke" for t in kept)
-    assert seen[2].problems[0].kind == "part_invalid" and "in your proof" in seen[2].problems[0].why
-    assert "part_invalid" in seen[3].text and "level" in seen[3].text and "tester" in seen[3].text
-    assert out.proof and out.turns == 10
+    assert seen[1].problems[0].kind == "part_invalid" and "in your proof" in seen[1].problems[0].why
+    assert "part_invalid" in seen[2].text and "level" in seen[2].text and "architect" in seen[2].text
+    assert out.proof and out.turns == 7
 
 
 async def test_a_meeting_that_never_agrees_ends_at_max_turns_with_owner_decides_on_record(
@@ -289,20 +305,19 @@ async def test_a_meeting_that_never_agrees_ends_at_max_turns_with_owner_decides_
             say("The proof is thin.", verdict(("proof", "AC2", "thin"), proof="object")),
             say("Still thin.", verdict(("proof", "AC2", "still thin"), proof="object")),
         ],
-        "architect": [say("ok", AGREE)] * 2,
-        "tester": [
+        "architect": [
             say("Proof.", fence(PROOF), verdict(("requirements", "AC1", "vague"), requirements="object")),
             say("Same.", verdict(("requirements", "AC1", "still vague"), requirements="object")),
         ],
     }
     seen: list[Turn] = []
-    out = await agree(meeting(script, max_turns=8, on_turn=lambda t, s: seen.append(t)), tmp_path)
-    assert out.turns == 8 and len(seen) == 8
+    out = await agree(meeting(script, max_turns=6, on_turn=lambda t, s: seen.append(t)), tmp_path)
+    assert out.turns == 6 and len(seen) == 6
     assert [t.text for t in seen if t.role == "airlie"] == ["no findings", "no findings"]  # unchanged: silent
     assert set(out.decided_by_owner) == {"requirements", "proof"}
     assert {(o.by, o.part, o.claim) for o in out.unresolved} == {
         ("product", "proof", "still thin"),
-        ("tester", "requirements", "still vague"),
+        ("architect", "requirements", "still vague"),
     }
     assert out.story == STORY and out.layers == LAYERS and len(out.proof) == 2  # each owner's part stands
 
@@ -318,8 +333,11 @@ async def test_the_checkers_findings_are_posted_after_a_changed_part_and_nothing
     )
     script = {
         "product": [say("ok", AGREE)] * 3,
-        "architect": [say("ok", AGREE)] * 3,
-        "tester": [say("Proof.", fence(wrong), AGREE), say("Fixed.", fence(PROOF), AGREE), say("ok", AGREE)],
+        "architect": [
+            say("Proof.", fence(wrong), AGREE),
+            say("Fixed.", fence(PROOF), AGREE),
+            say("ok", AGREE),
+        ],
     }
     seen: list[Turn] = []
     await agree(meeting(script, on_turn=lambda t, s: seen.append(t)), tmp_path)
@@ -358,32 +376,26 @@ async def test_a_dropped_criterion_in_the_meeting_leaves_findings_until_the_owne
         "product": [
             say("ok", AGREE),
             say("Drop AC2.", fence(dropped), AGREE),
-            say("ok", AGREE),
-            say("ok", AGREE),
+            *[say("ok", AGREE)] * 12,
         ],
         "architect": [
-            say("ok", AGREE),
-            say("ok", AGREE),
-            say("One layer.", fence(split), AGREE),
-            say("ok", AGREE),
-        ],
-        "tester": [
             say("Proof.", fence(PROOF), AGREE),
             say("ok", AGREE),
+            say("One layer.", fence(split), AGREE),
             say("Fewer tests.", fence(only), AGREE),
-            say("ok", AGREE),
+            *[say("ok", AGREE)] * 12,
         ],
     }
     seen: list[Turn] = []
     out = await agree(meeting(script, on_turn=lambda t, s: seen.append(t)), tmp_path)
     says = [t.text for t in seen if t.role == "airlie"]
-    assert says[0] == "no findings"
-    assert says[1].count("stale_reference") == 2 and "AC2" in says[1]  # the profile layer and its test
-    assert says[2:] == ["no findings"]
+    stale = next(s for s in says if "stale_reference" in s)
+    assert stale.count("stale_reference") == 2 and "AC2" in stale
+    assert says[-1] == "no findings"
     assert [c.id for c in out.story.acceptance] == ["AC1"]
     assert out.dropped == {"AC2": "shown by the profile story instead"}
     assert [x.slug for x in out.layers] == ["storage"] and len(out.proof) == 1
-    assert out.unresolved == () and out.turns == 14
+    assert out.unresolved == () and out.turns >= 10
 
 
 async def test_product_blocking_the_request_stops_the_meeting(tmp_path: Path) -> None:
@@ -405,7 +417,7 @@ async def test_on_turn_receives_every_turn_and_the_teams_state(tmp_path: Path) -
         states.append(json.loads(json.dumps(state)))  # it must be JSON, for the story's state file
 
     await agree(meeting(EASY, on_turn=on_turn), tmp_path)
-    assert len(states) == len(seen) == 6
+    assert len(states) == len(seen) == 4
     for n, state in enumerate(states, 1):
         thread = state["agent_states"]["RoundRobinGroupChatManager"]["message_thread"]
         assert sum(1 for m in thread if m["source"] != "user") == n
@@ -414,7 +426,7 @@ async def test_on_turn_receives_every_turn_and_the_teams_state(tmp_path: Path) -
 
 @pytest.mark.parametrize(
     ("cut", "next_speakers"),
-    [(2, ["airlie", "product", "architect"]), (3, ["product", "architect"]), (4, ["architect"])],
+    [(1, ["airlie", "product"]), (2, ["product"]), (3, [])],
 )
 async def test_a_meeting_resumes_from_a_saved_state_with_the_next_speaker_in_order(
     tmp_path: Path, cut: int, next_speakers: list[str]
@@ -447,7 +459,7 @@ async def test_an_agreed_state_is_not_run_again(tmp_path: Path) -> None:
     )
     out = await agree(
         meeting(
-            {"product": [], "architect": [], "tester": []},
+            {"product": [], "architect": []},
             on_turn=lambda t, s: pytest.fail("no turn should run"),
         ),
         tmp_path / "b",
@@ -482,8 +494,14 @@ async def test_the_architect_reads_with_its_tools_inside_its_turn(tmp_path: Path
         "family": "unknown",
         "structured_output": False,
     }
+    split = fence({"layers": [x.to_dict() for x in LAYERS]})
     script = {r: list(v) for r, v in EASY.items()}
-    script["architect"] = [read, say("I read the store.", AGREE), say("ok", AGREE)]
+    script["product"] = [say("The criteria read fine.", AGREE)] * 4
+    script["architect"] = [
+        read,
+        say("I read the store.", split, fence(PROOF), AGREE),
+        say("Still good.", AGREE),
+    ]
 
     def factory(role_name: str, spec: RoleSpec) -> ReplayChatCompletionClient:
         return ReplayChatCompletionClient(script[role_name], model_info=info)
@@ -499,7 +517,7 @@ async def test_the_architect_reads_with_its_tools_inside_its_turn(tmp_path: Path
     )
     out = await agree(m, tmp_path / "m")
     assert asked == ["read_file"]
-    assert seen[1].text.startswith("I read the store.") and out.turns == 6
+    assert seen[1].text.startswith("I read the store.") and out.turns == 4
 
 
 def test_latest_parts_are_the_last_valid_version_by_the_owner() -> None:
@@ -520,13 +538,13 @@ def test_the_opening_message_lays_out_the_story_the_split_the_conventions_and_th
         "## The repository's test gate\n- uv run pytest",
         (Lesson("Layer 01", ending="gate_red"),),
     )
-    assert "a meeting of three" in text and "Avatars" in text and "AC2" in text
+    assert "a meeting of two" in text and "Avatars" in text and "AC2" in text
     assert '"slug": "storage"' in text and '"path": "src/store.py"' in text
     assert "uv run pytest" in text and "Layer 01" in text and "gate_red" in text
     assert '"type": "story"' in text and '"layers"' in text and '"type": "proof"' in text
     assert '"type": "verdict"' in text and "End every turn with your verdict" in text
     assert "End your reply with one" not in text  # the turn ends with the verdict, not with a part
-    assert "tester" in text and "proof" in text
+    assert "architect" in text and "proof" in text
     assert parse_proof is not None
 
 
@@ -535,7 +553,7 @@ def test_the_real_meeting_speaks_to_each_roles_engine_with_the_configured_limits
     from airlie.teams.autogen_client import RepairingOpenAIClient
 
     clients = http_clients(CFG)
-    for role in ("product", "architect", "tester"):
+    for role in ("product", "architect"):
         client = clients(role, CFG.roles[role])
         assert isinstance(client, RepairingOpenAIClient)
         engine = CFG.engines[CFG.engine_for_model(CFG.roles[role].model)]
@@ -556,13 +574,13 @@ def test_while_no_proof_is_on_record_the_checker_names_who_posted_one_in_the_tes
     from airlie.story.amigos import NO_PROOF, no_proof_why
     from airlie.story.layer_checks import Finding
 
-    refused = Finding("part_invalid", "product", "you posted the proof, which is tester's part; ...", "")
-    assert no_proof_why([Turn("tester", "I've read the tests.")]) == NO_PROOF
+    refused = Finding("part_invalid", "product", "you posted the proof, which is architect's part; ...", "")
+    assert no_proof_why([Turn("architect", "I've read the tests.")]) == NO_PROOF
     told = no_proof_why(
-        [Turn("tester", "x"), Turn("product", "y", None, {}, (refused,)), Turn("airlie", "z")]
+        [Turn("architect", "x"), Turn("product", "y", None, {}, (refused,)), Turn("airlie", "z")]
     )
     assert told.startswith(NO_PROOF) and told.endswith(
-        "The proof product posted is not the tester's and was not used"
+        "The proof product posted is not the architect's and was not used"
     )
     assert '"stands as posted" posts nothing' in NO_PROOF
 

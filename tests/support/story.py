@@ -218,10 +218,12 @@ def kinds(path: Path, kind: str) -> list[dict[str, Any]]:
 
 def happy_engine(**scripts: list[FakeReply]) -> FakeEngine:
     """The replies of a story whose two layers build first time; a keyword replaces one role's script."""
+    scripts = dict(scripts)
+    build = scripts.pop("coder", [WRITE_PASS, RUN, DONE, NOTE, DONE])
+    plan = scripts.pop("architect", [LAYERS, *PKGS])
     base = {
         "product": [STORY],
-        "architect": [LAYERS, *PKGS],
-        "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+        "architect": list(plan) + list(build),
         "reviewer": [APPROVE, APPROVE],
     }
     return FakeEngine({**base, **scripts})

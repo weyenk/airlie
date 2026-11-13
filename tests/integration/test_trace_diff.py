@@ -22,13 +22,13 @@ def state_dir(root: Path, name: str, *, outcome: Outcome = "helped", extra_node:
     (story / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     run = state / "runs" / "20261112-010101-abcd"
     (run / "trace" / "build").mkdir(parents=True)
-    studio = [{"kind": "step", "role": "coder", "ts": 3.0, "path": str(state / "wt")}]
+    studio = [{"kind": "step", "role": "architect", "ts": 3.0, "path": str(state / "wt")}]
     if extra_node:
         studio.append({"kind": "node_started", "node": "place"})
     (run / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in studio))
     (run / "trace" / "build" / "prompt.json").write_text(
         json.dumps(
-            {"role": "coder", "attempt": 0, "messages": [{"role": "user", "content": f"build in {state}/wt"}]}
+            {"role": "architect", "attempt": 0, "messages": [{"role": "user", "content": f"build in {state}/wt"}]}
         )
     )
     ledger = Ledger(state / "supervisor.sqlite")
@@ -142,7 +142,7 @@ def test_a_prompt_for_another_role_or_attempt_or_without_messages_is_not_clean(t
     b = state_dir(tmp_path, "b")
     f = b / "runs" / "20261112-010101-abcd" / "trace" / "build" / "prompt.json"
     saved = json.loads(f.read_text())
-    f.write_text(json.dumps({**saved, "role": "tester", "attempt": 2}))
+    f.write_text(json.dumps({**saved, "role": "architect", "attempt": 2}))
     assert any("role=" in line for line in diff_story_runs(a, b).prompts)
-    f.write_text(json.dumps({"role": "coder", "attempt": 0}))
+    f.write_text(json.dumps({"role": "architect", "attempt": 0}))
     assert any("no messages key" in line for line in diff_story_runs(a, b).prompts)

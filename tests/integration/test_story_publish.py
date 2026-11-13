@@ -1631,7 +1631,7 @@ def _publish_cfg(tmp_path: Path, *, publish: str | None) -> object:
         "router": {"kind": "chief"},
         "studio": {
             "parallel": 2,
-            "review": {"enabled": True, "roles": ["coder"], "rounds": 1},
+            "review": {"enabled": True, "roles": ["architect"], "rounds": 1},
             "done_check": False,
         },
         "repo_map": {"enabled": False},

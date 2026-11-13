@@ -13,11 +13,11 @@ def intervention(**kw: Any) -> Intervention:
     if answer == "default":
         answer = Answer(
             category=kw.pop("category", "missing_import"),
-            owner="coder",
+            owner="architect",
             diagnosis="the import is missing",
             evidence=("line 3",),
             message="add the import",
-            would_route_to="coder",
+            would_route_to="architect",
             fix_if_attempt=kw.pop("fix_if_attempt", None),
         )
     return Intervention(
@@ -25,7 +25,7 @@ def intervention(**kw: Any) -> Intervention:
         layer=kw.pop("layer", "01"),
         studio_run="run-1",
         subtask="s1",
-        role="coder",
+        role="architect",
         trigger=kw.pop("trigger", "precode_retry"),
         kinds=kw.pop("kinds", ("passes_before_code",)),
         answer=answer,

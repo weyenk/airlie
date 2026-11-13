@@ -460,7 +460,7 @@ def test_the_catalog_lists_roles_types_kinds_checks_and_rule_files(tmp_path: Pat
         "meetings",
         "prompt_files",
     }
-    assert got["meetings"] == [{"roles": ["product", "architect", "tester"], "inputs": ["story", "layers"]}]
+    assert got["meetings"] == [{"roles": ["product", "architect"], "inputs": ["story", "layers"]}]
     assert got["roles"] == sorted(c.roles)
     assert got["types"] == [
         "model",

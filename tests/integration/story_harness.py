@@ -107,7 +107,7 @@ def story_yaml(tmp_path: Path, repos_root: Path) -> Path:
         "router": {"kind": "chief"},
         "studio": {
             "parallel": 2,
-            "review": {"enabled": True, "roles": ["coder"], "rounds": 1},
+            "review": {"enabled": True, "roles": ["architect"], "rounds": 1},
             "done_check": False,
         },
         "repo_map": {"enabled": False},

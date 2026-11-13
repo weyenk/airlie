@@ -46,8 +46,8 @@ def _fixture(tmp_path: Path, brief: str = "", extra: tuple[str, ...] = ()) -> tu
     _lines(
         state / "runs" / RUN / "events.jsonl",
         [
-            {"kind": "subtask_start", "subtask": "tests", "role": "tester"},
-            {"kind": "subtask_start", "subtask": "build", "role": "coder"},
+            {"kind": "subtask_start", "subtask": "tests", "role": "architect"},
+            {"kind": "subtask_start", "subtask": "build", "role": "architect"},
         ],
     )
     _trace(
@@ -92,7 +92,7 @@ def test_brief_file_reads_count_named_files_present_at_the_base(tmp_path: Path) 
     )
     _lines(
         state / "runs" / RUN / "events.jsonl",
-        [{"kind": "subtask_start", "subtask": "more", "role": "tester"}],
+        [{"kind": "subtask_start", "subtask": "more", "role": "architect"}],
     )
     seg = _by_seg(story_segments(state, STORY, repo, {}))["more"]
     assert seg.brief_file_reads == 1

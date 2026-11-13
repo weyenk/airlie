@@ -29,7 +29,7 @@ def bugfix() -> dict[str, Any]:
     )
     fix = WorkflowSpec(
         nodes={
-            "write": NodeSpec(type="write", role="coder", prompt="p", to=[Line(node="gate")]),
+            "write": NodeSpec(type="write", role="architect", prompt="p", to=[Line(node="gate")]),
             "gate": NodeSpec(type="gate", run="story.layer_gate"),
         },
     )

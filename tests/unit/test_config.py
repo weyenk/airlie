@@ -234,6 +234,23 @@ def test_coder_and_tester_roles_removed() -> None:
     assert "tester" not in cfg.roles
 
 
+def test_repo_config_has_no_generalist_coder_tester_names() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert "generalist" not in cfg.models
+    assert "coder" not in cfg.roles
+    assert "tester" not in cfg.roles
+
+
+def test_generalist_model_key_rejected(tmp_path: Path) -> None:
+    rev = "a" * 40
+    data = {
+        **MINIMAL,
+        "models": {**MINIMAL["models"], "generalist": {"repo": "org/m", "revision": rev}},
+    }
+    with pytest.raises(ConfigError, match=r"generalist.*architect"):
+        load_config(write(tmp_path, data))
+
+
 def test_pipeline_package_critic_uses_architect() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     assert "tester" not in cfg.roles

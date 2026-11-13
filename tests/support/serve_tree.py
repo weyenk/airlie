@@ -14,7 +14,7 @@ def ev(kind: str, ts: float, **fields: Any) -> dict[str, Any]:
 
 
 def step(
-    team: str, n: int, ts: float, *, tool: str = "read_file", ok: bool = True, role: str = "coder"
+    team: str, n: int, ts: float, *, tool: str = "read_file", ok: bool = True, role: str = "architect"
 ) -> dict:
     return ev(
         "step",
@@ -25,7 +25,7 @@ def step(
         ok=ok,
         prompt_tokens=1000,
         completion_tokens=100,
-        model="qwen-coder",
+        model="qwen-architect",
         role=role,
         topology="studio",
     )
@@ -37,11 +37,11 @@ def handoff(src: str, dst: str, what: str, text: str, ts: float, **more: Any) ->
 
 STUDIO_START = [
     ev("run_start", 1.0, goal="fix the build", k=1, repo="/r", orchestrator="studio"),
-    ev("plan", 2.0, assumptions=[], subtasks=["fix", "note"], roles=["coder", "docs"], pinned=False),
-    ev("route", 2.1, subtask="fix", chosen="coder", decision="hint", confidence=0.9),
+    ev("plan", 2.0, assumptions=[], subtasks=["fix", "note"], roles=["architect", "docs"], pinned=False),
+    ev("route", 2.1, subtask="fix", chosen="architect", decision="hint", confidence=0.9),
     ev("skill", 2.2, subtask="fix", chosen="python", decision="pick", confidence=0.8),
     handoff("chief", "fix", "brief", "make the check pass", 2.3),
-    ev("subtask_start", 2.3, subtask="fix", role="coder", skill="python", writes=True),
+    ev("subtask_start", 2.3, subtask="fix", role="architect", skill="python", writes=True),
     step("fix", 1, 3.0),
     step("fix", 2, 4.0, tool="write_file"),
 ]
@@ -57,7 +57,7 @@ STUDIO_DONE = [
     handoff("fix", "reviewer", "diff", "1 file changed: PASS", 9.0, role="reviewer"),
     ev("review", 10.0, subtask="fix", verdict="approve", findings=0, blocking=0, round=1),
     handoff("reviewer", "fix", "findings", "approve: no findings", 10.0, role="reviewer"),
-    ev("subtask_done", 10.1, subtask="fix", role="coder", ok=True, stop_reason="done", steps=4, fix_rounds=1),
+    ev("subtask_done", 10.1, subtask="fix", role="architect", ok=True, stop_reason="done", steps=4, fix_rounds=1),
     handoff("fix", "chief", "result", "wrote PASS; the check passes", 10.1),
     ev("route", 10.2, subtask="note", chosen="docs", decision="hint", confidence=0.9),
     handoff("chief", "note", "brief", "describe the repo", 10.3),

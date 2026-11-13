@@ -103,7 +103,8 @@ def calc_repo(tmp_path: Path, gate: tuple[str, ...] = (), base_test: str = "asse
 
 async def run(
     tmp_path: Path,
-    coder: list[FakeReply],
+    architect_build: list[FakeReply] | None = None,
+    coder: list[FakeReply] | None = None,
     packages: list[FakeReply] | None = None,
     test_cmd: str = PYTEST,
     gate: tuple[str, ...] = (),
@@ -113,10 +114,10 @@ async def run(
     """The one-layer story: the architect's `packages` (default: one red one) after its layer plan, then the
     coder's replies. With `gate`, the repository's AGENTS.md gate runs instead of `test_cmd`; `base_test` as
     in calc_repo; `story` is more story settings."""
+    build = architect_build if architect_build is not None else (coder or [])
     scripts = {
         "product": [STORY],
-        "architect": [LAYERS, *(packages if packages is not None else [RED])],
-        "coder": coder,
+        "architect": [LAYERS, *(packages if packages is not None else [RED]), *build],
         "reviewer": [APPROVE, APPROVE],
     }
     engine = FakeEngine(scripts)

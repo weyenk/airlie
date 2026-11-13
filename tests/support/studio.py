@@ -12,7 +12,7 @@ from airlie.engine import FakeReply, ToolCall
 
 ROLES: dict[str, tuple[str, list[str] | None]] = {
     "chief": ("---\nsummary: no\nroutable: false\n---\n# chief\nJSON only.", []),
-    "coder": ("---\nsummary: Implement or change code\n---\n# coder", None),
+    "architect": ("---\nsummary: Implement or change code\n---\n# architect", None),
     "qa": ("---\nsummary: Tests and edge cases\n---\n# qa", ["read_file", "write_file", "run_tests"]),
     "docs": ("---\nsummary: README and guides\n---\n# docs", ["read_file", "list_dir"]),
     "reviewer": ("---\nsummary: no\nroutable: false\n---\n# reviewer", []),
@@ -46,7 +46,7 @@ def cfg_for(
         "tools": {"builtin": ["read_file", "write_file", "list_dir", "run_tests"]},
         "topology": {"kind": "studio"},
         "router": {"kind": "chief"},
-        "studio": {"parallel": 2, "review": {"enabled": True, "roles": ["coder"], "rounds": 1}, **studio},
+        "studio": {"parallel": 2, "review": {"enabled": True, "roles": ["architect"], "rounds": 1}, **studio},
         "repo_map": {"enabled": False},
         "observability": {"state_dir": str(tmp_path / "state")},
         **(extra or {}),
@@ -63,7 +63,7 @@ PLAN = FakeReply(
             "type": "plan",
             "assumptions": ["a1"],
             "subtasks": [
-                {"id": "fix", "role": "coder", "brief": "make the check pass"},
+                {"id": "fix", "role": "architect", "brief": "make the check pass"},
                 {"id": "note", "role": "docs", "brief": "describe the repo", "depends_on": ["fix"]},
             ],
         }

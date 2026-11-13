@@ -84,7 +84,7 @@ async def test_a_subtask_that_follows_a_writer_starts_with_that_writers_files_as
     d = json.loads(PLAN.text)
     d["subtasks"] = [
         {"id": "t", "role": "qa", "brief": "write the test"},
-        {"id": "fix", "role": "coder", "brief": "make the check pass", "depends_on": ["t"]},
+        {"id": "fix", "role": "architect", "brief": "make the check pass", "depends_on": ["t"]},
     ]
     write_test = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "tests/test_x.py", "content": "x\n"}))]
@@ -125,7 +125,7 @@ async def test_a_writers_files_committed_by_a_checkpoint_still_count_as_already_
     d = json.loads(PLAN.text)
     d["subtasks"] = [
         {"id": "t", "role": "qa", "brief": "write the test"},
-        {"id": "fix", "role": "coder", "brief": "make the check pass", "depends_on": ["t"]},
+        {"id": "fix", "role": "architect", "brief": "make the check pass", "depends_on": ["t"]},
     ]
     write_test = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "tests/test_x.py", "content": "x\n"}))]
@@ -276,7 +276,7 @@ async def test_studio_done_check_emits_a_steer_event(tmp_path: Path) -> None:
     report = await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task(
         "fix the build", repo=repo, test_cmd="./check.sh"
     )
-    assert steers(report) == [{"id": "done-check", "role": "coder", "subtask": "fix"}]
+    assert steers(report) == [{"id": "done-check", "role": "architect", "subtask": "fix"}]
     ev = events(report)
     kinds = ["studio-steer" if e["kind"] == "steer" and "subtask" in e else e["kind"] for e in ev]
     assert kinds.index("studio-steer") < kinds.index("done_check") < kinds.index("done_check_done")
@@ -348,7 +348,7 @@ async def test_a_fix_round_on_a_long_conversation_starts_fresh_with_the_findings
     assert "A reviewer found blocking problems" in goal and "PASS:1" in goal and "worktree" in goal
     fresh = [e for e in events(report) if e["kind"] == "fresh_continuation"]
     assert len(fresh) == 1 and fresh[0]["subtask"] == "fix"
-    assert steers(report) == [{"id": "fresh-continuation", "role": "coder", "subtask": "fix"}]
+    assert steers(report) == [{"id": "fresh-continuation", "role": "architect", "subtask": "fix"}]
     assert hub_text("fresh-continuation") in goal
     # a new conversation is still the second run of the team: its steps are traced apart from the first's
     # (AIR-7 layer 02 attempt 5, 2026-10-18: a fresh fix round wrote step-001.json over the build run's)
@@ -454,8 +454,8 @@ async def test_writers_are_serialised_readers_run_in_parallel(tmp_path: Path) ->
             {
                 "type": "plan",
                 "subtasks": [
-                    {"id": "a", "role": "coder", "brief": "write a"},
-                    {"id": "b", "role": "coder", "brief": "write b"},
+                    {"id": "a", "role": "architect", "brief": "write a"},
+                    {"id": "b", "role": "architect", "brief": "write b"},
                     {"id": "r", "role": "docs", "brief": "read"},
                 ],
             }
@@ -658,7 +658,7 @@ async def test_plan_rejected_twice_is_a_failed_run_with_feedback(tmp_path: Path)
     repo = repo_with_marker_tests(tmp_path)
     bad = FakeReply(
         text=json.dumps(
-            {"type": "plan", "subtasks": [{"id": "a", "role": "coder", "brief": "x", "depends_on": ["zz"]}]}
+            {"type": "plan", "subtasks": [{"id": "a", "role": "architect", "brief": "x", "depends_on": ["zz"]}]}
         )
     )
     engine = FakeEngine({"chief": [bad, bad]})
@@ -725,7 +725,7 @@ CHIEF_WHY_TEXT = (  # a reply with text was not still thinking when it was cut o
 )
 HALF_PLAN = (
     'I will split it.\n```json\n{"type": "plan", '
-    '"subtasks": [{"id": "fix", "role": "coder", "brief": "make the che'
+    '"subtasks": [{"id": "fix", "role": "architect", "brief": "make the che'
 )
 
 
@@ -832,8 +832,8 @@ async def test_each_review_sees_only_its_own_subtasks_diff(tmp_path: Path) -> No
             {
                 "type": "plan",
                 "subtasks": [
-                    {"id": "a", "role": "coder", "brief": "write PASS"},
-                    {"id": "b", "role": "coder", "brief": "write note", "depends_on": ["a"]},
+                    {"id": "a", "role": "architect", "brief": "write PASS"},
+                    {"id": "b", "role": "architect", "brief": "write note", "depends_on": ["a"]},
                 ],
             }
         )
@@ -1335,7 +1335,7 @@ async def test_a_failing_final_gate_sends_the_named_subtask_its_output_once(tmp_
     told = [r.messages[-1].content for r in engine.requests if r.role == "coder"]
     assert sum("the whole suite fails with your change" in t and "1 failed" in t for t in told) == 1
     assert [e["follow_up"] for e in events(report) if e["kind"] == "gate_failed"] == ["build"]
-    assert steers(report) == [{"id": "gate-failed", "role": "coder", "subtask": "build"}]
+    assert steers(report) == [{"id": "gate-failed", "role": "architect", "subtask": "build"}]
     assert sum(t.startswith(hub_text("gate-failed")) for t in told) == 1
     gates = [(e["kind"], e["n"]) for e in events(report) if e["kind"] in ("gate_start", "gate_passed")]
     assert gates == [("gate_start", 1), ("gate_start", 2), ("gate_passed", 2)]
