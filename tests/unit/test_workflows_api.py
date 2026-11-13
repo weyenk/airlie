@@ -450,10 +450,30 @@ def test_the_catalog_lists_roles_types_kinds_checks_and_rule_files(tmp_path: Pat
     http, c = client(tmp_path)
     with http:
         got = http.get("/v1/workflows/catalog", headers=AUTH).json()
-    assert set(got) == {"roles", "types", "formats", "kinds", "checks", "meetings", "prompt_files"}
+    assert set(got) == {
+        "roles",
+        "types",
+        "deprecated_types",
+        "formats",
+        "kinds",
+        "checks",
+        "meetings",
+        "prompt_files",
+    }
     assert got["meetings"] == [{"roles": ["product", "architect", "tester"], "inputs": ["story", "layers"]}]
     assert got["roles"] == sorted(c.roles)
-    assert got["types"] == ["ask", "conversation", "write", "meeting", "team", "check", "gate", "bundle"]
+    assert got["types"] == [
+        "model",
+        "ask",
+        "conversation",
+        "write",
+        "meeting",
+        "team",
+        "check",
+        "gate",
+        "bundle",
+    ]
+    assert got["deprecated_types"] == ["ask", "conversation", "meeting", "write"]
     assert got["formats"] == list(get_args(Format))
     assert got["kinds"] == ["text", "number", "bool", "list of …", "one of …"]
     assert got["checks"] == STORY_CATALOG.describe()

@@ -7,9 +7,33 @@
 // `inputs`, worked out again after every edit (`relabel`). The boxes' order is the file's order (a new box goes
 // last), not where they sit: a drag changes only the layout.
 
-export const NODE_TYPES = ["ask", "conversation", "write", "meeting", "team", "check", "gate", "bundle"] as const;
+export const NODE_TYPES = ["model", "ask", "conversation", "write", "meeting", "team", "check", "gate", "bundle"] as const;
 export type NodeType = (typeof NODE_TYPES)[number];
+export const PROTOCOLS = ["ask", "conversation", "write", "meeting"] as const;
+export type Protocol = (typeof PROTOCOLS)[number];
 export const isNodeType = (t: unknown): t is NodeType => typeof t === "string" && (NODE_TYPES as readonly string[]).includes(t);
+
+const LEGACY_TO_PROTOCOL: Record<string, Protocol> = { ask: "ask", conversation: "conversation", write: "write", meeting: "meeting" };
+
+/** Effective protocol for a box on the canvas (`model` + `protocol`, or a legacy type). */
+export const protocolOf = (type: NodeType, spec: NodeSpec): Protocol | null => {
+  if (type === "model") {
+    const p = spec.protocol;
+    return typeof p === "string" && (PROTOCOLS as readonly string[]).includes(p) ? (p as Protocol) : null;
+  }
+  return LEGACY_TO_PROTOCOL[type] ?? null;
+};
+
+/** Rewrite legacy model node types to `model` + `protocol` before writing YAML. */
+export function normalizeTopologyTypes(spec: WorkflowSpec): WorkflowSpec {
+  const nodes: WorkflowSpec["nodes"] = {};
+  for (const [id, n] of Object.entries(spec.nodes)) {
+    const proto = LEGACY_TO_PROTOCOL[n.type];
+    if (proto) nodes[id] = { ...n, type: "model", protocol: proto };
+    else nodes[id] = n;
+  }
+  return { ...spec, nodes };
+}
 
 /** The output formats a node may declare (airlie.flow.spec `Format`). */
 export const FORMATS = ["json", "markdown", "text", "bool", "list", "ref:branch", "ref:worktree", "ref:pr", "file", "session"] as const;
@@ -194,6 +218,8 @@ export function freeId(graph: Graph, type: string): string {
  * meeting's seats and inputs come from the catalog, which the caller hands in as `spec`. */
 function defaults(type: NodeType): NodeSpec {
   switch (type) {
+    case "model":
+      return { protocol: "ask", role: "", prompt: "", inputs: [], outputs: {} };
     case "ask":
     case "conversation":
     case "write":

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { NODE_TYPES } from "./graph";
 import type { NodeType } from "./graph";
+import { PALETTE_TYPES, paletteLabel } from "./palette_types";
 import { SHAPE_CLASS, shapeOf } from "./shapes";
 
 defineOptions({ name: "AirlieBuilderPalette" });
@@ -10,7 +10,7 @@ defineOptions({ name: "AirlieBuilderPalette" });
  * room, for a keyboard or a phone, where nothing drags. */
 const props = defineProps<{ bundles: string[]; failed?: boolean; readonly?: boolean }>();
 /** A bundle box is placed from the bundles below, which name the workflow it runs. */
-const TYPES = NODE_TYPES.filter((t) => t !== "bundle");
+const TYPES = PALETTE_TYPES;
 const emit = defineEmits<{ retry: []; add: [item: { type: NodeType } | { bundle: string }] }>();
 
 function carry(e: DragEvent, kind: "node" | "bundle", value: string) {
@@ -38,7 +38,7 @@ function add(item: { type: NodeType } | { bundle: string }) {
           @dragstart="carry($event, 'node', t)"
           @click="add({ type: t })"
         >
-          {{ t }}
+          {{ paletteLabel(t) }}
         </button>
       </li>
     </ul>

@@ -10,6 +10,7 @@
     "summarizer"
   ],
   "types": [
+    "model",
     "ask",
     "conversation",
     "write",
@@ -18,6 +19,12 @@
     "check",
     "gate",
     "bundle"
+  ],
+  "deprecated_types": [
+    "ask",
+    "conversation",
+    "meeting",
+    "write"
   ],
   "formats": [
     "json",

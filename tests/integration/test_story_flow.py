@@ -774,9 +774,9 @@ def test_every_check_the_workflows_name_is_in_the_catalog_and_every_prompt_file_
     prompts = {node.prompt for node in nodes if node.prompt is not None}
     assert prompts == {"prompt:story-survey", "prompt:amigos-opening"}
     assert {p.removeprefix("prompt:") for p in prompts} <= rule_ids()
-    assert all(node.run is None for node in nodes if node.type in ("ask", "meeting"))
+    assert all(node.run is None for node in nodes if node.type in ("model", "ask", "meeting"))
     runners = story_runners(pipe, st, card)
-    assert set(runners) == {"ask", "conversation", "write", "meeting", "check", "gate", "team"}
+    assert set(runners) == {"model", "ask", "conversation", "write", "meeting", "check", "gate", "team"}
     assert {node.type for node in nodes} - {"bundle"} <= set(runners)  # a bundle is the composer's own
 
 

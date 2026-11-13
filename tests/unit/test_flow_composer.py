@@ -1023,4 +1023,5 @@ def test_the_probe_is_refused_when_the_workflow_is_checked():
     assert any(p.startswith("workflow w: node a: prompt") and "'__class__'" in p for p in problems), problems
     condition = "workflow w: node a: line to b: condition"
     assert any(p.startswith(condition) and "'__class__'" in p for p in problems), problems
-    assert check_workflows({"w": spec("{config.story.max_layers} {card.title}", "card.title exists")}) == []
+    clean = spec("{config.story.max_layers} {card.title}", "card.title exists")
+    assert check_workflows({"w": clean}, deprecations=False) == []

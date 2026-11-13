@@ -16,7 +16,7 @@ import pytest
 from airlie.flow.composer import Composer, Registry, RunContext
 from airlie.flow.prompt_files import parse_draft_prompts, render_value
 from airlie.flow.render import prompt_source, render
-from airlie.flow.runners import ask_runner
+from airlie.flow.runners import ask_runner, model_runner
 from airlie.flow.spec import NodeSpec, WorkflowSpec, check_workflows
 from airlie.flow.store import MemoryStore, Sessions
 from airlie.prompts.hub import PromptError
@@ -71,7 +71,7 @@ def brief(ctx: RunContext, id: str, feedback: str | None = None) -> str:
 
 
 def node(**kw: Any) -> NodeSpec:
-    return NodeSpec(type="ask", role="tester", prompt="prompt:bug-reproduce", **kw)
+    return NodeSpec(type="model", protocol="ask", role="tester", prompt="prompt:bug-reproduce", **kw)
 
 
 def context(n: NodeSpec, registry: Registry, store: MemoryStore, loose: tuple[str, ...] = ()) -> RunContext:
@@ -129,7 +129,7 @@ async def test_a_field_with_no_value_is_a_prompt_error_naming_the_field() -> Non
 
 def test_a_hub_rule_is_found_without_a_draft() -> None:
     registry = Registry()
-    n = NodeSpec(type="ask", role="architect", prompt="prompt:brief-survey-task")
+    n = NodeSpec(type="model", protocol="ask", role="architect", prompt="prompt:brief-survey-task")
     assert brief(context(n, registry, MemoryStore()), "brief-survey-task").startswith(
         "Read the code this request touches"
     )
@@ -145,7 +145,9 @@ def test_a_draft_prompt_that_does_not_parse_is_a_prompt_error() -> None:
 
 
 def bug(prompt: str, **kw: Any) -> Mapping[str, WorkflowSpec]:
-    reproduce = NodeSpec(type="ask", role="tester", prompt=prompt, outputs={"steps": "text"}, **kw)
+    reproduce = NodeSpec(
+        type="model", protocol="ask", role="tester", prompt=prompt, outputs={"steps": "text"}, **kw
+    )
     return {"bug": WorkflowSpec(inputs=["card"], nodes={"reproduce": reproduce})}
 
 
@@ -194,7 +196,8 @@ async def test_a_loop_carry_reaches_the_feedback_field_on_the_re_run(tmp_path: P
         return next(verdicts)
 
     write = {
-        "type": "ask",
+        "type": "model",
+        "protocol": "ask",
         "role": "tester",
         "prompt": "prompt:bug-write",
         "inputs": ["card"],
@@ -215,7 +218,8 @@ async def test_a_loop_carry_reaches_the_feedback_field_on_the_re_run(tmp_path: P
     composer = Composer(
         cfg_for(tmp_path),
         runners={
-            "ask": functools.partial(ask_runner, asker=cast(Any, asker), st=cast(Any, None)),
+            "model": functools.partial(model_runner, asker=cast(Any, asker), st=cast(Any, None)),
+            "ask": functools.partial(model_runner, asker=cast(Any, asker), st=cast(Any, None)),
             "check": judge,
         },
         registry=Registry(prompts=texts),
@@ -249,6 +253,6 @@ def test_a_draft_prompt_named_like_a_hub_prompt_is_a_problem_and_the_hub_wins() 
         with pytest.raises(WorkflowError, match=f"workflow bug: prompt file '{id}' is already a hub prompt"):
             closure_prompts({"bug": {id: clash}}, ["bug"])
     registry = Registry(prompts=parse_draft_prompts({"brief-survey-task": clash}))
-    n = NodeSpec(type="ask", role="architect", prompt="prompt:brief-survey-task")
+    n = NodeSpec(type="model", protocol="ask", role="architect", prompt="prompt:brief-survey-task")
     opening = brief(context(n, registry, MemoryStore()), "brief-survey-task")
     assert opening.startswith("Read the code this request touches")  # the hub first, whatever a draft says
