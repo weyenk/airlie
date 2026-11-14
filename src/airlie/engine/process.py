@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import resource
 import signal
 import subprocess
 import time
@@ -45,11 +46,26 @@ class ProcessHealth:
     detail: str = ""
 
 
+_ENGINE_SPAWN_NOFILE_SOFT = int(os.environ.get("AIRLIE_ENGINE_SPAWN_NOFILE_SOFT", "10240"))
+
+
+def raise_nofile_soft_limit(desired: int = _ENGINE_SPAWN_NOFILE_SOFT) -> None:
+    """Raise the soft RLIMIT_NOFILE before spawning mlx-vlm (PLE models open many mmap FDs)."""
+    if not hasattr(resource, "RLIMIT_NOFILE"):
+        return
+    with contextlib.suppress(OSError, ValueError):
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        new_soft = min(desired, hard)
+        if new_soft > soft:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (new_soft, hard))
+
+
 class RealRunner:
     """Spawns the engine detached from the CLI so it survives `task up`; mlx-vlm runs inside `uv run`."""
 
     def spawn(self, argv: list[str], log_path: Path, cwd: Path, env: dict[str, str] | None = None) -> int:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        raise_nofile_soft_limit()
         in_uv = argv[: len(MLX_VLM_ENTRY)] == MLX_VLM_ENTRY
         cmd = ["uv", "run", "--quiet", *argv] if in_uv else list(argv)
         with log_path.open("ab") as log:
