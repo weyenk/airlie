@@ -132,8 +132,8 @@ def test_plan_from_dict_names_a_list_field_of_the_wrong_type() -> None:
 
 
 def test_pin_marks_every_subtask_and_keeps_roles() -> None:
-    p = pin(Plan((), (Subtask("a", "x", "coder"), Subtask("b", "y", "qa"))))
-    assert all(s.pinned for s in p.subtasks) and [s.role_hint for s in p.subtasks] == ["coder", "qa"]
+    p = pin(Plan((), (Subtask("a", "x", "architect"), Subtask("b", "y", "qa"))))
+    assert all(s.pinned for s in p.subtasks) and [s.role_hint for s in p.subtasks] == ["architect", "qa"]
 
 
 def test_extract_json_block_prefers_the_last_fence() -> None:

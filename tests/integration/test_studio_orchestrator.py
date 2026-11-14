@@ -53,7 +53,7 @@ async def test_plan_route_run_review_synthesis(tmp_path: Path) -> None:
     kinds = [e["kind"] for e in events(report)]
     assert kinds[:2] == ["run_start", "plan"] and "review" in kinds and kinds[-1] == "run_done"
     route = [e for e in events(report) if e["kind"] == "route"]
-    assert [r["chosen"] for r in route] == ["coder", "docs"] and route[0]["decision"] == "hint"
+    assert [r["chosen"] for r in route] == ["architect", "docs"] and route[0]["decision"] == "hint"
     assert (report.run_dir.path / "routing.jsonl").read_text().count("\n") == 2
     assert (report.run_dir.path / "report.md").read_text().count("| fix |") == 1
     assert (report.run_dir.path / "studio" / "PASS").exists()
@@ -172,7 +172,7 @@ async def test_prepare_runs_on_the_worktree_after_the_base_commit_and_before_the
     `base_sha` is the commit before it; the coder starts with the placed files as already written."""
     repo = repo_with_marker_tests(tmp_path)
     cfg = cfg_for(tmp_path, review={"enabled": False}, extra={"repo_map": {"enabled": True}})
-    build = Plan((), (Subtask("build", "make the check pass", "coder"),))
+    build = Plan((), (Subtask("build", "make the check pass", "architect"),))
     engine = FakeEngine({"architect": [WRITE_PASS, RUN, DONE]})
     orch = StudioOrchestrator(cfg, engine, router=ChiefRouter())
     seen: list[Any] = []
@@ -903,7 +903,7 @@ async def test_a_given_plan_skips_the_chief_and_its_roles_beat_the_router(tmp_pa
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=Overrider())
     report = await orch.execute_task("g", repo=repo, test_cmd="./check.sh", plan=given, synthesise=False)
     routes = [e for e in events(report) if e["kind"] == "route"]
-    assert [(r["chosen"], r["decision"]) for r in routes] == [("qa", "pinned"), ("coder", "pinned")]
+    assert [(r["chosen"], r["decision"]) for r in routes] == [("qa", "pinned"), ("architect", "pinned")]
     assert "chief" not in {r.role for r in engine.requests}  # no plan call, no synthesis
     assert report.final_answer.startswith("### t (qa)\ndone") and report.tests == {"studio": True}
 
@@ -915,7 +915,7 @@ async def test_a_given_plan_that_cannot_run_raises_before_any_work(tmp_path: Pat
         await orch.execute_task("g", repo=repo, plan=Plan((), (Subtask("a", "x", "chief"),)))
     with pytest.raises(PlanError, match="not in the plan"):
         await orch.execute_task("g", repo=repo, plan=Plan((), (Subtask("a", "x", "architect", ("zz",)),)))
-    two = Plan((), (Subtask("a", "x", "coder"), Subtask("b", "y", "coder")))
+    two = Plan((), (Subtask("a", "x", "architect"), Subtask("b", "y", "architect")))
     with pytest.raises(PlanError, match="max_subtasks is 1"):
         await orch.execute_task("g", repo=repo, plan=two)
     with pytest.raises(PlanError, match="dependency cycle"):
@@ -927,7 +927,7 @@ async def test_a_given_plan_that_cannot_run_raises_before_any_work(tmp_path: Pat
 
 def test_check_plan_judges_a_plan_from_outside_the_chief_by_every_role_pinned_or_not(tmp_path: Path) -> None:
     cfg = cfg_for(tmp_path, max_subtasks=2)
-    check_plan(cfg, Plan((), (Subtask("a", "x", "coder"), Subtask("b", "y", "docs", ("a",)))))  # runnable
+    check_plan(cfg, Plan((), (Subtask("a", "x", "architect"), Subtask("b", "y", "docs", ("a",)))))  # runnable
     with pytest.raises(PlanError, match="no subtasks"):
         check_plan(cfg, Plan((), ()))
     with pytest.raises(PlanError, match="role 'chief'"):  # not pinned, and still rejected
@@ -935,7 +935,7 @@ def test_check_plan_judges_a_plan_from_outside_the_chief_by_every_role_pinned_or
     with pytest.raises(PlanError, match="role None"):
         check_plan(cfg, Plan((), (Subtask("a", "x"),)))
     with pytest.raises(PlanError, match="max_subtasks is 2"):
-        check_plan(cfg, Plan((), tuple(Subtask(i, "x", "coder") for i in "abc")))
+        check_plan(cfg, Plan((), tuple(Subtask(i, "x", "architect") for i in "abc")))
     with pytest.raises(PlanError, match="not in the plan"):
         check_plan(cfg, Plan((), (Subtask("a", "x", "architect", ("zz",)),)))
     with pytest.raises(PlanError, match="dependency cycle"):
@@ -950,7 +950,7 @@ async def test_base_and_branch_place_the_worktree_and_detach_leaves_no_branch(tm
     _git(repo, "commit", "-q", "-m", "later")  # HEAD moves past the base
     cfg = cfg_for(tmp_path, review={"enabled": False})
     engine = FakeEngine({"architect": [WRITE_PASS, DONE], "docs": [DONE]})
-    one = Plan((), (Subtask("b", "write PASS", "coder"),))
+    one = Plan((), (Subtask("b", "write PASS", "architect"),))
     orch = StudioOrchestrator(cfg, engine, router=ChiefRouter())
     report = await orch.execute_task(
         "g", repo=repo, plan=one, base="layer-00", branch="s-01-x", synthesise=False
@@ -1109,7 +1109,7 @@ async def test_the_final_gate_remembers_the_tree_it_passed_and_does_not_run_on_i
     assert (await orch._tests_pass("exit 1"))[0] is False  # an edit since: it runs
 
 
-ONE_BUILD = Plan((), (Subtask("build", "make the check pass", "coder"),))
+ONE_BUILD = Plan((), (Subtask("build", "make the check pass", "architect"),))
 TESTS_THEN_BUILD = Plan(
     (),
     (

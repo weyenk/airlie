@@ -19,7 +19,7 @@ from tests.support.studio import ROLES, cfg_for
 runner = CliRunner()
 
 
-def _text(id: str, body: str, *, kind: Kind = "rule", roles: tuple[str, ...] = ("coder",)) -> PromptText:
+def _text(id: str, body: str, *, kind: Kind = "rule", roles: tuple[str, ...] = ("architect",)) -> PromptText:
     return PromptText(
         id=id,
         kind=kind,
@@ -53,7 +53,7 @@ def test_instruction_sets_hold_every_text_that_reaches_a_role(tmp_path: Path) ->
         _text("slow-down", "Read first.", kind="steering", roles=("any",)),
     ]
     sets = instruction_sets(texts, roles)
-    assert list(sets) == ["coder", "qa"]
+    assert list(sets) == ["architect", "qa"]
 
     coder = sets["coder"]
     # the role prompt first, without its front matter; then the rules, then the steering, each by source
@@ -110,7 +110,7 @@ def test_audit_can_be_limited_to_some_roles_and_reports_a_role_the_engine_failed
     assert len(seen) == 1 and seen[0][0] == "architect" and seen[0][1].startswith("(no reply")
 
     failing = FakeEngine()  # no script for the reviewer: every ask is an EngineError
-    report = _run(audit(cfg, failing, ["coder", "qa"]))
+    report = _run(audit(cfg, failing, ["architect", "qa"]))
     assert report.count("(no reply: ") == 2 and "no script for role 'reviewer'" in report
 
 

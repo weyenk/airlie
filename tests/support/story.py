@@ -202,6 +202,7 @@ def pipeline(
     # architect since the Qwen migration; the studio keeps teams.max_steps for subagents).
     arch = cfg.roles["architect"]
     cfg.roles["architect"] = arch.model_copy(update={"max_steps": 1})
+    engine = StoryFakeEngine.coerce(engine)
     return StoryPipeline(
         cfg,
         board=board or NullBoard(cfg.observability.state_dir / "stories"),
@@ -241,21 +242,45 @@ def build_architect_requests(engine: FakeEngine) -> list[GenRequest]:
 
 def _plan_lane_text(req: GenRequest) -> bool:
     """True when the architect turn is planning or packaging, not the studio build subtask."""
-    user = "\n".join(m.content for m in req.messages if m.role == "user")
+    users = [m.content for m in req.messages if m.role == "user"]
+    if not users:
+        return False
+    user = users[-1]
+    full_user = "\n".join(users)
+    if (
+        "## The tests you make pass" in full_user
+        or "you cannot change them" in full_user
+        or "the whole suite fails with your change" in full_user
+        or "(a regression guard" in full_user
+        or "of a stacked change" in full_user
+    ):
+        return False
     hints = (
         "Split this story into a stack",
         "You write the packages",
         "next layer's package",
         "package-fix",
         "Do not plan and do not write JSON",
+        "Read these tests against the agreed proof",
         "critic",
         "Critic",
         "objection",
         "verdict",
         "survey the repository",
         "Survey notes",
+        "the whole gate is still red",
+        "fix these by hand",
+        "passes before the layer's code is written",
+        "read your tests against the agreed proof",
     )
-    return any(h in user for h in hints)
+    if any(h in full_user for h in hints):
+        return True
+    nudges = (
+        "Your reply called no tool",
+        "You have used all ",
+        "No tools are available on this turn",
+    )
+    return any(n in user for n in nudges) and any(h in full_user for h in hints)
 
 
 def pad_plan_script(replies: list[FakeReply]) -> list[FakeReply]:
@@ -283,6 +308,7 @@ class StoryFakeEngine(FakeEngine):
         raw = dict(scripts or {})
         legacy = raw.pop("architect", None)
         plan = raw.pop("architect:plan", None)
+        explicit_build = "architect:build" in (scripts or {})
         build = raw.pop("architect:build", [])
         explicit_plan = plan is not None
         if plan is None:
@@ -293,12 +319,21 @@ class StoryFakeEngine(FakeEngine):
                 plan = []
         if not explicit_plan:
             plan = pad_plan_script(list(plan))
+        if not explicit_build and build:
+            build = _per_layer_build(list(build), list(plan))
         merged: dict[str, list[FakeReply]] = {
             **raw,
             "architect:plan": list(plan),
             "architect:build": list(build),
         }
         super().__init__(merged)
+
+    @classmethod
+    def coerce(cls, engine: FakeEngine) -> StoryFakeEngine:
+        if isinstance(engine, StoryFakeEngine):
+            return engine
+        scripts = {role: list(replies) for role, replies in engine._scripts.items()}
+        return cls(scripts)
 
     def _lane(self, role: str, req: GenRequest | None = None) -> str:
         if role != "architect":
@@ -353,17 +388,24 @@ class StoryFakeEngine(FakeEngine):
         return (1.0, 0.0) if yes else (0.0, 1.0)
 
 
+def _per_layer_build(replies: list[FakeReply], plan: list[FakeReply]) -> list[FakeReply]:
+    packages = sum(1 for r in plan if '"type": "package"' in r.text or "test file:" in r.text)
+    return list(replies) * max(1, packages)
+
+
 def happy_engine(**scripts: list[FakeReply]) -> StoryFakeEngine:
     """The replies of a story whose two layers build first time; a keyword replaces one role's script.
 
       ``architect=`` overrides the plan/package replies; ``build=`` or legacy ``coder=`` overrides the layer
     build lane (same ``architect`` role since the Qwen migration)."""
     scripts = dict(scripts)
-    build = scripts.pop("build", scripts.pop("coder", [WRITE_PASS, RUN, DONE, NOTE, DONE]))
-    plan = scripts.pop("architect", [LAYERS, *PKGS])
+    per_layer = scripts.pop("build", scripts.pop("coder", [WRITE_PASS, RUN, DONE, NOTE, DONE]))
+    plan = pad_plan_script(list(scripts.pop("architect", [LAYERS, *PKGS])))
+    build = _per_layer_build(per_layer, plan)
     base: dict[str, list[FakeReply]] = {
         "product": [STORY],
-        "architect": list(plan) + list(build),
+        "architect:plan": plan,
+        "architect:build": build,
         "reviewer": [APPROVE, APPROVE],
     }
     return StoryFakeEngine({**base, **scripts})

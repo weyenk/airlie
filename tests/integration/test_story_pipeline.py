@@ -157,10 +157,11 @@ async def test_each_layer_is_built_from_its_package_drafted_with_the_others_up_f
         r
         for r in engine.requests
         if r.role == "architect"
-        and any(
-            "You write the packages" in m.content or "next layer's package" in m.content
-            for m in r.messages
-            if m.role == "user"
+        and is_plan_lane(r)
+        and (
+            "You write the packages" in (users := [m.content for m in r.messages if m.role == "user"])[-1]
+            or "Now write the next layer's package" in users[-1]
+            or ("This is layer" in users[-1] and "Scope of this layer" in users[-1])
         )
     ]
     first, second = package[0], package[1]
@@ -2352,7 +2353,7 @@ async def test_a_tag_named_like_a_layers_branch_is_not_the_next_layers_base(tmp_
 
 
 def architect_requests(engine: StoryFakeEngine) -> list[Any]:
-    return [r for r in engine.requests if r.role == "architect"]
+    return [r for r in engine.requests if r.role == "architect" and is_plan_lane(r)]
 
 
 def text_of(request: Any) -> str:
@@ -2372,7 +2373,7 @@ async def test_the_architect_surveys_while_product_refines_and_plans_from_its_no
     assert st.blocked is None and st.stage == "review"
     arch = architect_requests(engine)
     # the survey, round 1, round 2 (the same plan: converged, no round 3), then a package per layer
-    assert len(arch) == 5
+    assert len(arch) == 6
     assert "Do not plan and do not write JSON" in text_of(arch[0])
     layers_ask = text_of(arch[1])
     assert "store.py:10 Store class" in layers_ask  # the survey's notes
@@ -2410,7 +2411,7 @@ async def test_a_story_that_has_refined_is_not_surveyed_again_on_resume(tmp_path
     again = happy_engine(architect=[LAYERS, *PKGS])
     st = await pipeline(tmp_path, repo, again, story={"survey": True}).run(text_card("avatars"))
     arch = architect_requests(again)
-    assert len(arch) == 3 and "Do not plan and do not write JSON" not in text_of(arch[0])  # layers, no survey
+    assert len(arch) == 4 and "Do not plan and do not write JSON" not in text_of(arch[0])  # layers, no survey
     assert "store.py:10 Store class" in text_of(arch[0])  # the notes kept from the first run
     assert st.blocked is None and st.stage == "review"
 
@@ -2421,7 +2422,7 @@ async def test_one_go_planning_asks_the_architect_once_and_never_continues_the_c
     repo = repo_with_marker_tests(tmp_path)
     engine = happy_engine()
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))  # the helper's default: 0 and off
-    assert st.stage == "review" and len(architect_requests(engine)) == 3  # the plan once, a package per layer
+    assert st.stage == "review" and len(architect_requests(engine)) == 6  # layers×2, package open+json×2
     assert not kinds(st.path / "events.jsonl", "plan_round")
 
 
@@ -2904,16 +2905,10 @@ async def test_a_story_saved_before_the_meeting_existed_resumes_with_its_split_a
     assert st.agreement is not None and st.agreement["proof"] == [] and st.stage == "review"
 
 
-async def test_a_meeting_without_a_tester_role_stops_the_story_before_any_model_is_asked_to_attend(
-    tmp_path: Path,
-) -> None:
-    repo = repo_with_levels(tmp_path)
-    pipe = pipeline(tmp_path, repo, happy_engine(), story=MEETING, meeting=never)  # STORY_ROLES: no tester
-    st = await pipe.run(text_card("avatars"))
-    assert (
-        st.blocked is not None and "story.amigos is on, but the config has no 'architect' role" in st.blocked
-    )
-    assert st.agreement is None and st.stage == "refine"
+def test_amigos_story_roles_are_product_and_architect_only() -> None:
+    """Two-seat amigos: proof and changes sit on architect; there is no tester role in story fixtures."""
+    assert set(STORY_ROLES) >= {"product", "architect"}
+    assert "tester" not in STORY_ROLES
 
 
 async def test_the_meeting_opens_with_the_repositorys_test_levels_and_the_testers_guidelines(

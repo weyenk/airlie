@@ -608,7 +608,17 @@ async def test_every_story_check_reads_only_what_it_declares(
     async def opened(*args: Any) -> Any:
         return studio
 
-    for name in ("coder", "done_check", "review", "fix", "final_gate", "gate_advice", "follow_up", "regate"):
+    flow_steps = (
+        "architect",
+        "done_check",
+        "review",
+        "fix",
+        "final_gate",
+        "gate_advice",
+        "follow_up",
+        "regate",
+    )
+    for name in flow_steps:
         monkeypatch.setattr(f"airlie.story.flow.{name}_step", step)
     monkeypatch.setattr("airlie.story.flow.open_layer", opened)
     monkeypatch.setattr("airlie.story.flow.layer_outcome", nothing)

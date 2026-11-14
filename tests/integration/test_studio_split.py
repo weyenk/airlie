@@ -260,7 +260,7 @@ async def test_the_writing_steps_take_the_write_lock_themselves(tmp_path: Path) 
     repo = repo_with_marker_tests(tmp_path)
     engine = FakeEngine({"architect": [WRITE_PASS, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
-    chosen = await opened(orch, repo, Plan((), (Subtask("fix", "make the check pass", "coder"),)))
+    chosen = await opened(orch, repo, Plan((), (Subtask("fix", "make the check pass", "architect"),)))
     run = await orch.coder_turn(chosen.subtasks[0])
 
     async def waits(step: Awaitable[Any]) -> Any:

@@ -24,15 +24,18 @@ def jev(handler, **kw) -> JevRouter:  # type: ignore[no-untyped-def]
 
 
 def test_ranked_orders_by_probability_then_name() -> None:
-    assert ranked({"qa": 0.3, "coder": 0.6, "docs": 0.1}) == [("coder", 0.6), ("qa", 0.3), ("docs", 0.1)]
+    assert ranked({"qa": 0.3, "coder": 0.6, "docs": 0.1}) == [("architect", 0.6), ("qa", 0.3), ("docs", 0.1)]
     assert ranked({"b": 0.5, "a": 0.5}) == [("a", 0.5), ("b", 0.5)]
 
 
 def test_policy_matches_ai_mode() -> None:
-    assert policy([("coder", 0.8), ("qa", 0.2)], 0.9, ambiguous_gap=0.15, min_confidence=0.5) == "clear"
-    assert policy([("coder", 0.5), ("qa", 0.4)], 0.9, ambiguous_gap=0.15, min_confidence=0.5) == "ambiguous"
+    assert policy([("architect", 0.8), ("qa", 0.2)], 0.9, ambiguous_gap=0.15, min_confidence=0.5) == "clear"
     assert (
-        policy([("coder", 0.8), ("qa", 0.2)], 0.3, ambiguous_gap=0.15, min_confidence=0.5) == "low-confidence"
+        policy([("architect", 0.5), ("qa", 0.4)], 0.9, ambiguous_gap=0.15, min_confidence=0.5) == "ambiguous"
+    )
+    assert (
+        policy([("architect", 0.8), ("qa", 0.2)], 0.3, ambiguous_gap=0.15, min_confidence=0.5)
+        == "low-confidence"
     )
 
 

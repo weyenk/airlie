@@ -60,6 +60,16 @@ the next scripted reply)."""
 
 
 def prompts(engine: FakeEngine, role: str) -> list[str]:
+    from tests.support.story import build_architect_requests, is_plan_lane
+
+    if role == "coder":
+        return [r.messages[-1].content for r in build_architect_requests(engine)]
+    if role == "architect":
+        return [
+            r.messages[-1].content
+            for r in engine.requests
+            if r.role == "architect" and is_plan_lane(r) and r.messages[-1].content.startswith("Goal:\n")
+        ]
     return [r.messages[-1].content for r in engine.requests if r.role == role]
 
 
@@ -415,10 +425,15 @@ async def agreed_run(
     """The one-layer calc story with an agreement in hand (the meeting is a double): the architect's
     `packages` after its layer plan, the tester critic's replies, then the coder's; `product` after the
     story it refines."""
-    engine = FakeEngine(
+    from tests.support.story import StoryFakeEngine, pad_plan_script
+
+    plan_tail = [packages[0], *tester, *packages[1:]] if packages else list(tester)
+    plan = pad_plan_script([LAYERS, *plan_tail])
+    engine = StoryFakeEngine(
         {
             "product": [STORY, *product],
-            "architect": [LAYERS, *packages, *tester, *coder],
+            "architect:plan": plan,
+            "architect:build": list(coder),
             "reviewer": [APPROVE, APPROVE],
         }
     )
@@ -441,18 +456,25 @@ async def test_the_critics_objection_gives_the_architect_one_revision_before_the
     st, engine = await agreed_run(tmp_path, [two(), two(TWO_REVISED)], [OBJECT], [FEATURE, DONE])
     assert st.blocked is None and st.stage == "review", st.blocked
     asked = prompts(engine, "architect")
-    assert len(asked) == 3  # the layers, the package, its one revision
-    assert "The tester read your tests against the agreed proof and objects" in asked[2]
-    assert f"- {ID_ZERO}: it checks only one operand order" in asked[2] and "swap them too" in asked[2]
+    assert len(asked) == 3  # the layers, the package, the critic
+    revision = [
+        m.content
+        for r in engine.requests
+        if r.role == "architect"
+        for m in r.messages
+        if m.role == "user" and "read your tests against the agreed proof and objects" in m.content
+    ]
+    assert len(revision) == 1
+    assert f"- {ID_ZERO}: it checks only one operand order" in revision[0] and "swap them too" in revision[0]
     assert (
-        asked[2].rstrip().endswith(hub_text("package-fix").splitlines()[-1])
-        or hub_text("package-fix") in asked[2]
+        revision[0].rstrip().endswith(hub_text("package-fix").splitlines()[-1])
+        or hub_text("package-fix") in revision[0]
     )
     # the revision is a turn of the drafting conversation, not a cold ask: layer 01's draft is in it
     drafts = [r for r in engine.requests if r.role == "architect"][1:]
     assert len(drafts[1].messages) > len(drafts[0].messages)
     assert "objects" in drafts[1].messages[-1].content
-    critic = prompts(engine, "architect")[0]
+    critic = prompts(engine, "architect")[2]
     assert "Read these tests against the agreed proof" in critic and "def test_mul_zero" in critic
     assert f"{ID_ZERO} (proves AC2" in critic
     events = st.path / "events.jsonl"

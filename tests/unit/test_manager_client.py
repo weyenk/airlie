@@ -93,7 +93,7 @@ async def test_generate_runs_inside_a_hold() -> None:
 
 async def test_yes_no_runs_inside_a_hold() -> None:
     events: list[str] = []
-    p = await managed(events, FakeReply(p_yes=0.75)).yes_no("coder", [Message("user", "ok?")])
+    p = await managed(events, FakeReply(p_yes=0.75)).yes_no("architect", [Message("user", "ok?")])
     assert p == (0.75, 0.25)
     assert events == ["enter main role:architect", "yes_no", "exit main"]
 
