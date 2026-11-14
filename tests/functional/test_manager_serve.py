@@ -19,7 +19,7 @@ from airlie.serve.app import create_app
 from tests.support.serve import FakeEngine, FakeUpstream, StuckClock, cfg
 from tests.unit.serve_helpers import TestClient
 
-ASK = {"model": "coder", "messages": [{"role": "user", "content": "yo"}]}
+ASK = {"model": "architect", "messages": [{"role": "user", "content": "yo"}]}
 KEY = {"Authorization": "Bearer test-key"}
 ELSEWHERE = ("10.0.0.5", 1)
 

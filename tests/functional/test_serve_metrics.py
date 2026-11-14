@@ -35,7 +35,7 @@ def _cfg(tmp_path: Path) -> object:
         },
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
-            "architect": {"prompt": "coder.md", "model": "base"},
+            "architect": {"prompt": "architect.md", "model": "base"},
             "summarizer": {"prompt": "summarizer.md", "model": "base"},
             "judge": {"prompt": "judge.md", "model": "base"},
             "aggregator": {"prompt": "aggregator.md", "model": "base"},
@@ -81,9 +81,9 @@ def test_summary_body_shape_and_by_role(tmp_path: Path) -> None:
     assert set(body["by"]) == {"architect", "reviewer"}
     for entry in body["by"].values():
         assert "generation_tps" in entry and "prefill_tps" in entry
-    # coder: (200+100) tokens / (100+50) ms, doubled in both files -> 2000 tok/s
-    assert body["by"]["coder"]["generation_tps"] == pytest.approx(2000.0)
-    assert body["by"]["coder"]["prefill_tps"] == pytest.approx(20000.0)
+    # architect: (200+100) tokens / (100+50) ms, doubled in both files -> 2000 tok/s
+    assert body["by"]["architect"]["generation_tps"] == pytest.approx(2000.0)
+    assert body["by"]["architect"]["prefill_tps"] == pytest.approx(20000.0)
     # reviewer: (400+200) / (80+40) -> 5000 tok/s; prefill (800+400)/(40+20) -> 20000 tok/s
     assert body["by"]["reviewer"]["generation_tps"] == pytest.approx(5000.0)
     assert body["by"]["reviewer"]["prefill_tps"] == pytest.approx(20000.0)
@@ -108,8 +108,8 @@ def test_series_rows_one_bucket_per_width_and_quantiles_ordered(tmp_path: Path) 
         assert row["p10"] <= row["p50"] <= row["p90"]
     by_role = {row["role"]: row for row in rows}
     assert set(by_role) == {"architect", "reviewer"}
-    # coder: 200/100 and 100/50 -> both 2000 tok/s; reviewer: 400/80 and 200/40 -> both 5000 tok/s
-    assert by_role["coder"]["p50"] == pytest.approx(2000.0)
+    # architect: 200/100 and 100/50 -> both 2000 tok/s; reviewer: 400/80 and 200/40 -> both 5000 tok/s
+    assert by_role["architect"]["p50"] == pytest.approx(2000.0)
     assert by_role["reviewer"]["p50"] == pytest.approx(5000.0)
 
 

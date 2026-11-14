@@ -47,7 +47,7 @@ def test_routable_roles_need_a_summary(tmp_path: Path) -> None:
         "aggregator": "# aggregator\n",
     }.items():
         (tmp_path / f"{name}.md").write_text(text)
-    names = ("coder", "qa", "chief", "summarizer", "judge", "aggregator")
+    names = ("architect", "qa", "chief", "summarizer", "judge", "aggregator")
     data = {
         "version": 1,
         "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["m"]}},

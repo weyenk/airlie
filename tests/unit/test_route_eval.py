@@ -38,7 +38,7 @@ async def test_evaluate_reports_accuracy_confidence_wrong_but_clear_and_confusio
         {
             "write tests": ("qa", "clear", 0.9),
             "fix the bug": ("qa", "clear", 0.8),
-            "write the README": ("coder", "ambiguous", 0.4),
+            "write the README": ("architect", "ambiguous", 0.4),
         }
     )
     rep = await evaluate(router, load_cases(p), {"qa": "t", "coder": "c", "docs": "d"})

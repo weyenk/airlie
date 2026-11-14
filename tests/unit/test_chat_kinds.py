@@ -202,7 +202,7 @@ async def test_the_registrys_task_tool_runs_on_the_engine_for_its_role_with_the_
     from tests.support.box import FakeBox
 
     cfg = cfg.model_copy(deep=True)
-    cfg.chat.task.roles = ["coder", "chat"]
+    cfg.chat.task.roles = ["architect", "chat"]
     engine = FakeEngine({"chat": [FakeReply(text="done")]})
     asked: list[str] = []
 

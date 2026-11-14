@@ -35,7 +35,7 @@ def ok_payload(question: str = "role", **ans: Any) -> dict[str, Any]:
         "answers": {
             question: {
                 "type": "choice",
-                "value": "coder",
+                "value": "architect",
                 "probabilities": {"architect": 0.9, "qa": 0.1},
                 **ans,
             }
@@ -103,7 +103,7 @@ async def test_missing_usage_defaults_to_zero_tokens() -> None:
 
 
 async def test_answer_without_probabilities_is_empty() -> None:
-    transport, _ = answering({"answers": {"role": {"value": "coder"}}})
+    transport, _ = answering({"answers": {"role": {"value": "architect"}}})
     ans = await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
     assert ans.probabilities == {} and ans.choice == "architect"
 
@@ -116,20 +116,22 @@ async def test_confidence_is_read_from_the_answers_metadata() -> None:
 
 async def test_a_value_answer_without_confidence_uses_its_top_probability() -> None:
     transport, _ = answering(
-        {"answers": {"role": {"value": "coder", "probabilities": {"architect": 0.8, "qa": 0.2}}}}
+        {"answers": {"role": {"value": "architect", "probabilities": {"architect": 0.8, "qa": 0.2}}}}
     )
     ans = await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
     assert ans.choice == "architect" and ans.confidence == 0.8
 
 
 async def test_a_value_answer_without_probabilities_has_zero_confidence() -> None:
-    transport, _ = answering({"answers": {"role": {"value": "coder", "probabilities": {}}}})
+    transport, _ = answering({"answers": {"role": {"value": "architect", "probabilities": {}}}})
     ans = await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
     assert ans.confidence == 0.0
 
 
 async def test_an_answer_with_no_value_is_refused() -> None:
-    transport, _ = answering({"answers": {"role": {"choice": "coder", "probabilities": {"architect": 1.0}}}})
+    transport, _ = answering(
+        {"answers": {"role": {"choice": "architect", "probabilities": {"architect": 1.0}}}}
+    )
     with pytest.raises(ValueError, match="answered without 'role'"):
         await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
 
@@ -200,15 +202,15 @@ async def test_off_set_choice_uses_hint_then_top_and_reports_every_field() -> No
         "answers": {
             "role": {
                 "value": "zzz",
-                "probabilities": {"zzz": 0.5, "qa": 0.3, "coder": 0.2},
+                "probabilities": {"zzz": 0.5, "qa": 0.3, "architect": 0.2},
                 "metadata": {"confidence": 0.8},
             }
         },
         "usage": {"input_tokens": 42},
     }
     transport, _ = answering(payload)
-    probs = {"zzz": 0.5, "qa": 0.3, "coder": 0.2}
-    d = await router(transport).route("s", CRITERIA, "coder")
+    probs = {"zzz": 0.5, "qa": 0.3, "architect": 0.2}
+    d = await router(transport).route("s", CRITERIA, "architect")
     assert d == RouteDecision("role", "zzz", "architect", "invalid", probs, 0.8, "architect", 42)
     d = await router(transport).route("s", CRITERIA)
     assert d == RouteDecision("role", "zzz", "qa", "invalid", probs, 0.8, None, 42)
@@ -246,7 +248,7 @@ def mlx_vlm_payload(**ans: Any) -> dict[str, Any]:
         "answers": {
             "role": {
                 "type": "choice",
-                "value": "coder",
+                "value": "architect",
                 "probabilities": {"architect": 0.8, "qa": 0.2},
                 **ans,
             }
@@ -259,7 +261,7 @@ async def test_ask_reads_an_mlx_vlm_decision_answer() -> None:
     transport, seen = answering(mlx_vlm_payload(metadata={"confidence": 0.8}))
     client = JevClient("http://d/v1", model="/models/clef", transport=transport, endpoint="/decisions")
     ans = await client.ask("state", "role", "which seat", {"architect": "writes", "qa": "tests"})
-    assert (ans.choice, ans.confidence, ans.input_tokens) == ("coder", 0.8, 42)
+    assert (ans.choice, ans.confidence, ans.input_tokens) == ("architect", 0.8, 42)
     assert ans.probabilities == {"architect": 0.8, "qa": 0.2}
     assert seen[0].url.path == "/v1/decisions" and json.loads(seen[0].content)["model"] == "/models/clef"
 

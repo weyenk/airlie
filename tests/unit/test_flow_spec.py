@@ -103,7 +103,7 @@ def test_an_input_nothing_produces_is_refused_unless_the_workflow_declares_it():
 
 def test_feedback_is_readable_where_a_loop_line_carries_it():
     w = wf(
-        build=ask("coder", inputs=["feedback"], outputs={"built": "json"}, to=["gate"]),
+        build=ask("architect", inputs=["feedback"], outputs={"built": "json"}, to=["gate"]),
         gate=check(
             inputs=["built"],
             outputs={"result": "json"},
@@ -165,7 +165,7 @@ def test_a_session_line_is_only_between_two_nodes_of_the_same_role():
             outputs={"drafts_session": "session"},
             to=["pkg"],
         ),
-        pkg=ask("coder", session="drafts_session"),
+        pkg=ask("architect", session="drafts_session"),
     )
     assert check_workflows({"w": by_field}) == [
         "workflow w: node pkg: input 'drafts_session' is a session of node 'drafts' (role architect); "

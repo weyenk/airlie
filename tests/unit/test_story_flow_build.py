@@ -264,7 +264,7 @@ def test_the_build_card_lists_coder_reviewer_gate_and_follow_up(tmp_path: Path) 
     steps = [(r["text"], r["status"]) for r in steps_of(build)]
     # the follow-up was stopped by airlie's repeat guard (subtask_done ok: false, stop repeated_action)
     assert steps == [
-        ("coder", "passed"),
+        ("architect", "passed"),
         ("reviewer", "passed"),
         ("gate", "failed"),
         ("coder · gate follow-up", "failed"),
@@ -290,7 +290,7 @@ def test_a_failing_gate_then_its_follow_up_then_a_passing_gate_is_built_only_on_
     run_story(tmp_path, run)
     _, _, _, build, squash = by_id(nodes_of(tmp_path), "layer-01")["jobs"]
     assert [(r["text"], r["status"]) for r in steps_of(build)] == [
-        ("coder", "passed"),
+        ("architect", "passed"),
         ("gate", "failed"),
         ("coder · gate follow-up", "passed"),
         ("gate", "passed"),
@@ -348,7 +348,8 @@ def test_an_old_run_without_gate_events_shows_the_gate_running_after_the_coder(t
     )
     build = by_id(nodes_of(tmp_path), "layer-01")["jobs"][3]
     assert build["status"] == "running" and build["live"] == "gate"
-    assert [(r["text"], r["status"]) for r in steps_of(build)] == [("coder", "passed"), ("gate", "running")]
+    rows = [(r["text"], r["status"]) for r in steps_of(build)]
+    assert rows == [("architect", "passed"), ("gate", "running")]
 
 
 def test_a_new_run_logs_its_gate_runs_and_a_passed_build_waits_for_its_squash(tmp_path: Path) -> None:
@@ -369,7 +370,7 @@ def test_a_new_run_logs_its_gate_runs_and_a_passed_build_waits_for_its_squash(tm
     )
     _, _, _, build, squash = by_id(nodes_of(tmp_path), "layer-01")["jobs"]
     assert [(r["text"], r["status"]) for r in steps_of(build)] == [
-        ("coder", "passed"),
+        ("architect", "passed"),
         ("done-check", "passed"),
         ("reviewer · 1 fix round", "passed"),
         ("gate", "passed"),

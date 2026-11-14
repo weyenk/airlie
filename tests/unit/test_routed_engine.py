@@ -144,7 +144,7 @@ async def test_cancel_reaches_the_engine_that_took_the_request() -> None:
 
 async def test_yes_no_start_stop_health_and_stats() -> None:
     eng, a, b = routed()
-    assert await eng.yes_no("coder", []) == (1.0, 0.0)
+    assert await eng.yes_no("architect", []) == (1.0, 0.0)
     assert await eng.yes_no("rev", []) == (0.0, 1.0)
     await eng.start()
     await eng.stop()
