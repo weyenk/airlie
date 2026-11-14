@@ -12,7 +12,8 @@ includes:
 # An `mlx_vlm` engine is one mlx-vlm server process serving one model; airlie starts the `autostart` ones
 # (`task up`), and `airlie engine up <name>` starts any other by hand (the bench engines). `openai_http` is any
 # external OpenAI-compatible server. Roles pick a model; the engine that serves that model is derived, so swapping
-# engines never touches the roles. The studio's values (131072 KV, 8-bit KV) are the base.
+# engines never touches the roles. The studio's values (131072 KV) are the base; main omits kv_bits because
+# Flash-Next REAP's model-specific cache state rejects quantized KV with continuous batching (mlx-vlm QSAKVCache).
 engines:
   main:                            # the team model; its MTP head rides as the draft model
     kind: mlx_vlm
@@ -20,7 +21,6 @@ engines:
     model: architect
     max_num_seqs: 16               # docs/wiki/build-spec/02 §1
     max_kv_size: 131072
-    kv_bits: 8
     prefill_step_size: 2048
     prefix_cache: true
     cache_memory_gb: 8
