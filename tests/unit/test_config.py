@@ -466,9 +466,9 @@ def test_committed_config_declares_four_autostart_engines_and_the_bench_engines(
     assert cfg.models["architect"].tool_call_parser == "qwen3_coder"
     gemma = cfg.models["gemma4"]
     assert (gemma.repo, gemma.revision, gemma.mtp, gemma.mtp_block_size, gemma.tool_call_parser) == (
-        "mlx-community/gemma-4-26B-A4B-it-qat-8bit",
-        "bedc5c51905d796b192de24567f358b0b1653d2e",
-        None,  # MTP off: its QAT assistant decoded slower (docs/bench/2026-11-12-gemma-qat-mtp.md)
+        "mlx-community/gemma-4-26B-A4B-it-heretic-4bit",
+        "1f1ae59040a78b1d717618f44c82757255925d26",
+        None,
         None,
         "gemma4",
     )

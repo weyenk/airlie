@@ -25,12 +25,11 @@ models:
     kv_mb_per_1k_tokens: 48        # Flash-Next hybrid; tighten after doctor documents actual layers
     tool_call_parser: qwen3_coder
     tags: [modern, coder, vision, hybrid-attention]
-  gemma4:                          # Gemma 4 26B-A4B-it QAT 8-bit: chat, design, ux
+  gemma4:                          # Gemma 4 26B-A4B-it heretic 4-bit (mlx-community): chat, design, ux
     label: Gemma 4
-    repo: mlx-community/gemma-4-26B-A4B-it-qat-8bit   # bf16 (51.6 GB) does not fit beside the studio
-    revision: bedc5c51905d796b192de24567f358b0b1653d2e   # 2026-06-05
-    # no MTP: its QAT assistant decoded slower at 3k and 150k tokens (docs/bench/2026-11-12-gemma-qat-mtp.md)
-    estimated_memory_gb: 28.0       # the snapshot's safetensors on the Hub
+    repo: mlx-community/gemma-4-26B-A4B-it-heretic-4bit
+    revision: 1f1ae59040a78b1d717618f44c82757255925d26   # 2026-11-14
+    estimated_memory_gb: 15.6       # the snapshot's safetensors on the Hub (~15.6 GB)
     # 5 full-attention layers × 2 KV heads × 512 dim = 20 MB/1k in bf16; the 25 sliding layers hold 1024 tokens
     # (0.2 GB a sequence) whatever the length: 22 covers both past ~100k
     kv_mb_per_1k_tokens: 22
