@@ -29,7 +29,7 @@ def _cfg(tmp_path: Path, *, main: dict[str, Any]) -> AirlieConfig:
         },
         "roles": {
             r: {"prompt": "p.md", "model": main["model"]}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"role": "coder"},
         "chat": {"task": {"default_role": "coder", "roles": ["coder"]}},

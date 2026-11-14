@@ -20,7 +20,7 @@ def cfg(tmp_path: Path):
             "base": {"repo": "org/base", "revision": "r1", "path": "/models/base", "estimated_memory_gb": 16}
         },
         "roles": {
-            r: {"prompt": "p.md", "model": "base"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "base"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
     }
     (tmp_path / "p.md").write_text("x")

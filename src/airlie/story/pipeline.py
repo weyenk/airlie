@@ -1109,8 +1109,9 @@ class StoryPipeline:
         return layers
 
     async def _routed_guideline(self, st: StoryState, story: Story) -> Skill | None:
-        """The architect's testing guideline Kev routes for the story (the studio's `_skill`, reused): None when
-        the architect role has no guideline library, the router has no answer, or it fails (a missing guideline
+        """The architect's testing guideline Kev routes for the story (the studio's `_skill`, reused).
+        None when the architect role has no guideline library, the router has no answer, or it fails
+        (a missing guideline
         is never a reason to stop)."""
         spec = self.cfg.roles.get(self.s.architect_role)
         skills = load_skills(spec.skills) if spec is not None and spec.skills is not None else []
@@ -2069,8 +2070,9 @@ class StoryPipeline:
         proof: tuple[ProofTest, ...],
         drafting: Session | None = None,
     ) -> Package | ProofChange | Satisfied:
-        """The architect critic's turn on a package (D9), when the layer has an agreed proof: one read-only ask
-        of the architect role at the base with the test files, the layer's proof and the conventions. An
+        """The architect critic's turn on a package (D9), when the layer has an agreed proof.
+        One read-only ask of the architect role at the base with the test files, the layer's proof and
+        the conventions. An
         objection is the architect's one revision (`package-fix` after the objections); a critic that cannot
         be read, or does not finish, is no objection (an event says so): the mechanical checks follow
         either way. Events: amigos_critic, and an amigos_objection (source "package") per objection."""
@@ -2160,7 +2162,8 @@ class StoryPipeline:
         """The architect found layer `i`'s agreed proof wrong (D12): it revises that layer's tests in
         one fresh ask (the contract of the meeting's proof, this layer only, its reasons as data),
         parsed against the whole agreement; the stored agreement takes the new tests. When it found criteria
-        false, product rewords them first (`_revise_criteria`) and the architect revises against the new story.
+        false, product rewords them first (`_revise_criteria`), then the architect revises against
+        the new story.
         When the layer is being re-planned after a red gate, a `gate_red` lesson records `proof_revised`.
         The story as it now stands is returned. StoryError when there is no agreed proof to change;
         StoryBlocked when product or the architect gives no usable revision."""

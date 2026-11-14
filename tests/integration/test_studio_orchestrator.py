@@ -658,7 +658,10 @@ async def test_plan_rejected_twice_is_a_failed_run_with_feedback(tmp_path: Path)
     repo = repo_with_marker_tests(tmp_path)
     bad = FakeReply(
         text=json.dumps(
-            {"type": "plan", "subtasks": [{"id": "a", "role": "architect", "brief": "x", "depends_on": ["zz"]}]}
+            {
+                "type": "plan",
+                "subtasks": [{"id": "a", "role": "architect", "brief": "x", "depends_on": ["zz"]}],
+            }
         )
     )
     engine = FakeEngine({"chief": [bad, bad]})

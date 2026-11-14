@@ -99,7 +99,9 @@ def test_a_reply_cut_off_at_max_tokens_is_returned_with_finish_reason_length_not
     choice = r.json()["choices"][0]
     assert choice["finish_reason"] == "length" and choice["message"]["content"] == ""
     assert choice["message"]["reasoning_content"] == "Let me think"  # what the engine sent is passed on
-    assert json.loads(up.requests[0].content)["max_tokens"] == c.roles["architect"].max_tokens  # the role's own
+    assert (
+        json.loads(up.requests[0].content)["max_tokens"] == c.roles["architect"].max_tokens
+    )  # the role's own
 
 
 def test_a_streamed_reply_cut_off_at_max_tokens_ends_with_finish_reason_length(tmp_path: Path) -> None:
@@ -801,7 +803,10 @@ def test_the_line_row_shows_both_lanes_the_gates_and_the_blocked_cards(tmp_path:
     write_diagnosis(
         state,
         Diagnosis(
-            pack, Classified("config", "cut_off", "layers", "config:cut_off:architect", ("x",), "r"), None, "n"
+            pack,
+            Classified("config", "cut_off", "layers", "config:cut_off:architect", ("x",), "r"),
+            None,
+            "n",
         ),
     )
     story = state / "stories" / building

@@ -129,7 +129,7 @@ def test_create_photo_preview_publish(tmp_path: Path, ctx: ToolContext) -> None:
 
 def _mini_cfg(tmp_path: Path) -> Path:
     (tmp_path / "prompts" / "roles").mkdir(parents=True)
-    for name in ("chat", "lhr", "coder", "summarizer", "judge", "aggregator"):
+    for name in ("chat", "lhr", "architect", "summarizer", "judge", "aggregator"):
         (tmp_path / "prompts" / "roles" / f"{name}.md").write_text(f"# {name}\n")
     (tmp_path / "skills" / "chat").mkdir(parents=True)
     (tmp_path / "skills" / "chat" / "lhr-publish.md").write_text("---\nsummary: pub\n---\nBODY\n")

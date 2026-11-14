@@ -18,7 +18,7 @@ from tests.unit.engine_contract import plain_request
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "mlx_vlm"
 
-ROLES = ("coder", "summarizer", "judge", "aggregator")
+ROLES = ("architect", "summarizer", "judge", "aggregator")
 
 
 class Recorder:

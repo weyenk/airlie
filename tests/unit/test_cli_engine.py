@@ -23,7 +23,7 @@ def write_cfg(tmp_path: Path) -> Path:
             "small": {"repo": "org/small", "revision": "r2", "estimated_memory_gb": 3},
         },
         "roles": {
-            r: {"prompt": "p.md", "model": "base"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "base"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "observability": {"state_dir": str(tmp_path / "state")},
     }

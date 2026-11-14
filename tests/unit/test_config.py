@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, StorySpec, load_config, profile_configs
 from airlie.config.load import _yaml_problem
-from airlie.config.schema import MUTATING_TOOLS, EngineSpec, ManagerSpec
+from airlie.config.schema import EngineSpec, ManagerSpec
 from tests.support.config import MINIMAL, write
 
 
@@ -18,13 +18,13 @@ def test_minimal_config_loads_with_defaults(tmp_path: Path) -> None:
     cfg = load_config(write(tmp_path, MINIMAL))
     assert isinstance(cfg, AirlieConfig)
     assert cfg.teams.k == 3
-    assert cfg.teams.role == "coder"
+    assert cfg.teams.role == "architect"
     assert cfg.lts.controller.kind == "heuristic"
     assert cfg.scheduler.max_active == 4
     # prompt paths resolve relative to the config file, not the cwd
-    assert cfg.roles["coder"].prompt == (tmp_path / "prompts/roles/coder.md").resolve()
+    assert cfg.roles["architect"].prompt == (tmp_path / "prompts/roles/architect.md").resolve()
     # a role's engine is derived from which engine serves its model
-    assert cfg.engine_for_role("coder") == "main"
+    assert cfg.engine_for_role("architect") == "main"
 
 
 def test_role_referencing_unknown_model_fails_with_named_error(tmp_path: Path) -> None:
@@ -150,7 +150,7 @@ def test_local_overrides_deep_merge(tmp_path: Path) -> None:
     )
     cfg = load_config(base, local)
     assert cfg.teams.k == 1
-    assert cfg.teams.role == "coder"  # untouched sibling survives the merge
+    assert cfg.teams.role == "architect"  # untouched sibling survives the merge
     e = cfg.engines["main"]
     assert e.kind == "openai_http"
     assert e.base_url == "http://127.0.0.1:1/v1"
@@ -169,8 +169,8 @@ def test_write_file_overwrite_limit_defaults_to_200_and_can_be_set(tmp_path: Pat
 
 
 def test_committed_architect_has_room_for_a_large_edit() -> None:
-    """HDS-5 2026-10-16: 4096 tokens cut a whole-file rewrite off mid-call; the build architect keeps 10240 for
-    answers (think_when_red covers red turns)."""
+    """HDS-5 2026-10-16: 4096 tokens cut a whole-file rewrite mid-call; the build architect keeps
+    10240 for answers (think_when_red covers red turns)."""
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")
     arch = cfg.roles["architect"]
@@ -195,9 +195,13 @@ def test_main_engine_serves_architect() -> None:
     assert cfg.engines["main"].models == ["architect"]
     assert cfg.engines["main"].port == 8080
     assert cfg.engines["main"].max_kv_size == 131072
-    assert cfg.engines["main"].served_name("architect").endswith(
-        "models--sh0wie--Qwen3.8-Flash-Next-REAP-288-MLX-4bit/snapshots/"
-        f"{cfg.models['architect'].revision}"
+    assert (
+        cfg.engines["main"]
+        .served_name("architect")
+        .endswith(
+            "models--sh0wie--Qwen3.8-Flash-Next-REAP-288-MLX-4bit/snapshots/"
+            f"{cfg.models['architect'].revision}"
+        )
     )
 
 
@@ -293,9 +297,12 @@ ROOT = Path(__file__).resolve().parents[2]
 NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
 
 
+CODER_ROLE = {"prompt": "prompts/roles/coder.md", "model": "team"}
+
+
 def with_coder(**coder: object) -> dict:
-    """MINIMAL with `coder` set over the schema defaults."""
-    return {**MINIMAL, "roles": {**MINIMAL["roles"], "coder": {**MINIMAL["roles"]["coder"], **coder}}}
+    """MINIMAL with an extra `coder` role for thinking-budget tests."""
+    return {**MINIMAL, "roles": {**MINIMAL["roles"], "coder": {**CODER_ROLE, **coder}}}
 
 
 def no_room(role: str, max_tokens: int, budget: int) -> str:
@@ -486,7 +493,9 @@ def test_catalog_kv_constants_follow_each_models_attention_geometry() -> None:
     Qwen2.5-32B, four times what its 16 full-attention layers hold, and the number had already shrunk a
     profile's KV."""
     models = load_config(ROOT / "airlie.yaml", NO_LOCAL).models
-    assert models["architect"].kv_mb_per_1k_tokens == 48  # Flash-Next hybrid; tighten after doctor documents layers
+    assert (
+        models["architect"].kv_mb_per_1k_tokens == 48
+    )  # Flash-Next hybrid; tighten after doctor documents layers
     assert models["small"].kv_mb_per_1k_tokens == 144  # 36 layers × 8 heads × 128 dim
     # 5 full-attention layers × 2 heads × 512 dim = 20, + the 25 sliding layers' fixed 1024-token window
     assert models["gemma4"].kv_mb_per_1k_tokens == 22
@@ -1204,7 +1213,9 @@ def test_on_context_full_trim_loads(tmp_path: Path) -> None:
     assert load_config(write(tmp_path, data)).roles["coder"].on_context_full == "trim"
 
 
-def test_the_committed_architect_has_a_write_schedule_and_a_schedule_must_put_tests_first(tmp_path: Path) -> None:
+def test_the_committed_architect_has_a_write_schedule_and_a_schedule_must_put_tests_first(
+    tmp_path: Path,
+) -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     ws = cfg.roles["architect"].write_schedule
     assert ws is not None and (ws.tests, ws.code) == (0.25, 0.75)
@@ -1657,8 +1668,6 @@ def test_hf_snapshot_dir_honours_an_explicit_cache(tmp_path: Path) -> None:
     assert got == tmp_path / "elsewhere" / "models--mlx-community--Qwen3.8-27B-4bit" / "snapshots" / "abc123"
 
 
-
-
 # ---- engine lifecycles and the manager ----
 
 
@@ -1832,10 +1841,9 @@ def test_chat_task_default_role_must_be_one_a_model_may_choose(tmp_path: Path) -
 
 
 def test_chat_task_accepts_a_narrower_role_list(tmp_path: Path) -> None:
-    assert (
-        load_config(_chat(tmp_path, {"task": {"default_role": "coder", "roles": ["coder"]}})).chat.task.roles
-        == ["coder"]
-    )
+    assert load_config(
+        _chat(tmp_path, {"task": {"default_role": "coder", "roles": ["coder"]}})
+    ).chat.task.roles == ["coder"]
 
 
 @pytest.mark.parametrize("bad", [{"max_steps": 0}, {"max_depth": 2}, {"roles": []}])
@@ -1854,8 +1862,8 @@ def test_a_repository_chat_cannot_drop_a_confirmation_of_push_pr_or_build(
 
 
 def test_the_reviewer_is_a_different_lab_than_the_build_model_and_runs_on_a_served_engine() -> None:
-    """Noah 2026-11-12: the reviewer (and the supervisor) run on gemma4 (Google), the architect on Qwen Flash-Next:
-    a different lab on purpose, with no second model in memory; Muse catalog dropped 2026-11-13."""
+    """Noah 2026-11-12: the reviewer (and supervisor) run on gemma4; the architect on Qwen Flash-Next:
+    different labs on purpose, no second model in memory; Muse catalog dropped 2026-11-13."""
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     assert cfg.roles["reviewer"].model == cfg.roles["supervisor"].model == "gemma4"
     assert "Qwen" in cfg.models["architect"].repo and "gemma" in cfg.models["gemma4"].repo.lower()

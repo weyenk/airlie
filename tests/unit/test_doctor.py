@@ -16,7 +16,7 @@ def make_cfg(tmp_path: Path, engines: dict, models: dict) -> AirlieConfig:
         "engines": engines,
         "models": {name: {"repo": repo, "revision": "r1"} for name, repo in models.items()},
         "roles": {
-            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "team"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
     }
     (tmp_path / "p.md").write_text("x")
@@ -88,7 +88,7 @@ def projected_cfg(tmp_path: Path, est_gb: float) -> AirlieConfig:
             }
         },
         "roles": {
-            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "team"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 3},
         "notifications": {"contact": "mailto:noah@example.com"},
@@ -223,7 +223,7 @@ def decision_cfg(tmp_path: Path) -> AirlieConfig:
             "kev": {"repo": "org/decider", "revision": "d9", "estimated_memory_gb": 3},
         },
         "roles": {
-            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "team"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "router": {"kind": "jev", "model": "kev"},
         "topology": {
@@ -389,7 +389,8 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
     wider.line.fanout = 8
     assert live_kv_gb(wider, e) > live_kv_gb(studio, e)  # more asks, more KV
     assert (
-        f"the build lane's 1 sequence at {build.max_context} + 4 asks at 8192 + 1 sequence on small at 16384, "
+        f"the build lane's 1 sequence at {build.max_context} + 4 asks at 8192 "
+        f"+ 1 sequence on small at 16384, "
         "gemma at 131072 + 13 GB prefix cache" in projection_detail(studio, e)
     )
     teams = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="teams")
@@ -407,7 +408,7 @@ def profile_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AirlieConfig
         "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"], "max_kv_size": 65536}},
         "models": {"team": {"repo": "org/model", "revision": "r1"}},
         "roles": {
-            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "team"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "topology": {"profiles": {"wide": {"engines": {"main": {"max_kv_size": 131072}}}}},
     }
@@ -599,7 +600,7 @@ def mlx_vlm_cfg(
             "bench": {"repo": "org/bench", "revision": "r1", "estimated_memory_gb": 20},
         },
         "roles": {
-            r: {"prompt": "p.md", "model": "base"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "base"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
     }
     (tmp_path / "p.md").write_text("x")
@@ -618,7 +619,7 @@ def test_memory_projection_counts_every_autostart_mlx_vlm_engine_and_its_cache(t
     assert unknown == []
 
 
-TEAM_ROLES = ("coder", "summarizer", "judge", "aggregator")
+TEAM_ROLES = ("architect", "summarizer", "judge", "aggregator")
 
 
 def two_engine_cfg(tmp_path: Path, *, head_gb: float | None) -> AirlieConfig:

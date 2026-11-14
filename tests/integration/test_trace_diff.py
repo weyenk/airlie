@@ -28,7 +28,11 @@ def state_dir(root: Path, name: str, *, outcome: Outcome = "helped", extra_node:
     (run / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in studio))
     (run / "trace" / "build" / "prompt.json").write_text(
         json.dumps(
-            {"role": "architect", "attempt": 0, "messages": [{"role": "user", "content": f"build in {state}/wt"}]}
+            {
+                "role": "architect",
+                "attempt": 0,
+                "messages": [{"role": "user", "content": f"build in {state}/wt"}],
+            }
         )
     )
     ledger = Ledger(state / "supervisor.sqlite")

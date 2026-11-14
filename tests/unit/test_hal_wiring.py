@@ -64,7 +64,7 @@ async def test_orchestrator_updates_hal_from_steps_and_emits_budgets(tmp_path: P
     )
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text("x")
     data = {
         "version": 1,
@@ -72,7 +72,7 @@ async def test_orchestrator_updates_hal_from_steps_and_emits_budgets(tmp_path: P
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 1, "orchestrator": "native", "max_steps": 5, "stop_on_first_pass": False},
         "tools": {"builtin": ["write_file"]},

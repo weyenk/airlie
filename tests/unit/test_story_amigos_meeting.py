@@ -124,7 +124,7 @@ def _two_seat(script: Mapping[str, list[Any]]) -> dict[str, list[Any]]:
     out = {k: list(v) for k, v in script.items() if k != "tester"}
     arch = out.get("architect", [])
     proof = list(script["tester"])
-    out["architect"] = ([arch[0], *proof, *arch[1:]] if arch else proof)
+    out["architect"] = [arch[0], *proof, *arch[1:]] if arch else proof
     return out
 
 

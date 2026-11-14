@@ -38,9 +38,10 @@ from tests.support.supervisor_flow import SUPERVISOR_ROLES, answer, rows
 
 SCRIPT_LAYER: dict[str, list[FakeReply]] = {
     "product": [STORY],
-    "architect": [LAYERS, RED],
     "architect": [
-        FEATURE,  # the coder turn: mul, as the package asks
+        LAYERS,
+        RED,
+        FEATURE,  # the build turn: mul, as the package asks
         DONE,
         write("README.md", "mul multiplies.\n"),  # the done-check finds a miss and fixes it
         DONE,
@@ -142,7 +143,9 @@ class AdvisedThenDies(StudioOrchestrator):
 
     async def coder_turn(self, subtask: Subtask) -> SubtaskRun:
         assert self.advisor is not None
-        await self.advisor.advise("gate_retry", subtask.id, "architect", "the gate is red", kinds=("gate_fails",))
+        await self.advisor.advise(
+            "gate_retry", subtask.id, "architect", "the gate is red", kinds=("gate_fails",)
+        )
         raise RuntimeError("the engine fell over")
 
 
@@ -478,7 +481,14 @@ GOLDEN_STATE = {
     "built_keys": ["branch", "sha", "run_id", "subtasks", "gate", "package", "tests"],
     "branch": "add-avatar-upload-01-mul",
     "subtasks": [
-        {"id": "build", "role": "architect", "stop": "done", "review": "approve", "fix_rounds": 1, "findings": []}
+        {
+            "id": "build",
+            "role": "architect",
+            "stop": "done",
+            "review": "approve",
+            "fix_rounds": 1,
+            "findings": [],
+        }
     ],
     "tests": ["tests/test_calc.py::test_mul"],
     "runs": 4,

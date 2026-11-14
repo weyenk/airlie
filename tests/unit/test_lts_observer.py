@@ -92,7 +92,7 @@ async def test_orchestrator_wires_lts(tmp_path: Path) -> None:
     )
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text(f"you are {r}")
     data = {
         "version": 1,
@@ -100,7 +100,7 @@ async def test_orchestrator_wires_lts(tmp_path: Path) -> None:
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 2, "orchestrator": "native", "max_steps": 5},
         "tools": {"builtin": ["shell"]},
@@ -144,14 +144,15 @@ async def test_orchestrator_wires_lts(tmp_path: Path) -> None:
 def blueprint_cfg(tmp_path: Path) -> AirlieConfig:
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text("x")
     data = {
         "version": 1,
         "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
-            r: {"prompt": f"{r}.md", "model": "base"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": f"{r}.md", "model": "base"}
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "lts": {"controller": {"kind": "always"}, "summarizer": {"kind": "truncate"}},
         "observability": {"state_dir": str(tmp_path / "state")},

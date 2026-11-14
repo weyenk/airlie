@@ -80,7 +80,7 @@ def test_routable_false_in_frontmatter_excludes_the_role(tmp_path: Path) -> None
         "models": {"m": {"repo": "o/m", "revision": "r"}},
         "roles": {
             n: {"prompt": f"{n}.md", "model": "m"}
-            for n in ("chief", "coder", "summarizer", "judge", "aggregator")
+            for n in ("chief", "architect", "summarizer", "judge", "aggregator")
         },
     }
     (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))

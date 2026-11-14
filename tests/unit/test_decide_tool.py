@@ -68,7 +68,7 @@ def test_attach_decide_only_with_a_decision_router_engine(tmp_path: Path) -> Non
         "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
         "models": {"team": {"repo": "org/t", "revision": "r", "path": "/models/team"}},
         "roles": {
-            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "team"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
     }
     (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(base))
@@ -127,7 +127,7 @@ def _tool_config(tmp_path: Path, **router):  # type: ignore[no-untyped-def]
             "loose": {"repo": "org/l", "revision": "r", "path": "/models/loose"},
         },
         "roles": {
-            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "team"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "router": router,
     }

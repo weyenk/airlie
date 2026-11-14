@@ -89,7 +89,7 @@ async def test_orchestrator_runs_k_teams_in_worktrees_and_reports(tmp_path: Path
     repo = git_repo(tmp_path)
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text(f"you are {r}")
     data = {
         "version": 1,
@@ -97,7 +97,7 @@ async def test_orchestrator_runs_k_teams_in_worktrees_and_reports(tmp_path: Path
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 2, "orchestrator": "native", "max_steps": 5},
         "tools": {"builtin": ["write_file", "run_tests"]},
@@ -145,7 +145,7 @@ async def test_orchestrator_aggregates_and_writes_report(tmp_path: Path) -> None
     repo = git_repo(tmp_path)
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text(f"you are {r}")
     data = {
         "version": 1,
@@ -153,7 +153,7 @@ async def test_orchestrator_aggregates_and_writes_report(tmp_path: Path) -> None
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 2, "orchestrator": "native", "max_steps": 5, "stop_on_first_pass": False},
         "tools": {"builtin": ["write_file"]},
@@ -195,7 +195,7 @@ async def test_stop_on_first_pass_cancels_other_teams(tmp_path: Path) -> None:
     repo = git_repo(tmp_path)
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text("x")
     data = {
         "version": 1,
@@ -203,7 +203,7 @@ async def test_stop_on_first_pass_cancels_other_teams(tmp_path: Path) -> None:
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 2, "orchestrator": "native", "max_steps": 50, "stop_on_first_pass": True},
         "tools": {"builtin": ["write_file", "shell"]},
@@ -258,7 +258,7 @@ async def test_a_single_agent_cut_off_at_max_tokens_is_reported_as_cut_off_not_d
     repo = git_repo(tmp_path)
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text("x")
     data = {
         "version": 1,
@@ -266,7 +266,7 @@ async def test_a_single_agent_cut_off_at_max_tokens_is_reported_as_cut_off_not_d
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 1, "orchestrator": "native", "max_steps": 5},
         "tools": {"builtin": ["write_file"]},
@@ -326,7 +326,7 @@ async def test_a_parallel_teams_malformed_tool_call_reaches_the_runs_events(tmp_
     repo = git_repo(tmp_path)
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text(f"you are {r}")
     data = {
         "version": 1,
@@ -334,7 +334,7 @@ async def test_a_parallel_teams_malformed_tool_call_reaches_the_runs_events(tmp_
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 1, "orchestrator": "native", "max_steps": 5},
         "tools": {"builtin": ["write_file", "run_tests"]},

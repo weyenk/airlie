@@ -37,7 +37,7 @@ def make_cfg(tmp_path: Path) -> AirlieConfig:
         "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "model": "base", "lifecycle": "on_demand"}},
         "models": {"base": {"repo": "org/base", "revision": "r1", "path": "/models/base"}},
         "roles": {
-            r: {"prompt": "p.md", "model": "base"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "base"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "observability": {"state_dir": str(tmp_path / "state")},
     }

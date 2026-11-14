@@ -89,7 +89,7 @@ def _config(root: Path, *, workflows: bool = False) -> AirlieConfig:
     """The least airlie.yaml the app starts with: one engine it never reaches (the board needs none), the
     roles the config requires, and the state under `root`. Its own, so the image needs no engine packages.
     `workflows` includes the shipped workflow files, as airlie.yaml does."""
-    roles = ("coder", "summarizer", "judge", "aggregator")
+    roles = ("architect", "summarizer", "judge", "aggregator")
     for r in roles:
         (root / f"{r}.md").write_text("x")
     (root / "chat.md").write_text("---\nroutable: false\n---\nYou are the chat role.\n")

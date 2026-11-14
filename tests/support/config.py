@@ -11,13 +11,13 @@ MINIMAL: dict = {
     "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
     "models": {"team": {"repo": "mlx-community/Qwen3.8-27B-4bit", "revision": "abc123"}},
     "roles": {
-        "coder": {"prompt": "prompts/roles/coder.md", "model": "team"},
+        "architect": {"prompt": "prompts/roles/architect.md", "model": "team"},
         "summarizer": {"prompt": "prompts/roles/summarizer.md", "model": "team"},
         "judge": {"prompt": "prompts/roles/judge.md", "model": "team"},
         "aggregator": {"prompt": "prompts/roles/aggregator.md", "model": "team"},
     },
-    "teams": {"role": "coder"},
-    "chat": {"task": {"default_role": "coder", "roles": ["coder"]}},
+    "teams": {"role": "architect"},
+    "chat": {"task": {"default_role": "architect", "roles": ["architect"]}},
 }
 
 

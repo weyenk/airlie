@@ -22,7 +22,7 @@ API_KEY = "sekret-key"
 
 
 def _cfg(tmp_path: Path) -> object:
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (tmp_path / f"{r}.md").write_text("x")
     data = {
         "version": 1,

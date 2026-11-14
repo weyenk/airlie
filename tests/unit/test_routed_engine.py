@@ -18,7 +18,7 @@ from airlie.engine.types import EngineStats
 from airlie.manager.client import ManagedEngine
 from tests.unit.engine_contract import plain_request
 
-ROLES = ("coder", "summarizer", "judge", "aggregator", "reviewer")
+ROLES = ("architect", "summarizer", "judge", "aggregator", "reviewer")
 
 
 def config(tmp_path: Path, *, reviewer_engine: bool = True):  # type: ignore[no-untyped-def]

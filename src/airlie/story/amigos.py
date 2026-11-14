@@ -770,9 +770,7 @@ def no_proof_why(turns: Sequence[Turn]) -> str:
     posted = sorted({t.role for t in turns for p in t.problems if p.why.startswith("you posted the proof")})
     if not posted:
         return NO_PROOF
-    return (
-        f"{NO_PROOF}. The proof {' and '.join(posted)} posted is not the {PROOF_OWNER}'s and was not used"
-    )
+    return f"{NO_PROOF}. The proof {' and '.join(posted)} posted is not the {PROOF_OWNER}'s and was not used"
 
 
 class OneTurn(TerminationCondition):
@@ -904,7 +902,8 @@ def opening_message(
         hub_text("amigos-opening") if purpose is None else purpose,
         "## Product's story: the requirements as they stand\n" + story_text(story),
         "## The architect's split: the changes as they stand\n```json\n" + split + "\n```",
-        f"## The proof\nThe {PROOF_OWNER} has not posted it yet: the architect's turn proposes the proof plan "
+        f"## The proof\nThe {PROOF_OWNER} has not posted it yet: the architect's turn proposes the "
+        "proof plan "
         f"after the split. Only the {PROOF_OWNER} posts it: product never posts a proof block, not even to "
         "help; product and architect object to it once it is posted.",
         conventions_text,
