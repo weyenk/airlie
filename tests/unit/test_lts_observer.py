@@ -92,7 +92,7 @@ async def test_orchestrator_wires_lts(tmp_path: Path) -> None:
     )
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text(f"you are {r}")
     data = {
         "version": 1,
@@ -100,7 +100,7 @@ async def test_orchestrator_wires_lts(tmp_path: Path) -> None:
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 2, "orchestrator": "native", "max_steps": 5},
         "tools": {"builtin": ["shell"]},
@@ -111,7 +111,7 @@ async def test_orchestrator_wires_lts(tmp_path: Path) -> None:
     cfg = load_config(cfg_dir / "airlie.yaml")
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(tool_calls=[ToolCall("a", "shell", json.dumps({"cmd": "echo one"}))]),
                 FakeReply(tool_calls=[ToolCall("b", "retrieve_value", json.dumps({"entry_id": "nope"}))]),
                 # one more step, so a team's later turn comes after an admission whatever order the two
@@ -144,14 +144,15 @@ async def test_orchestrator_wires_lts(tmp_path: Path) -> None:
 def blueprint_cfg(tmp_path: Path) -> AirlieConfig:
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text("x")
     data = {
         "version": 1,
         "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
-            r: {"prompt": f"{r}.md", "model": "base"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": f"{r}.md", "model": "base"}
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "lts": {"controller": {"kind": "always"}, "summarizer": {"kind": "truncate"}},
         "observability": {"state_dir": str(tmp_path / "state")},
@@ -164,7 +165,7 @@ async def test_run_step_blueprint(tmp_path: Path) -> None:
     """Spec 04 §3: run_step injects keys, generates, evaluates admission; execute_task-free entry point."""
     cfg = blueprint_cfg(tmp_path)
     engine = FakeEngine(
-        {"coder": [FakeReply(text="Parsed the CSV into a DataFrame"), FakeReply(text="second")]}
+        {"architect": [FakeReply(text="Parsed the CSV into a DataFrame"), FakeReply(text="second")]}
     )
     orch = ParallelAgentTeamOrchestrator(cfg, engine, run_id="r3")
     out = await orch.run_step("team-1", "parse the csv", [])
@@ -178,8 +179,8 @@ async def test_run_step_blueprint(tmp_path: Path) -> None:
 async def test_single_system_message_has_no_front_matter(tmp_path: Path) -> None:
     """run_step sends the role prompt body without its front matter, as studio and review do."""
     cfg = blueprint_cfg(tmp_path)
-    cfg.roles["coder"].prompt.write_text("---\nsummary: s\n---\n# coder\nbody\n")
-    engine = FakeEngine({"coder": [FakeReply(text="done")]})
+    cfg.roles["architect"].prompt.write_text("---\nsummary: s\n---\n# coder\nbody\n")
+    engine = FakeEngine({"architect": [FakeReply(text="done")]})
     orch = ParallelAgentTeamOrchestrator(cfg, engine, run_id="r4")
     await orch.run_step("team-1", "parse the csv", [])
     system = engine.requests[0].messages[0]

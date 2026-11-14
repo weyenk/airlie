@@ -36,6 +36,24 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 @pytest.fixture(autouse=True)
+def _story_fake_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Architect plan and build share one role; route scripted replies by lane in integration tests."""
+    import airlie.engine as eng
+    from tests.support.story import StoryFakeEngine
+
+    monkeypatch.setattr(eng, "FakeEngine", StoryFakeEngine)
+
+
+@pytest.fixture(autouse=True)
+def _story_fake_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Architect plan and build share one role; route scripted replies by lane in integration tests."""
+    import airlie.engine as eng
+    from tests.support.story import StoryFakeEngine
+
+    monkeypatch.setattr(eng, "FakeEngine", StoryFakeEngine)
+
+
+@pytest.fixture(autouse=True)
 def _no_atlassian_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ATLASSIAN:
         monkeypatch.delenv(name, raising=False)

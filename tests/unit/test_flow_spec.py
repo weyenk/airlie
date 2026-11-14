@@ -24,7 +24,7 @@ def test_each_type_requires_its_fields():
         c=NodeSpec(type="conversation", role="architect"),
         wr=NodeSpec(type="write", prompt="p"),
         m=NodeSpec(type="meeting", role="product", prompt="p"),
-        t=NodeSpec(type="team", role=TeamRole(supervisor="architect", worker="coder"), prompt="p"),
+        t=NodeSpec(type="team", role=TeamRole(supervisor="architect", worker="architect"), prompt="p"),
         k=NodeSpec(type="check"),
         g=NodeSpec(type="gate"),
         b=NodeSpec(type="bundle"),
@@ -49,7 +49,7 @@ def test_a_model_node_needs_protocol_and_per_protocol_fields():
     meeting = NodeSpec(
         type="model",
         protocol="meeting",
-        role=["product", "architect", "tester"],
+        role=["product", "architect"],
         prompt="p",
         inputs=["story", "layers"],
     )
@@ -103,7 +103,7 @@ def test_an_input_nothing_produces_is_refused_unless_the_workflow_declares_it():
 
 def test_feedback_is_readable_where_a_loop_line_carries_it():
     w = wf(
-        build=ask("coder", inputs=["feedback"], outputs={"built": "json"}, to=["gate"]),
+        build=ask("architect", inputs=["feedback"], outputs={"built": "json"}, to=["gate"]),
         gate=check(
             inputs=["built"],
             outputs={"result": "json"},
@@ -165,7 +165,7 @@ def test_a_session_line_is_only_between_two_nodes_of_the_same_role():
             outputs={"drafts_session": "session"},
             to=["pkg"],
         ),
-        pkg=ask("coder", session="drafts_session"),
+        pkg=ask("architect", session="drafts_session"),
     )
     assert check_workflows({"w": by_field}) == [
         "workflow w: node pkg: input 'drafts_session' is a session of node 'drafts' (role architect); "
@@ -465,6 +465,19 @@ def test_the_storys_costed_check_declares_its_stages():
     assert all(c.describe()["args"] == list(c.args) for c in STORY_CATALOG)
 
 
+def test_meeting_amigos_roles_are_product_and_architect() -> None:
+    from airlie.flow.spec import MEETINGS
+
+    assert MEETINGS[0]["roles"] == ("product", "architect")
+
+
+def test_amigos_roles_tuple() -> None:
+    from airlie.story.amigos import OWNER, ROLES
+
+    assert ROLES == ("product", "architect")
+    assert OWNER["proof"] == "architect"
+
+
 def test_a_meeting_names_the_amigos_roles_in_order_and_reads_the_story_and_the_layers():
     def meeting(roles, inputs):
         return NodeSpec(type="meeting", role=roles, prompt="p", inputs=inputs)
@@ -472,14 +485,14 @@ def test_a_meeting_names_the_amigos_roles_in_order_and_reads_the_story_and_the_l
     w = WorkflowSpec(
         inputs=["story", "layers", "base"],
         nodes={
-            "ok": meeting(["product", "architect", "tester"], ["story", "layers", "base"]),
-            "order": meeting(["architect", "product", "tester"], ["story", "layers"]),
-            "short": meeting(["product", "architect"], ["story", "layers"]),
-            "blind": meeting(["product", "architect", "tester"], ["story"]),
+            "ok": meeting(["product", "architect"], ["story", "layers", "base"]),
+            "order": meeting(["architect", "product"], ["story", "layers"]),
+            "short": meeting(["product"], ["story", "layers"]),
+            "blind": meeting(["product", "architect"], ["story"]),
         },
     )
     rule = (
-        "a meeting runs the amigos protocol: role must be [product, architect, tester] "
+        "a meeting runs the amigos protocol: role must be [product, architect] "
         "and inputs include story, layers"
     )
     assert check_workflows({"w": w}) == [

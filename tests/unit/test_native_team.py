@@ -54,15 +54,15 @@ def make_team(
     *,
     max_steps: int = 10,
     token_budget: int = 10**6,
-    role_name: str = "coder",
+    role_name: str = "architect",
     tool_names: tuple[str, ...] = ("write_file", "read_file", "run_tests"),
     **role_fields: Any,
 ):
     wt = tmp_path / "wt"
     wt.mkdir(exist_ok=True)
-    (tmp_path / "coder.md").write_text("You are the coder.")
+    (tmp_path / "architect.md").write_text("You are the architect.")
     fields = {"thinking": False, "max_tokens": 64, **role_fields}
-    role = RoleSpec(prompt=tmp_path / "coder.md", model="base", **fields)
+    role = RoleSpec(prompt=tmp_path / "architect.md", model="base", **fields)
     tools = ToolRegistry.builtin(list(tool_names), ToolContext(worktree=wt, test_cmd="echo ok"))
     ctx = TeamContext(
         team_id="team-1",
@@ -81,7 +81,7 @@ def make_team(
 async def test_tool_calls_become_steps_and_final_text_ends_the_run(tmp_path: Path) -> None:
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(
                     tool_calls=[
                         ToolCall("c1", "write_file", json.dumps({"path": "a.py", "content": "x=1\n"}))
@@ -110,7 +110,7 @@ async def test_tool_calls_become_steps_and_final_text_ends_the_run(tmp_path: Pat
 async def test_observer_injection_is_appended_as_a_user_message(tmp_path: Path) -> None:
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "missing.py"}))]),
                 FakeReply(text="giving up"),
             ]
@@ -129,7 +129,7 @@ async def test_max_steps_stops_the_loop(tmp_path: Path) -> None:
     calls = [
         FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": f"f{i}"}))]) for i in range(10)
     ]
-    engine = FakeEngine({"coder": calls})
+    engine = FakeEngine({"architect": calls})
     team, ctx = make_team(tmp_path, engine, max_steps=3)
     result = await team.run(ctx, Recorder())
     # the fourth request offered no tools and asked for the answer; a tool call there is told once, and a
@@ -142,7 +142,7 @@ async def test_max_steps_stops_the_loop(tmp_path: Path) -> None:
 async def test_the_last_step_gets_no_tools_and_its_answer_finishes_the_run(tmp_path: Path) -> None:
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))]),
                 FakeReply(tool_calls=[ToolCall("c2", "read_file", json.dumps({"path": "b"}))]),
                 FakeReply(text="The story, from what I read."),
@@ -162,7 +162,7 @@ async def test_the_last_step_gets_no_tools_and_its_answer_finishes_the_run(tmp_p
 async def test_a_cut_off_last_answer_is_not_a_finished_one(tmp_path: Path) -> None:
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))]),
                 FakeReply(text="The story so", finish_reason="length"),
             ]
@@ -175,7 +175,7 @@ async def test_a_cut_off_last_answer_is_not_a_finished_one(tmp_path: Path) -> No
 
 async def test_native_team_repeated_action_stops(tmp_path: Path) -> None:
     same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [same] * 10})
+    engine = FakeEngine({"architect": [same] * 10})
     team, ctx = make_team(tmp_path, engine, max_steps=10)
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "repeated_action"
@@ -184,7 +184,7 @@ async def test_native_team_repeated_action_stops(tmp_path: Path) -> None:
 
 async def test_token_budget_stops_the_loop(tmp_path: Path) -> None:
     engine = FakeEngine(
-        {"coder": [FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])] * 10}
+        {"architect": [FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])] * 10}
     )
     team, ctx = make_team(tmp_path, engine, token_budget=5)
     result = await team.run(ctx, Recorder())
@@ -192,11 +192,11 @@ async def test_token_budget_stops_the_loop(tmp_path: Path) -> None:
 
 
 async def test_tools_are_sent_to_the_engine(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [FakeReply(text="ok")]})
+    engine = FakeEngine({"architect": [FakeReply(text="ok")]})
     team, ctx = make_team(tmp_path, engine)
     await team.run(ctx, Recorder())
     assert [t.name for t in engine.requests[0].tools or []] == ["write_file", "read_file", "run_tests"]
-    assert engine.requests[0].messages[0].content == "You are the coder."
+    assert engine.requests[0].messages[0].content == "You are the architect."
     assert "make it pass" in engine.requests[0].messages[1].content
 
 
@@ -204,7 +204,7 @@ async def test_token_budget_counts_context_plus_generated_not_resent_history(tmp
     """Each turn resends the whole conversation (prefix-cached); the budget must not grow quadratically."""
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": f"f{i}"}))])
                 for i in range(6)
             ]
@@ -224,7 +224,7 @@ async def test_repeated_action_requires_identical_outputs(tmp_path: Path) -> Non
     outputs = iter(["fail 1", "fail 2", "pass"])
     engine = FakeEngine(
         {
-            "coder": [FakeReply(tool_calls=[ToolCall("c", "shell", json.dumps({"cmd": "echo x"}))])] * 3
+            "architect": [FakeReply(tool_calls=[ToolCall("c", "shell", json.dumps({"cmd": "echo x"}))])] * 3
             + [FakeReply(text="done")]
         }
     )
@@ -272,7 +272,7 @@ async def test_a_reply_cut_off_with_no_visible_text_ends_the_turn_unsuccessfully
 async def test_a_reply_cut_off_after_tool_steps_keeps_the_steps_it_took(tmp_path: Path) -> None:
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a.py"}))]),
                 FakeReply(reasoning="Now the second file. ", finish_reason="length"),
             ]
@@ -287,7 +287,7 @@ async def test_a_reply_cut_off_after_tool_steps_keeps_the_steps_it_took(tmp_path
 
 async def test_a_cut_off_reply_that_has_text_keeps_it_and_is_marked_cut_off(tmp_path: Path) -> None:
     cut = FakeReply(text="The plan has three lay", reasoning="Two layers? Three. ", finish_reason="length")
-    team, ctx = make_team(tmp_path, FakeEngine({"coder": [cut]}))
+    team, ctx = make_team(tmp_path, FakeEngine({"architect": [cut]}))
     result = await team.run(ctx, Recorder())
     assert result.final_text == "The plan has three lay"  # its text, not a message about the cut-off
     assert result.stop_reason == "cut_off" and result.ok is False
@@ -295,12 +295,12 @@ async def test_a_cut_off_reply_that_has_text_keeps_it_and_is_marked_cut_off(tmp_
 
 async def test_a_cut_off_reply_whose_text_is_only_whitespace_has_no_visible_text(tmp_path: Path) -> None:
     cut = FakeReply(text=" \n\t ", reasoning="hmm ", finish_reason="length")
-    team, ctx = make_team(tmp_path, FakeEngine({"coder": [cut]}))
+    team, ctx = make_team(tmp_path, FakeEngine({"architect": [cut]}))
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "cut_off"
     assert result.final_text == (
         "the reply was cut off at max_tokens (64) before it ended, still thinking; "
-        "raise roles.coder.max_tokens"
+        "raise roles.architect.max_tokens"
     )
 
 
@@ -311,27 +311,27 @@ async def test_a_cut_off_reply_whose_text_is_only_whitespace_has_no_visible_text
             {"thinking": True, "thinking_budget": 4096, "max_tokens": 4096},
             "hmm",
             "the reply was cut off at max_tokens (4096) before it ended, still thinking; "
-            "raise roles.coder.max_tokens above its thinking_budget (4096)",
+            "raise roles.architect.max_tokens above its thinking_budget (4096)",
             id="the budget is as big as max_tokens: it leaves no room",
         ),
         pytest.param(
             {"thinking": True, "thinking_budget": 4095, "max_tokens": 4096},
             "hmm",
             "the reply was cut off at max_tokens (4096) before it ended, still thinking; "
-            "raise roles.coder.max_tokens",
+            "raise roles.architect.max_tokens",
             id="a budget below max_tokens is not what to raise it above",
         ),
         pytest.param(
             {"thinking": True, "thinking_budget": None, "max_tokens": 4096},
             "hmm",
             "the reply was cut off at max_tokens (4096) before it ended, still thinking; "
-            "raise roles.coder.max_tokens",
+            "raise roles.architect.max_tokens",
             id="uncapped thinking has no budget to name",
         ),
         pytest.param(
             {"thinking": False, "thinking_budget": 8192, "max_tokens": 4096},
             "",
-            "the reply was cut off at max_tokens (4096) before it ended; raise roles.coder.max_tokens",
+            "the reply was cut off at max_tokens (4096) before it ended; raise roles.architect.max_tokens",
             id="a role that does not think: no thinking, no budget",
         ),
     ],
@@ -340,7 +340,7 @@ async def test_the_cut_off_message_names_what_to_raise(
     tmp_path: Path, fields: dict[str, Any], reasoning: str, expected: str
 ) -> None:
     cut = FakeReply(reasoning=reasoning, finish_reason="length")
-    team, ctx = make_team(tmp_path, FakeEngine({"coder": [cut]}), **fields)
+    team, ctx = make_team(tmp_path, FakeEngine({"architect": [cut]}), **fields)
     assert (await team.run(ctx, Recorder())).final_text == expected
 
 
@@ -348,7 +348,7 @@ async def test_a_tool_call_is_unaffected_by_a_length_finish(tmp_path: Path) -> N
     """Only a reply with no tool call is judged by how it ended; a call is run as ever."""
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(
                     tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a.py"}))],
                     finish_reason="length",
@@ -365,7 +365,7 @@ async def test_a_tool_call_is_unaffected_by_a_length_finish(tmp_path: Path) -> N
 
 async def test_a_reply_that_stopped_by_itself_is_done_whatever_it_holds(tmp_path: Path) -> None:
     only_thinking = FakeReply(reasoning="All of it was thinking. ", finish_reason="stop")
-    team, ctx = make_team(tmp_path, FakeEngine({"coder": [only_thinking]}))
+    team, ctx = make_team(tmp_path, FakeEngine({"architect": [only_thinking]}))
     result = await team.run(ctx, Recorder())
     assert result.ok and result.stop_reason == "done" and result.final_text == ""
 
@@ -376,7 +376,7 @@ async def test_a_reply_that_stopped_by_itself_is_done_whatever_it_holds(tmp_path
 async def test_stop_when_returns_fork_point_with_state_and_last_test_output(tmp_path: Path) -> None:
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(tool_calls=[ToolCall("c1", "run_tests", "{}")]),
                 FakeReply(tool_calls=[ToolCall("c2", "run_tests", "{}")]),
                 FakeReply(text="never reached"),
@@ -406,12 +406,12 @@ async def test_initial_state_resumes_verbatim_and_nudge_is_next_user_message(tmp
     from airlie.teams.native_team import dump_messages
 
     history = [
-        Message(role="system", content="You are the coder."),
+        Message(role="system", content="You are the architect."),
         Message(role="user", content="Goal:\nmake it pass"),
         Message(role="assistant", content="", tool_calls=(ToolCall("c1", "run_tests", "{}"),)),
         Message(role="tool", content="FAILED", tool_call_id="c1", name="run_tests"),
     ]
-    engine = FakeEngine({"coder": [FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [FakeReply(text="done")]})
     team, ctx = make_team(tmp_path, engine)
     ctx.initial_state = {"messages": dump_messages(history)}
     ctx.nudge = "Branch r1-1 of 2. Try a different approach."
@@ -424,7 +424,7 @@ async def test_initial_state_resumes_verbatim_and_nudge_is_next_user_message(tmp
 
 
 async def test_preamble_precedes_goal(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [FakeReply(text="done")]})
     team, ctx = make_team(tmp_path, engine)
     ctx.preamble = "[Repository map]\ntests/\n  test_a.py"
     await team.run(ctx, Recorder())
@@ -461,7 +461,7 @@ class FakeClock:
 def _write_then_done() -> FakeEngine:
     return TtftEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(
                     tool_calls=[
                         ToolCall("c1", "write_file", json.dumps({"path": "a.py", "content": "x=1\n"}))
@@ -507,7 +507,7 @@ async def test_only_the_first_tool_call_of_a_reply_is_executed(tmp_path: Path) -
     argument-less, and the history must only carry the call that ran."""
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(
                     tool_calls=[
                         ToolCall("c1", "write_file", json.dumps({"path": "a.py", "content": "x=1\\n"})),
@@ -532,7 +532,7 @@ async def test_only_the_first_tool_call_of_a_reply_is_executed(tmp_path: Path) -
 async def test_a_call_whose_arguments_do_not_parse_is_replayed_without_them(tmp_path: Path) -> None:
     runaway = '{"path": "a.py", "content": "def f():\\n    return compute(1, 2, 3) if'
     engine = FakeEngine(
-        {"coder": [FakeReply(tool_calls=[ToolCall("c1", "write_file", runaway)]), FakeReply(text="done")]}
+        {"architect": [FakeReply(tool_calls=[ToolCall("c1", "write_file", runaway)]), FakeReply(text="done")]}
     )
     team, ctx = make_team(tmp_path, engine)
     rec = Recorder()
@@ -555,7 +555,7 @@ def test_dump_and_load_messages_keep_parts() -> None:
 async def test_prompt_frontmatter_is_not_sent_as_system_text(tmp_path: Path) -> None:
     from airlie.engine import FakeEngine, FakeReply
 
-    engine = FakeEngine({"coder": [FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [FakeReply(text="done")]})
     team, ctx = make_team(tmp_path, engine)
     ctx.role.prompt.write_text("---\nsummary: Implement code\n---\n# coder\n")
     await team.run(ctx, Recorder())
@@ -567,7 +567,7 @@ async def test_images_become_parts_on_the_goal_message(tmp_path: Path) -> None:
 
     png = tmp_path / "s.png"
     png.write_bytes(b"\x89PNG\r\n\x1a\n")
-    engine = FakeEngine({"coder": [FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [FakeReply(text="done")]})
     team, ctx = make_team(tmp_path, engine)
     ctx.images = [png]
     await team.run(ctx, Recorder())
@@ -587,7 +587,7 @@ UNREPAIRABLE = "Let me look.\n\n<function=open_file>\n<file>src/airlie/config/sc
 async def test_a_tool_call_left_as_text_is_not_an_answer_and_gets_one_correction(tmp_path: Path) -> None:
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(text=UNREPAIRABLE),
                 FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))]),
                 FakeReply(text="Read it; nothing to change."),
@@ -605,7 +605,7 @@ async def test_a_tool_call_left_as_text_is_not_an_answer_and_gets_one_correction
 
 async def test_a_second_unparsed_tool_call_in_a_row_fails_the_run(tmp_path: Path) -> None:
     engine = FakeEngine(
-        {"coder": [FakeReply(text=UNREPAIRABLE), FakeReply(text='<tool_call>\n{"name": "read_file"')]}
+        {"architect": [FakeReply(text=UNREPAIRABLE), FakeReply(text='<tool_call>\n{"name": "read_file"')]}
     )
     team, ctx = make_team(tmp_path, engine)
     result = await team.run(ctx, Recorder())
@@ -617,7 +617,14 @@ async def test_a_second_unparsed_tool_call_in_a_row_fails_the_run(tmp_path: Path
 async def test_each_streak_of_unparsed_calls_gets_its_own_correction(tmp_path: Path) -> None:
     read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
     engine = FakeEngine(
-        {"coder": [FakeReply(text=UNREPAIRABLE), read, FakeReply(text=UNREPAIRABLE), FakeReply(text="Done.")]}
+        {
+            "architect": [
+                FakeReply(text=UNREPAIRABLE),
+                read,
+                FakeReply(text=UNREPAIRABLE),
+                FakeReply(text="Done."),
+            ]
+        }
     )
     team, ctx = make_team(tmp_path, engine)
     result = await team.run(ctx, Recorder())
@@ -626,7 +633,7 @@ async def test_each_streak_of_unparsed_calls_gets_its_own_correction(tmp_path: P
 
 async def test_on_the_last_turn_an_unparsed_tool_call_is_no_answer(tmp_path: Path) -> None:
     read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [read, FakeReply(text=UNREPAIRABLE), FakeReply(text=UNREPAIRABLE)]})
+    engine = FakeEngine({"architect": [read, FakeReply(text=UNREPAIRABLE), FakeReply(text=UNREPAIRABLE)]})
     team, ctx = make_team(tmp_path, engine, max_steps=1)
     result = await team.run(ctx, Recorder())
     assert not result.ok and result.stop_reason == "max_steps"
@@ -634,7 +641,7 @@ async def test_on_the_last_turn_an_unparsed_tool_call_is_no_answer(tmp_path: Pat
 
 async def test_a_role_is_told_it_has_one_step_left_after_its_second_to_last(tmp_path: Path) -> None:
     read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [read, read, FakeReply(text="Final.")]})
+    engine = FakeEngine({"architect": [read, read, FakeReply(text="Final.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=3)
     result = await team.run(ctx, Recorder())
     assert result.ok and result.final_text == "Final."
@@ -647,7 +654,7 @@ async def test_a_role_is_told_it_has_one_step_left_after_its_second_to_last(tmp_
 
 async def test_a_one_step_role_is_not_told_it_has_a_step_left(tmp_path: Path) -> None:
     read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [read, FakeReply(text="Final.")]})
+    engine = FakeEngine({"architect": [read, FakeReply(text="Final.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=1)
     await team.run(ctx, Recorder())
     assert not any("one step left" in str(m.content) for r in engine.requests for m in r.messages)
@@ -657,7 +664,7 @@ async def test_the_turn_after_the_last_step_thinks_unless_the_role_says_not_to(t
     read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
 
     async def thinking_per_request(last_turn_thinking: bool) -> list[bool]:
-        engine = FakeEngine({"coder": [read, read, FakeReply(text="Plan.")]})
+        engine = FakeEngine({"architect": [read, read, FakeReply(text="Plan.")]})
         team, ctx = make_team(tmp_path, engine, max_steps=2)
         ctx.role = ctx.role.model_copy(update={"thinking": True, "last_turn_thinking": last_turn_thinking})
         await team.run(ctx, Recorder())
@@ -673,7 +680,7 @@ async def test_a_tool_call_on_a_last_turn_without_thinking_is_retried_with_think
     turn is tried first; the one retry thinks, since a plan written from 30k tokens of reading is the hard
     part the turn exists for."""
     read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [read, read, read, FakeReply(text="The plan.")]})
+    engine = FakeEngine({"architect": [read, read, read, FakeReply(text="The plan.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=2)
     ctx.role = ctx.role.model_copy(update={"thinking": True, "last_turn_thinking": False})
     result = await team.run(ctx, Recorder())
@@ -685,7 +692,7 @@ async def test_a_tool_call_on_the_last_turn_is_told_once_and_the_answer_after_it
     tmp_path: Path,
 ) -> None:
     read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [read, read, FakeReply(text="The plan.")]})
+    engine = FakeEngine({"architect": [read, read, FakeReply(text="The plan.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=1)
     result = await team.run(ctx, Recorder())
     assert result.ok and result.stop_reason == "done" and result.final_text == "The plan."
@@ -697,7 +704,7 @@ async def test_a_tool_call_on_the_last_turn_is_told_once_and_the_answer_after_it
 
 async def test_a_tool_call_on_the_last_turn_is_an_event_each_time(tmp_path: Path) -> None:
     read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [read, read, read]})
+    engine = FakeEngine({"architect": [read, read, read]})
     team, ctx = make_team(tmp_path, engine, max_steps=1)
     events: list[tuple[str, dict[str, Any]]] = []
     ctx.emit = lambda kind, **f: events.append((kind, f))
@@ -712,7 +719,7 @@ async def test_a_tool_call_on_the_last_turn_is_an_event_each_time(tmp_path: Path
 
 async def test_a_role_without_thinking_does_not_think_on_the_last_turn_retry(tmp_path: Path) -> None:
     read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [read, read, FakeReply(text="The plan.")]})
+    engine = FakeEngine({"architect": [read, read, FakeReply(text="The plan.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=1)
     ctx.role = ctx.role.model_copy(update={"thinking": False, "last_turn_thinking": False})
     await team.run(ctx, Recorder())
@@ -738,7 +745,7 @@ def told_to_write(engine: FakeEngine) -> list[int]:
 async def test_a_role_that_can_write_and_has_only_read_is_told_once_to_write_two_fifths_in(
     tmp_path: Path,
 ) -> None:
-    engine = FakeEngine({"coder": [*reads(8), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*reads(8), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=10)
     await team.run(ctx, Recorder())
     # 10 steps: the fourth is the line; the fifth request is the first to carry it, and it carries it on
@@ -752,7 +759,7 @@ async def test_a_role_that_still_has_not_written_four_steps_after_the_nudge_has_
 ) -> None:
     """AIR-28: the schemas offered never change (a changed tool list is a prompt the engine's prefix cache has
     never seen), so write-only is enforced where the call runs: a read is refused with an observation."""
-    engine = FakeEngine({"coder": [*reads(12), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*reads(12), FakeReply(text="Done.")]})
     team, ctx = make_team(
         tmp_path, engine, max_steps=12
     )  # nudge at step 4 (12 * 2 // 5 = 4), reading off at 8
@@ -783,7 +790,7 @@ async def test_a_role_that_still_has_not_written_four_steps_after_the_nudge_has_
     ] == [False] * 11 + [True]
     refused = [e for e in events.records if e["kind"] == "read_refused"]
     assert [(e["team_id"], e["role"], e["step"], e["tool"]) for e in refused] == [
-        ("team-1", "coder", 12, "read_file")
+        ("team-1", "architect", 12, "read_file")
     ]
 
 
@@ -791,7 +798,7 @@ async def test_a_role_that_writes_after_the_nudge_keeps_its_read_tools(tmp_path:
     write = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 1\n"}))]
     )
-    engine = FakeEngine({"coder": [*reads(4), write, *reads(5), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*reads(4), write, *reads(5), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=14)
     await team.run(ctx, Recorder())
     assert all("read_file" in {t.name for t in (r.tools or [])} for r in engine.requests[:-1])
@@ -804,7 +811,7 @@ async def test_a_writer_with_nudge_stuck_that_repeats_again_loses_the_tool_then_
     unmade. Told once; then the tool it loops on is switched off until it writes; a streak of refusals ends
     the run."""
     same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [same] * 12})
+    engine = FakeEngine({"architect": [same] * 12})
     team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
     rec = Recorder()
     result = await team.run(ctx, rec)
@@ -818,7 +825,7 @@ async def test_a_writer_with_nudge_stuck_that_repeats_again_loses_the_tool_then_
 async def run_repeating_writer(tmp_path: Path, advisor: StuckAdvisor | None) -> tuple[Any, FakeEngine]:
     """The writer of the test above (told, its tool switched off, stopped), with `advisor` as its on_stuck."""
     same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [same] * 12})
+    engine = FakeEngine({"architect": [same] * 12})
     team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
     ctx.on_stuck = advisor
     return await team.run(ctx, Recorder()), engine
@@ -840,14 +847,14 @@ async def test_the_repeat_nudge_carries_the_advisors_section_once(tmp_path: Path
     assert text("repeat-write-only", tool="read_file") in said  # the hold is sent as it is, no advice
     assert sum(SUPERVISOR in m for m in said) == 1
     # asked once, with the subtask, the role, the fixed text and the conversation so far (system, goal, 3x2)
-    assert adv.stuck_calls == [("team-1", "coder", fixed, 8)]
+    assert adv.stuck_calls == [("team-1", "architect", fixed, 8)]
     # it repeated again (repeat-write-only): settled not helped then, and not again when the run stopped
     assert adv.stuck_settles == [("team-1", False)]
 
 
 async def test_a_role_that_goes_on_after_the_advised_nudge_settles_it_with_its_result(tmp_path: Path) -> None:
     same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [same, same, same, *reads(1), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [same, same, same, *reads(1), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
     adv = RecordingAdvisor("Read something else.")
     ctx.on_stuck = adv
@@ -876,7 +883,7 @@ async def test_an_advisor_that_cannot_record_the_outcome_leaves_the_run_as_it_wa
 
 
 async def test_a_run_that_never_repeats_never_asks_or_settles(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [*reads(2), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*reads(2), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
     adv = RecordingAdvisor("unused")
     ctx.on_stuck = adv
@@ -888,7 +895,7 @@ async def test_a_writer_whose_looping_tool_is_switched_off_writes_and_gets_it_ba
     same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
     (tmp_path / "wt").mkdir(exist_ok=True)
     (tmp_path / "wt" / "a").write_text("x\n")
-    engine = FakeEngine({"coder": [*[same] * 6, write("w", "b.py"), *reads(1), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*[same] * 6, write("w", "b.py"), *reads(1), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
     rec = Recorder()
     result = await team.run(ctx, rec)
@@ -901,7 +908,7 @@ async def test_a_role_without_write_tools_that_repeats_again_after_the_nudge_is_
     tmp_path: Path,
 ) -> None:
     same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [same] * 9})
+    engine = FakeEngine({"architect": [same] * 9})
     team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True, tool_names=("read_file",))
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "repeated_action" and result.steps == 6  # 3 repeats, told, 3 more repeats
@@ -911,7 +918,7 @@ async def test_a_role_without_write_tools_that_repeats_again_after_the_nudge_is_
 
 async def test_a_role_without_nudge_stuck_is_stopped_at_the_first_repeat(tmp_path: Path) -> None:
     same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [same] * 9})
+    engine = FakeEngine({"architect": [same] * 9})
     team, ctx = make_team(tmp_path, engine, max_steps=20)
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "repeated_action" and result.steps == 3
@@ -919,7 +926,7 @@ async def test_a_role_without_nudge_stuck_is_stopped_at_the_first_repeat(tmp_pat
 
 async def test_a_role_that_can_recover_after_the_nudge_goes_on(tmp_path: Path) -> None:
     same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [same, same, same, *reads(1), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [same, same, same, *reads(1), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
     result = await team.run(ctx, Recorder())
     assert result.ok and result.final_text == "Done."
@@ -929,7 +936,7 @@ async def test_a_green_before_done_role_that_answers_with_run_tests_failing_is_t
     tmp_path: Path,
 ) -> None:
     fail = FakeReply(tool_calls=[ToolCall("t", "run_tests", "{}")])
-    engine = FakeEngine({"coder": [fail, FakeReply(text="Done."), FakeReply(text="Still done.")]})
+    engine = FakeEngine({"architect": [fail, FakeReply(text="Done."), FakeReply(text="Still done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=10, green_before_done=True)
     # the registry's test command is `echo ok`: make it fail for this test (the context is frozen)
     object.__setattr__(ctx.tools.ctx, "test_cmd", "exit 1")
@@ -941,11 +948,11 @@ async def test_a_green_before_done_role_that_answers_with_run_tests_failing_is_t
 
 async def test_a_role_that_answers_green_or_without_the_setting_is_not_held_back(tmp_path: Path) -> None:
     passing = FakeReply(tool_calls=[ToolCall("t", "run_tests", "{}")])
-    engine = FakeEngine({"coder": [passing, FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [passing, FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=10, green_before_done=True)
     assert (await team.run(ctx, Recorder())).final_text == "Done."  # `echo ok` passes
     fail = FakeReply(tool_calls=[ToolCall("t", "run_tests", "{}")])
-    engine = FakeEngine({"coder": [fail, FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [fail, FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=10)  # no setting
     object.__setattr__(ctx.tools.ctx, "test_cmd", "exit 1")
     assert (await team.run(ctx, Recorder())).final_text == "Done."
@@ -955,7 +962,7 @@ async def test_a_role_that_has_written_is_not_told_to(tmp_path: Path) -> None:
     write = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 1\n"}))]
     )
-    engine = FakeEngine({"coder": [reads(1)[0], write, *reads(6), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [reads(1)[0], write, *reads(6), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=10)
     await team.run(ctx, Recorder())
     assert told_to_write(engine) == []
@@ -972,7 +979,7 @@ def told_to_write_again(engine: FakeEngine) -> list[int]:
 
 async def test_a_continuation_that_only_reads_is_nudged_then_held(tmp_path: Path) -> None:
     """AIR-9 layer 05, 2026-10-23: the tester's retry read for all 20 steps and never wrote."""
-    engine = FakeEngine({"coder": [*reads(19), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*reads(19), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=20)
     ctx.already_written = ("tests/test_x.py",)
     ctx.emit = events = Events()
@@ -1003,7 +1010,7 @@ async def test_a_continuation_held_to_write_reads_again_once_its_write_lands(tmp
     write = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 1\n"}))]
     )
-    engine = FakeEngine({"coder": [*reads(15), write, *reads(2), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*reads(15), write, *reads(2), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=20)
     ctx.already_written = ("tests/test_x.py",)
     ctx.emit = events = Events()
@@ -1016,7 +1023,7 @@ async def test_a_continuation_that_writes_first_is_not_nudged(tmp_path: Path) ->
     write = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 1\n"}))]
     )
-    engine = FakeEngine({"coder": [*reads(2), write, *reads(15), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*reads(2), write, *reads(15), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=20)
     ctx.already_written = ("tests/test_x.py",)
     await team.run(ctx, Recorder())
@@ -1054,7 +1061,7 @@ class Events:
 async def test_a_call_in_a_known_misshape_is_repaired_and_run_as_a_step(tmp_path: Path) -> None:
     (tmp_path / "wt" / "src" / "airlie" / "config").mkdir(parents=True)
     (tmp_path / "wt" / "src" / "airlie" / "config" / "schema.py").write_text("SCHEMA = 1\n")
-    engine = FakeEngine({"coder": [FakeReply(text=GARBLED), FakeReply(text="It defines SCHEMA.")]})
+    engine = FakeEngine({"architect": [FakeReply(text=GARBLED), FakeReply(text="It defines SCHEMA.")]})
     team, ctx = make_team(tmp_path, engine)
     rec = Recorder()
     result = await team.run(ctx, rec)
@@ -1071,18 +1078,18 @@ async def test_a_call_in_a_known_misshape_is_repaired_and_run_as_a_step(tmp_path
 
 
 async def test_a_repaired_call_is_logged_as_a_malformed_reply_that_was_repaired(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [FakeReply(text=GARBLED), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [FakeReply(text=GARBLED), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine)
     ctx.emit = events = Events()
     await team.run(ctx, Recorder())
     [ev] = [e for e in events.records if e["kind"] == "malformed_call"]
-    assert ev["team_id"] == "team-1" and ev["role"] == "coder" and ev["step"] == 1
+    assert ev["team_id"] == "team-1" and ev["role"] == "architect" and ev["step"] == 1
     assert ev["text"] == GARBLED
     assert ev["repair_tried"] is True and ev["repaired"] is True
 
 
 async def test_an_unrepairable_reply_is_logged_with_its_text_and_why(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [FakeReply(text=UNREPAIRABLE), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [FakeReply(text=UNREPAIRABLE), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine)
     ctx.emit = events = Events()
     await team.run(ctx, Recorder())
@@ -1092,7 +1099,7 @@ async def test_an_unrepairable_reply_is_logged_with_its_text_and_why(tmp_path: P
 
 
 async def test_every_malformed_reply_is_logged_even_the_one_that_ends_the_run(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [FakeReply(text=UNREPAIRABLE), FakeReply(text=UNREPAIRABLE)]})
+    engine = FakeEngine({"architect": [FakeReply(text=UNREPAIRABLE), FakeReply(text=UNREPAIRABLE)]})
     team, ctx = make_team(tmp_path, engine)
     ctx.emit = events = Events()
     result = await team.run(ctx, Recorder())
@@ -1102,7 +1109,7 @@ async def test_every_malformed_reply_is_logged_even_the_one_that_ends_the_run(tm
 
 async def test_a_long_malformed_reply_is_logged_capped(tmp_path: Path) -> None:
     long = UNREPAIRABLE + "x" * 20_000
-    engine = FakeEngine({"coder": [FakeReply(text=long), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [FakeReply(text=long), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine)
     ctx.emit = events = Events()
     await team.run(ctx, Recorder())
@@ -1112,7 +1119,7 @@ async def test_a_long_malformed_reply_is_logged_capped(tmp_path: Path) -> None:
 
 async def test_on_the_last_turn_no_repair_is_tried(tmp_path: Path) -> None:
     read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [read, FakeReply(text=GARBLED), FakeReply(text=GARBLED)]})
+    engine = FakeEngine({"architect": [read, FakeReply(text=GARBLED), FakeReply(text=GARBLED)]})
     team, ctx = make_team(tmp_path, engine, max_steps=1)
     ctx.emit = events = Events()
     result = await team.run(ctx, Recorder())
@@ -1122,7 +1129,7 @@ async def test_on_the_last_turn_no_repair_is_tried(tmp_path: Path) -> None:
 
 
 async def test_the_correction_shows_a_call_in_the_proper_format(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [FakeReply(text=UNREPAIRABLE), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [FakeReply(text=UNREPAIRABLE), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine)
     await team.run(ctx, Recorder())
     asked = str(engine.requests[1].messages[-1].content)
@@ -1136,7 +1143,7 @@ INVENTED = FakeReply(
 
 
 async def test_a_role_without_tools_is_asked_to_answer_directly_and_offered_no_tools(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [FakeReply(text="Here is the design: …")]})
+    engine = FakeEngine({"architect": [FakeReply(text="Here is the design: …")]})
     team, ctx = make_team(tmp_path, engine, tool_names=())
     result = await team.run(ctx, Recorder())
     assert result.ok and result.final_text == "Here is the design: …" and result.steps == 0
@@ -1148,7 +1155,7 @@ async def test_a_role_without_tools_is_asked_to_answer_directly_and_offered_no_t
 async def test_a_role_whose_tools_only_read_is_not_told_to_change_files_or_run_tests(tmp_path: Path) -> None:
     """2026-10-29, bundle 2 run 3: the architect, told "change it, run the tests" with read tools only, argued
     with the brief till its thinking was cut at max_tokens."""
-    engine = FakeEngine({"coder": [FakeReply(text="The plan.")]})
+    engine = FakeEngine({"architect": [FakeReply(text="The plan.")]})
     team, ctx = make_team(tmp_path, engine, tool_names=("read_file", "list_dir", "grep"))
     await team.run(ctx, Recorder())
     goal = str(engine.requests[0].messages[1].content)
@@ -1157,7 +1164,7 @@ async def test_a_role_whose_tools_only_read_is_not_told_to_change_files_or_run_t
 
 
 async def test_a_role_without_tools_gets_one_correction_for_an_invented_call(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [INVENTED, FakeReply(text="The answer.")]})
+    engine = FakeEngine({"architect": [INVENTED, FakeReply(text="The answer.")]})
     team, ctx = make_team(tmp_path, engine, tool_names=())
     rec = Recorder()
     result = await team.run(ctx, rec)
@@ -1169,7 +1176,7 @@ async def test_a_role_without_tools_gets_one_correction_for_an_invented_call(tmp
 
 async def test_a_role_without_tools_that_keeps_calling_tools_stops(tmp_path: Path) -> None:
     text_call = FakeReply(text="<tool_call>\n<function=list_files>\n</function>\n</tool_call>")
-    engine = FakeEngine({"coder": [INVENTED, text_call]})
+    engine = FakeEngine({"architect": [INVENTED, text_call]})
     team, ctx = make_team(tmp_path, engine, tool_names=())
     result = await team.run(ctx, Recorder())
     assert not result.ok and result.stop_reason == "no_tools"
@@ -1180,7 +1187,7 @@ async def test_a_step_records_what_the_model_thought(tmp_path: Path) -> None:
     """The reasoning of a thinking reply travels with the step (the trace keeps it: test_step_trace)."""
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(
                     reasoning="a.py is the only file; write it",
                     tool_calls=[
@@ -1242,7 +1249,7 @@ def test_a_test_write_is_one_under_a_tests_directory_or_named_like_a_test() -> N
 async def test_a_coder_that_only_reads_is_told_to_write_a_test_at_the_first_deadline_then_loses_reading(
     tmp_path: Path,
 ) -> None:
-    engine = FakeEngine({"coder": [*reads(11), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*reads(11), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=12, write_schedule=SCHEDULE)
     ctx.emit = events = Events()
     rec = Recorder()
@@ -1265,7 +1272,7 @@ async def test_a_coder_that_only_reads_is_told_to_write_a_test_at_the_first_dead
     ]
     assert deadlines == [("tests", 3, False), ("code", 9, False)]
     assert all(
-        e["team_id"] == "team-1" and e["role"] == "coder"
+        e["team_id"] == "team-1" and e["role"] == "architect"
         for e in events.records
         if e["kind"] == "write_deadline"
     )
@@ -1274,7 +1281,7 @@ async def test_a_coder_that_only_reads_is_told_to_write_a_test_at_the_first_dead
 async def test_a_coder_that_writes_its_test_and_code_in_time_is_never_nudged(tmp_path: Path) -> None:
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 *reads(1),
                 write("t", "tests/test_a.py"),
                 *reads(2),
@@ -1301,7 +1308,7 @@ async def test_a_coder_that_wrote_only_tests_is_told_to_write_code_at_the_second
     tmp_path: Path,
 ) -> None:
     engine = FakeEngine(
-        {"coder": [*reads(1), write("t", "tests/test_a.py"), *reads(17), FakeReply(text="Done.")]}
+        {"architect": [*reads(1), write("t", "tests/test_a.py"), *reads(17), FakeReply(text="Done.")]}
     )
     team, ctx = make_team(tmp_path, engine, max_steps=20, write_schedule=SCHEDULE)  # deadlines 5 and 15
     ctx.emit = events = Events()
@@ -1319,7 +1326,7 @@ async def test_a_coder_that_wrote_only_tests_is_told_to_write_code_at_the_second
 
 async def test_reading_comes_back_once_the_missed_write_lands(tmp_path: Path) -> None:
     engine = FakeEngine(
-        {"coder": [*reads(12), write("t", "tests/test_a.py"), *reads(2), FakeReply(text="Done.")]}
+        {"architect": [*reads(12), write("t", "tests/test_a.py"), *reads(2), FakeReply(text="Done.")]}
     )
     team, ctx = make_team(tmp_path, engine, max_steps=16, write_schedule=SCHEDULE)  # deadlines 4 and 12
     rec = Recorder()
@@ -1337,7 +1344,7 @@ async def test_the_same_observation_three_times_is_a_repeat_whatever_the_argumen
     calls = [
         FakeReply(tool_calls=[ToolCall(f"c{i}", "shell", json.dumps({"cmd": f"echo {i}"}))]) for i in range(3)
     ]
-    engine = FakeEngine({"coder": [*calls, FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [*calls, FakeReply(text="done")]})
     team, ctx = make_team(tmp_path, engine)
 
     class SameShell:
@@ -1358,7 +1365,7 @@ async def test_the_same_observation_three_times_is_a_repeat_whatever_the_argumen
 async def test_a_continuation_counts_the_files_already_written(tmp_path: Path) -> None:
     """AIR-7 2026-10-18: the fix round after a review started with blank flags, told the coder at step 10 it
     had "written no test" (its tests were in the worktree from the run before) and switched reading off."""
-    engine = FakeEngine({"coder": [*reads(11), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*reads(11), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=12, write_schedule=SCHEDULE)
     ctx.already_written = ("tests/unit/test_a.py",)
     ctx.emit = events = Events()
@@ -1369,7 +1376,7 @@ async def test_a_continuation_counts_the_files_already_written(tmp_path: Path) -
     ]
     assert deadlines == [("code", 3, False)]  # a change of its own is still owed, by the earlier deadline
     # and the one write-now nudge of a role without a schedule counts an earlier write too
-    engine = FakeEngine({"coder": [*reads(8), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*reads(8), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=10)
     ctx.already_written = ("a.py",)
     await team.run(ctx, Recorder())
@@ -1381,7 +1388,7 @@ async def test_a_continuation_owes_a_change_of_its_own_by_the_earlier_deadline(t
     files, so nothing pushed it to write; it probed for 28 steps and changed nothing. A continuation has one
     deadline, the earlier one, for a write of any kind this round, and loses its read tools WRITE_ONLY_AFTER
     steps later until that write lands."""
-    engine = FakeEngine({"coder": [*reads(8), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*reads(8), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=12, write_schedule=SCHEDULE)
     ctx.already_written = ("tests/unit/test_a.py", "a.py")
     ctx.emit = events = Events()
@@ -1397,7 +1404,7 @@ async def test_a_continuation_owes_a_change_of_its_own_by_the_earlier_deadline(t
     )
     # an edit of a test file is the change this round owes, as a code edit would be
     engine = FakeEngine(
-        {"coder": [*reads(2), write("w", "tests/unit/test_b.py"), *reads(5), FakeReply(text="Done.")]}
+        {"architect": [*reads(2), write("w", "tests/unit/test_b.py"), *reads(5), FakeReply(text="Done.")]}
     )
     team, ctx = make_team(tmp_path, engine, max_steps=12, write_schedule=SCHEDULE)
     ctx.already_written = ("tests/unit/test_a.py", "a.py")
@@ -1419,7 +1426,7 @@ async def test_three_edits_of_one_file_in_a_row_are_not_a_repeat(tmp_path: Path)
         )
         for i, (o, n) in enumerate((("x = 1", "x = 10"), ("y = 2", "y = 20"), ("z = 3", "z = 30")))
     ]
-    engine = FakeEngine({"coder": [*edits, FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*edits, FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, tool_names=("write_file", "edit_file", "read_file", "run_tests"))
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "done" and result.steps == 3
@@ -1431,7 +1438,7 @@ async def test_a_writer_whose_first_reply_is_text_is_told_once_to_act(tmp_path: 
     prose and no tool call, and the run ended as done with nothing changed."""
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(text="Here is how I would fix it: change _load to register a view, then…"),
                 write("w", "a.py"),
                 FakeReply(text="Done: a.py changed."),
@@ -1455,7 +1462,7 @@ async def test_a_writer_whose_reply_is_empty_is_told_once_to_act(tmp_path: Path)
     failure still there. An empty reply is no more an answer than prose is."""
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(reasoning="Let me reconsider the whole design of the test…"),
                 write("w", "a.py"),
                 FakeReply(text="Done: a.py changed."),
@@ -1473,7 +1480,7 @@ async def test_a_writer_whose_reply_is_empty_is_told_once_to_act(tmp_path: Path)
 
 async def test_a_writer_that_answers_with_text_twice_is_done_as_before(tmp_path: Path) -> None:
     engine = FakeEngine(
-        {"coder": [FakeReply(text="I would change a.py."), FakeReply(text="Still just words.")]}
+        {"architect": [FakeReply(text="I would change a.py."), FakeReply(text="Still just words.")]}
     )
     team, ctx = make_team(tmp_path, engine)
     ctx.must_act = True
@@ -1501,7 +1508,7 @@ async def test_a_writer_whose_only_edit_failed_and_then_answers_with_text_is_sen
         tool_calls=[ToolCall("e1", "edit_file", json.dumps({"path": "a.py", "old": "nope", "new": "y"}))]
     )
     engine = FakeEngine(
-        {"coder": [miss, FakeReply(text="I give up."), write("w", "b.py"), FakeReply(text="Done.")]}
+        {"architect": [miss, FakeReply(text="I give up."), write("w", "b.py"), FakeReply(text="Done.")]}
     )
     team, ctx = make_team(tmp_path, engine, tool_names=("write_file", "edit_file", "read_file", "run_tests"))
     ctx.must_act = True
@@ -1538,7 +1545,7 @@ async def test_a_stalled_generation_is_asked_again_once_before_the_run_stops(
     from airlie.teams import native_team as nt
 
     monkeypatch.setattr(nt, "ENGINE_RETRY_S", 0.0)
-    engine = FlakyEngine({"coder": [write("w", "a.py"), FakeReply(text="Done.")]}, failures=1)
+    engine = FlakyEngine({"architect": [write("w", "a.py"), FakeReply(text="Done.")]}, failures=1)
     team, ctx = make_team(tmp_path, engine)
     ctx.emit = events = Events()
     result = await team.run(ctx, Recorder())
@@ -1546,7 +1553,7 @@ async def test_a_stalled_generation_is_asked_again_once_before_the_run_stops(
     retries = [e for e in events.records if e["kind"] == "engine_retry"]
     assert [(e["step"], e["attempt"]) for e in retries] == [(1, 1)]
     assert "INACTIVITY" in retries[0]["error"]
-    engine = FlakyEngine({"coder": [write("w", "a.py"), FakeReply(text="Done.")]}, failures=2)
+    engine = FlakyEngine({"architect": [write("w", "a.py"), FakeReply(text="Done.")]}, failures=2)
     team, ctx = make_team(tmp_path, engine)
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "engine_error" and engine.errors == 2
@@ -1556,7 +1563,7 @@ async def test_every_step_carries_the_contexts_attempt(tmp_path: Path) -> None:
     """The caller numbers the runs of a team (the studio: 0, then one per fix round or follow-up, whether
     the conversation resumes or starts again); the step records carry it, so the observer keeps each run's
     steps apart."""
-    engine = FakeEngine({"coder": [write("w", "a.py"), FakeReply(text="done")] * 2})
+    engine = FakeEngine({"architect": [write("w", "a.py"), FakeReply(text="done")] * 2})
     team, ctx = make_team(tmp_path, engine)
     rec = Recorder()
     await team.run(ctx, rec)
@@ -1576,7 +1583,7 @@ async def test_a_resumed_conversation_drops_the_last_runs_end_of_budget_messages
         text("last-turn-retry"),
     )
     history = [
-        Message(role="system", content="You are the coder."),
+        Message(role="system", content="You are the architect."),
         Message(role="user", content="Goal:\nmake it pass"),
         Message(role="assistant", content="", tool_calls=(ToolCall("c1", "run_tests", "{}"),)),
         Message(role="tool", content="FAILED", tool_call_id="c1", name="run_tests"),
@@ -1588,7 +1595,7 @@ async def test_a_resumed_conversation_drops_the_last_runs_end_of_budget_messages
         Message(role="user", content=last_turn_retry),
         Message(role="assistant", content="Final answer: the fix is …"),
     ]
-    engine = FakeEngine({"coder": [write("w", "a.py"), FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [write("w", "a.py"), FakeReply(text="done")]})
     team, ctx = make_team(tmp_path, engine, max_steps=12)
     ctx.initial_state = {"messages": dump_messages(history)}
     ctx.nudge = "A reviewer found blocking problems with your change. Fix each one, run the tests, then stop:"
@@ -1655,7 +1662,7 @@ async def test_the_same_test_run_three_times_is_a_repeat_whatever_its_timings_an
         PYTEST_RUN.format(dots=d, n=n, w=w, failed=1)
         for d, n, w in ((".F...", 52521, 6), ("...F.", 52522, 3), ("F....", 52523, 1))
     ]
-    engine = FakeEngine({"coder": [*shells(3), FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [*shells(3), FakeReply(text="done")]})
     team, ctx = make_team(tmp_path, engine)
     ctx.tools.add(ScriptedShell(runs))
     result = await team.run(ctx, Recorder())
@@ -1665,7 +1672,7 @@ async def test_the_same_test_run_three_times_is_a_repeat_whatever_its_timings_an
 async def test_a_test_run_whose_failure_count_changes_is_not_a_repeat(tmp_path: Path) -> None:
     """The noise is blanked, not the result: a run that fails fewer tests each time is a fix loop."""
     runs = [PYTEST_RUN.format(dots=".F...", n=52521, w=6, failed=f) for f in (3, 2, 1)]
-    engine = FakeEngine({"coder": [*shells(3), FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [*shells(3), FakeReply(text="done")]})
     team, ctx = make_team(tmp_path, engine)
     ctx.tools.add(ScriptedShell(runs))
     result = await team.run(ctx, Recorder())
@@ -1675,7 +1682,7 @@ async def test_a_test_run_whose_failure_count_changes_is_not_a_repeat(tmp_path: 
 async def test_going_round_the_same_three_reads_three_times_is_a_repeat(tmp_path: Path) -> None:
     """AIR-9 layer 02: a follow-up read the same three files in turn for 16 steps; a guard that looked for one
     call repeated never fired. Without nudge_stuck the run stops after the third round."""
-    engine = FakeEngine({"coder": [*reads(3) * 4, FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [*reads(3) * 4, FakeReply(text="done")]})
     team, ctx = make_team(tmp_path, engine, max_steps=20)
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "repeated_action" and result.steps == 9
@@ -1685,7 +1692,7 @@ async def test_going_round_the_same_three_reads_three_times_is_a_repeat(tmp_path
 async def test_a_writer_going_round_a_cycle_is_told_then_loses_its_reads(tmp_path: Path) -> None:
     """The cycle earns what one repeated call does: told once (cycled), then reading is switched off until
     it writes."""
-    engine = FakeEngine({"coder": [*reads(2) * 6, FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [*reads(2) * 6, FakeReply(text="done")]})
     team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
     rec = Recorder()
     await team.run(ctx, rec)
@@ -1698,7 +1705,7 @@ async def test_two_reads_in_turn_whose_results_change_are_not_a_repeat(tmp_path:
     (tmp_path / "wt").mkdir(exist_ok=True)
     runs = [PYTEST_RUN.format(dots=".", n=1, w=1, failed=f) for f in (3, 2, 1)]
     calls = [r for pair in zip(reads(1) * 3, shells(3), strict=True) for r in pair]
-    engine = FakeEngine({"coder": [*calls, FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [*calls, FakeReply(text="done")]})
     team, ctx = make_team(tmp_path, engine)
     ctx.tools.add(ScriptedShell(runs))
     result = await team.run(ctx, Recorder())
@@ -1739,7 +1746,7 @@ async def test_a_read_after_thinking_cut_at_the_budget_gets_its_reasoning_back_n
 ) -> None:
     """AIR-30 (AIR-28's coder, 2026-10-18): a turn cut at the thinking budget read one more file, and the next
     turn began the same argument from zero. Its reasoning comes back, after the tool result, to go on from."""
-    engine = FakeEngine({"coder": [cut_read("a"), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [cut_read("a"), FakeReply(text="Done.")]})
     team, ctx = thinking_team(tmp_path, engine)
     await team.run(ctx, Recorder())
     assert carried(engine, 1) == []
@@ -1756,7 +1763,7 @@ async def test_each_cut_appends_its_own_carried_reasoning_and_the_earlier_one_st
     on 2026-10-23, 14 carries since 2026-10-19 (docs/bench/2026-10-23-performance-review.md, finding 3).
     Each carry now goes after its own tool result and the earlier ones stay, so every prompt is a prefix of
     the next; the ~400 stale tokens a kept carry costs are cheaper than the re-prefill."""
-    engine = FakeEngine({"coder": [cut_read("a"), cut_read("b", "b"), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [cut_read("a"), cut_read("b", "b"), FakeReply(text="Done.")]})
     team, ctx = thinking_team(tmp_path, engine)
     await team.run(ctx, Recorder())
     a, b = (f"{CUT}\n{thought(8, t)}\n\n{GO_ON}" for t in "ab")
@@ -1770,14 +1777,14 @@ async def test_each_cut_appends_its_own_carried_reasoning_and_the_earlier_one_st
 
 async def test_a_turn_under_the_budget_leaves_the_last_carried_reasoning_where_it_is(tmp_path: Path) -> None:
     under = FakeReply(reasoning=thought(3, "u"), tool_calls=[ToolCall("u", "read_file", '{"path": "u"}')])
-    engine = FakeEngine({"coder": [cut_read("a"), under, FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [cut_read("a"), under, FakeReply(text="Done.")]})
     team, ctx = thinking_team(tmp_path, engine)
     await team.run(ctx, Recorder())
     assert carried(engine, 3) == [f"{CUT}\n{thought(8, 'a')}\n\n{GO_ON}"]
 
 
 async def test_only_the_tail_of_the_reasoning_is_carried(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [cut_read("a", words=20), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [cut_read("a", words=20), FakeReply(text="Done.")]})
     team, ctx = thinking_team(tmp_path, engine, carried_reasoning_chars=10)
     await team.run(ctx, Recorder())
     assert carried(engine, 2) == [f"{CUT}\n{thought(20, 'a')[-10:]}\n\n{GO_ON}"]
@@ -1804,21 +1811,21 @@ async def test_only_the_tail_of_the_reasoning_is_carried(tmp_path: Path) -> None
 async def test_nothing_is_carried_from_a_turn_that_was_not_a_read_cut_at_the_budget(
     tmp_path: Path, reply: FakeReply, fields: dict[str, Any]
 ) -> None:
-    engine = FakeEngine({"coder": [reply, FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [reply, FakeReply(text="Done.")]})
     team, ctx = thinking_team(tmp_path, engine, **fields)
     await team.run(ctx, Recorder())
     assert carried(engine, 2) == []
 
 
 async def test_a_role_without_thinking_never_gets_reasoning_carried(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [cut_read("a"), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [cut_read("a"), FakeReply(text="Done.")]})
     team, ctx = thinking_team(tmp_path, engine, thinking=False)
     await team.run(ctx, Recorder())
     assert carried(engine, 2) == []
 
 
 async def test_carrying_reasoning_is_a_reasoning_carried_event(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [cut_read("a"), cut_read("b", "b"), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [cut_read("a"), cut_read("b", "b"), FakeReply(text="Done.")]})
     team, ctx = thinking_team(tmp_path, engine)
     events: list[tuple[str, dict[str, Any]]] = []
     ctx.emit = lambda kind, **f: events.append((kind, f))
@@ -1833,11 +1840,11 @@ async def test_carrying_reasoning_is_a_reasoning_carried_event(tmp_path: Path) -
 async def test_a_resumed_conversation_keeps_the_reasoning_its_last_run_carried(tmp_path: Path) -> None:
     """The last run's carried message is history like any other (it sits after its tool result and holds):
     the resumed run adds its own after it rather than editing the middle of the prompt."""
-    first = FakeEngine({"coder": [cut_read("a")]})
+    first = FakeEngine({"architect": [cut_read("a")]})
     team, ctx = thinking_team(tmp_path, first, max_steps=1)
     ctx.stop_when = lambda step: True
     state = (await team.run(ctx, Recorder())).state
-    engine = FakeEngine({"coder": [cut_read("b", "b"), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [cut_read("b", "b"), FakeReply(text="Done.")]})
     team, ctx = thinking_team(tmp_path, engine)
     ctx.initial_state = state
     await team.run(ctx, Recorder())
@@ -1866,7 +1873,7 @@ async def test_a_writer_cut_before_it_wrote_anything_is_held_to_writing_not_aske
     )
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 cut_read("a"),
                 cut_read("b", "b"),
                 write,
@@ -1907,7 +1914,9 @@ async def test_a_writer_that_wrote_ends_its_run_after_cuts_for_its_caller_to_ask
     write = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "t.py", "content": "x\n"}))]
     )
-    engine = FakeEngine({"coder": [write, cut_read("a"), cut_read("b", "b"), FakeReply(text="Never asked.")]})
+    engine = FakeEngine(
+        {"architect": [write, cut_read("a"), cut_read("b", "b"), FakeReply(text="Never asked.")]}
+    )
     team, ctx = answering_team(tmp_path, engine, tool_names=("write_file", "read_file"))
     ctx.emit = events = Events()
     result = await team.run(ctx, Recorder())
@@ -1921,7 +1930,7 @@ async def test_a_writer_that_wrote_ends_its_run_after_cuts_for_its_caller_to_ask
     ] == [
         {
             "team_id": "team-1",
-            "role": "coder",
+            "role": "architect",
             "step": 3,
             "cuts": 2,
             "chars": len(thought(8, "b")),
@@ -1940,7 +1949,7 @@ async def test_a_writer_held_after_cuts_is_not_asked_for_text_while_it_still_wri
 ) -> None:
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 cut_read("a"),
                 cut_read("b", "b"),
                 cut_read("c", "c"),
@@ -1961,7 +1970,7 @@ async def test_cut_reads_in_a_row_end_in_the_answer_with_all_of_the_last_reasoni
     repeat guard or max_steps stopped it; a larger budget only made each lap longer. After answer_after_cuts
     cut reads in a row the next turn is the answer: no tools, and the whole of the last reasoning, not its
     tail."""
-    engine = FakeEngine({"coder": [cut_read("a"), cut_read("b", "b"), FakeReply(text="The package.")]})
+    engine = FakeEngine({"architect": [cut_read("a"), cut_read("b", "b"), FakeReply(text="The package.")]})
     team, ctx = answering_team(tmp_path, engine, carried_reasoning_chars=5)
     result = await team.run(ctx, Recorder())
     assert (result.ok, result.stop_reason, result.final_text, result.steps) == (
@@ -1986,7 +1995,7 @@ async def test_the_answer_after_cuts_is_asked_as_one_conversation_in_text_withou
     tool call anyway (4 of 11 answer turns, twice each, so the run ended): its history was a long run of tool
     calls and their results, and it went on with one. The answer turn is asked as the same conversation in
     plain text: the system prompt, then one message with the goal, each call and what it returned, the ask."""
-    engine = FakeEngine({"coder": [cut_read("a"), cut_read("b", "b"), FakeReply(text="The package.")]})
+    engine = FakeEngine({"architect": [cut_read("a"), cut_read("b", "b"), FakeReply(text="The package.")]})
     team, ctx = answering_team(tmp_path, engine)
     await team.run(ctx, Recorder())
     before, answer = engine.requests[1].messages, engine.requests[2].messages
@@ -2001,7 +2010,7 @@ async def test_the_answer_after_cuts_is_asked_as_one_conversation_in_text_withou
 
 
 async def test_a_last_turn_after_max_steps_keeps_its_conversation_as_it_was(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [cut_read("a"), FakeReply(text="The package.")]})
+    engine = FakeEngine({"architect": [cut_read("a"), FakeReply(text="The package.")]})
     team, ctx = answering_team(tmp_path, engine, max_steps=1)
     await team.run(ctx, Recorder())
     last = engine.requests[1].messages
@@ -2011,7 +2020,7 @@ async def test_a_last_turn_after_max_steps_keeps_its_conversation_as_it_was(tmp_
 
 async def test_a_turn_under_the_budget_starts_the_count_of_cut_reads_again(tmp_path: Path) -> None:
     under = FakeReply(reasoning=thought(3, "u"), tool_calls=[ToolCall("u", "read_file", '{"path": "u"}')])
-    engine = FakeEngine({"coder": [cut_read("a"), under, cut_read("b", "b"), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [cut_read("a"), under, cut_read("b", "b"), FakeReply(text="Done.")]})
     team, ctx = answering_team(tmp_path, engine)
     await team.run(ctx, Recorder())
     assert engine.requests[3].tools is not None
@@ -2020,7 +2029,7 @@ async def test_a_turn_under_the_budget_starts_the_count_of_cut_reads_again(tmp_p
 
 async def test_cut_reads_go_on_as_before_when_answer_after_cuts_is_off(tmp_path: Path) -> None:
     engine = FakeEngine(
-        {"coder": [cut_read("a"), cut_read("b", "b"), cut_read("c", "c"), FakeReply(text="Done.")]}
+        {"architect": [cut_read("a"), cut_read("b", "b"), cut_read("c", "c"), FakeReply(text="Done.")]}
     )
     team, ctx = thinking_team(tmp_path, engine)
     await team.run(ctx, Recorder())
@@ -2028,7 +2037,7 @@ async def test_cut_reads_go_on_as_before_when_answer_after_cuts_is_off(tmp_path:
 
 
 async def test_answering_after_cuts_is_an_event_and_a_steer(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [cut_read("a"), cut_read("b", "b"), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [cut_read("a"), cut_read("b", "b"), FakeReply(text="Done.")]})
     team, ctx = answering_team(tmp_path, engine)
     ctx.emit = events = Events()
     await team.run(ctx, Recorder())
@@ -2037,14 +2046,14 @@ async def test_answering_after_cuts_is_an_event_and_a_steer(tmp_path: Path) -> N
         {k: v for k, v in e.items() if k != "kind"}
         for e in events.records
         if e["kind"] == "answer_after_cuts"
-    ] == [{"team_id": "team-1", "role": "coder", "step": 2, "cuts": 2, "chars": len(thought(8, "b"))}]
+    ] == [{"team_id": "team-1", "role": "architect", "step": 2, "cuts": 2, "chars": len(thought(8, "b"))}]
 
 
 async def test_a_tool_call_on_the_answer_turn_after_cuts_gets_the_last_turns_one_retry(
     tmp_path: Path,
 ) -> None:
     engine = FakeEngine(
-        {"coder": [cut_read("a"), cut_read("b", "b"), cut_read("c", "c"), FakeReply(text="The package.")]}
+        {"architect": [cut_read("a"), cut_read("b", "b"), cut_read("c", "c"), FakeReply(text="The package.")]}
     )
     team, ctx = answering_team(tmp_path, engine)
     result = await team.run(ctx, Recorder())
@@ -2063,11 +2072,11 @@ def steers(events: Events) -> list[dict[str, Any]]:
 
 
 async def test_a_nudge_emits_a_steer_event_with_its_id(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [*reads(5), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*reads(5), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=10)  # the write-now line: step 4 (10 * 2 // 5)
     ctx.emit = events = Events()
     await team.run(ctx, Recorder())
-    assert steers(events) == [{"id": "write-now", "team_id": "team-1", "role": "coder", "step": 4}]
+    assert steers(events) == [{"id": "write-now", "team_id": "team-1", "role": "architect", "step": 4}]
     assert user_said(engine).count(text("write-now", n=4, total=10)) == 1
 
 
@@ -2075,7 +2084,7 @@ async def test_an_advised_repeat_still_reports_the_hub_id(tmp_path: Path) -> Non
     """on_stuck rewrites the repeat nudge; its event names the hub text it started from. The hold and its
     refusals that follow are steering too, each an event at the step it was sent after."""
     same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [same] * 12})
+    engine = FakeEngine({"architect": [same] * 12})
     team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
     ctx.on_stuck = RecordingAdvisor("Stop reading a; write the test.")
     ctx.emit = events = Events()
@@ -2100,18 +2109,20 @@ async def test_an_advised_repeat_still_reports_the_hub_id(tmp_path: Path) -> Non
 async def test_carried_reasoning_is_a_steer_event_as_well(tmp_path: Path) -> None:
     """AIR-30's reasoning_carried event stays, with its chars; the carried text is steering, so it is a
     steer event too."""
-    engine = FakeEngine({"coder": [cut_read("a"), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [cut_read("a"), FakeReply(text="Done.")]})
     team, ctx = thinking_team(tmp_path, engine)
     ctx.emit = events = Events()
     await team.run(ctx, Recorder())
-    assert steers(events) == [{"id": "reasoning-carried", "team_id": "team-1", "role": "coder", "step": 1}]
+    assert steers(events) == [
+        {"id": "reasoning-carried", "team_id": "team-1", "role": "architect", "step": 1}
+    ]
     assert [e["chars"] for e in events.records if e["kind"] == "reasoning_carried"] == [len(thought(8, "a"))]
     assert carried(engine, 2) == [text("reasoning-carried", tail=thought(8, "a"))]
 
 
 async def test_context_pressure_is_said_once_and_is_a_steer_event(tmp_path: Path) -> None:
     """At 75% of the role's max_context the role is told once to stop reading (2026-10-19, 9d6cdff)."""
-    engine = FakeEngine({"coder": [*reads(2), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*reads(2), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_context=200)
     ctx.goal = " ".join(["word"] * 120)  # the first prompt: ~160 words, over 150 and under 200
     ctx.emit = events = Events()
@@ -2120,7 +2131,7 @@ async def test_context_pressure_is_said_once_and_is_a_steer_event(tmp_path: Path
     assert result.ok
     said = text("context-pressure", max_prompt=rec.steps[0].prompt_tokens, max_context=200)
     assert user_said(engine).count(said) == 1
-    assert steers(events) == [{"id": "context-pressure", "team_id": "team-1", "role": "coder", "step": 1}]
+    assert steers(events) == [{"id": "context-pressure", "team_id": "team-1", "role": "architect", "step": 1}]
     assert [e["kind"] for e in events.records].count("context") == 1
 
 
@@ -2129,7 +2140,7 @@ def test_a_resumed_run_drops_hub_end_of_budget_messages() -> None:
     history saved with them still loses them on resume; other nudges in it stay."""
     write_now = text("write-now", n=4, total=10)
     history = [
-        Message(role="system", content="You are the coder."),
+        Message(role="system", content="You are the architect."),
         Message(role="user", content="Goal:\nmake it pass"),
         Message(role="user", content=entry("one-step-left").body),
         Message(role="user", content=write_now),
@@ -2142,14 +2153,14 @@ def test_a_resumed_run_drops_hub_end_of_budget_messages() -> None:
     ]
     kept, dropped = _without_stale_budget(load_messages(dump_messages(history)))
     assert dropped
-    assert [m.content for m in kept] == ["You are the coder.", "Goal:\nmake it pass", write_now]
+    assert [m.content for m in kept] == ["You are the architect.", "Goal:\nmake it pass", write_now]
     assert _without_stale_budget(kept) == (kept, False)
 
 
 async def test_the_opening_messages_are_told_to_on_prompt_without_the_picture_bytes(tmp_path: Path) -> None:
     pic = tmp_path / "shot.png"
     pic.write_bytes(b"\x89PNG" + b"0" * 5000)
-    engine = FakeEngine({"coder": [FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [FakeReply(text="done")]})
     team, ctx = make_team(tmp_path, engine)
     told: list[list[dict[str, Any]]] = []
     ctx.images = [pic]
@@ -2168,7 +2179,7 @@ async def test_a_think_when_red_role_thinks_only_while_its_last_test_run_failed(
     write = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 1\n"}))]
     )
-    engine = FakeEngine({"coder": [write, run, write, run, FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [write, run, write, run, FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=10, think_when_red=True, thinking_budget=32)
     object.__setattr__(ctx.tools.ctx, "test_cmd", "exit 1")  # every run fails: from step 3 on it thinks
     await team.run(ctx, Recorder())
@@ -2176,7 +2187,7 @@ async def test_a_think_when_red_role_thinks_only_while_its_last_test_run_failed(
     told = [str(m.content) for m in engine.requests[2].messages if m.role == "tool"]
     assert "do not read a file you wrote in this conversation" in told[-1]  # each red run says what is next
     assert sum("make the one edit_file" in str(m.content) for m in engine.requests[-1].messages) == 2
-    engine = FakeEngine({"coder": [write, run, write, FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [write, run, write, FakeReply(text="Done.")]})
     (tmp_path / "green").mkdir()
     team, ctx = make_team(tmp_path / "green", engine, max_steps=10, think_when_red=True, thinking_budget=32)
     await team.run(ctx, Recorder())  # `echo ok` passes: never red, never thinking
@@ -2194,7 +2205,7 @@ async def test_a_think_when_red_role_does_not_read_back_its_own_file_while_red(t
 
     async def last_tool_output(test_cmd: str, path: str, workdir: Path) -> tuple[str, list[str]]:
         read = FakeReply(tool_calls=[ToolCall("r", "read_file", json.dumps({"path": path}))])
-        engine = FakeEngine({"coder": [write, run, read, FakeReply(text="Done.")]})
+        engine = FakeEngine({"architect": [write, run, read, FakeReply(text="Done.")]})
         team, ctx = make_team(workdir, engine, max_steps=10, think_when_red=True, thinking_budget=32)
         object.__setattr__(ctx.tools.ctx, "test_cmd", test_cmd)
         events: list[str] = []
@@ -2226,13 +2237,13 @@ async def test_a_red_streak_asks_the_advisor_and_tells_it_what_came_of_it(tmp_pa
         return FakeReply(tool_calls=[ToolCall(f"w{n}", "write_file", content)])
 
     script = [x for n in range(RED_STREAK) for x in (edit(n), run)] + [FakeReply(text="Done.")]
-    engine = FakeEngine({"coder": script})
+    engine = FakeEngine({"architect": script})
     team, ctx = make_team(tmp_path, engine, max_steps=20, think_when_red=True, thinking_budget=32)
     object.__setattr__(ctx.tools.ctx, "test_cmd", "exit 1")
     advisor = RecordingAdvisor("from_roman lets IIII through: add a repeat check")
     object.__setattr__(ctx, "on_stuck", advisor)
     await team.run(ctx, Recorder())
-    assert len(advisor.red_calls) == 1 and advisor.red_calls[0][1] == "coder"
+    assert len(advisor.red_calls) == 1 and advisor.red_calls[0][1] == "architect"
     told = [str(m.content) for m in engine.requests[-1].messages if m.role == "tool"][-1]
     assert told.endswith("from_roman lets IIII through: add a repeat check")  # after red-fix
     assert [helped for _, helped in advisor.red_settles] == [False]  # the run ended red
@@ -2252,7 +2263,7 @@ async def test_a_red_streak_diagnosed_as_a_wrong_test_stops_the_role(tmp_path: P
         return FakeReply(tool_calls=[ToolCall(f"w{n}", "write_file", content)])
 
     script = [x for n in range(RED_STREAK + 1) for x in (edit(n), run)] + [FakeReply(text="Done.")]
-    engine = FakeEngine({"coder": script})
+    engine = FakeEngine({"architect": script})
     team, ctx = make_team(tmp_path, engine, max_steps=20, think_when_red=True, thinking_budget=32)
     object.__setattr__(ctx.tools.ctx, "test_cmd", "exit 1")
     object.__setattr__(ctx, "on_stuck", RecordingAdvisor("line 17: MMMDCCCLXXXIX is 3889", WRONG_TEST))
@@ -2269,7 +2280,7 @@ async def test_a_repeat_diagnosed_as_a_wrong_test_stops_the_role(tmp_path: Path)
     from tests.unit.advisor_doubles import RecordingAdvisor
 
     probe = FakeReply(tool_calls=[ToolCall("s", "shell", json.dumps({"cmd": "python3 -c 1"}))])
-    engine = FakeEngine({"coder": [probe] * 8 + [FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [probe] * 8 + [FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
     object.__setattr__(
         ctx, "on_stuck", RecordingAdvisor("the bound is 15, not 13: the test is wrong", WRONG_TEST)
@@ -2289,7 +2300,7 @@ async def test_different_programs_that_print_the_same_are_not_a_repeat(tmp_path:
             tool_calls=[ToolCall(f"c{n}", "compute", json.dumps({"code": f"print(15)  # check {n}"}))]
         )
 
-    engine = FakeEngine({"coder": [check(1), check(2), check(3), check(4), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [check(1), check(2), check(3), check(4), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=10, tool_names=("compute",))
     result = await team.run(ctx, Recorder())
     assert result.stop_reason != "repeated_action" and result.final_text == "Done."
@@ -2308,7 +2319,9 @@ async def test_the_same_read_again_is_answered_from_the_conversation_until_the_f
     write = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 2\n"}))]
     )
-    engine = FakeEngine({"coder": [read(), read(), read(offset=1), write, read(), FakeReply(text="Done.")]})
+    engine = FakeEngine(
+        {"architect": [read(), read(), read(offset=1), write, read(), FakeReply(text="Done.")]}
+    )
     team, ctx = make_team(tmp_path, engine, max_steps=10)
     (ctx.tools.ctx.worktree / "a.py").write_text("x = 1\n")
     events: list[dict[str, Any]] = []
@@ -2333,7 +2346,7 @@ async def test_a_role_red_for_red_limit_runs_in_a_row_stops_for_the_architect(tm
         return FakeReply(tool_calls=[ToolCall(f"w{n}", "write_file", content)])
 
     script = [x for n in range(RED_LIMIT + 2) for x in (edit(n), run)] + [FakeReply(text="Done.")]
-    engine = FakeEngine({"coder": script})
+    engine = FakeEngine({"architect": script})
     team, ctx = make_team(tmp_path, engine, max_steps=40, think_when_red=True, thinking_budget=32)
     object.__setattr__(ctx.tools.ctx, "test_cmd", "exit 1")
     result = await team.run(ctx, Recorder())
@@ -2369,7 +2382,7 @@ async def test_an_unwritten_writer_cut_again_under_the_hold_is_told_to_write_and
     it, and the run ended with nothing written (stop answer_after_cuts, the package unusable). Cut again
     under the hold, it is told to write now, with its last reasoning, no reads left and the write tools kept;
     its write lands and the run goes on to its answer."""
-    engine = FakeEngine({"coder": [*held_cuts(), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*held_cuts(), FakeReply(text="Done.")]})
     team, ctx = answering_team(tmp_path, engine, tool_names=("write_file", "read_file"), max_steps=20)
     ctx.emit = events = Events()
     result = await team.run(ctx, Recorder())
@@ -2382,8 +2395,8 @@ async def test_an_unwritten_writer_cut_again_under_the_hold_is_told_to_write_and
         {k: v for k, v in e.items() if k != "kind"} for e in events.records if e["kind"] == "write_after_cuts"
     ]
     assert after == [
-        {"team_id": "team-1", "role": "coder", "step": 2},
-        {"team_id": "team-1", "role": "coder", "step": 4, "again": True},
+        {"team_id": "team-1", "role": "architect", "step": 2},
+        {"team_id": "team-1", "role": "architect", "step": 4, "again": True},
     ]
     assert not [e for e in events.records if e["kind"] == "answer_after_cuts"]
 
@@ -2393,7 +2406,7 @@ async def test_a_writer_that_still_writes_nothing_after_the_demand_stops_unwritt
 ) -> None:
     """One bounded escalation: after the demand its reads are refused, and READS_UNDER_HOLD steps on with
     nothing written the run ends (unwritten_after_cuts), not at max_steps or in an endless hold."""
-    engine = FakeEngine({"coder": [cut_read(t, t) for t in "abcdefghij"]})
+    engine = FakeEngine({"architect": [cut_read(t, t) for t in "abcdefghij"]})
     team, ctx = answering_team(tmp_path, engine, tool_names=("write_file", "read_file"), max_steps=20)
     rec = Recorder()
     result = await team.run(ctx, rec)
@@ -2406,7 +2419,7 @@ async def test_the_answer_turn_of_a_writer_told_to_write_keeps_the_write_tools(t
     """The tool-less answer turn is never how a tool-written deliverable is asked for: a writer told to write
     that reaches max_steps is offered its write tools on the last turn, as the conversation it was (not in
     text), and its write there runs; the turn after, written, is the tool-less answer."""
-    engine = FakeEngine({"coder": [*held_cuts(), FakeReply(text="Done.")]})
+    engine = FakeEngine({"architect": [*held_cuts(), FakeReply(text="Done.")]})
     team, ctx = answering_team(tmp_path, engine, tool_names=("write_file", "read_file"), max_steps=4)
     result = await team.run(ctx, Recorder())
     assert (result.ok, result.stop_reason) == (True, "done")
@@ -2425,7 +2438,16 @@ async def test_the_same_call_with_the_same_result_is_answered_from_the_earlier_o
     step, costs no held read, and counts toward the repeat guard as the earlier one."""
     read_f = FakeReply(tool_calls=[ToolCall("r", "read_file", json.dumps({"path": "f"}))])
     engine = FakeEngine(
-        {"coder": [cut_grep("a"), cut_grep("b"), cut_grep("c"), read_f, write_t(), FakeReply(text="Done.")]}
+        {
+            "architect": [
+                cut_grep("a"),
+                cut_grep("b"),
+                cut_grep("c"),
+                read_f,
+                write_t(),
+                FakeReply(text="Done."),
+            ]
+        }
     )
     team, ctx = answering_team(
         tmp_path, engine, tool_names=("write_file", "read_file", "grep"), nudge_stuck=True, max_steps=20

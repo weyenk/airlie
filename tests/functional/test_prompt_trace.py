@@ -26,13 +26,13 @@ from tests.support.studio import (
 async def test_each_subtask_keeps_the_messages_its_conversation_opened_with(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     engine = FakeEngine(
-        {"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [APPROVE]}
+        {"chief": [PLAN, SYNTH], "architect": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [APPROVE]}
     )
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
     saved = json.loads((report.run_dir.path / "trace" / "fix" / "prompt.json").read_text())
-    sent = [r for r in engine.requests if r.role == "coder"][0].messages
-    assert saved["role"] == "coder" and saved["attempt"] == 0
+    sent = [r for r in engine.requests if r.role == "architect"][0].messages
+    assert saved["role"] == "architect" and saved["attempt"] == 0
     assert [m["role"] for m in saved["messages"]] == ["system", "user"]
     assert saved["messages"][0]["content"] == sent[0].content
     assert saved["messages"][1]["content"] == sent[1].content
@@ -45,7 +45,7 @@ async def test_a_fix_round_keeps_its_own_opening_message(tmp_path: Path) -> None
     engine = FakeEngine(
         {
             "chief": [PLAN, SYNTH],
-            "coder": [WRITE_PASS, RUN, DONE, WRITE_PASS, DONE],
+            "architect": [WRITE_PASS, RUN, DONE, WRITE_PASS, DONE],
             "docs": [DONE],
             "reviewer": [CHANGES, APPROVE],
         }

@@ -71,7 +71,7 @@ def brief(ctx: RunContext, id: str, feedback: str | None = None) -> str:
 
 
 def node(**kw: Any) -> NodeSpec:
-    return NodeSpec(type="model", protocol="ask", role="tester", prompt="prompt:bug-reproduce", **kw)
+    return NodeSpec(type="model", protocol="ask", role="architect", prompt="prompt:bug-reproduce", **kw)
 
 
 def context(n: NodeSpec, registry: Registry, store: MemoryStore, loose: tuple[str, ...] = ()) -> RunContext:
@@ -146,7 +146,7 @@ def test_a_draft_prompt_that_does_not_parse_is_a_prompt_error() -> None:
 
 def bug(prompt: str, **kw: Any) -> Mapping[str, WorkflowSpec]:
     reproduce = NodeSpec(
-        type="model", protocol="ask", role="tester", prompt=prompt, outputs={"steps": "text"}, **kw
+        type="model", protocol="ask", role="architect", prompt=prompt, outputs={"steps": "text"}, **kw
     )
     return {"bug": WorkflowSpec(inputs=["card"], nodes={"reproduce": reproduce})}
 
@@ -198,7 +198,7 @@ async def test_a_loop_carry_reaches_the_feedback_field_on_the_re_run(tmp_path: P
     write = {
         "type": "model",
         "protocol": "ask",
-        "role": "tester",
+        "role": "architect",
         "prompt": "prompt:bug-write",
         "inputs": ["card"],
         "outputs": {"steps": "text"},

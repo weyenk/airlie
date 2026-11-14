@@ -19,7 +19,7 @@ def cfg(tmp_path: Path):
             "local": {"repo": "x/y", "revision": "r", "path": "weights/local"},
         },
         "roles": {
-            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "team"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
     }
     (tmp_path / "p.md").write_text("x")

@@ -96,8 +96,6 @@ def scripts() -> dict[str, list[FakeReply]]:
                 interfaces=[{"file": "calc.py", "signature": "def subtract(a, b)", "behaviour": "a - b"}],
                 steps=["add subtract(a, b) to calc.py returning a - b"],
             ),
-        ],
-        "coder": [
             write("c", "calc.py", SUBTRACT),
             FakeReply(tool_calls=[ToolCall("r", "run_tests", "{}")]),
             FakeReply(text="done: subtract added, tests pass"),
@@ -136,7 +134,8 @@ def test_a_board_story_is_built_gated_and_published_as_a_draft_stack(
     assert state["stage"] == "review" and state["blocked"] is None
     built = state["built"]["01"]
     assert built["branch"] == branch and built["gate"] == gate_command()
-    assert [(s["role"], s["stop"], s["review"]) for s in built["subtasks"]] == [("coder", "done", "approve")]
+    subs = [(s["role"], s["stop"], s["review"]) for s in built["subtasks"]]
+    assert subs == [("architect", "done", "approve")]
     assert [p["branch"] for p in state["prs"]] == [branch]
     kinds = [e["kind"] for e in events(story_dir)]
     assert [k for k in kinds if k in MILESTONES] == MILESTONES, kinds

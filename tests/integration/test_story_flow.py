@@ -174,10 +174,10 @@ def test_a_story_recorded_before_the_package_still_renders_its_tests_job(state_d
     assert layer["title"] == "The seam" and layer["acceptance"] == ["AC1"]
     assert [j["id"] for j in layer["jobs"]] == ["tests", "checks", "build"]
     tests, checks, build = layer["jobs"]
-    assert tests["role"] == "tester" and tests["status"] == "passed"
+    assert tests["role"] == "architect" and tests["status"] == "passed"
     assert tests["tokens"]["tps"] == pytest.approx(50.0)
     assert checks["status"] == "passed" and checks["attempts"] == 1
-    assert build["role"] == "coder" and build["status"] == "passed" and build["fix_rounds"] == 1
+    assert build["role"] == "architect" and build["status"] == "passed" and build["fix_rounds"] == 1
 
 
 def test_a_layer_that_stopped_shows_which_job_failed_and_why(state_dir: Path) -> None:
@@ -210,12 +210,12 @@ def test_a_layer_run_without_a_tester_shows_its_tests_job_as_skipped(state_dir: 
     write_events(
         state_dir / "runs" / "run-l2" / "events.jsonl",
         [
-            {"ts": 301.0, "kind": "subtask_start", "subtask": "build", "role": "coder"},
+            {"ts": 301.0, "kind": "subtask_start", "subtask": "build", "role": "architect"},
             {
                 "ts": 340.0,
                 "kind": "subtask_done",
                 "subtask": "build",
-                "role": "coder",
+                "role": "architect",
                 "ok": False,
                 "stop_reason": "max_steps",
                 "steps": 3,
@@ -291,13 +291,13 @@ def write_packaged_story(root: Path) -> Path:
     write_events(
         runs / "run-b1" / "events.jsonl",
         [
-            {"ts": 81.0, "kind": "subtask_start", "subtask": "build", "role": "coder"},
+            {"ts": 81.0, "kind": "subtask_start", "subtask": "build", "role": "architect"},
             step("run-b1", "build", 1),
             {
                 "ts": 190.0,
                 "kind": "subtask_done",
                 "subtask": "build",
-                "role": "coder",
+                "role": "architect",
                 "ok": True,
                 "stop_reason": "done",
                 "steps": 1,
@@ -323,7 +323,7 @@ def test_a_layer_is_a_lane_of_jobs_with_package_and_coder_stats(state_dir: Path)
     assert package["duration_s"] == pytest.approx(60.0)  # from package_start to package_ready
     assert checks["status"] == "passed" and checks["retries"] == [] and checks["label"] == "checks"
     assert place["status"] == "passed" and place["sub"] == "1 test file"
-    assert build["role"] == "coder" and build["status"] == "passed"
+    assert build["role"] == "architect" and build["status"] == "passed"
     assert squash["status"] == "passed"
 
 
@@ -510,12 +510,12 @@ def turn(ts: float, role: str, n: int, prompt: int = 1000, completion: int = 100
 MEETING_EVENTS = [
     turn(50.0, "product", 1),
     turn(60.0, "architect", 2),
-    turn(70.0, "tester", 3),
+    turn(70.0, "architect", 3),
     {"ts": 71.0, "kind": "amigos_objection", "role": "product", "part": "proof", "about": "AC1", "round": 2},
     {
         "ts": 72.0,
         "kind": "amigos_objection",
-        "role": "tester",
+        "role": "architect",
         "part": "proof",
         "about": "t::x",
         "source": "package",
@@ -629,7 +629,7 @@ def test_the_shipped_workflow_lists_the_diagram_boxes_in_order():
         "start", "covered", "drafts", "package", "place", "build", "done_check", "review", "fix",
         "final_gate", "gate_advice", "follow_up", "regate", "outcome", "squash", "costed_layer",
     ]  # fmt: skip
-    assert cfg.workflows["story"].nodes["amigos"].role == ["product", "architect", "tester"]
+    assert cfg.workflows["story"].nodes["amigos"].role == ["product", "architect"]
     [back] = [line for line in layer.nodes["outcome"].to if line.loop is not None]
     assert back.node == "package" and back.loop is not None
     assert (back.loop.max, back.loop.carry) == ("story.layer_attempts", "feedback")
@@ -1063,8 +1063,7 @@ async def test_a_layer_sent_back_to_the_architect_runs_the_same_through_the_comp
         engine = FakeEngine(
             {
                 "product": [STORY],
-                "architect": [CALC_LAYERS, RED, OTHER_RED],
-                "coder": [BROKEN, DONE, STILL_BROKEN, DONE, *second],
+                "architect": [CALC_LAYERS, RED, OTHER_RED, BROKEN, DONE, STILL_BROKEN, DONE, *second],
                 "reviewer": [APPROVE, APPROVE],
             }
         )
@@ -1262,8 +1261,18 @@ def run_kinds(st: StoryState, root: Path) -> list[list[str]]:
 
 def engine_of(**scripts: list[Any]) -> Callable[[], FakeEngine]:
     """A fresh engine on the calc story's replies (`scripted`'s), any role's replaced by `scripts`."""
-    base = {"product": [STORY], "architect": [CALC_LAYERS, RED], "reviewer": [APPROVE, APPROVE]}
-    return lambda: FakeEngine({role: list(replies) for role, replies in {**base, **scripts}.items()})
+    from tests.support.story import StoryFakeEngine
+
+    scripts = dict(scripts)
+    build = scripts.pop("build", scripts.pop("coder", []))
+    plan = scripts.pop("architect", [CALC_LAYERS, RED])
+    base = {
+        "product": [STORY],
+        "architect:plan": list(plan),
+        "architect:build": list(build),
+        "reviewer": [APPROVE, APPROVE],
+    }
+    return lambda: StoryFakeEngine({role: list(replies) for role, replies in {**base, **scripts}.items()})
 
 
 async def test_the_dissolved_layer_runs_the_golden_script_the_same_either_way(tmp_path: Path) -> None:
@@ -1418,7 +1427,7 @@ async def test_a_run_killed_after_the_coder_turn_resumes_from_place_either_way(t
         assert saved.built == {} and saved.attempt is not None and Path(saved.attempt["worktree"]).is_dir()
         log = saved.path / "events.jsonl"
         before = len(log.read_text().splitlines())
-        engine = FakeEngine({"architect": [RED], "coder": [FEATURE, DONE], "reviewer": [APPROVE]})
+        engine = FakeEngine({"architect": [RED, FEATURE, DONE], "reviewer": [APPROVE]})
         st = await pipeline(root, repo, engine, **kw).build(card)
         assert st.blocked is None and list(st.built) == ["01"], st.blocked
         starts = kinds(log, "layer_start")
@@ -1719,7 +1728,7 @@ async def test_a_write_node_yields_its_diff_its_account_and_a_session_a_later_no
     nodes = {
         "build": {
             "type": "write",
-            "role": "coder",
+            "role": "architect",
             "prompt": "Write PASS for {card}.",
             "inputs": ["card"],
             "outputs": {"diff": "text", "account": "text", "coding": "session"},
@@ -1727,7 +1736,7 @@ async def test_a_write_node_yields_its_diff_its_account_and_a_session_a_later_no
         },
         "fix": {
             "type": "write",
-            "role": "coder",
+            "role": "architect",
             "prompt": "Now write MORE after: {account}",
             "session": "coding",
             "inputs": ["coding", "account"],
@@ -1757,7 +1766,7 @@ async def test_a_write_node_yields_its_diff_its_account_and_a_session_a_later_no
     assert c.store.get("account") == "done" and c.store.get("account.fix") == "added MORE"
     assert isinstance(held[0], Session) and held[1] is held[0]  # one session, continued
     assert len(st.runs) == 1 and c.sessions.get("coding") is None  # one studio run, closed at the end
-    assert "Now write MORE after: done" in briefs_to(engine, "coder")[-1]
+    assert "Now write MORE after: done" in briefs_to(engine, "architect")[-1]
 
 
 async def test_a_write_node_starts_from_the_head_of_the_worktree_its_input_names(tmp_path: Path) -> None:
@@ -1778,7 +1787,7 @@ async def test_a_write_node_starts_from_the_head_of_the_worktree_its_input_names
         "place": {"type": "check", "run": "place", "outputs": {"wt": "ref:worktree"}, "to": ["build"]},
         "build": {
             "type": "write",
-            "role": "coder",
+            "role": "architect",
             "prompt": "Write PASS.",
             "inputs": ["wt"],
             "outputs": {"diff": "text", "coding": "session"},
@@ -1821,7 +1830,7 @@ async def test_a_write_that_fails_continues_or_names_an_output_it_cannot_fill(tm
     st = bare_state(tmp_path, repo)
     node = v2(
         type="write",
-        role="coder",
+        role="architect",
         prompt="Write PASS.",
         outputs={"diff": "text", "account": "text"},
         on_fail="continue",
@@ -1893,8 +1902,7 @@ async def test_a_package_retry_continues_the_drafting_session(tmp_path: Path) ->
         engine = FakeEngine(
             {
                 "product": [STORY],
-                "architect": [CALC_LAYERS, RED, OTHER_RED],
-                "coder": [BROKEN, DONE, STILL_BROKEN, DONE, FEATURE, DONE],
+                "architect": [CALC_LAYERS, RED, OTHER_RED, BROKEN, DONE, STILL_BROKEN, DONE, FEATURE, DONE],
                 "reviewer": [APPROVE, APPROVE],
             }
         )
@@ -1927,8 +1935,7 @@ async def test_a_lost_session_falls_back_to_a_fresh_package_ask(tmp_path: Path) 
         first = FakeEngine(
             {
                 "product": [STORY],
-                "architect": [CALC_LAYERS, RED],
-                "coder": [BROKEN, DONE, STILL_BROKEN, DONE],
+                "architect": [CALC_LAYERS, RED, BROKEN, DONE, STILL_BROKEN, DONE],
                 "reviewer": [APPROVE],
             }
         )
@@ -1939,8 +1946,7 @@ async def test_a_lost_session_falls_back_to_a_fresh_package_ask(tmp_path: Path) 
         before = len(log.read_text().splitlines())
         again = FakeEngine(
             {
-                "architect": [RED, OTHER_RED],
-                "coder": [BROKEN, DONE, STILL_BROKEN, DONE, FEATURE, DONE],
+                "architect": [RED, OTHER_RED, BROKEN, DONE, STILL_BROKEN, DONE, FEATURE, DONE],
                 "reviewer": [APPROVE, APPROVE],
             }
         )
@@ -2059,7 +2065,7 @@ async def test_the_meeting_runs_and_resumes_from_saved_state_the_same_as_the_dri
             saved = StoryState.open(first.stories_dir / card.key, card, first.repo)
             assert saved.meeting is not None and saved.agreement is None
             # what each role has left to say: the architect's second turn
-            script = {"product": [], "architect": EASY_MEETING["architect"][1:], "tester": []}
+            script = {"product": [], "architect": EASY_MEETING["architect"][1:]}
             engine = FakeEngine({})  # product is not asked to refine again, nor the architect to split
         pipe = pipeline(
             root,
@@ -2078,7 +2084,7 @@ async def test_the_meeting_runs_and_resumes_from_saved_state_the_same_as_the_dri
         starts = [e["resumed"] for e in events if e["kind"] == "amigos_start"]
         assert starts == ([False, True] if resume else [False])
         roles = [e["role"] for e in events if e["kind"] == "amigos_turn"]
-        assert roles == ["product", "architect", "tester", "airlie", "product", "architect"]
+        assert roles == ["product", "architect", "airlie", "product", "architect", "airlie"]
         assert st.agreement["turns"] == 6
         seen.append((events, plan_state(st.path, root, st.base["sha"], composer=composer)))
     assert seen[1] == seen[0]
@@ -2086,7 +2092,7 @@ async def test_the_meeting_runs_and_resumes_from_saved_state_the_same_as_the_dri
 
 MEETING_NODE = {
     "type": "meeting",
-    "role": ["product", "architect", "tester"],
+    "role": ["product", "architect"],
     "prompt": "Agree on {story.title} before anyone builds.",
     "turn": "Speak for your part of {story.title}.",
     "inputs": ["story", "layers"],
@@ -2121,7 +2127,7 @@ async def test_the_meeting_runner_holds_its_meeting_from_the_saved_state_through
     def factory(cfg: Any, tools: Any, on_turn: Any) -> Any:
         nonlocal self_on_turn
         self_on_turn = on_turn
-        made.append((cfg is pipe.cfg, tools("tester")))
+        made.append((cfg is pipe.cfg, tools("architect")))
         return Held()
 
     self_on_turn: Any = None
@@ -2141,12 +2147,12 @@ async def test_the_meeting_runner_holds_its_meeting_from_the_saved_state_through
         tools=lambda tree: lambda role: f"{role} reads {tree.name}",
         on_turn=lambda: lambda turn, state: turned.append((turn, state)),
         before_turn=lambda: wait,
-        roles=("product", "architect", "tester"),
+        roles=("product", "architect"),
     )
     assert out == {"agreement": "the agreement", "story": "reworded"}
     opening = "Agree on Avatars before anyone builds."
     assert made == [
-        (True, "tester reads tree"),
+        (True, "architect reads tree"),
         (
             opening,
             ("story", "layers", {}, set()),
@@ -2158,15 +2164,15 @@ async def test_the_meeting_runner_holds_its_meeting_from_the_saved_state_through
         ),
     ]
     assert turned == [("turn", {"n": 1})]
-    with pytest.raises(ValueError, match="product, architect, tester"):  # the protocol's seats
+    with pytest.raises(ValueError, match="product, architect"):  # the protocol's seats
         await meeting_runner(
-            node.model_copy(update={"role": ["product", "coder"]}),
+            node.model_copy(update={"role": ["product", "architect"]}),
             run_context(pipe, Registry(), store, "amigos"),
             agree=agree,
             meeting=factory,
             tools=lambda tree: lambda role: role,
             on_turn=lambda: lambda turn, state: None,
-            roles=("product", "architect", "tester"),
+            roles=("product", "architect"),
         )
 
 
@@ -2186,7 +2192,7 @@ async def test_a_meeting_nodes_prompt_and_turn_texts_reach_the_amigos_opening_an
         run = meeting.run
 
         async def run_and_see(opening: str, *args: Any, **kwargs: Any) -> Any:
-            agent, client = meeting._agent("tester")
+            agent, client = meeting._agent("architect")
             seen.append((opening, agent._system_messages[0].content))
             await client.close()
             return await run(opening, *args, **kwargs)

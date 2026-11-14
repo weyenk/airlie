@@ -31,7 +31,7 @@ test("a meeting is placed with the protocol's roles and inputs from the catalog"
   const b = useBuilder(ref("new"));
   await flushPromises();
   b.place({ type: "meeting" });
-  expect(b.graph.value.nodes[0].spec).toMatchObject({ role: ["product", "architect", "tester"], inputs: ["story", "layers"] });
+  expect(b.graph.value.nodes[0].spec).toMatchObject({ role: ["product", "architect"], inputs: ["story", "layers"] });
 });
 
 test("an output rename follows into its readers, or is refused through a draft prompt file that names it", async () => {

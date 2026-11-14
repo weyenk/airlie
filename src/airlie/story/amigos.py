@@ -62,7 +62,7 @@ from airlie.topology.studio_plan import extract_json_block
 
 Part = Literal["requirements", "changes", "proof"]
 PARTS: tuple[Part, ...] = ("requirements", "changes", "proof")
-OWNER: dict[Part, str] = {"requirements": "product", "changes": "architect", "proof": "tester"}
+OWNER: dict[Part, str] = {"requirements": "product", "changes": "architect", "proof": "architect"}
 """Who owns each part of the agreement: the owner alone changes the text, and has the last word on it."""
 
 PROOF_CONTRACT = """Post the proof plan as one ```json block holding exactly one object:
@@ -415,7 +415,7 @@ def parse_critic_verdict(text: str) -> tuple[Objection, ...]:
                 _field(o, "about", where),
                 _field(o, "claim", where),
                 _field(o, "suggest", where, required=False),
-                "tester",
+                OWNER["proof"],
             )
         )
     return tuple(out)
@@ -515,8 +515,8 @@ def parse_story_revision(obj: dict[str, Any]) -> tuple[Story, dict[str, str]]:
 
 CHECKER = "airlie"
 """The checker's name in the group chat: the fourth participant, with no model."""
-ROLES: tuple[str, ...] = ("product", "architect", "tester")
-"""The three amigos, in turn order; the checker speaks fourth."""
+ROLES: tuple[str, ...] = ("product", "architect")
+"""The two amigos, in turn order; the checker speaks third."""
 _PARTICIPANTS = (*ROLES, CHECKER)
 
 ClientFactory = Callable[[str, RoleSpec], ChatCompletionClient]
@@ -745,7 +745,7 @@ class Checker(BaseChatAgent):
             since.append(turn)
         found = [p for turn in since for p in turn.problems]
         if standing.proof is None:
-            found.append(Finding("part_invalid", "tester", no_proof_why(self._turns), ""))
+            found.append(Finding("part_invalid", OWNER["proof"], no_proof_why(self._turns), ""))
         else:
             found += check_agreement(
                 standing.story, standing.layers, standing.proof, self._repo, self._base, self._max_scope_files
@@ -757,21 +757,20 @@ class Checker(BaseChatAgent):
         self.last = ()
 
 
+PROOF_OWNER = OWNER["proof"]
 NO_PROOF = (
-    "no proof plan has been posted yet: the tester posts it, whole, in its own ```json block "
+    f"no proof plan has been posted yet: the {PROOF_OWNER} posts it, whole, in its own ```json block "
     '{"type": "proof", "tests": [...]} before its verdict; saying a proof "stands as posted" posts nothing'
 )
 
 
 def no_proof_why(turns: Sequence[Turn]) -> str:
-    """What the checker tells the tester while no proof is on record, naming any role that posted one in
-    its place (roman, 2026-10-27: the tester's first turn ended with no part, product posted the proof in
-    the tester's voice, and the tester, taking that post for its own, said for 25 turns that its proof
-    "stands as posted")."""
+    """What the checker tells the proof owner while no proof is on record, naming any role that posted one in
+    its place."""
     posted = sorted({t.role for t in turns for p in t.problems if p.why.startswith("you posted the proof")})
     if not posted:
         return NO_PROOF
-    return f"{NO_PROOF}. The proof {' and '.join(posted)} posted is not the tester's and was not used"
+    return f"{NO_PROOF}. The proof {' and '.join(posted)} posted is not the {PROOF_OWNER}'s and was not used"
 
 
 class OneTurn(TerminationCondition):
@@ -903,9 +902,10 @@ def opening_message(
         hub_text("amigos-opening") if purpose is None else purpose,
         "## Product's story: the requirements as they stand\n" + story_text(story),
         "## The architect's split: the changes as they stand\n```json\n" + split + "\n```",
-        "## The proof\nThe tester has not posted it yet: its first turn proposes the proof plan. Only the "
-        "tester posts it: product and architect never post a proof block, not even to help; they object "
-        "to it once it is posted.",
+        f"## The proof\nThe {PROOF_OWNER} has not posted it yet: the architect's turn proposes the "
+        "proof plan "
+        f"after the split. Only the {PROOF_OWNER} posts it: product never posts a proof block, not even to "
+        "help; product and architect object to it once it is posted.",
         conventions_text,
         *dossier_section(dossier or {}),
         *([_lessons_text(lessons)] if lessons else []),
@@ -1168,7 +1168,7 @@ def agreement_note(agreement: Agreement) -> str:
     """The agreement for a person, as the card's comment: the criteria, the layers bottom first with their
     files and interfaces, and the proof as a table."""
     lines = [
-        f"agreement of product, the architect and the tester ({agreement.turns} turns)",
+        f"agreement of product and the architect ({agreement.turns} turns)",
         "criteria:",
         *(f"- {c.line()}" for c in agreement.story.acceptance),
         "layers, bottom first:",

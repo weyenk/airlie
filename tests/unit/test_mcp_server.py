@@ -44,7 +44,7 @@ from tests.support.story import STORY_ROLES
 from tests.support.studio import APPROVE, DONE, PLAN, RUN, SYNTH, WRITE_PASS, cfg_for
 
 ROOT = Path(__file__).resolve().parents[2]
-ONE = {"subtasks": [{"id": "b", "role": "coder", "brief": "write PASS"}]}
+ONE = {"subtasks": [{"id": "b", "role": "architect", "brief": "write PASS"}]}
 runner = CliRunner()
 
 
@@ -163,11 +163,13 @@ async def test_a_plan_comes_back_as_a_table_and_json_and_the_approved_plan_build
     tmp_path: Path,
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, RUN, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"chief": [PLAN, SYNTH], "architect": [WRITE_PASS, RUN, DONE], "reviewer": [APPROVE]})
     serve = Serve(app_for(tmp_path, engine))
     async with connected(serve, repo, test_cmds=["./check.sh"]) as client:
         out = text(await client.call_tool("plan", {"goal": "fix the build", "test_cmd": "./check.sh"}))
-        assert "| fix | coder | make the check pass | - |\n| note | docs | describe the repo | fix |" in out
+        assert (
+            "| fix | architect | make the check pass | - |\n| note | docs | describe the repo | fix |" in out
+        )
         assert "\n\nAssumptions:\n- a1\n" in out
         plan = json.loads(out.split("Plan JSON for airlie_run:\n", 1)[1])
         plan["subtasks"] = plan["subtasks"][:1]  # the person drops the docs subtask
@@ -202,7 +204,7 @@ async def test_planning_that_outlasts_the_window_hands_back_its_job_and_status_s
         assert rest.startswith("still planning. Call airlie_status with this job id"), out
         engine.open.set()  # the chief answers now
         done = (await until_ended(client, job))[-1]
-        assert done.startswith(f"{job}: done\n") and "| fix | coder | make the check pass | - |" in done
+        assert done.startswith(f"{job}: done\n") and "| fix | architect | make the check pass | - |" in done
         plan = json.loads(done.split("\nPlan JSON for airlie_run:\n", 1)[1])  # what airlie_run takes
         assert [s["id"] for s in plan["subtasks"]] == ["fix", "note"] and "Result:" not in done
         engine.open = anyio.Event()
@@ -418,7 +420,7 @@ async def test_status_leaves_out_steer_events_the_client_model_reads_the_rest(tm
     status text is read by a model, so it shows the events it showed before steer events existed."""
     events = [
         {"ts": 1, "kind": "layer_started", "layer": "01"},
-        {"ts": 2, "kind": "steer", "id": "checks-found", "role": "tester", "layer": "01"},
+        {"ts": 2, "kind": "steer", "id": "checks-found", "role": "architect", "layer": "01"},
         {"ts": 3, "kind": "locked_tests_fail", "layer": "01", "tests": ["t::a"]},
     ]
     job = {"job_id": "j", "kind": "story", "state": "running", "events": events, "next": 3}
@@ -552,7 +554,7 @@ def test_install_adds_airlie_to_opencodes_config_after_a_backup_and_only_when_it
         "$schema": "https://opencode.ai/config.json",
         "provider": {"airlie": {"name": "airlie Ü", "options": {"apiKey": "k"}}},
         "mcp": {"docs": {"type": "remote", "url": "https://mcp.example"}},
-        "model": "airlie/coder",
+        "model": "airlie/architect",
     }
     raw = json.dumps(mine)
     path.write_text(raw)
@@ -618,7 +620,7 @@ def test_a_write_that_fails_never_truncates_the_config(tmp_path: Path) -> None:
 def test_install_follows_a_symlinked_config_and_keeps_the_link(tmp_path: Path) -> None:
     real = tmp_path / "dotfiles/opencode.json"
     real.parent.mkdir()
-    real.write_text('{"model": "airlie/coder"}')
+    real.write_text('{"model": "airlie/architect"}')
     link = tmp_path / ".config/opencode/opencode.json"
     link.parent.mkdir(parents=True)
     link.symlink_to(real)

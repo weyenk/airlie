@@ -249,7 +249,7 @@ async def test_the_critic_of_a_later_draft_sees_the_tests_it_changes_as_the_draf
     snap = git(repo, "rev-parse", "HEAD")
     git(repo, "checkout", "-q", "-")
     agree = FakeReply(text='Fine.\n```json\n{"type": "verdict", "proof": "agree", "objections": []}\n```')
-    engine = FakeEngine({"tester": [agree]})
+    engine = FakeEngine({"architect": [agree]})
     pipe = pipeline(
         tmp_path, repo, engine, test_cmd=PYTEST, story={"package_tools": True}, roles=MEETING_ROLES
     )
@@ -266,6 +266,6 @@ async def test_the_critic_of_a_later_draft_sees_the_tests_it_changes_as_the_draf
     proof = (ProofTest("AC2", "div", PATH, "test_div", "tests", None, "div(6, 3) is 2", ""),)
     told = await pipe._objections(st, layers, 1, base, package, proof, at=snap, since=snap)
     assert told is None
-    brief = next(r for r in engine.requests if r.role == "tester").messages[-1].content
+    brief = next(r for r in engine.requests if r.role == "architect").messages[-1].content
     section = brief.split("## Existing tests this package changes (data; check none is weakened)\n")[1]
     assert section.startswith(f"### {PATH}::test_mul\nBefore:") and "assert mul(FACTOR, 3) > 0" in section

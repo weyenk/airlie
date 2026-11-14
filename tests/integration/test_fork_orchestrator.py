@@ -39,7 +39,10 @@ async def test_a_trunk_whose_reply_is_cut_off_ends_the_run_with_why_instead_of_f
     """HDS-3 (2026-10-15): a reply cut off at max_tokens is not "done", and it is not stuck: more branches
     would run into the same cap. The run ends, unsuccessfully, saying what to raise."""
     engine = FakeEngine(
-        {"coder": [WRITE_NOTE, FakeReply(reasoning="Thinking, still. ", finish_reason="length")] + [RUN] * 6}
+        {
+            "architect": [WRITE_NOTE, FakeReply(reasoning="Thinking, still. ", finish_reason="length")]
+            + [RUN] * 6
+        }
     )
     orch = ForkOrchestrator(cfg_for(tmp_path), engine, run_id="f9")
     report = await orch.execute_task(
@@ -58,7 +61,7 @@ async def test_trunk_forks_after_two_failures_and_passing_child_wins(tmp_path: P
     # until it is cancelled.
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 WRITE_NOTE,
                 RUN,
                 RUN,  # trunk: note written, two failures → fork point
@@ -108,7 +111,7 @@ async def test_trunk_forks_after_two_failures_and_passing_child_wins(tmp_path: P
 
 
 async def test_no_child_passes_best_effort_then_max_rounds(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [RUN] * 40})  # everyone only ever runs failing tests
+    engine = FakeEngine({"architect": [RUN] * 40})  # everyone only ever runs failing tests
     orch = ForkOrchestrator(cfg_for(tmp_path, child_steps=2, max_rounds=2), engine, run_id="f2")
     report = await orch.execute_task("goal", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh")
     ev = events(report)
@@ -138,7 +141,7 @@ async def test_resolve_uses_last_run_tests_outcome(tmp_path: Path) -> None:
 
 
 async def test_total_step_cap_ends_the_run(tmp_path: Path) -> None:
-    engine = FakeEngine({"coder": [RUN] * 40})
+    engine = FakeEngine({"architect": [RUN] * 40})
     orch = ForkOrchestrator(cfg_for(tmp_path, max_total_steps=5, max_rounds=5), engine, run_id="f3")
     report = await orch.execute_task("goal", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh")
     assert sum(1 for e in events(report) if e["kind"] == "fork_point") == 1  # trunk 2 + kids 2×4 ≥ cap
@@ -160,7 +163,7 @@ async def test_repeated_action_fork_trims_the_repeated_tail_and_names_it(tmp_pat
     them."""
     bad = FakeReply(tool_calls=[ToolCall("x", "write_file", "{}")])
     engine = FakeEngine(
-        {"coder": [WRITE_NOTE, bad, bad, bad, WRITE_PASS, RUN, FakeReply(text="ok now"), RUN, RUN]}
+        {"architect": [WRITE_NOTE, bad, bad, bad, WRITE_PASS, RUN, FakeReply(text="ok now"), RUN, RUN]}
     )
     orch = ForkOrchestrator(cfg_for(tmp_path, max_rounds=1), engine, run_id="f4")
     cfg = orch.cfg
@@ -198,7 +201,18 @@ async def test_a_branch_nudge_with_a_hypothesis_is_a_steer_event_per_hub_sentenc
     engine = FakeEngine(
         {
             "judge": [FakeReply(text="1. the note is the wrong file\n2. PASS is missing")],
-            "coder": [WRITE_NOTE, RUN, RUN, WRITE_PASS, RUN, RUN, FakeReply(text="fixed it"), RUN, RUN, RUN],
+            "architect": [
+                WRITE_NOTE,
+                RUN,
+                RUN,
+                WRITE_PASS,
+                RUN,
+                RUN,
+                FakeReply(text="fixed it"),
+                RUN,
+                RUN,
+                RUN,
+            ],
         }
     )
     orch = ForkOrchestrator(cfg_for(tmp_path, diversify="hypotheses"), engine, run_id="f10")
@@ -225,7 +239,7 @@ async def test_a_branch_nudge_naming_a_repeated_call_without_a_hypothesis_is_fou
     branch-stalled, branch-different and branch-finish, in the order they sit in its nudge."""
     bad = FakeReply(tool_calls=[ToolCall("x", "read_file", "{}")])
     engine = FakeEngine(
-        {"coder": [WRITE_NOTE, bad, bad, bad, WRITE_PASS, RUN, FakeReply(text="ok now"), RUN, RUN]}
+        {"architect": [WRITE_NOTE, bad, bad, bad, WRITE_PASS, RUN, FakeReply(text="ok now"), RUN, RUN]}
     )
     orch = ForkOrchestrator(cfg_for(tmp_path, max_rounds=1), engine, run_id="f11")
     orch.cfg.tools.builtin = ["write_file", "read_file", "run_tests"]
@@ -248,7 +262,7 @@ async def test_a_child_that_quits_without_passing_is_forked_again_not_accepted(t
     bad = FakeReply(tool_calls=[ToolCall("x", "read_file", "{}")])
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 RUN,
                 RUN,  # trunk: two failures → fork
                 FakeReply(text="I give up"),  # one child quits at once
@@ -330,7 +344,7 @@ async def test_cancelling_a_team_test_gate_kills_what_the_test_command_started(
 
 async def test_a_malformed_tool_call_reaches_the_runs_events(tmp_path: Path) -> None:
     bad = "<function=open_file>\n<file>PASS</file>\n</function>"
-    engine = FakeEngine({"coder": [FakeReply(text=bad), WRITE_PASS, RUN, FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [FakeReply(text=bad), WRITE_PASS, RUN, FakeReply(text="done")]})
     orch = ForkOrchestrator(cfg_for(tmp_path), engine, run_id="f10")
     report = await orch.execute_task(
         "make check.sh pass", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh"

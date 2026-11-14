@@ -334,7 +334,7 @@ def job_detail(
     elif node_id == "amigos":
         output["layers"] = st.get("layers")
         output["agreement"] = st.get("agreement")
-        note = "a meeting of product, the architect and the tester; its turns are in the story's events"
+        note = "a meeting of product and the architect; its turns are in the story's events"
     elif node_id == "survey":
         output["survey"] = st.get("survey")
     return {

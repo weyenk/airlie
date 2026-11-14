@@ -54,7 +54,7 @@ def test_a_renewed_lease_keeps_the_engine_past_idle(tmp_path: Path) -> None:
     with c:
 
         async def hold_for_three_ttls() -> tuple[str, ...]:
-            async with holder_on(c, clock).hold("main", "role:coder"):
+            async with holder_on(c, clock).hold("main", "role:architect"):
                 for _ in range(10_000):
                     if clock.now >= 3 * TTL_S:
                         break
@@ -73,7 +73,7 @@ def test_leaving_the_hold_deletes_the_lease(tmp_path: Path) -> None:
     with c:
 
         async def hold_once() -> tuple[str, ...]:
-            async with holder_on(c, clock).hold("main", "role:coder"):
+            async with holder_on(c, clock).hold("main", "role:architect"):
                 return holders(manager)
 
         (lease,) = c.portal.call(hold_once)

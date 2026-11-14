@@ -51,7 +51,7 @@ def write_events(path: Path, events: list[dict[str, Any]]) -> None:
 def test_the_pack_of_a_hold_trap_counts_the_refused_calls_and_names_the_hold() -> None:
     pack = recorded("hold_trap")
     assert (pack.stage, pack.layer) == ("layers", "02")
-    assert (pack.subtask, pack.role, pack.stop_reason) == ("build", "coder", "repeated_action")
+    assert (pack.subtask, pack.role, pack.stop_reason) == ("build", "architect", "repeated_action")
     assert pack.refused_calls == 12
     assert pack.holds == ("tests",)  # the coder missed the deadline to write tests, and the reads were held
     assert pack.run_id == "20261020-210203-3cdf"
@@ -181,7 +181,7 @@ def traceback(line: int, *, exception: str = "KeyError: 'x'") -> str:
 def blocked_pack(**fields: Any) -> Pack:
     base: dict[str, Any] = {
         "key": "AIR-1", "n": 1, "reason": "layer 01 (B) changed nothing", "stage": "layers", "layer": "01",
-        "attempt": 1, "run_id": "r", "subtask": "build", "role": "coder", "stop_reason": "done",
+        "attempt": 1, "run_id": "r", "subtask": "build", "role": "architect", "stop_reason": "done",
         "refused_calls": 0, "holds": (), "repeats": 0, "continuations": 0, "steps": 5, "tokens": 100,
         "minutes": 1.0, "gate_tail": "", "tracebacks": (), "failures": (), "base_gate_failed": None,
         "base_failing": (), "diff_stat": "", "paths": Paths(Path("e"), None, None, ()),

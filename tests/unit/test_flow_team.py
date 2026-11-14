@@ -118,14 +118,14 @@ async def test_three_workers_hand_back_in_finish_order_and_the_synthesis_is_stor
             ],
             "reviewer": [APPROVE] * 12,
         },
-        worker="coder",
+        worker="architect",
         workers={i: writes(f"{i}.txt", f"{i}\n", f"wrote {i}") for i in ("w1", "w2", "w3")},
         order=["w2", "w3", "w1"],
     )
     pipe = pipeline(tmp_path, repo, engine)
     st = bare_state(tmp_path, repo)
     ctx = run_context(pipe, Registry(), MemoryStore({"card": "three files"}), "split")
-    out = await team_runner(team("coder", tools=["write_file"]), ctx, asker=pipe.asker, st=st)
+    out = await team_runner(team("architect", tools=["write_file"]), ctx, asker=pipe.asker, st=st)
     assert out["results"] == [
         {"id": "w2", "ok": True, "text": "wrote w2"},
         {"id": "w3", "ok": True, "text": "wrote w3"},
@@ -140,10 +140,10 @@ async def test_three_workers_hand_back_in_finish_order_and_the_synthesis_is_stor
     opening = briefs_to(engine, "architect")[0]
     assert "Split this: three files." in opening and "at most 5 workers" in opening
     for i in ("w1", "w2", "w3"):  # each worker sees its own chunk only
-        mine = [b for b in briefs_to(engine, "coder") if f"[{i}]" in b]
+        mine = [b for b in briefs_to(engine, "architect") if f"[{i}]" in b]
         assert mine and all(f"Do write {i}.txt" in b for b in mine)
         assert not any(f"[{o}]" in b for b in mine for o in {"w1", "w2", "w3"} - {i})
-    first_ask = next(r for r in engine.requests if r.role == "coder" and "[w1]" in r.messages[1].content)
+    first_ask = next(r for r in engine.requests if r.role == "architect" and "[w1]" in r.messages[1].content)
     assert first_ask.messages[1].content.startswith("Goal:\nDo write w1.txt [w1].\n\n")  # the worker text
     assert re.search(r"w1\.txt \|\s+1 \+", third)  # an applied change comes with its --stat
     branch = out["branch"]
@@ -228,14 +228,14 @@ async def test_a_diff_that_does_not_apply_is_a_failed_hand_back_and_the_node_sti
             "architect": [assign("w1", "w2"), FakeReply(text="w1 in"), fenced({"summary": "one of two"})],
             "reviewer": [APPROVE] * 8,
         },
-        worker="coder",
+        worker="architect",
         workers={"w1": writes("PASS", "one\n", "wrote one"), "w2": writes("PASS", "two\n", "wrote two")},
         order=["w1", "w2"],
     )
     pipe = pipeline(tmp_path, repo, engine)
     st = bare_state(tmp_path, repo)
     ctx = run_context(pipe, Registry(), MemoryStore({"card": "one file twice"}), "split")
-    out = await team_runner(team("coder", tools=["write_file"]), ctx, asker=pipe.asker, st=st)
+    out = await team_runner(team("architect", tools=["write_file"]), ctx, asker=pipe.asker, st=st)
     [one, two] = out["results"]
     assert one == {"id": "w1", "ok": True, "text": "wrote one"}
     assert two["id"] == "w2" and two["ok"] is False and "PASS" in two["text"]
@@ -283,7 +283,7 @@ def test_a_team_worker_may_name_its_assignment_and_the_story_runs_teams(tmp_path
     team type to `team_runner`."""
     node = {
         "type": "team",
-        "role": {"supervisor": "architect", "worker": "coder"},
+        "role": {"supervisor": "architect", "worker": "architect"},
         "prompt": "Split {card}.",
         "worker": WORKER,
         "inputs": ["card"],
@@ -362,7 +362,10 @@ async def test_a_writer_team_whose_supervisor_checkout_never_opened_fails_before
     fails naming itself, and no worker is started."""
     repo = repo_with_marker_tests(tmp_path)
     engine = TeamEngine(
-        {"architect": [assign("w1")]}, worker="coder", workers={"w1": writes("A", "a\n", "a")}, order=["w1"]
+        {"architect": [assign("w1")]},
+        worker="architect",
+        workers={"w1": writes("A", "a\n", "a")},
+        order=["w1"],
     )
     pipe = pipeline(tmp_path, repo, engine)
     conversation = pipe.asker.conversation
@@ -374,8 +377,8 @@ async def test_a_writer_team_whose_supervisor_checkout_never_opened_fails_before
     st = bare_state(tmp_path, repo)
     ctx = run_context(pipe, Registry(), MemoryStore({"card": "q"}), "split")
     with pytest.raises(StoryError, match="team node 'split': the supervisor's checkout never opened"):
-        await team_runner(team("coder", tools=["write_file"]), ctx, asker=pipe.asker, st=st)
-    assert not [r for r in engine.requests if r.role == "coder"]
+        await team_runner(team("architect", tools=["write_file"]), ctx, asker=pipe.asker, st=st)
+    assert not [r for r in engine.requests if r.role == "architect"]
 
 
 def test_a_hand_back_shows_the_stat_and_the_diff_cut_to_the_cap() -> None:
@@ -391,11 +394,13 @@ def test_a_hand_back_shows_the_stat_and_the_diff_cut_to_the_cap() -> None:
 def test_a_team_worker_prompt_file_may_read_its_assignment() -> None:
     """A team's `worker: prompt:<id>` file may name `assignment` beside the node's inputs; its `prompt` file
     may not."""
-    raw = "---\nkind: rule\nroles: [coder]\nfields: [card, assignment]\nwhy: w\n---\n{card}: {assignment}\n"
+    raw = (
+        "---\nkind: rule\nroles: [architect]\nfields: [card, assignment]\nwhy: w\n---\n{card}: {assignment}\n"
+    )
     prompts = parse_draft_prompts({"work": raw})
     node = {
         "type": "team",
-        "role": {"supervisor": "architect", "worker": "coder"},
+        "role": {"supervisor": "architect", "worker": "architect"},
         "prompt": "Split {card}.",
         "worker": "prompt:work",
         "inputs": ["card"],

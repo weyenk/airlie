@@ -422,7 +422,7 @@ def test_llm_happy_path_posts_chat_completions(tmp_path: Path) -> None:
     assert out.result == {"output": "chat.completions", "content": "weekly digest"}
     assert serve_t.chat_posts == [
         {
-            "model": "generalist",
+            "model": "architect",
             "messages": [
                 {"role": "system", "content": "# Writer\n\nYou write concise summaries."},
                 {"role": "user", "content": "summarise the week"},
@@ -583,9 +583,9 @@ def test_a_model_in_use_logs_once_however_its_age_moves_and_idle_logs_once(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     reasons: list[str | None] = [
-        "model generalist used 14 s ago on engine main",
-        "model generalist used 19 s ago on engine main",
-        "model generalist used 24 s ago on engine main",
+        "model architect used 14 s ago on engine main",
+        "model architect used 19 s ago on engine main",
+        "model architect used 24 s ago on engine main",
         None,
         None,
     ]
@@ -602,7 +602,7 @@ def test_a_model_in_use_logs_once_however_its_age_moves_and_idle_logs_once(
     with caplog.at_level(logging.INFO, logger="airlie.serve.bridge.runner"):
         asyncio.run(go())
     lines = [r.getMessage() for r in caplog.records if r.name == "airlie.serve.bridge.runner"]
-    assert lines == ["not claiming: model generalist used 14 s ago on engine main", "idle again, claiming"]
+    assert lines == ["not claiming: model architect used 14 s ago on engine main", "idle again, claiming"]
 
 
 def test_an_outage_logs_once_and_recovery_logs_idle_again_claiming(

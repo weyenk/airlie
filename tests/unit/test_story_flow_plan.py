@@ -124,7 +124,7 @@ def test_the_meeting_is_its_own_box_running_from_its_start(tmp_path: Path) -> No
         [
             *events,
             turn(60.0, "architect", 2, agree()),
-            turn(65.0, "tester", 3, agree()),
+            turn(65.0, "architect", 3, agree()),
             turn(66.0, "airlie", 4),
             {"ts": 70.0, "kind": "amigos_agreed", "turns": 4},
         ],
@@ -141,7 +141,7 @@ def test_the_meeting_is_its_own_box_running_from_its_start(tmp_path: Path) -> No
         "changes": "agree",
         "proof": "agree",
     }
-    assert [v["role"] for v in votes_row["votes"]] == ["product", "architect", "tester"]
+    assert [v["role"] for v in votes_row["votes"]] == ["product", "architect", "architect"]
     assert {"kind": "text", "label": "skill", "text": "none"} in rows
 
 

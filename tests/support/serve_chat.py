@@ -42,7 +42,7 @@ def chat_cfg(tmp_path: Path, skills: dict[str, str] | None = None):
     for name, text in skills.items():
         (tmp_path / "skills" / f"{name}.md").write_text(text)
     for r, text in {
-        "coder": "x",
+        "architect": "x",
         "summarizer": "x",
         "judge": "x",
         "aggregator": "x",
@@ -52,7 +52,7 @@ def chat_cfg(tmp_path: Path, skills: dict[str, str] | None = None):
         (tmp_path / f"{r}.md").write_text(text)
     roles = {
         r: {"prompt": f"{r}.md", "model": "base"}
-        for r in ("coder", "summarizer", "judge", "aggregator", "chief")
+        for r in ("architect", "summarizer", "judge", "aggregator", "chief")
     }
     roles["chat"] = {"prompt": "chat.md", "model": "base", "skills": "skills"}
     data = {

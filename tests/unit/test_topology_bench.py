@@ -11,14 +11,15 @@ from airlie.config import load_config
 
 
 def cfg(tmp_path: Path):  # type: ignore[no-untyped-def]
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (tmp_path / f"{r}.md").write_text("x")
     data = {
         "version": 1,
         "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
-            r: {"prompt": f"{r}.md", "model": "base"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": f"{r}.md", "model": "base"}
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 3},
     }

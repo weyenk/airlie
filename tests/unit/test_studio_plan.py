@@ -22,7 +22,7 @@ from airlie.topology.studio_plan import (
 PLAN = """Here is my plan.
 {"type": "plan", "assumptions": ["the API is Flask"], "subtasks": [
  {"id": "map", "role": "architect", "brief": "Map app/ and tests/."},
- {"id": "fix", "role": "coder", "brief": "Fix the 500.", "depends_on": ["map"]},
+ {"id": "fix", "role": "architect", "brief": "Fix the 500.", "depends_on": ["map"]},
  {"id": "ux", "role": "ux", "brief": "Critique the screenshot.", "inputs": ["img:1"]}]}"""
 
 
@@ -30,7 +30,7 @@ def test_parse_plan_with_prose_around_it() -> None:
     p = parse_chief(PLAN)
     assert isinstance(p, Plan) and p.assumptions == ("the API is Flask",)
     assert [s.id for s in p.subtasks] == ["map", "fix", "ux"]
-    assert p.subtasks[1].depends_on == ("map",) and p.subtasks[1].role_hint == "coder"
+    assert p.subtasks[1].depends_on == ("map",) and p.subtasks[1].role_hint == "architect"
     assert p.subtasks[2].inputs == ("img:1",) and p.subtasks[0].depends_on == ()
 
 
@@ -82,12 +82,14 @@ def test_schedule_accepts_dependencies_already_satisfied() -> None:
 
 
 def test_plan_round_trips_through_a_dict() -> None:
-    p = Plan(("a1",), (Subtask("t", "write tests", "qa"), Subtask("b", "build", "coder", ("t",), ("img:1",))))
+    p = Plan(
+        ("a1",), (Subtask("t", "write tests", "qa"), Subtask("b", "build", "architect", ("t",), ("img:1",)))
+    )
     d = plan_to_dict(p)
     assert d["type"] == "plan" and d["assumptions"] == ["a1"]
     assert d["subtasks"][1] == {
         "id": "b",
-        "role": "coder",
+        "role": "architect",
         "brief": "build",
         "depends_on": ["t"],
         "inputs": ["img:1"],
@@ -130,8 +132,8 @@ def test_plan_from_dict_names_a_list_field_of_the_wrong_type() -> None:
 
 
 def test_pin_marks_every_subtask_and_keeps_roles() -> None:
-    p = pin(Plan((), (Subtask("a", "x", "coder"), Subtask("b", "y", "qa"))))
-    assert all(s.pinned for s in p.subtasks) and [s.role_hint for s in p.subtasks] == ["coder", "qa"]
+    p = pin(Plan((), (Subtask("a", "x", "architect"), Subtask("b", "y", "qa"))))
+    assert all(s.pinned for s in p.subtasks) and [s.role_hint for s in p.subtasks] == ["architect", "qa"]
 
 
 def test_extract_json_block_prefers_the_last_fence() -> None:

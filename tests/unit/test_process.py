@@ -1,13 +1,15 @@
 """EngineProcess: start/stop/status over an injected ProcessRunner and HTTP prober; no real server."""
 
+import resource
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import pytest
 import yaml
 
 from airlie.config import load_config
-from airlie.engine.process import EngineProcess, HTTPProber
+from airlie.engine.process import EngineProcess, HTTPProber, raise_nofile_soft_limit
 from airlie.engine.types import EngineError
 from tests.support.process import FakeProber, FakeRunner
 
@@ -20,7 +22,7 @@ def cfg(tmp_path: Path):
             "base": {"repo": "org/base", "revision": "r1", "path": "/models/base", "estimated_memory_gb": 16}
         },
         "roles": {
-            r: {"prompt": "p.md", "model": "base"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "base"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
     }
     (tmp_path / "p.md").write_text("x")
@@ -140,6 +142,34 @@ async def test_prober_sends_the_api_key_to_health_models_and_metrics() -> None:
     assert await prober.loaded_model_ids() == ["/models/small"]
     assert await prober.preload_failures() == []
     assert seen == {"/health": "Bearer k", "/v1/models": "Bearer k", "/v1/metrics": "Bearer k"}
+
+
+def test_raise_nofile_soft_limit_raises_soft_up_to_desired(monkeypatch: pytest.MonkeyPatch) -> None:
+    if not hasattr(resource, "RLIMIT_NOFILE"):
+        pytest.skip("RLIMIT_NOFILE unavailable")
+    recorded: list[tuple[int, int]] = []
+
+    def fake_getrlimit(which: int) -> tuple[int, int]:
+        assert which == resource.RLIMIT_NOFILE
+        return (256, 10240)
+
+    def fake_setrlimit(which: int, limits: tuple[int, int]) -> None:
+        recorded.append(limits)
+
+    monkeypatch.setattr(resource, "getrlimit", fake_getrlimit)
+    monkeypatch.setattr(resource, "setrlimit", fake_setrlimit)
+    raise_nofile_soft_limit(4096)
+    assert recorded == [(4096, 10240)]
+
+
+def test_real_runner_raises_nofile_before_spawn(tmp_path: Path) -> None:
+    from airlie.engine.process import RealRunner
+
+    with patch("airlie.engine.process.raise_nofile_soft_limit") as raised:
+        log = tmp_path / "server.log"
+        pid = RealRunner().spawn(["true"], log, tmp_path)
+    raised.assert_called_once()
+    assert pid > 0
 
 
 async def test_prober_reads_preload_failures_in_each_shape() -> None:

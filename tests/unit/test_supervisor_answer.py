@@ -13,20 +13,20 @@ from airlie.supervisor.answer import CATEGORIES, OWNERS, AnswerError, parse_answ
 
 GOOD: dict[str, Any] = {
     "category": "missing_import",
-    "owner": "tester",
+    "owner": "architect",
     "diagnosis": "Path is not imported.",
     "evidence": ["NameError: name 'Path' is not defined"],
     "message": "Import Path, then edit.",
-    "would_route_to": "tester",
+    "would_route_to": "architect",
     "fix_if_attempt": None,
 }
 
 
 def test_a_fenced_answer_parses() -> None:
     a = parse_answer("thinking...\n```json\n" + json.dumps(GOOD) + "\n```", block=False)
-    assert (a.category, a.owner, a.message) == ("missing_import", "tester", "Import Path, then edit.")
+    assert (a.category, a.owner, a.message) == ("missing_import", "architect", "Import Path, then edit.")
     assert a.evidence == ("NameError: name 'Path' is not defined",)
-    assert a.would_route_to == "tester" and a.fix_if_attempt is None
+    assert a.would_route_to == "architect" and a.fix_if_attempt is None
 
 
 def test_a_new_snake_case_category_is_kept() -> None:
@@ -71,7 +71,7 @@ def test_missing_evidence_means_none_and_strings_are_stripped() -> None:
 
 def test_the_seed_categories_and_owners_are_fixed() -> None:
     assert CATEGORIES[0] == "missing_import" and CATEGORIES[-1] == "environment" and len(CATEGORIES) == 8
-    assert OWNERS == ("tester", "coder", "existing_code", "environment", "unknown")
+    assert OWNERS == ("architect", "existing_code", "environment", "unknown")
 
 
 def test_with_advice_keeps_the_text_whole_and_adds_the_section_after_it() -> None:

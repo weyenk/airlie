@@ -19,7 +19,7 @@ from airlie.serve.app import create_app
 from tests.support.serve import FakeEngine, FakeUpstream, StuckClock, cfg
 from tests.unit.serve_helpers import TestClient
 
-ASK = {"model": "coder", "messages": [{"role": "user", "content": "yo"}]}
+ASK = {"model": "architect", "messages": [{"role": "user", "content": "yo"}]}
 KEY = {"Authorization": "Bearer test-key"}
 ELSEWHERE = ("10.0.0.5", 1)
 
@@ -102,7 +102,7 @@ def test_the_engines_route_names_the_roles_each_engine_serves(tmp_path: Path, ma
     with TestClient(serve(tmp_path, manager)) as c:
         row = c.get("/v1/airlie/engines").json()[0]
 
-    assert row["roles"] == ["aggregator", "coder", "judge", "summarizer"]
+    assert row["roles"] == ["aggregator", "architect", "judge", "summarizer"]
 
 
 def test_the_engines_route_lists_state_and_progress(
@@ -120,7 +120,7 @@ def test_the_engines_route_lists_state_and_progress(
                 "progress": None,
                 "holders": [],
                 "lifecycle": "on_demand",
-                "roles": ["aggregator", "coder", "judge", "summarizer"],
+                "roles": ["aggregator", "architect", "judge", "summarizer"],
             }
         ]
 
@@ -350,10 +350,10 @@ def test_a_story_engine_built_inside_serve_holds_through_the_serve_manager(
     with TestClient(serve(tmp_path, manager)) as client:
 
         async def held() -> tuple[str, ...]:
-            async with _engine(c)._holder.hold("main", "role:coder"):  # type: ignore[attr-defined]
+            async with _engine(c)._holder.hold("main", "role:architect"):  # type: ignore[attr-defined]
                 return status(manager).holders
 
-        assert client.portal.call(held) == ("role:coder",)
+        assert client.portal.call(held) == ("role:architect",)
         assert engine.up
 
 

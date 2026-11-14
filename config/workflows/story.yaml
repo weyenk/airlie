@@ -110,7 +110,7 @@ workflows:
         to: [costed_amigos]
       amigos:  # its protocol is the meeting type's (D20); the agreement rewrites the story and the layers
         type: meeting
-        role: [product, architect, tester]
+        role: [product, architect]
         prompt: prompt:amigos-opening
         inputs: [story, layers, base]
         outputs: {agreement: json, story: json, layers: list}

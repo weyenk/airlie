@@ -24,7 +24,7 @@ def answer(
     message: str | None,
     *,
     category: str = "missing_code",
-    owner: str = "coder",
+    owner: str = "architect",
     fix: str | None = None,
     class_agrees: bool | None = None,
     class_reason: str | None = None,
@@ -45,15 +45,16 @@ def answer(
 
 def scripted(
     *,
-    coder: list[FakeReply],
+    architect_build: list[FakeReply] | None = None,
+    coder: list[FakeReply] | None = None,
     supervisor: list[FakeReply] | None = None,
     packages: list[FakeReply] | None = None,
 ) -> FakeEngine:
     """The one-layer calc story's replies, by role; no `supervisor` key when `supervisor` is None."""
+    build = architect_build if architect_build is not None else (coder or [])
     scripts = {
         "product": [STORY],
-        "architect": [LAYERS, *(packages or [RED])],
-        "coder": coder,
+        "architect": [LAYERS, *(packages or [RED]), *build],
         "reviewer": [APPROVE, APPROVE],
     }
     if supervisor is not None:

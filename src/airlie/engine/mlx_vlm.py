@@ -24,6 +24,8 @@ def build_mlx_vlm_command(
 ) -> tuple[list[str], dict[str, str]]:
     """The argv and the environment to add for one mlx_vlm engine."""
     e = cfg.engines[engine_name]
+    if e.kind != "mlx_vlm":
+        raise ValueError(f"engines.{engine_name} is {e.kind!r}, not mlx_vlm")
     m = cfg.models[e.models[0]]
     argv = [*(e.entry or MLX_VLM_ENTRY)]
     argv += ["--decision-model" if e.decision else "--model", served_model(cfg, engine_name)]

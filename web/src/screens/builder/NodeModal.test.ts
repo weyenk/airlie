@@ -190,7 +190,7 @@ test("a meeting shows the node's own seats and inputs: the protocol's fixed, an 
   const w = mountIn(story, "amigos");
   await flushPromises();
   expect($("select[data-input=role]")).toBeNull();
-  for (const r of ["product", "architect", "tester"]) {
+  for (const r of ["product", "architect"]) {
     expect(box(`[data-meeting-role=${r}]`).checked).toBe(true);
     expect(box(`[data-meeting-role=${r}]`).disabled).toBe(true);
   }
@@ -220,10 +220,10 @@ test("a meeting missing a protocol input or seat offers to add it, after what it
   expect(box("[data-input-name=layers]").checked).toBe(false);
   expect(box("[data-input-name=layers]").disabled).toBe(false);
   expect(box("[data-meeting-role=product]").checked).toBe(false);
-  expect($("[data-meeting-seat]")!.textContent).toContain("product, tester, layers");
+  expect($("[data-meeting-seat]")!.textContent).toContain("product, layers");
   $<HTMLButtonElement>("[data-meeting-seat]")!.click();
   await flushPromises();
-  expect(lastUpdate(w)).toMatchObject({ role: ["architect", "product", "tester"], inputs: ["base", "story", "layers"] });
+  expect(lastUpdate(w)).toMatchObject({ role: ["architect", "product"], inputs: ["base", "story", "layers"] });
 });
 
 test("a bundle picks its workflow, runs once per item of a list input, and shows the bundle's ports once they are known", async () => {

@@ -176,8 +176,14 @@ def moving_rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TickRig:
                 nonsense,  # layer 02's package: unusable twice, so the story stops after layer 01
                 nonsense,
                 pkg_of("more", "AC2"),  # asked again after the replay
+                WRITE_PASS,
+                RUN,
+                DONE,
+                write("view.txt"),
+                DONE,
+                write("more.txt"),
+                DONE,
             ],
-            "coder": [WRITE_PASS, RUN, DONE, write("view.txt"), DONE, write("more.txt"), DONE],
             "reviewer": [APPROVE, APPROVE, APPROVE],
         }
     )

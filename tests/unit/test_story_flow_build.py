@@ -264,7 +264,7 @@ def test_the_build_card_lists_coder_reviewer_gate_and_follow_up(tmp_path: Path) 
     steps = [(r["text"], r["status"]) for r in steps_of(build)]
     # the follow-up was stopped by airlie's repeat guard (subtask_done ok: false, stop repeated_action)
     assert steps == [
-        ("coder", "passed"),
+        ("architect", "passed"),
         ("reviewer", "passed"),
         ("gate", "failed"),
         ("coder · gate follow-up", "failed"),
@@ -278,11 +278,11 @@ def test_a_failing_gate_then_its_follow_up_then_a_passing_gate_is_built_only_on_
     tmp_path: Path,
 ) -> None:
     run = [
-        {"ts": 3.0, "kind": "subtask_start", "subtask": "build", "role": "coder"},
+        {"ts": 3.0, "kind": "subtask_start", "subtask": "build", "role": "architect"},
         {"ts": 20.0, "kind": "subtask_done", "subtask": "build", "ok": True, "fix_rounds": 0},
         {"ts": 21.0, "kind": "gate_start", "n": 1},
         {"ts": 30.0, "kind": "gate_failed", "n": 1, "follow_up": "build"},
-        {"ts": 31.0, "kind": "follow_up", "subtask": "build", "role": "coder"},
+        {"ts": 31.0, "kind": "follow_up", "subtask": "build", "role": "architect"},
         {"ts": 50.0, "kind": "subtask_done", "subtask": "build", "ok": True, "fix_rounds": 0},
         {"ts": 51.0, "kind": "gate_start", "n": 2},
         {"ts": 60.0, "kind": "gate_passed", "n": 2},
@@ -290,7 +290,7 @@ def test_a_failing_gate_then_its_follow_up_then_a_passing_gate_is_built_only_on_
     run_story(tmp_path, run)
     _, _, _, build, squash = by_id(nodes_of(tmp_path), "layer-01")["jobs"]
     assert [(r["text"], r["status"]) for r in steps_of(build)] == [
-        ("coder", "passed"),
+        ("architect", "passed"),
         ("gate", "failed"),
         ("coder · gate follow-up", "passed"),
         ("gate", "passed"),
@@ -324,10 +324,10 @@ def test_a_build_is_not_done_while_its_gate_follow_up_runs(tmp_path: Path) -> No
     run_story(
         tmp_path,
         [
-            {"ts": 3.0, "kind": "subtask_start", "subtask": "build", "role": "coder"},
+            {"ts": 3.0, "kind": "subtask_start", "subtask": "build", "role": "architect"},
             {"ts": 50.0, "kind": "subtask_done", "subtask": "build", "ok": True, "fix_rounds": 0},
             {"ts": 60.0, "kind": "gate_failed", "follow_up": "build"},
-            {"ts": 61.0, "kind": "follow_up", "subtask": "build", "role": "coder"},
+            {"ts": 61.0, "kind": "follow_up", "subtask": "build", "role": "architect"},
         ],
     )
     layer = by_id(nodes_of(tmp_path), "layer-01")
@@ -342,20 +342,21 @@ def test_an_old_run_without_gate_events_shows_the_gate_running_after_the_coder(t
     run_story(
         tmp_path,
         [
-            {"ts": 3.0, "kind": "subtask_start", "subtask": "build", "role": "coder"},
+            {"ts": 3.0, "kind": "subtask_start", "subtask": "build", "role": "architect"},
             {"ts": 50.0, "kind": "subtask_done", "subtask": "build", "ok": True, "fix_rounds": 0},
         ],
     )
     build = by_id(nodes_of(tmp_path), "layer-01")["jobs"][3]
     assert build["status"] == "running" and build["live"] == "gate"
-    assert [(r["text"], r["status"]) for r in steps_of(build)] == [("coder", "passed"), ("gate", "running")]
+    rows = [(r["text"], r["status"]) for r in steps_of(build)]
+    assert rows == [("architect", "passed"), ("gate", "running")]
 
 
 def test_a_new_run_logs_its_gate_runs_and_a_passed_build_waits_for_its_squash(tmp_path: Path) -> None:
     run_story(
         tmp_path,
         [
-            {"ts": 3.0, "kind": "subtask_start", "subtask": "build", "role": "coder"},
+            {"ts": 3.0, "kind": "subtask_start", "subtask": "build", "role": "architect"},
             {"ts": 10.0, "kind": "done_check", "subtask": "build"},
             {"ts": 12.0, "kind": "done_check_done", "subtask": "build"},
             {"ts": 20.0, "kind": "review", "subtask": "build", "verdict": "request_changes", "round": 0},
@@ -369,7 +370,7 @@ def test_a_new_run_logs_its_gate_runs_and_a_passed_build_waits_for_its_squash(tm
     )
     _, _, _, build, squash = by_id(nodes_of(tmp_path), "layer-01")["jobs"]
     assert [(r["text"], r["status"]) for r in steps_of(build)] == [
-        ("coder", "passed"),
+        ("architect", "passed"),
         ("done-check", "passed"),
         ("reviewer · 1 fix round", "passed"),
         ("gate", "passed"),
@@ -381,7 +382,7 @@ def test_a_new_run_logs_its_gate_runs_and_a_passed_build_waits_for_its_squash(tm
 def test_supervisor_triages_go_to_the_build_they_happened_in_by_time(tmp_path: Path) -> None:
     run_story(
         tmp_path,
-        [{"ts": 3.0, "kind": "subtask_start", "subtask": "build", "role": "coder"}],
+        [{"ts": 3.0, "kind": "subtask_start", "subtask": "build", "role": "architect"}],
         {"ts": 0.5, "kind": "supervisor_triage", "layer": "01", "trigger": "repeat_guard"},  # before it
         {"ts": 10.0, "kind": "supervisor_triage", "layer": "02", "trigger": "repeat_guard"},  # a stale layer
     )

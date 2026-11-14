@@ -143,7 +143,7 @@ def test_a_runs_cost_is_read_from_the_story_and_its_studio_runs(tmp_path: Path) 
             {
                 "ts": 601,
                 "kind": "amigos_turn",
-                "role": "tester",
+                "role": "architect",
                 "prompt_tokens": 100,
                 "completion_tokens": 50,
                 "wall_ms": 30000,
@@ -197,7 +197,7 @@ def test_a_runs_cost_is_read_from_the_story_and_its_studio_runs(tmp_path: Path) 
                 "ts": 1100,
                 "kind": "step",
                 "tool": "edit_file",
-                "role": "coder",
+                "role": "architect",
                 "prompt_tokens": 50,
                 "completion_tokens": 9,
                 "gen_ms": 100,
@@ -217,7 +217,7 @@ def test_a_runs_cost_is_read_from_the_story_and_its_studio_runs(tmp_path: Path) 
     assert got["idle_min"] == round((1260 - 161.1) / 60, 1)
     assert got["decode_tps_by_context"] == {"<16k": round(2409 / 100.1, 1), "16-48k": 24.0, ">48k": None}
     assert by[("layer build", "coder")]["decode_tps"] is None  # too little decode time recorded to tell
-    assert by[("meeting", "tester")]["calls"] == 1 and ("meeting", "airlie") not in by
+    assert by[("meeting", "architect")]["calls"] == 1 and ("meeting", "airlie") not in by
     assert got["retries"]["critic_objections"] == 1 and got["retries"]["meeting_turns"] == 1
     empty = {
         "wall_min": 0.0,

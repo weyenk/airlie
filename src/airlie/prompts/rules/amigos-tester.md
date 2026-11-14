@@ -1,9 +1,9 @@
 ---
 kind: rule
-roles: [tester]
+roles: [architect]
 governs:
   numbers.source: computed
-  agreement.proof: tester-owns
+  agreement.proof: architect-owns
   proof.level: tree-levels
   tests.negative: inside-trigger
   criteria.subject: the-feature

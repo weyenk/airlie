@@ -37,7 +37,7 @@ def test_http_engine_reads_draft_counters_from_timings(tmp_path: Path) -> None:
         "http://e/v1", lambda r: "base", lambda r: role_spec(tmp_path), transport=httpx.MockTransport(handler)
     )
     req = GenRequest(
-        role="coder",
+        role="architect",
         messages=[Message(role="user", content="hi")],
         sampling=Sampling(),
         max_tokens=8,
@@ -64,7 +64,7 @@ async def test_orchestrator_updates_hal_from_steps_and_emits_budgets(tmp_path: P
     )
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text("x")
     data = {
         "version": 1,
@@ -72,7 +72,7 @@ async def test_orchestrator_updates_hal_from_steps_and_emits_budgets(tmp_path: P
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 1, "orchestrator": "native", "max_steps": 5, "stop_on_first_pass": False},
         "tools": {"builtin": ["write_file"]},
@@ -84,7 +84,7 @@ async def test_orchestrator_updates_hal_from_steps_and_emits_budgets(tmp_path: P
     cfg = load_config(cfg_dir / "airlie.yaml")
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(
                     tool_calls=[ToolCall("a", "write_file", json.dumps({"path": "a", "content": "1"}))],
                     accepted_draft_tokens=12,

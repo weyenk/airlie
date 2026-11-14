@@ -18,7 +18,7 @@ from airlie.serve.bridge.clock import FakeClock
 
 
 def cfg(tmp_path: Path):
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (tmp_path / f"{r}.md").write_text("x")
     data = {
         "version": 1,
@@ -32,7 +32,7 @@ def cfg(tmp_path: Path):
         },
         "models": {"base": {"repo": "org/m", "revision": "r"}, "small": {"repo": "org/s", "revision": "r"}},
         "roles": {
-            "coder": {"prompt": "coder.md", "model": "base"},
+            "architect": {"prompt": "architect.md", "model": "base"},
             "summarizer": {"prompt": "summarizer.md", "model": "small"},
             "judge": {"prompt": "judge.md", "model": "small"},
             "aggregator": {"prompt": "aggregator.md", "model": "base"},

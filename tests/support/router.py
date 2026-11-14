@@ -52,7 +52,7 @@ def _decision_cfg(tmp_path, *, decision: bool = True):  # type: ignore[no-untype
             "clef": {"repo": "org/c", "revision": "r", "path": "/models/clef"},
         },
         "roles": {
-            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "team"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "router": {"kind": "jev" if decision else "chief", "model": "clef"},
     }

@@ -1,6 +1,6 @@
 ---
 kind: steering
-roles: [product, architect, tester]
+roles: [product, architect]
 when: The checker, airlie's model-less participant in the story meeting, re-read the three parts after a turn that changed one and found problems in them; it is posted in the meeting before the next speaker.
 governs:
   agreement.findings: fix-next-turn

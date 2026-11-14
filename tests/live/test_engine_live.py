@@ -33,7 +33,8 @@ async def test_health_lists_models(engine, cfg) -> None:
 async def test_plain_generation_streams(engine) -> None:
     seen: list[TokenEvent] = []
     res = await engine.generate(
-        req("coder", "Reply with the single word: pong", thinking=False, max_tokens=8), on_token=seen.append
+        req("architect", "Reply with the single word: pong", thinking=False, max_tokens=8),
+        on_token=seen.append,
     )
     assert "pong" in res.text.lower()
     assert res.finish_reason in ("stop", "length")
@@ -43,7 +44,7 @@ async def test_plain_generation_streams(engine) -> None:
 
 async def test_reasoning_is_separated(engine, cfg) -> None:
     owner = cfg.engines[cfg.engine_for_role("coder")]  # an mlx_vlm engine splits reasoning on the server
-    if owner.kind != "mlx_vlm" and not cfg.models[cfg.roles["coder"].model].reasoning_parser:
+    if owner.kind != "mlx_vlm" and not cfg.models[cfg.roles["architect"].model].reasoning_parser:
         pytest.skip("team model has no reasoning parser (non-thinking model)")
     res = await engine.generate(
         req(
@@ -85,7 +86,7 @@ async def test_second_turn_after_tool_result_is_faster_than_first(engine) -> Non
     """Prefix cache: turn 2 resends the whole history; its TTFT must not pay the full prefill again."""
     long_system = "You are a careful engineer. " * 400  # ~2.4k tokens of shared prefix
     first = GenRequest(
-        role="coder",
+        role="architect",
         messages=[Message(role="system", content=long_system), Message(role="user", content="Say OK.")],
         sampling=Sampling(temperature=0.0),
         max_tokens=4,
@@ -94,7 +95,7 @@ async def test_second_turn_after_tool_result_is_faster_than_first(engine) -> Non
     )
     r1 = await engine.generate(first)
     second = GenRequest(
-        role="coder",
+        role="architect",
         messages=[
             *first.messages,
             Message(role="assistant", content=r1.text),

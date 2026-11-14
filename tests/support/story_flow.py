@@ -98,25 +98,25 @@ def write_story(root: Path) -> Path:
     write_events(
         runs / "run-l1" / "events.jsonl",
         [
-            {"ts": 91.0, "kind": "subtask_start", "subtask": "tests", "role": "tester"},
+            {"ts": 91.0, "kind": "subtask_start", "subtask": "tests", "role": "architect"},
             step("run-l1", "tests", 1, completion=200, gen_ms=4000.0),
             {
                 "ts": 150.0,
                 "kind": "subtask_done",
                 "subtask": "tests",
-                "role": "tester",
+                "role": "architect",
                 "ok": True,
                 "stop_reason": "done",
                 "steps": 1,
                 "fix_rounds": 0,
             },
-            {"ts": 151.0, "kind": "subtask_start", "subtask": "build", "role": "coder"},
+            {"ts": 151.0, "kind": "subtask_start", "subtask": "build", "role": "architect"},
             step("run-l1", "build", 1),
             {
                 "ts": 290.0,
                 "kind": "subtask_done",
                 "subtask": "build",
-                "role": "coder",
+                "role": "architect",
                 "ok": True,
                 "stop_reason": "done",
                 "steps": 1,
@@ -136,12 +136,12 @@ def write_story(root: Path) -> Path:
     write_events(
         runs / "run-l2" / "events.jsonl",
         [
-            {"ts": 301.0, "kind": "subtask_start", "subtask": "tests", "role": "tester"},
+            {"ts": 301.0, "kind": "subtask_start", "subtask": "tests", "role": "architect"},
             {
                 "ts": 340.0,
                 "kind": "subtask_done",
                 "subtask": "tests",
-                "role": "tester",
+                "role": "architect",
                 "ok": True,
                 "stop_reason": "done",
                 "steps": 3,
@@ -152,7 +152,9 @@ def write_story(root: Path) -> Path:
     trace = runs / "run-l1" / "trace" / "tests"
     trace.mkdir(parents=True)
     (trace / "prompt.json").write_text(
-        json.dumps({"role": "tester", "attempt": 0, "messages": [{"role": "user", "content": "write tests"}]})
+        json.dumps(
+            {"role": "architect", "attempt": 0, "messages": [{"role": "user", "content": "write tests"}]}
+        )
     )
     (trace / "step-001.json").write_text(
         json.dumps(

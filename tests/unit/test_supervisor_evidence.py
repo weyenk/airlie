@@ -13,8 +13,8 @@ from tests.support.supervisor_evidence import write_step
 
 def row(i: int, **kw: object) -> Row:
     base: dict[str, object] = dict(
-        id=i, at=0.0, story="S", layer="01", studio_run="r", subtask="tests", role="tester",
-        trigger="precode_retry", kinds=("k",), category="missing_import", owner="tester",
+        id=i, at=0.0, story="S", layer="01", studio_run="r", subtask="tests", role="architect",
+        trigger="precode_retry", kinds=("k",), category="missing_import", owner="architect",
         diagnosis=f"diag{i}", evidence=(), message=f"msg{i}", would_route_to=None, fix_if_attempt=None,
         fallback=None, model="m", seconds=1.0, tokens=1, outcome="helped", verdict=None,
     )  # fmt: skip
@@ -24,7 +24,7 @@ def row(i: int, **kw: object) -> Row:
 
 def inp(**kw: object) -> TriageInput:
     base: dict[str, object] = dict(
-        trigger="precode_retry", role="tester", subtask="tests", told="TOLD", evidence="FINDINGS",
+        trigger="precode_retry", role="architect", subtask="tests", told="TOLD", evidence="FINDINGS",
         kinds=("passes_before_code",), brief="BRIEF", trace="", diff="DIFF", events="", earlier=(), recall=(),
     )  # fmt: skip
     base.update(kw)
@@ -92,7 +92,7 @@ def test_layer_events_leave_out_steer_events(tmp_path: Path) -> None:
     ev = tmp_path / "events.jsonl"
     ev.write_text(
         '{"kind":"test_checks_retry","layer":"01","findings":1}\n'
-        '{"kind":"steer","id":"checks-found","role":"tester","layer":"01"}\n'
+        '{"kind":"steer","id":"checks-found","role":"architect","layer":"01"}\n'
         '{"kind":"locked_tests_fail","layer":"01","tests":["t::a"]}\n'
     )
     assert layer_events(ev, "01") == (

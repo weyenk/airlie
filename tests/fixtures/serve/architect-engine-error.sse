@@ -1,0 +1,3 @@
+data: {"error": "QSAKVCache does not support quantized continuous batching with model-specific cache state; disable KV quantization for continuous batching"}
+
+data: [DONE]

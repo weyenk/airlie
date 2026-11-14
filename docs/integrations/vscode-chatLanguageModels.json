@@ -17,13 +17,13 @@
         "streaming": true
       },
       {
-        "id": "generalist",
-        "name": "airlie generalist: Qwen3.8-27B 4-bit (tools + vision, thinking)",
+        "id": "architect",
+        "name": "airlie architect: Qwen3.8 Flash Next (tools + vision, thinking)",
         "url": "http://127.0.0.1:8080/v1/chat/completions",
         "toolCalling": true,
         "vision": true,
         "maxInputTokens": 106496,
-        "maxOutputTokens": 24576,
+        "maxOutputTokens": 16384,
         "thinking": true,
         "streaming": true,
         "editTools": [
@@ -44,21 +44,6 @@
     "apiType": "chat-completions",
     "models": [
       {
-        "id": "coder",
-        "name": "airlie coder role (generalist + coder prompt)",
-        "url": "http://127.0.0.1:8090/v1/chat/completions",
-        "toolCalling": true,
-        "vision": false,
-        "maxInputTokens": 112000,
-        "maxOutputTokens": 10240,
-        "thinking": false,
-        "streaming": true,
-        "editTools": [
-          "find-replace",
-          "multi-find-replace"
-        ]
-      },
-      {
         "id": "judge",
         "name": "airlie judge role (small, YES/NO)",
         "url": "http://127.0.0.1:8090/v1/chat/completions",
@@ -71,12 +56,12 @@
       },
       {
         "id": "architect",
-        "name": "airlie architect role (generalist + planning prompt)",
+        "name": "airlie architect role (plan, build, test)",
         "url": "http://127.0.0.1:8090/v1/chat/completions",
         "toolCalling": true,
         "vision": false,
         "maxInputTokens": 106496,
-        "maxOutputTokens": 24576,
+        "maxOutputTokens": 16384,
         "thinking": true,
         "streaming": true
       }

@@ -109,15 +109,15 @@ def test_amigos_objections_count_by_role_and_part_with_the_share_borne_out(tmp_p
     write_events(
         tmp_path / "stories" / "AIR-1" / "events.jsonl",
         [
-            {"kind": "amigos_objection", "role": "tester", "part": "changes", "about": "x", "round": 1},
-            {"kind": "amigos_objection", "role": "tester", "part": "changes", "about": "y", "round": 2},
+            {"kind": "amigos_objection", "role": "architect", "part": "changes", "about": "x", "round": 1},
+            {"kind": "amigos_objection", "role": "architect", "part": "changes", "about": "y", "round": 2},
             {"kind": "amigos_objection", "role": "architect", "part": "proof", "about": "z", "round": 1},
             {
                 "kind": "amigos_borne_out",
                 "layer": "01",
                 "test": "t",
                 "finding": "vacuous_test",
-                "role": "tester",
+                "role": "architect",
             },
         ],
     )

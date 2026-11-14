@@ -11,7 +11,16 @@ from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.story.board import text_card
 from airlie.story.state import StoryState
 from tests.support.git import git
-from tests.support.story import STORY, agents_md, fenced, kinds, package_reply, pipeline
+from tests.support.story import (
+    STORY,
+    StoryFakeEngine,
+    agents_md,
+    fenced,
+    kinds,
+    package_reply,
+    pad_plan_script,
+    pipeline,
+)
 from tests.support.studio import APPROVE, DONE
 
 # Re-exported for test modules that imported DONE from test_story_layer_checks_flow before the move.
@@ -103,7 +112,8 @@ def calc_repo(tmp_path: Path, gate: tuple[str, ...] = (), base_test: str = "asse
 
 async def run(
     tmp_path: Path,
-    coder: list[FakeReply],
+    architect_build: list[FakeReply] | None = None,
+    coder: list[FakeReply] | None = None,
     packages: list[FakeReply] | None = None,
     test_cmd: str = PYTEST,
     gate: tuple[str, ...] = (),
@@ -113,13 +123,16 @@ async def run(
     """The one-layer story: the architect's `packages` (default: one red one) after its layer plan, then the
     coder's replies. With `gate`, the repository's AGENTS.md gate runs instead of `test_cmd`; `base_test` as
     in calc_repo; `story` is more story settings."""
-    scripts = {
-        "product": [STORY],
-        "architect": [LAYERS, *(packages if packages is not None else [RED])],
-        "coder": coder,
-        "reviewer": [APPROVE, APPROVE],
-    }
-    engine = FakeEngine(scripts)
+    build = architect_build if architect_build is not None else (coder or [])
+    plan = pad_plan_script([LAYERS, *(packages if packages is not None else [RED])])
+    engine = StoryFakeEngine(
+        {
+            "product": [STORY],
+            "architect:plan": plan,
+            "architect:build": list(build),
+            "reviewer": [APPROVE, APPROVE],
+        }
+    )
     repo = calc_repo(tmp_path, gate, base_test)
     cmd = None if gate else test_cmd
     st = await pipeline(tmp_path, repo, engine, test_cmd=cmd, story=story).run(text_card("multiply"))

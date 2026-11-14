@@ -29,8 +29,7 @@ async def stopped_after_layer_01(tmp_path: Path) -> tuple[Path, StoryState]:
     engine = FakeEngine(
         {
             "product": [STORY],
-            "architect": [LAYERS, *PKGS],
-            "coder": [WRITE_PASS, RUN, DONE, DONE],
+            "architect": [LAYERS, *PKGS, WRITE_PASS, RUN, DONE, DONE],
             "reviewer": [APPROVE, APPROVE],
         }
     )
@@ -68,7 +67,7 @@ async def test_built_layers_move_onto_the_trunk_and_a_resume_builds_on_them(tmp_
     assert "layer 01" in line and news[:12] in line
     assert "restacked onto" in (st.path / "notes.md").read_text()
     # the next run builds layer 02 on the moved layer 01
-    again = FakeEngine({"architect": [PKG2], "coder": [NOTE, DONE], "reviewer": [APPROVE]})
+    again = FakeEngine({"architect": [PKG2, NOTE, DONE], "reviewer": [APPROVE]})
     st = await pipeline(tmp_path, repo, again).run(CARD)
     assert st.blocked is None and "02" in st.built
     assert git(repo, "rev-parse", f"{B2}^") == new_01

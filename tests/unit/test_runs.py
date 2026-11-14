@@ -89,7 +89,7 @@ async def test_orchestrator_runs_k_teams_in_worktrees_and_reports(tmp_path: Path
     repo = git_repo(tmp_path)
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text(f"you are {r}")
     data = {
         "version": 1,
@@ -97,7 +97,7 @@ async def test_orchestrator_runs_k_teams_in_worktrees_and_reports(tmp_path: Path
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 2, "orchestrator": "native", "max_steps": 5},
         "tools": {"builtin": ["write_file", "run_tests"]},
@@ -107,7 +107,7 @@ async def test_orchestrator_runs_k_teams_in_worktrees_and_reports(tmp_path: Path
     cfg = load_config(cfg_dir / "airlie.yaml")
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(
                     tool_calls=[
                         ToolCall("a1", "write_file", json.dumps({"path": "t1.txt", "content": "one"}))
@@ -145,7 +145,7 @@ async def test_orchestrator_aggregates_and_writes_report(tmp_path: Path) -> None
     repo = git_repo(tmp_path)
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text(f"you are {r}")
     data = {
         "version": 1,
@@ -153,7 +153,7 @@ async def test_orchestrator_aggregates_and_writes_report(tmp_path: Path) -> None
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 2, "orchestrator": "native", "max_steps": 5, "stop_on_first_pass": False},
         "tools": {"builtin": ["write_file"]},
@@ -165,7 +165,7 @@ async def test_orchestrator_aggregates_and_writes_report(tmp_path: Path) -> None
     cfg = load_config(cfg_dir / "airlie.yaml")
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(
                     tool_calls=[ToolCall("a1", "write_file", json.dumps({"path": "ok.txt", "content": "1"}))]
                 ),
@@ -195,7 +195,7 @@ async def test_stop_on_first_pass_cancels_other_teams(tmp_path: Path) -> None:
     repo = git_repo(tmp_path)
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text("x")
     data = {
         "version": 1,
@@ -203,7 +203,7 @@ async def test_stop_on_first_pass_cancels_other_teams(tmp_path: Path) -> None:
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 2, "orchestrator": "native", "max_steps": 50, "stop_on_first_pass": True},
         "tools": {"builtin": ["write_file", "shell"]},
@@ -258,7 +258,7 @@ async def test_a_single_agent_cut_off_at_max_tokens_is_reported_as_cut_off_not_d
     repo = git_repo(tmp_path)
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text("x")
     data = {
         "version": 1,
@@ -266,7 +266,7 @@ async def test_a_single_agent_cut_off_at_max_tokens_is_reported_as_cut_off_not_d
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 1, "orchestrator": "native", "max_steps": 5},
         "tools": {"builtin": ["write_file"]},
@@ -276,7 +276,7 @@ async def test_a_single_agent_cut_off_at_max_tokens_is_reported_as_cut_off_not_d
     }
     (cfg_dir / "airlie.yaml").write_text(yaml.safe_dump(data))
     cfg = load_config(cfg_dir / "airlie.yaml")
-    engine = FakeEngine({"coder": [FakeReply(reasoning="Thinking, still. ", finish_reason="length")]})
+    engine = FakeEngine({"architect": [FakeReply(reasoning="Thinking, still. ", finish_reason="length")]})
     report = await ParallelAgentTeamOrchestrator(cfg, engine, run_id="r12").execute_task("do it", repo=repo)
     [team] = report.teams
     assert (team.ok, team.stop_reason) == (False, "cut_off") and not report.any_ok
@@ -326,7 +326,7 @@ async def test_a_parallel_teams_malformed_tool_call_reaches_the_runs_events(tmp_
     repo = git_repo(tmp_path)
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text(f"you are {r}")
     data = {
         "version": 1,
@@ -334,7 +334,7 @@ async def test_a_parallel_teams_malformed_tool_call_reaches_the_runs_events(tmp_
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 1, "orchestrator": "native", "max_steps": 5},
         "tools": {"builtin": ["write_file", "run_tests"]},
@@ -342,7 +342,7 @@ async def test_a_parallel_teams_malformed_tool_call_reaches_the_runs_events(tmp_
     }
     (cfg_dir / "airlie.yaml").write_text(yaml.safe_dump(data))
     bad = "<function=write_file>\n<file>t.txt</file>\n<content>one</content>\n</function>"
-    engine = FakeEngine({"coder": [FakeReply(text=bad), FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [FakeReply(text=bad), FakeReply(text="done")]})
     orch = ParallelAgentTeamOrchestrator(load_config(cfg_dir / "airlie.yaml"), engine, run_id="r10")
     report = await orch.execute_task("do the thing", repo=repo, test_cmd="true")
     events = [json.loads(x) for x in report.run_dir.events_path.read_text().splitlines()]

@@ -1631,7 +1631,7 @@ def _publish_cfg(tmp_path: Path, *, publish: str | None) -> object:
         "router": {"kind": "chief"},
         "studio": {
             "parallel": 2,
-            "review": {"enabled": True, "roles": ["coder"], "rounds": 1},
+            "review": {"enabled": True, "roles": ["architect"], "rounds": 1},
             "done_check": False,
         },
         "repo_map": {"enabled": False},
@@ -1790,8 +1790,9 @@ def _happy_engine() -> FakeEngine:
     return FakeEngine(
         {
             "product": [story],
-            "architect": [layers, *pkgs],
-            "coder": [
+            "architect": [
+                layers,
+                *pkgs,
                 WRITE_PASS,
                 RUN,
                 DONE,

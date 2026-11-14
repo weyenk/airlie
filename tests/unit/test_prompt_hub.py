@@ -20,7 +20,7 @@ from airlie.prompts.hub import PromptError, PromptText, _load_from, entry, load,
 
 def _raw(body: str = "hello\n", **front: Any) -> str:
     """A prompt file: defaults for a valid rule, each keyword overriding a key, `None` dropping it."""
-    meta: dict[str, Any] = {"kind": "rule", "roles": ["coder"], "why": "because"}
+    meta: dict[str, Any] = {"kind": "rule", "roles": ["architect"], "why": "because"}
     meta.update(front)
     meta = {k: v for k, v in meta.items() if v is not None}
     return f"---\n{yaml.safe_dump(meta, sort_keys=False)}---\n{body}"
@@ -34,7 +34,7 @@ def test_parse_reads_front_matter_and_body() -> None:
     raw = (
         "---\n"
         "kind: steering\n"
-        "roles: [coder, tester]\n"
+        "roles: [architect, product]\n"
         "fields: [n, total]\n"
         "when: two-fifths of the steps used and nothing written\n"
         "governs:\n"
@@ -53,7 +53,7 @@ def test_parse_reads_front_matter_and_body() -> None:
     assert p == PromptText(
         id="write-now",
         kind="steering",
-        roles=("coder", "tester"),
+        roles=("architect", "architect"),
         fields=("n", "total"),
         when="two-fifths of the steps used and nothing written",
         governs={"reading": "stop", "tests.location": "new-file"},
@@ -209,14 +209,14 @@ def test_the_id_is_kebab_case(name: str) -> None:
     ("raw", "message"),
     [
         ("no front matter\n", "start with a line of ---"),
-        ("---\nkind: rule\nroles: [coder]\nwhy: x\n", "closing ---"),
+        ("---\nkind: rule\nroles: [architect]\nwhy: x\n", "closing ---"),
         ("---\n---\nbody\n", "mapping"),
         ("---\n- a\n- b\n---\nbody\n", "mapping"),
         ("---\nkind: [unclosed\n---\nbody\n", "not valid YAML"),
         (_raw(roles=None), "roles"),
         (_raw(roles=[]), "roles"),
         (_raw(roles="coder"), "roles"),
-        (_raw(roles=["coder", 3]), "roles"),
+        (_raw(roles=["architect", 3]), "roles"),
         (_raw(why=None), "why"),
         (_raw(why="  "), "why"),
         (_raw(why=["a"]), "why"),
@@ -234,7 +234,7 @@ def test_a_malformed_file_is_named_with_the_problem(raw: str, message: str) -> N
 
 
 def test_a_governs_value_that_yaml_reads_as_a_boolean_says_to_quote_it() -> None:
-    raw = "---\nkind: rule\nroles: [coder]\ngoverns:\n  reading: off\nwhy: x\n---\nbody\n"
+    raw = "---\nkind: rule\nroles: [architect]\ngoverns:\n  reading: off\nwhy: x\n---\nbody\n"
 
     with pytest.raises(PromptError, match=r"quote"):
         parse("x.md", "rule", raw)

@@ -63,7 +63,7 @@ fine; nothing may write inside the others."""
 ASSIGNMENT = "assignment"
 """What a team's `worker` text reads beside its inputs: the one assignment the worker was given."""
 MEETINGS: tuple[dict[str, tuple[str, ...]], ...] = (
-    {"roles": ("product", "architect", "tester"), "inputs": ("story", "layers")},
+    {"roles": ("product", "architect"), "inputs": ("story", "layers")},
 )
 """The meeting protocols a `meeting` node may run, each by the seats it names (in order) and the inputs it
 reads: only the amigos protocol (the story meeting, `_agree`) this round. The builder lists them (the

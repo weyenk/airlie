@@ -109,7 +109,7 @@ def test_a_big_non_python_file_gets_its_head(tmp_path: Path) -> None:
 def test_guide_budget_is_a_share_of_the_smallest_readers_context() -> None:
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")
-    assert guide_budget(cfg, ["tester", "coder"]) == 39321
+    assert guide_budget(cfg, ["architect", "architect"]) == 39321
 
 
 def test_a_large_agents_md_never_pushes_the_guide_over_budget(tmp_path: Path) -> None:

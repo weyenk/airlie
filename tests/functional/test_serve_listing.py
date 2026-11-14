@@ -679,7 +679,13 @@ def test_the_diagnosis_route_returns_the_json_and_the_markdown(tmp_path: Path) -
     state = c.observability.state_dir.expanduser()
     pack = Pack(
         key="AIR-9", n=2, reason="layer 01 changed nothing", stage="layers", layer="01", attempt=1,
-        run_id="r1", subtask="build", role="coder", stop_reason="done", refused_calls=0, holds=(), repeats=0,
+        run_id="r1",
+        subtask="build",
+        role="architect",
+        stop_reason="done",
+        refused_calls=0,
+        holds=(),
+        repeats=0,
         continuations=0, steps=3, tokens=10, minutes=0.5, gate_tail="", tracebacks=(), failures=(),
         base_gate_failed=None, base_failing=(), diff_stat="", paths=Paths(state / "e.jsonl", None, None, ()),
     )  # fmt: skip

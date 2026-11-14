@@ -59,7 +59,7 @@ async def test_the_gate_retry_carries_muses_advice(tmp_path: Path) -> None:
     [retry] = [p for p in user_messages(engine, "coder") if "the whole suite fails with your change" in p]
     assert "Put add back as it was." in retry and SUPERVISOR in retry
     [row] = rows(tmp_path)
-    assert (row.trigger, row.subtask, row.role, row.outcome) == ("gate_retry", "build", "coder", "helped")
+    assert (row.trigger, row.subtask, row.role, row.outcome) == ("gate_retry", "build", "architect", "helped")
     assert row.kinds == ("gate_fails",) and row.layer == "01"
 
 

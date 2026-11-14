@@ -1,9 +1,9 @@
 ---
 kind: rule
-roles: [tester]
+roles: [architect]
 governs:
   numbers.source: computed
-  agreement.proof: tester-owns
+  agreement.proof: architect-owns
   proof.revision: layer-only
 why: |
   2026-10-30 (bundle 6): the number rule and the compute tool, after four invented facts in five roman runs

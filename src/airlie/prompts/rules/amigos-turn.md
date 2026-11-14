@@ -1,6 +1,6 @@
 ---
 kind: rule
-roles: [product, architect, tester]
+roles: [product, architect]
 governs:
   agreement.turn: speak-then-verdict
   agreement.post: changed-parts-only

@@ -1,8 +1,8 @@
 {
   "roles": [
     "aggregator",
+    "architect",
     "chief",
-    "coder",
     "docs",
     "judge",
     "qa",
@@ -901,8 +901,7 @@
     {
       "roles": [
         "product",
-        "architect",
-        "tester"
+        "architect"
       ],
       "inputs": [
         "story",

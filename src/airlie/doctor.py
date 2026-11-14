@@ -364,6 +364,10 @@ def _mlx_vlm_names(cfg: AirlieConfig, engines: list[Any]) -> list[str]:
     return [n for n, e in cfg.engines.items() if e.kind == "mlx_vlm" and e in engines]
 
 
+def _weights_only_names(cfg: AirlieConfig) -> list[str]:
+    return [n for n, e in cfg.engines.items() if e.kind == "weights_only"]
+
+
 def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[str]]:
     """Spec 01 §1 budget: preloaded weights + the live KV + the prefix cache + OS reserve, over every engine
     that can be resident at once (`_resident_engines`).
@@ -377,7 +381,9 @@ def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[
     aside.
 
     Returns (projected GB, names of preloaded models or MTP heads with no estimated_memory_gb)."""
-    return _sum_footprints(cfg, _mlx_vlm_names(cfg, _resident_engines(cfg)))
+    resident = _resident_engines(cfg)
+    names = _mlx_vlm_names(cfg, resident) + _weights_only_names(cfg)
+    return _sum_footprints(cfg, names)
 
 
 def _pinned_engines(cfg: AirlieConfig) -> list[Any]:
@@ -675,6 +681,9 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
     managed_models: set[str] = set()
     projected_once = False
     for ename, e in cfg.engines.items():
+        if e.kind == "weights_only":
+            managed_models.update(e.models)
+            continue
         if e.kind == "mlx_vlm":
             managed_models.update(e.models)
             results.append(_mlx_vlm_binary_check(ename, e.entry, probe))

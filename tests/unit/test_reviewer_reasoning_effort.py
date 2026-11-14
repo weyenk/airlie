@@ -16,7 +16,7 @@ from airlie.config import load_config
 from airlie.engine.http_engine import HTTPEngine
 from airlie.topology.review import Reviewer
 
-ROLES = ("reviewer", "supervisor", "coder", "summarizer", "judge", "aggregator")
+ROLES = ("reviewer", "supervisor", "architect", "summarizer", "judge", "aggregator")
 ROLE = {"model": "muse", "thinking": False, "chat_template_kwargs": {"reasoning_strength": "low"}}
 
 
