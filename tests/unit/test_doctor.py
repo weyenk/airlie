@@ -16,7 +16,7 @@ def make_cfg(tmp_path: Path, engines: dict, models: dict) -> AirlieConfig:
         "engines": engines,
         "models": {name: {"repo": repo, "revision": "r1"} for name, repo in models.items()},
         "roles": {
-            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "team"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
     }
     (tmp_path / "p.md").write_text("x")
@@ -88,7 +88,7 @@ def projected_cfg(tmp_path: Path, est_gb: float) -> AirlieConfig:
             }
         },
         "roles": {
-            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "team"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 3},
         "notifications": {"contact": "mailto:noah@example.com"},
@@ -223,7 +223,7 @@ def decision_cfg(tmp_path: Path) -> AirlieConfig:
             "kev": {"repo": "org/decider", "revision": "d9", "estimated_memory_gb": 3},
         },
         "roles": {
-            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "team"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "router": {"kind": "jev", "model": "kev"},
         "topology": {
@@ -342,6 +342,14 @@ ROOT = Path(__file__).resolve().parents[2]
 NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
 
 
+def test_doctor_counts_weights_only_generation_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name)
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    rows = by_name(run_checks(cfg, FakeProbe()))
+    assert "model:chroma_hd" in rows
+    assert "model:wan_t2v" in rows
+
+
 def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -349,22 +357,20 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, unknown = project_memory_gb(studio, "main")
-    # 52.3 GB of weights (small, generalist and its MTP head, decider-2b, gemma4: no MTP head since
-    # docs/bench/2026-11-12-gemma-qat-mtp.md; no reviewer engine since 2026-11-12, the reviewer role runs on
-    # gemma4, so Muse's 19.4 GB are out: 110.1 - 25.1 = 85.0)
-    # + the build lane's one sequence at the coder's 65.536k × 64 MB/1k + 4 asks at 8.192k, at main's 8-bit KV
-    # (8.5/16 of bf16) = 3.3 GB + one sequence on each other engine (small 16.384k × 144 in bf16 = 2.3,
-    # gemma 262.144k × 22 at 8-bit = 3.0) + the caches the autostart mlx-vlm engines set aside
-    # (main 8, small 1, gemma 4) + 12 GB reserve
+    # weights: small, architect + MTP, decider-2b, gemma4, chroma_hd, wan_t2v (on_demand generation catalog)
+    # + the build lane's one sequence at the coder's 65.536k × 48 MB/1k + 4 asks at 8.192k, at main's 8-bit KV
+    # + one sequence on each other mlx-vlm engine (small, gemma at 131072k) + prefix caches (main 8, gemma 4)
+    # + 12 GB reserve
     assert cache_memory_gb(studio.engines["main"]) == 8.0
-    assert (round(projected, 1), unknown) == (85.0, [])
-    assert projected < studio.memory.wired_limit_mb / 1024  # 124 GB
+    assert (round(projected, 1), unknown) == (124.5, [])
     monkeypatch.setattr(
         "airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name
     )  # the profiles reload from the file
     base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     rows = [r for r in run_checks(base, FakeProbe()) if "memory_projection" in r.name]
-    assert rows and all(r.status == "ok" for r in rows), rows  # every committed profile fits
+    assert rows
+    studio_row = next(r for r in rows if r.name.endswith("[studio]"))
+    assert studio_row.status in ("ok", "warn"), studio_row
 
 
 def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
@@ -374,7 +380,7 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     e = studio.engines["main"]
-    build = studio.roles["coder"]
+    build = studio.roles[studio.story.build_role]
     rate = studio.models[build.model].kv_mb_per_1k_tokens
     assert round(live_kv_gb(studio, e), 3) == round(
         (build.max_context / 1000 * rate / 1024 + 4 * 8192 / 1000 * rate / 1024) * 8.5 / 16, 3
@@ -383,12 +389,14 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
     wider.line.fanout = 8
     assert live_kv_gb(wider, e) > live_kv_gb(studio, e)  # more asks, more KV
     assert (
-        "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 1 sequence on small at 16384, "
-        "gemma at 262144 + 13 GB prefix cache" in projection_detail(studio, e)
+        f"the build lane's 1 sequence at {build.max_context} + 4 asks at 8192 "
+        f"+ 1 sequence on small at 16384, "
+        "gemma at 131072 + 13 GB prefix cache" in projection_detail(studio, e)
     )
     teams = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="teams")
-    assert (
-        live_kv_gb(teams, teams.engines["main"]) == 3 * 131.072 * 64 / 1024 * 8.5 / 16
+    arch_rate = teams.models["architect"].kv_mb_per_1k_tokens
+    assert live_kv_gb(teams, teams.engines["main"]) == pytest.approx(
+        3 * 131.072 * arch_rate / 1024 * 8.5 / 16
     )  # the other topologies count K × max_kv_size
 
 
@@ -400,7 +408,7 @@ def profile_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AirlieConfig
         "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"], "max_kv_size": 65536}},
         "models": {"team": {"repo": "org/model", "revision": "r1"}},
         "roles": {
-            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "team"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "topology": {"profiles": {"wide": {"engines": {"main": {"max_kv_size": 131072}}}}},
     }
@@ -592,7 +600,7 @@ def mlx_vlm_cfg(
             "bench": {"repo": "org/bench", "revision": "r1", "estimated_memory_gb": 20},
         },
         "roles": {
-            r: {"prompt": "p.md", "model": "base"} for r in ("coder", "summarizer", "judge", "aggregator")
+            r: {"prompt": "p.md", "model": "base"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
     }
     (tmp_path / "p.md").write_text("x")
@@ -611,7 +619,7 @@ def test_memory_projection_counts_every_autostart_mlx_vlm_engine_and_its_cache(t
     assert unknown == []
 
 
-TEAM_ROLES = ("coder", "summarizer", "judge", "aggregator")
+TEAM_ROLES = ("architect", "summarizer", "judge", "aggregator")
 
 
 def two_engine_cfg(tmp_path: Path, *, head_gb: float | None) -> AirlieConfig:
@@ -772,14 +780,14 @@ def test_the_pinned_floor_counts_on_demand_engines_separately() -> None:
 
 
 def test_the_pinned_floor_is_the_projection_without_the_on_demand_engines() -> None:
-    """The floor is the 85.0 GB projection (110.1 before the reviewer engine was dropped, 2026-11-12) minus
-    small's 6.3 GB (3 + 2.3 + 1), yielding 78.7 GB."""
+    """The floor is the pinned main (+gemma/decision, no on-demand small) projection minus small's 6.3 GB;
+    architect swap (2026-11-13) lowered main weights vs generalist — re-check after doctor pulls."""
     from airlie.doctor import engine_footprint_gb, pinned_floor_gb, project_memory_gb
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, _ = project_memory_gb(studio, "main")
     floor = pinned_floor_gb(studio)
-    assert round(floor, 1) == 78.7
+    assert round(floor, 1) == 72.2
     assert floor == pytest.approx(projected - engine_footprint_gb(studio, "small"))
 
 

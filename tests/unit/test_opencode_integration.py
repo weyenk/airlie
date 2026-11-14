@@ -92,8 +92,8 @@ def test_agents_use_models_task_serve_lists() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     served = {*cfg.roles, *cfg.models}
     agents = {p.stem: front(p)[0] for p in (OC / "agent").glob("*.md")}
-    assert set(agents) == {"chief", "architect", "coder", "docs"}
-    assert agents["chief"]["mode"] == "primary" and agents["chief"]["model"] == "airlie/generalist"
+    assert set(agents) == {"chief", "architect", "docs"}
+    assert agents["chief"]["mode"] == "primary" and agents["chief"]["model"] == "airlie/architect"
     for name, meta in agents.items():
         provider, model = meta["model"].split("/", 1)
         assert provider == "airlie" and model in served and meta.get("description"), name
@@ -110,14 +110,14 @@ def test_no_agent_can_merge_and_the_chief_cannot_edit() -> None:
     assert front(OC / "agent/chief.md")[0]["permission"]["edit"] == "deny"
 
 
-def test_only_coder_runs_a_shell_command_without_asking() -> None:
+def test_only_architect_runs_a_shell_command_without_asking() -> None:
     """No allow list stays read-only. On OpenCode 2.0.29 `gh pr view *` took `gh pr view 1 > pr.txt` unasked,
     and a redirect after a compound statement ran unasked under the plain git allows: OpenCode matches each
     command inside by its own text and the redirect is part of none, so no rule can close it. An agent asks
     before every shell command, its denies aside, unless it is meant to run any (coder)."""
     for p in (OC / "agent").glob("*.md"):
         bash = front(p)[0]["permission"]["bash"]
-        assert list(bash)[0] == "*" and bash["*"] == ("allow" if p.stem == "coder" else "ask"), p.name
+        assert list(bash)[0] == "*" and bash["*"] == ("allow" if p.stem == "architect" else "ask"), p.name
         assert "allow" not in [v for k, v in bash.items() if k != "*"], p.name
 
 
@@ -133,7 +133,7 @@ def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
     assert decision(task, "explore") == decision(task, "general") == "deny" and "explore" not in body
     # every agent the chief may hand work to, with or without asking the person
     reachable = [name for name in task if decision(task, name) in ("allow", "ask")]
-    assert sorted(reachable) == ["architect", "coder", "docs"]
+    assert sorted(reachable) == ["architect", "docs"]
     for name in reachable:
         path = OC / "agent" / f"{name}.md"
         assert path.is_file(), name
@@ -301,7 +301,7 @@ def code_mode_problems(body: str, schemas: dict[str, dict[str, Any]]) -> list[st
 
 async def test_the_chief_and_the_commands_reach_airlie_through_code_mode_with_the_schemas_names() -> None:
     """OpenCode 2.0 shows the model its own tools and one `execute` tool; airlie's MCP tools are reachable
-    only inside its JavaScript (asked for `airlie_run` by name, the generalist said it had no such tool:
+    only inside its JavaScript (asked for `airlie_run` by name, the architect said it had no such tool:
     2.0.29, live). So the chief and both commands say how, with the tool and argument names of the schemas
     that `airlie mcp` lists."""
     async with airlie_http({}) as http:
@@ -394,7 +394,7 @@ def test_the_samples_thinking_models_have_room_for_a_reply_after_their_thinking(
     listed = {
         n: tokens for n, tokens in wanted.items() if n in models
     }  # the roles and models the sample lists
-    assert listed == {"architect": 24576, "research": 16384, "generalist": 24576}
+    assert listed == {"architect": 16384, "research": 16384}
     for name, tokens in listed.items():
         limit = models[name]["limit"]
         assert tokens <= limit["output"] < limit["context"], name
@@ -407,7 +407,7 @@ def test_the_vscode_samples_thinking_models_have_room_for_a_reply_after_their_th
     groups = json.loads((ROOT / "docs/integrations/vscode-chatLanguageModels.json").read_text())
     listed = {m["id"]: m for group in groups for m in group["models"]}
     thinking = {n for n, m in listed.items() if m["thinking"]}
-    assert thinking == {"generalist", "architect"} == {n for n in listed if n in wanted}
+    assert thinking == {"architect"} == {n for n in listed if n in wanted}
     window = cfg.engines["main"].max_kv_size
     for name in thinking:
         m = listed[name]

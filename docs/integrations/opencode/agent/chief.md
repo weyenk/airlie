@@ -1,7 +1,7 @@
 ---
 description: Chief of staff for airlie's local studio. Scopes the work, hands small changes to a subagent and features to the studio, never edits files itself.
 mode: primary
-model: airlie/generalist
+model: airlie/architect
 temperature: 0.3
 permission:
   edit: deny
@@ -14,8 +14,7 @@ permission:
     "gh stack merge*": deny
   task:
     "*": deny
-    architect: allow
-    coder: ask
+    architect: ask
     docs: allow
   airlie_run: ask
   airlie_story: ask

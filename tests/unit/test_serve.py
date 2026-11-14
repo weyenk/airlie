@@ -28,7 +28,7 @@ def test_models_lists_roles(tmp_path: Path) -> None:
     r = TestClient(app).get("/v1/models")
     assert r.status_code == 200
     ids = [m["id"] for m in r.json()["data"]]
-    assert sorted(ids[:4]) == ["aggregator", "coder", "judge", "summarizer"]  # roles first
+    assert sorted(ids[:4]) == ["aggregator", "architect", "judge", "summarizer"]  # roles first
     assert sorted(ids[4:]) == ["base", "small"]  # then the raw catalog models
 
 
@@ -50,7 +50,7 @@ def test_chat_completion_streams_through(tmp_path: Path) -> None:
     with TestClient(app).stream(
         "POST",
         "/v1/chat/completions",
-        json={"model": "coder", "stream": True, "messages": [{"role": "user", "content": "yo"}]},
+        json={"model": "architect", "stream": True, "messages": [{"role": "user", "content": "yo"}]},
     ) as r:
         assert r.status_code == 200
         body = b"".join(r.iter_bytes())
@@ -93,13 +93,15 @@ def test_a_reply_cut_off_at_max_tokens_is_returned_with_finish_reason_length_not
     up, c = CutOffUpstream(), cfg(tmp_path)
     app = create_app(c, transport=httpx.MockTransport(up))
     r = TestClient(app).post(
-        "/v1/chat/completions", json={"model": "coder", "messages": [{"role": "user", "content": "yo"}]}
+        "/v1/chat/completions", json={"model": "architect", "messages": [{"role": "user", "content": "yo"}]}
     )
     assert r.status_code == 200
     choice = r.json()["choices"][0]
     assert choice["finish_reason"] == "length" and choice["message"]["content"] == ""
     assert choice["message"]["reasoning_content"] == "Let me think"  # what the engine sent is passed on
-    assert json.loads(up.requests[0].content)["max_tokens"] == c.roles["coder"].max_tokens  # the role's own
+    assert (
+        json.loads(up.requests[0].content)["max_tokens"] == c.roles["architect"].max_tokens
+    )  # the role's own
 
 
 def test_a_streamed_reply_cut_off_at_max_tokens_ends_with_finish_reason_length(tmp_path: Path) -> None:
@@ -107,7 +109,7 @@ def test_a_streamed_reply_cut_off_at_max_tokens_ends_with_finish_reason_length(t
     with TestClient(app).stream(
         "POST",
         "/v1/chat/completions",
-        json={"model": "coder", "stream": True, "messages": [{"role": "user", "content": "yo"}]},
+        json={"model": "architect", "stream": True, "messages": [{"role": "user", "content": "yo"}]},
     ) as r:
         assert r.status_code == 200
         body = b"".join(r.iter_bytes())
@@ -117,7 +119,7 @@ def test_a_streamed_reply_cut_off_at_max_tokens_ends_with_finish_reason_length(t
 def test_a_role_on_an_mlx_vlm_engine_is_sent_mlx_vlms_thinking_fields_and_its_model_path(
     tmp_path: Path,
 ) -> None:
-    names = ("coder", "summarizer", "judge", "aggregator")
+    names = ("architect", "summarizer", "judge", "aggregator")
     for r in names:
         (tmp_path / f"{r}.md").write_text("x")
     data = {
@@ -142,7 +144,7 @@ def test_a_role_on_an_mlx_vlm_engine_is_sent_mlx_vlms_thinking_fields_and_its_mo
 
 
 def mlx_vlm_upstream(tmp_path: Path) -> tuple[FakeUpstream, TestClient, Any]:
-    names = ("coder", "summarizer", "judge", "aggregator")
+    names = ("architect", "summarizer", "judge", "aggregator")
     for r in names:
         (tmp_path / f"{r}.md").write_text("x")
     data = {
@@ -178,7 +180,7 @@ def test_the_old_thinking_field_names_from_a_client_are_translated_for_an_mlx_vl
     """The Press Box bridge speaks the old names (thinking_token_budget); mlx-vlm would drop the budget."""
     up, client, _ = mlx_vlm_upstream(tmp_path)
     body = {
-        "model": "coder",
+        "model": "architect",
         "chat_template_kwargs": {"enable_thinking": False},
         "thinking_token_budget": 64,
         **ASK,
@@ -193,7 +195,7 @@ def test_other_client_template_kwargs_survive_the_translation(tmp_path: Path) ->
     up, client, _ = mlx_vlm_upstream(tmp_path)
     client.post(
         "/v1/chat/completions",
-        json={"model": "coder", "chat_template_kwargs": {"enable_thinking": True, "x": 1}, **ASK},
+        json={"model": "architect", "chat_template_kwargs": {"enable_thinking": True, "x": 1}, **ASK},
     )
     sent = json.loads(up.requests[0].content)
     assert sent["enable_thinking"] is True and sent["chat_template_kwargs"] == {"x": 1}
@@ -202,14 +204,14 @@ def test_other_client_template_kwargs_survive_the_translation(tmp_path: Path) ->
 def test_the_serve_proxy_remaps_reasoning_effort_high_for_an_mlx_vlm_role(tmp_path: Path) -> None:
     up, client, _ = mlx_vlm_upstream(tmp_path)
     ask = {"messages": [{"role": "user", "content": "yo"}], "reasoning_effort": "high"}
-    client.post("/v1/chat/completions", json={"model": "coder", **ask})
+    client.post("/v1/chat/completions", json={"model": "architect", **ask})
     assert json.loads(up.requests[0].content)["reasoning_effort"] == "xhigh"
 
 
 def test_tool_loop_follow_ups_gain_a_user_turn_on_the_proxy(tmp_path: Path) -> None:
     up, client, _ = mlx_vlm_upstream(tmp_path)
     body = {
-        "model": "coder",
+        "model": "architect",
         "messages": [
             {"role": "user", "content": "run"},
             {
@@ -232,7 +234,7 @@ def test_an_mlx_vlm_role_gets_its_tool_parser_when_tools_are_sent_and_its_reason
 ) -> None:
     up, client, _ = mlx_vlm_upstream(tmp_path)
     tool = {"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}
-    client.post("/v1/chat/completions", json={"model": "coder", "tools": [tool], **ASK})
+    client.post("/v1/chat/completions", json={"model": "architect", "tools": [tool], **ASK})
     client.post("/v1/chat/completions", json={"model": "summarizer", **ASK})
     client.post("/v1/chat/completions", json={"model": "judge", **ASK})
     with_tools, without, strength = (json.loads(r.content) for r in up.requests)
@@ -280,7 +282,7 @@ def test_run_endpoint_reports_a_team_cut_off_at_max_tokens_as_not_ok_with_why(tm
     c = cfg(tmp_path)
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
-    why = "the reply was cut off at max_tokens (4096) before it ended; raise roles.coder.max_tokens"
+    why = "the reply was cut off at max_tokens (4096) before it ended; raise roles.architect.max_tokens"
 
     class Stub:
         def __init__(self) -> None:
@@ -436,7 +438,7 @@ def test_api_key_guards_the_v1_routes_but_not_health(tmp_path: Path) -> None:
         assert c.get("/v1/models").status_code == 401
         assert c.get("/v1/models", headers={"Authorization": "Bearer wrong"}).status_code == 401
         assert c.get("/v1/models", headers={"Authorization": "Bearer s3cret"}).status_code == 200
-        body = {"model": "coder", "messages": [{"role": "user", "content": "hi"}]}
+        body = {"model": "architect", "messages": [{"role": "user", "content": "hi"}]}
         assert c.post("/v1/chat/completions", json=body).status_code == 401
         ok = c.post("/v1/chat/completions", json=body, headers={"Authorization": "Bearer s3cret"})
         assert ok.status_code == 200
@@ -447,7 +449,7 @@ def test_raw_catalog_models_are_served_without_a_prompt(tmp_path: Path) -> None:
     app = create_app(cfg(tmp_path), transport=httpx.MockTransport(up))
     with TestClient(app) as c:
         ids = {m["id"] for m in c.get("/v1/models").json()["data"]}
-        assert {"coder", "small", "base"} <= ids  # roles and raw catalog models
+        assert {"architect", "small", "base"} <= ids  # roles and raw catalog models
         r = c.post(
             "/v1/chat/completions", json={"model": "small", "messages": [{"role": "user", "content": "hi"}]}
         )
@@ -461,9 +463,9 @@ def test_raw_catalog_models_are_served_without_a_prompt(tmp_path: Path) -> None:
 def test_role_prompt_precedes_a_client_system_prompt(tmp_path: Path) -> None:
     up = FakeUpstream()
     app = create_app(cfg(tmp_path), transport=httpx.MockTransport(up))
-    (tmp_path / "coder.md").write_text("---\nsummary: Implement code\n---\n# coder\nUse write_file.")
+    (tmp_path / "architect.md").write_text("---\nsummary: Implement code\n---\n# architect\nUse write_file.")
     body = {
-        "model": "coder",
+        "model": "architect",
         "messages": [
             {"role": "system", "content": "You are OpenCode. Tools: write, read, bash."},
             {"role": "user", "content": "hi"},
@@ -477,7 +479,7 @@ def test_role_prompt_precedes_a_client_system_prompt(tmp_path: Path) -> None:
     # the role prompt, a blank line, the client-bridge rule: the rule's file is one sentence with no blank
     # lines around it, so the separator is the server's
     assert not text("client-bridge").startswith("\n")
-    assert sent[0]["content"] == "# coder\nUse write_file.\n\n" + text("client-bridge")
+    assert sent[0]["content"] == "# architect\nUse write_file.\n\n" + text("client-bridge")
 
 
 class IdlessToolStream:
@@ -801,7 +803,10 @@ def test_the_line_row_shows_both_lanes_the_gates_and_the_blocked_cards(tmp_path:
     write_diagnosis(
         state,
         Diagnosis(
-            pack, Classified("config", "cut_off", "layers", "config:cut_off:coder", ("x",), "r"), None, "n"
+            pack,
+            Classified("config", "cut_off", "layers", "config:cut_off:architect", ("x",), "r"),
+            None,
+            "n",
         ),
     )
     story = state / "stories" / building

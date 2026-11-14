@@ -66,7 +66,7 @@ async def test_the_golden_script_exercises_every_phase_of_a_layer_build(tmp_path
     assert one("gate_passed")["n"] == 2 and one("run_done")["tests"] is True
     assert [(r.trigger, r.outcome) for r in ledger] == [("gate_retry", "helped")]  # the advice
     assert "supervisor_triage" in [e["kind"] for e in story] and "layer_built" in [e["kind"] for e in story]
-    assert one("steer", id="gate-failed")["role"] == "coder"
+    assert one("steer", id="gate-failed")["role"] == "architect"
     assert "Put add back as it was." in golden_prompts(tmp_path)["build/round-3"]  # the follow-up carries it
 
 
@@ -104,7 +104,7 @@ LAYER = {"test_cmd": PYTEST, "branch": "layer", "scope_tests": True}
 def layer_studio(tmp_path: Path) -> tuple[StudioOrchestrator, Path]:
     """A studio on the calc repository with the golden script's coder and reviewer replies."""
     repo = calc_repo(tmp_path)
-    engine = FakeEngine({role: list(SCRIPT_LAYER[role]) for role in ("coder", "reviewer")})
+    engine = FakeEngine({role: list(SCRIPT_LAYER[role]) for role in ("architect", "reviewer")})
     return StudioOrchestrator(cfg_for(tmp_path, done_check=True), engine, run_id="layer"), repo
 
 
@@ -167,7 +167,7 @@ async def test_the_steps_in_order_emit_what_execute_task_emits(tmp_path: Path) -
     as `execute_task` does with the driver's one-call arguments (the driver now calls the steps itself, so
     the comparison is made on the studio alone): the full neutralised events, the report and the coder's
     prompts."""
-    plan = layer_plan(BRIEF, build_role="coder")
+    plan = layer_plan(BRIEF, build_role="architect")
     one, repo_a = layer_studio(tmp_path / "a")
     a = await one.execute_task(
         GOAL, repo=repo_a, plan=plan, synthesise=False, gate_follow_up="build", repo_map=False, **LAYER
@@ -233,7 +233,7 @@ async def test_a_fix_round_that_raises_ends_its_subtask_as_an_engine_error_with_
     engine = FakeEngine(
         {
             "chief": [PLAN, SYNTH],
-            "coder": [WRITE_PASS, RUN, DONE],
+            "architect": [WRITE_PASS, RUN, DONE],
             "docs": [DONE],
             "reviewer": [CHANGES, APPROVE],
         }
@@ -258,7 +258,7 @@ async def test_the_writing_steps_take_the_write_lock_themselves(tmp_path: Path) 
     """The done-check, a review round and a fix round each commit or edit the worktree: called on their own,
     as the layer's nodes call them, each waits for the write lock as the coder turn does."""
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"coder": [WRITE_PASS, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"architect": [WRITE_PASS, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     chosen = await opened(orch, repo, Plan((), (Subtask("fix", "make the check pass", "coder"),)))
     run = await orch.coder_turn(chosen.subtasks[0])

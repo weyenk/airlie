@@ -38,7 +38,7 @@ ACCEPTED = (
         "coder",
         "file.rewrite",
         "brief-layer-plan-edit-file",
-        "role:coder",
+        "role:architect",
         "coder.md allows write_file on a short existing file, the build brief never; mild",
     ),
 )

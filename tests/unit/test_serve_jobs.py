@@ -30,7 +30,7 @@ from tests.unit.serve_helpers import TestClient
 
 def test_a_plan_job_then_the_edited_plan_runs_as_a_job(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"chief": [PLAN], "coder": [WRITE_PASS, RUN, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"chief": [PLAN], "architect": [WRITE_PASS, RUN, DONE], "reviewer": [APPROVE]})
     with TestClient(app_for(tmp_path, engine)) as client:
         r = client.post("/v1/airlie/plans", json={"goal": "fix the build", "repo": str(repo)})
         assert r.status_code == 202 and r.json()["kind"] == "plan"
@@ -48,7 +48,7 @@ def test_a_plan_job_then_the_edited_plan_runs_as_a_job(tmp_path: Path) -> None:
     assert done["result"]["branch"].startswith("airlie/") and done["result"]["ok"] is True
     assert Path(done["result"]["report"]).is_file()
     routes = [e for e in done["events"] if e["kind"] == "route"]
-    assert [(e["chosen"], e["decision"]) for e in routes] == [("coder", "pinned")]
+    assert [(e["chosen"], e["decision"]) for e in routes] == [("architect", "pinned")]
     assert [q.role for q in engine.requests].count("chief") == 1  # the plan call only: no synthesis
 
 
@@ -70,7 +70,7 @@ def test_a_plan_job_whose_chief_answers_or_fails_says_so_in_its_result(tmp_path:
 
 def test_a_plan_or_base_that_cannot_run_is_a_400_and_unknown_jobs_are_404(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    one = {"subtasks": [{"id": "b", "role": "coder", "brief": "write PASS"}]}
+    one = {"subtasks": [{"id": "b", "role": "architect", "brief": "write PASS"}]}
     runs = tmp_path / "state" / "runs"
 
     def left_behind() -> list[Path]:  # the orchestrator makes a run directory when it is built
@@ -134,7 +134,7 @@ def test_a_running_job_can_be_cancelled(tmp_path: Path) -> None:
         async def generate(self, req, on_token=None):  # type: ignore[no-untyped-def]
             await asyncio.sleep(3600)
 
-    one = {"subtasks": [{"id": "b", "role": "coder", "brief": "write PASS"}]}
+    one = {"subtasks": [{"id": "b", "role": "architect", "brief": "write PASS"}]}
     with TestClient(app_for(tmp_path, Hang({}))) as client:
         body = {"goal": "g", "repo": str(repo), "plan": one}
         job = client.post("/v1/airlie/runs", json=body).json()["job_id"]

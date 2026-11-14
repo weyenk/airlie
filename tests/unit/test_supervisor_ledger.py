@@ -142,7 +142,7 @@ def test_the_ledger_adds_the_class_columns_to_an_old_file_and_old_rows_read_null
     [before] = led.recent()
     assert (before.class_, before.signature, before.class_agrees) == (None, None, None)
     answer = Answer(
-        "wrong_acceptance_test", "tester", "d", (), None, None, "f", class_agrees=False, class_reason="r"
+        "wrong_acceptance_test", "architect", "d", (), None, None, "f", class_agrees=False, class_reason="r"
     )
     new = led.record(
         replace(intervention(trigger="block"), answer=answer, class_="content", signature="content:x:y")

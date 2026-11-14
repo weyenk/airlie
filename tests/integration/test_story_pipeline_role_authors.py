@@ -83,13 +83,13 @@ async def test_a_layer_built_note_is_stored_by_the_build_role_not_airlie(tmp_pat
         repo,
         happy_engine(),
         board=board,
-        story={"product_role": "product", "architect_role": "architect", "build_role": "coder"},
+        story={"product_role": "product", "architect_role": "architect", "build_role": "architect"},
     ).run(card)
     assert st.blocked is None and st.stage == "review"  # the whole story ran, so the notes were posted
     item = board.store.get(card.key)
     built_notes = [c for c in item.comments if "built:" in c.text and c.text.startswith(NOTE_PREFIX)]
     assert len(built_notes) == 2  # one per built layer (Storage, Profile)
     for built_note in built_notes:
-        assert built_note.author == "coder"  # the build role, not airlie
+        assert built_note.author == "architect"  # the build role, not airlie
         assert built_note.author != "airlie"
         assert built_note.text.startswith(NOTE_PREFIX)  # still recognisable as airlie's

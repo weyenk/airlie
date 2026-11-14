@@ -38,9 +38,10 @@ from tests.support.supervisor_flow import SUPERVISOR_ROLES, answer, rows
 
 SCRIPT_LAYER: dict[str, list[FakeReply]] = {
     "product": [STORY],
-    "architect": [LAYERS, RED],
-    "coder": [
-        FEATURE,  # the coder turn: mul, as the package asks
+    "architect": [
+        LAYERS,
+        RED,
+        FEATURE,  # the build turn: mul, as the package asks
         DONE,
         write("README.md", "mul multiplies.\n"),  # the done-check finds a miss and fixes it
         DONE,
@@ -142,7 +143,9 @@ class AdvisedThenDies(StudioOrchestrator):
 
     async def coder_turn(self, subtask: Subtask) -> SubtaskRun:
         assert self.advisor is not None
-        await self.advisor.advise("gate_retry", subtask.id, "coder", "the gate is red", kinds=("gate_fails",))
+        await self.advisor.advise(
+            "gate_retry", subtask.id, "architect", "the gate is red", kinds=("gate_fails",)
+        )
         raise RuntimeError("the engine fell over")
 
 
@@ -226,7 +229,7 @@ GOLDEN_STORY_LAYER = [
         "kind": "supervisor_triage",
         "trigger": "gate_retry",
         "category": "missing_code",
-        "owner": "coder",
+        "owner": "architect",
         "ledger_id": 1,
         "layer": "01",
     },
@@ -248,16 +251,16 @@ GOLDEN_STUDIO = [
         "paths": ["tests/test_calc.py"],
         "tests": {"tests/test_calc.py": ["test_mul"]},
     },
-    {"kind": "plan", "assumptions": [], "subtasks": ["build"], "roles": ["coder"], "pinned": True},
+    {"kind": "plan", "assumptions": [], "subtasks": ["build"], "roles": ["architect"], "pinned": True},
     {
         "kind": "route",
         "subtask": "build",
-        "chosen": "coder",
+        "chosen": "architect",
         "decision": "pinned",
         "confidence": 1.0,
-        "probabilities": {"coder": 1.0},
-        "hint": "coder",
-        "criteria": ["architect", "coder", "docs", "product", "qa"],
+        "probabilities": {"architect": 1.0},
+        "hint": "architect",
+        "criteria": ["architect", "architect", "docs", "product", "qa"],
     },
     {
         "kind": "handoff",
@@ -274,7 +277,7 @@ GOLDEN_STUDIO = [
             "The acceptance criteria this "
         ),
     },
-    {"kind": "subtask_start", "subtask": "build", "role": "coder", "skill": None, "writes": True},
+    {"kind": "subtask_start", "subtask": "build", "role": "architect", "skill": None, "writes": True},
     {
         "kind": "step",
         "team_id": "build",
@@ -284,20 +287,20 @@ GOLDEN_STUDIO = [
         "reasoning_chars": 0,
         "answer_chars": 122,
         "model": "base",
-        "role": "coder",
+        "role": "architect",
         "topology": "studio",
         "story": None,
     },
     {
         "kind": "reply",
         "team_id": "build",
-        "role": "coder",
+        "role": "architect",
         "model": "base",
         "reasoning_chars": 0,
         "answer_chars": 4,
     },
-    {"kind": "steer", "id": "done-check", "role": "coder", "subtask": "build"},
-    {"kind": "done_check", "subtask": "build", "role": "coder", "fresh": False},
+    {"kind": "steer", "id": "done-check", "role": "architect", "subtask": "build"},
+    {"kind": "done_check", "subtask": "build", "role": "architect", "fresh": False},
     {
         "kind": "step",
         "team_id": "build",
@@ -307,14 +310,14 @@ GOLDEN_STUDIO = [
         "reasoning_chars": 0,
         "answer_chars": 64,
         "model": "base",
-        "role": "coder",
+        "role": "architect",
         "topology": "studio",
         "story": None,
     },
     {
         "kind": "reply",
         "team_id": "build",
-        "role": "coder",
+        "role": "architect",
         "model": "base",
         "reasoning_chars": 0,
         "answer_chars": 4,
@@ -354,14 +357,14 @@ GOLDEN_STUDIO = [
         "reasoning_chars": 0,
         "answer_chars": 122,
         "model": "base",
-        "role": "coder",
+        "role": "architect",
         "topology": "studio",
         "story": None,
     },
     {
         "kind": "reply",
         "team_id": "build",
-        "role": "coder",
+        "role": "architect",
         "model": "base",
         "reasoning_chars": 0,
         "answer_chars": 4,
@@ -386,7 +389,7 @@ GOLDEN_STUDIO = [
     {
         "kind": "subtask_done",
         "subtask": "build",
-        "role": "coder",
+        "role": "architect",
         "ok": True,
         "stop_reason": "done",
         "steps": 1,
@@ -418,8 +421,8 @@ GOLDEN_STUDIO = [
             "[exit 1]"
         ),
     },
-    {"kind": "steer", "id": "gate-failed", "role": "coder", "subtask": "build"},
-    {"kind": "follow_up", "subtask": "build", "role": "coder"},
+    {"kind": "steer", "id": "gate-failed", "role": "architect", "subtask": "build"},
+    {"kind": "follow_up", "subtask": "build", "role": "architect"},
     {
         "kind": "step",
         "team_id": "build",
@@ -429,14 +432,14 @@ GOLDEN_STUDIO = [
         "reasoning_chars": 0,
         "answer_chars": 154,
         "model": "base",
-        "role": "coder",
+        "role": "architect",
         "topology": "studio",
         "story": None,
     },
     {
         "kind": "reply",
         "team_id": "build",
-        "role": "coder",
+        "role": "architect",
         "model": "base",
         "reasoning_chars": 0,
         "answer_chars": 4,
@@ -444,7 +447,7 @@ GOLDEN_STUDIO = [
     {
         "kind": "subtask_done",
         "subtask": "build",
-        "role": "coder",
+        "role": "architect",
         "ok": True,
         "stop_reason": "done",
         "steps": 1,
@@ -460,10 +463,10 @@ GOLDEN_LEDGER = [
     (
         "gate_retry",
         "build",
-        "coder",
+        "architect",
         ("gate_fails",),
         "missing_code",
-        "coder",
+        "architect",
         "Put add back as it was.",
         "helped",
         "01",
@@ -478,7 +481,14 @@ GOLDEN_STATE = {
     "built_keys": ["branch", "sha", "run_id", "subtasks", "gate", "package", "tests"],
     "branch": "add-avatar-upload-01-mul",
     "subtasks": [
-        {"id": "build", "role": "coder", "stop": "done", "review": "approve", "fix_rounds": 1, "findings": []}
+        {
+            "id": "build",
+            "role": "architect",
+            "stop": "done",
+            "review": "approve",
+            "fix_rounds": 1,
+            "findings": [],
+        }
     ],
     "tests": ["tests/test_calc.py::test_mul"],
     "runs": 4,

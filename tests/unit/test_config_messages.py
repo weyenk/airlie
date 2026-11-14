@@ -13,7 +13,7 @@ from airlie.config import AirlieConfig, ConfigError, load_config
 from airlie.config.schema import TOPOLOGY_KINDS
 from tests.support.config import MINIMAL, write
 
-ROLES = "['aggregator', 'coder', 'judge', 'summarizer']"
+ROLES = "['aggregator', 'architect', 'judge', 'summarizer']"
 KINDS = ", ".join(TOPOLOGY_KINDS)
 
 
@@ -86,10 +86,10 @@ def test_jev_router_needs_a_catalog_model_served_by_a_decision_engine(tmp_path: 
 
 def test_role_problems_do_not_stop_the_checks_of_later_roles(tmp_path: Path) -> None:
     data = valid(tmp_path)
-    data["roles"]["coder"]["model"] = "ghost"
+    data["roles"]["architect"]["model"] = "ghost"
     data["roles"]["judge"]["prompt"] = str(tmp_path / "missing.md")
     assert problems(data) == [
-        "roles.coder.model names 'ghost', which is not in models (['team'])",
+        "roles.architect.model names 'ghost', which is not in models (['team'])",
         f"roles.judge.prompt file not found: {tmp_path / 'missing.md'}",
     ]
 
@@ -97,9 +97,9 @@ def test_role_problems_do_not_stop_the_checks_of_later_roles(tmp_path: Path) -> 
 def test_a_role_model_served_by_no_engine_or_by_two(tmp_path: Path) -> None:
     data = valid(tmp_path)
     data["models"]["loose"] = {"repo": "o/l", "revision": "r"}
-    data["roles"]["coder"]["model"] = "loose"
+    data["roles"]["architect"]["model"] = "loose"
     assert problems(data) == [
-        "models.loose (used by roles.coder) is served by no engine; add it to an engine's models list"
+        "models.loose (used by roles.architect) is served by no engine; add it to an engine's models list"
     ]
     data = valid(tmp_path)
     data["engines"]["other"] = {"kind": "mlx_vlm", "port": 8090, "models": ["team"]}
@@ -155,15 +155,15 @@ def test_the_room_is_max_tokens_strictly_above_the_budget(
     tmp_path: Path, max_tokens: int, fits: bool
 ) -> None:
     data = valid(tmp_path)
-    data["roles"]["coder"].update(thinking=True, thinking_budget=8192, max_tokens=max_tokens)
-    assert problems(data) == ([] if fits else [no_room("coder", max_tokens, 8192)])
+    data["roles"]["architect"].update(thinking=True, thinking_budget=8192, max_tokens=max_tokens)
+    assert problems(data) == ([] if fits else [no_room("architect", max_tokens, 8192)])
 
 
 def test_a_role_that_does_not_think_or_has_no_budget_needs_no_room(tmp_path: Path) -> None:
     data = valid(tmp_path)
-    data["roles"]["coder"].update(
+    data["roles"]["architect"].update(
         thinking=False, thinking_budget=16384, max_tokens=4096
-    )  # airlie.yaml's coder
+    )  # airlie.yaml's architect
     data["roles"]["judge"].update(
         thinking=True, thinking_budget=None, max_tokens=64
     )  # uncapped stays allowed
@@ -172,10 +172,10 @@ def test_a_role_that_does_not_think_or_has_no_budget_needs_no_room(tmp_path: Pat
 
 def test_the_room_check_does_not_wait_on_the_roles_other_problems(tmp_path: Path) -> None:
     data = valid(tmp_path)
-    data["roles"]["coder"].update(model="ghost", thinking=True, thinking_budget=8192, max_tokens=4096)
+    data["roles"]["architect"].update(model="ghost", thinking=True, thinking_budget=8192, max_tokens=4096)
     assert problems(data) == [
-        no_room("coder", 4096, 8192),
-        "roles.coder.model names 'ghost', which is not in models (['team'])",
+        no_room("architect", 4096, 8192),
+        "roles.architect.model names 'ghost', which is not in models (['team'])",
     ]
 
 
@@ -263,11 +263,11 @@ def test_a_profile_with_an_unknown_kind_is_reported_where_it_is_declared(tmp_pat
 def test_role_skills_and_knowledge_must_be_directories(tmp_path: Path) -> None:
     data = valid(tmp_path)
     (tmp_path / "skills").mkdir()
-    data["roles"]["coder"]["skills"] = str(tmp_path / "skills")
-    data["roles"]["coder"]["knowledge"] = str(tmp_path / "know")
+    data["roles"]["architect"]["skills"] = str(tmp_path / "skills")
+    data["roles"]["architect"]["knowledge"] = str(tmp_path / "know")
     data["roles"]["judge"]["skills"] = str(tmp_path / "no-skills")
     assert problems(data) == [
-        f"roles.coder.knowledge: {tmp_path / 'know'} is not a directory",
+        f"roles.architect.knowledge: {tmp_path / 'know'} is not a directory",
         f"roles.judge.skills: {tmp_path / 'no-skills'} is not a directory",
     ]
     (tmp_path / "know").mkdir()
@@ -279,17 +279,20 @@ def test_role_skills_and_knowledge_paths_resolve_relative_to_the_config(tmp_path
     data = copy.deepcopy(MINIMAL)
     (tmp_path / "docs" / "kb").mkdir(parents=True)
     (tmp_path / "docs" / "sk").mkdir()
-    data["roles"]["coder"]["knowledge"] = "docs/kb"
-    data["roles"]["coder"]["skills"] = "docs/sk"
+    data["roles"]["architect"]["knowledge"] = "docs/kb"
+    data["roles"]["architect"]["skills"] = "docs/sk"
     cfg = load_config(write(tmp_path, data))
-    assert cfg.roles["coder"].knowledge == (tmp_path / "docs" / "kb").resolve()
-    assert cfg.roles["coder"].skills == (tmp_path / "docs" / "sk").resolve()
+    assert cfg.roles["architect"].knowledge == (tmp_path / "docs" / "kb").resolve()
+    assert cfg.roles["architect"].skills == (tmp_path / "docs" / "sk").resolve()
     assert cfg.roles["judge"].knowledge is None and cfg.roles["judge"].skills is None
 
 
 def test_studio_roles_are_checked_only_for_the_studio_topology(tmp_path: Path) -> None:
     data = valid(tmp_path)
-    data["studio"] = {"chief_role": "nope", "review": {"role": "nope2", "roles": ["coder", "nopeA", "nopeB"]}}
+    data["studio"] = {
+        "chief_role": "nope",
+        "review": {"role": "nope2", "roles": ["architect", "nopeA", "nopeB"]},
+    }
     assert problems(data) == []  # topology.kind is teams: the studio block is not in play
     data["topology"] = {"kind": "studio"}
     assert problems(data) == [
@@ -300,7 +303,7 @@ def test_studio_roles_are_checked_only_for_the_studio_topology(tmp_path: Path) -
     ]
     data["studio"]["review"]["enabled"] = False
     assert problems(data) == [f"studio.chief_role names 'nope', which is not in roles ({ROLES})"]
-    data["studio"] = {"chief_role": "coder", "review": {"role": "judge", "roles": ["coder", "qa"]}}
+    data["studio"] = {"chief_role": "architect", "review": {"role": "judge", "roles": ["architect", "qa"]}}
     assert problems(data) == [f"studio.review.roles names 'qa', which is not in roles ({ROLES})"]
 
 

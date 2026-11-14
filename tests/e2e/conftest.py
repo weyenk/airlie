@@ -89,7 +89,7 @@ def _config(root: Path, *, workflows: bool = False) -> AirlieConfig:
     """The least airlie.yaml the app starts with: one engine it never reaches (the board needs none), the
     roles the config requires, and the state under `root`. Its own, so the image needs no engine packages.
     `workflows` includes the shipped workflow files, as airlie.yaml does."""
-    roles = ("coder", "summarizer", "judge", "aggregator")
+    roles = ("architect", "summarizer", "judge", "aggregator")
     for r in roles:
         (root / f"{r}.md").write_text("x")
     (root / "chat.md").write_text("---\nroutable: false\n---\nYou are the chat role.\n")
@@ -199,10 +199,10 @@ def _seed_story(state: Path) -> None:
         """A layer's studio run: the coder, the reviewer's hand-off, then the gate (red when not `ok`)."""
         done = {"ok": True, "stop_reason": "done", "steps": 1, "fix_rounds": 0}
         return [
-            {"ts": t0, "kind": "subtask_start", "subtask": "build", "role": "coder"},
+            {"ts": t0, "kind": "subtask_start", "subtask": "build", "role": "architect"},
             step(run, "build", 1),
-            {"ts": t0 + 60, "kind": "handoff", "src": "coder", "dst": "reviewer"},
-            {"ts": t0 + 90, "kind": "subtask_done", "subtask": "build", "role": "coder", **done},
+            {"ts": t0 + 60, "kind": "handoff", "src": "architect", "dst": "reviewer"},
+            {"ts": t0 + 90, "kind": "subtask_done", "subtask": "build", "role": "architect", **done},
             {"ts": t0 + 91, "kind": "gate_start"},
             {"ts": t0 + 120, "kind": "gate_passed" if ok else "gate_failed"},
             {"ts": t0 + 121, "kind": "run_done", "ok": ok},
@@ -319,7 +319,7 @@ def _topology_events(run: str, *, done: bool) -> list[dict[str, Any]]:
             prompt_tokens=1200,
             completion_tokens=150,
             model="base",
-            role="coder" if team == "fix" else "docs",
+            role="architect" if team == "fix" else "docs",
         )
 
     def hand(src: str, dst: str, what: str, text: str, ts: float) -> dict[str, Any]:
@@ -327,9 +327,9 @@ def _topology_events(run: str, *, done: bool) -> list[dict[str, Any]]:
 
     rows = [
         e("run_start", 1792750000.0, goal="Fix the build", k=1, repo="/r/airlie", orchestrator="studio"),
-        e("plan", 1792750001.0, subtasks=["fix", "note"], roles=["coder", "docs"]),
+        e("plan", 1792750001.0, subtasks=["fix", "note"], roles=["architect", "docs"]),
         hand("chief", "fix", "brief", "make the check pass", 1792750002.0),
-        e("subtask_start", 1792750002.0, subtask="fix", role="coder", skill="python", writes=True),
+        e("subtask_start", 1792750002.0, subtask="fix", role="architect", skill="python", writes=True),
         step("fix", 1, 1792750003.0, "read_file"),
         step("fix", 2, 1792750004.0, "write_file"),
     ]
@@ -339,7 +339,15 @@ def _topology_events(run: str, *, done: bool) -> list[dict[str, Any]]:
         hand("fix", "reviewer", "diff", "1 file changed: PASS", 1792750005.0),
         e("review", 1792750006.0, subtask="fix", verdict="approve", findings=0, blocking=0, round=0),
         hand("reviewer", "fix", "findings", "approve: no findings", 1792750006.0),
-        e("subtask_done", 1792750007.0, subtask="fix", role="coder", ok=True, stop_reason="done", steps=2),
+        e(
+            "subtask_done",
+            1792750007.0,
+            subtask="fix",
+            role="architect",
+            ok=True,
+            stop_reason="done",
+            steps=2,
+        ),
         hand("fix", "chief", "result", "wrote PASS; the check passes", 1792750007.0),
         hand("chief", "note", "brief", "describe the repo", 1792750008.0),
         e("subtask_start", 1792750008.0, subtask="note", role="docs", writes=False),
@@ -383,7 +391,7 @@ def _seed_topologies(state: Path) -> None:
             prompt_tokens=900,
             completion_tokens=90,
             model="base",
-            role="coder",
+            role="architect",
         )
 
     t, run = 1792740000.0, RUN_TEAMS
@@ -481,11 +489,13 @@ class _FakeStudio:
             "No change to the upload API is needed.",
         ),
         subtasks=(
-            Subtask(id="fix", brief="Wait for the upload's response before asserting.", role_hint="coder"),
+            Subtask(
+                id="fix", brief="Wait for the upload's response before asserting.", role_hint="architect"
+            ),
             Subtask(
                 id="retry-note",
                 brief="Note the wait in the test's docstring.",
-                role_hint="coder",
+                role_hint="architect",
                 depends_on=("fix",),
             ),
         ),
@@ -505,7 +515,7 @@ class _FakeStudio:
         self, goal: str, *, repo: Path, test_cmd: str | None = None, images: Any = ()
     ) -> PlanOutcome:
         self._emit("run_start", goal=goal, k=1, repo=str(repo), orchestrator="studio", mode="plan")
-        self._emit("plan", subtasks=["fix", "retry-note"], roles=["coder", "coder"])
+        self._emit("plan", subtasks=["fix", "retry-note"], roles=["architect", "architect"])
         self._emit("run_done", ok=True, wall_ms=10.0, subtasks=0, tests=None)
         return PlanOutcome(self.PLAN, "", False)
 
@@ -514,7 +524,7 @@ class _FakeStudio:
         self._emit(
             "plan",
             subtasks=[s.id for s in plan.subtasks] if plan else [],
-            roles=["coder"] * (len(plan.subtasks) if plan else 0),
+            roles=["architect"] * (len(plan.subtasks) if plan else 0),
         )
         await asyncio.sleep(3600)  # until a person stops it
 

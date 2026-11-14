@@ -25,7 +25,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 def an_input(**kw: object) -> TriageInput:
     base: dict[str, object] = dict(
-        trigger="precode_retry", role="tester", subtask="tests", told="TOLD", evidence="FINDINGS",
+        trigger="precode_retry", role="architect", subtask="tests", told="TOLD", evidence="FINDINGS",
         kinds=("passes_before_code",), brief="BRIEF", trace="", diff="DIFF", events="", earlier=(), recall=(),
     )  # fmt: skip
     base.update(kw)

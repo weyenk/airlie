@@ -66,7 +66,7 @@ async def test_step_event_carries_slice_keys(tmp_path: Path) -> None:
     await observer.after_step(_step_record())
     line = _last_step_line(run_dir.events_path)
     assert line["model"] == "qwen3-coder"
-    assert line["role"] == "coder"
+    assert line["role"] == "architect"
     assert line["topology"] == "teams"
     assert line["story"] is None  # a task run lives under runs/, not stories/<key>/
     assert line["span_id"]

@@ -10,29 +10,29 @@ from pydantic import ValidationError
 
 from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, StorySpec, load_config, profile_configs
 from airlie.config.load import _yaml_problem
-from airlie.config.schema import MUTATING_TOOLS, EngineSpec, ManagerSpec
-from tests.support.config import MINIMAL, write
+from airlie.config.schema import EngineSpec, ManagerSpec
+from tests.support.config import MINIMAL, with_architect, write
 
 
 def test_minimal_config_loads_with_defaults(tmp_path: Path) -> None:
     cfg = load_config(write(tmp_path, MINIMAL))
     assert isinstance(cfg, AirlieConfig)
     assert cfg.teams.k == 3
-    assert cfg.teams.role == "coder"
+    assert cfg.teams.role == "architect"
     assert cfg.lts.controller.kind == "heuristic"
     assert cfg.scheduler.max_active == 4
     # prompt paths resolve relative to the config file, not the cwd
-    assert cfg.roles["coder"].prompt == (tmp_path / "prompts/roles/coder.md").resolve()
+    assert cfg.roles["architect"].prompt == (tmp_path / "prompts/roles/architect.md").resolve()
     # a role's engine is derived from which engine serves its model
-    assert cfg.engine_for_role("coder") == "main"
+    assert cfg.engine_for_role("architect") == "main"
 
 
 def test_role_referencing_unknown_model_fails_with_named_error(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
-        "roles": {**MINIMAL["roles"], "coder": {"prompt": "prompts/roles/coder.md", "model": "nope"}},
+        "roles": {**MINIMAL["roles"], "ghost": {"prompt": "prompts/roles/ghost.md", "model": "nope"}},
     }
-    with pytest.raises(ConfigError, match=r"roles\.coder\.model.*'nope'.*models"):
+    with pytest.raises(ConfigError, match=r"roles\.ghost\.model.*'nope'.*models"):
         load_config(write(tmp_path, data))
 
 
@@ -91,7 +91,7 @@ def test_missing_prompt_file_fails(tmp_path: Path) -> None:
 
 
 def test_unknown_key_is_rejected_to_catch_typos(tmp_path: Path) -> None:
-    data = {**MINIMAL, "teams": {"k": 3, "rol": "coder"}}
+    data = {**MINIMAL, "teams": {"k": 3, "rol": "architect"}}
     with pytest.raises(ConfigError, match=r"teams.*rol"):
         load_config(write(tmp_path, data))
 
@@ -109,8 +109,8 @@ def test_openai_http_engine_requires_base_url(tmp_path: Path) -> None:
 
 
 def test_teams_role_must_exist(tmp_path: Path) -> None:
-    data = {**MINIMAL, "teams": {"role": "architect"}}
-    with pytest.raises(ConfigError, match=r"teams\.role.*'architect'"):
+    data = {**MINIMAL, "teams": {"role": "ghost"}}
+    with pytest.raises(ConfigError, match=r"teams\.role.*'ghost'"):
         load_config(write(tmp_path, data))
 
 
@@ -150,7 +150,7 @@ def test_local_overrides_deep_merge(tmp_path: Path) -> None:
     )
     cfg = load_config(base, local)
     assert cfg.teams.k == 1
-    assert cfg.teams.role == "coder"  # untouched sibling survives the merge
+    assert cfg.teams.role == "architect"  # untouched sibling survives the merge
     e = cfg.engines["main"]
     assert e.kind == "openai_http"
     assert e.base_url == "http://127.0.0.1:1/v1"
@@ -168,35 +168,133 @@ def test_write_file_overwrite_limit_defaults_to_200_and_can_be_set(tmp_path: Pat
     assert load_config(write(tmp_path, data)).tools.write_file_max_overwrite_lines == 50
 
 
-def test_committed_coder_has_room_for_a_large_edit() -> None:
-    """HDS-5 2026-10-16: 4096 tokens cut a whole-file rewrite off mid-call. The coder does not think
-    (2026-10-18: the architect's brief is its plan; a thinking coder ran its budget out re-deliberating the
-    brief every step and read instead of writing), so max_tokens is the answer alone."""
+def test_committed_architect_has_room_for_a_large_edit() -> None:
+    """HDS-5 2026-10-16: 4096 tokens cut a whole-file rewrite mid-call; the build architect keeps
+    10240 for answers (think_when_red covers red turns)."""
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")
-    assert (cfg.roles["coder"].thinking, cfg.roles["coder"].max_tokens) == (False, 10240)
+    arch = cfg.roles["architect"]
+    assert arch.max_tokens == 12288 and arch.think_when_red
+
+
+def test_architect_catalog_replaces_generalist() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert "generalist" not in cfg.models
+    arch = cfg.models["architect"]
+    assert arch.repo == "sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
+    assert arch.revision == "668f31bcc56bf9400e64c9463445eee47597c2d9"
+    assert arch.mtp is not None
+    assert arch.mtp.repo == "sh0wie/Qwen3.8-Flash-Next-MTP-Drafter-MLX-bf16"
+    assert arch.mtp.revision == "be6e2bc325d41ac7858b99269a96c495349b494d"
+    assert arch.tool_call_parser == "qwen3_coder"
+    assert {"architect"} <= {n for n, m in cfg.models.items() if m.bench}
+
+
+def test_main_engine_serves_architect() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert cfg.engines["main"].models == ["architect"]
+    assert cfg.engines["main"].port == 8080
+    assert cfg.engines["main"].max_kv_size == 131072
+    assert (
+        cfg.engines["main"]
+        .served_name("architect")
+        .endswith(
+            "models--sh0wie--Qwen3.8-Flash-Next-REAP-288-MLX-4bit/snapshots/"
+            f"{cfg.models['architect'].revision}"
+        )
+    )
+
+
+def test_gemma_chat_context_is_128k() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert cfg.engines["gemma"].max_kv_size == 131072
+    assert cfg.roles["chat"].max_context == 131072
+
+
+def test_studio_roles_use_architect_and_product_on_gemma() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    for name in ("chief", "lhr", "architect", "docs", "research", "security", "aggregator"):
+        assert cfg.roles[name].model == "architect", name
+    assert cfg.roles["product"].model == "gemma4"
+    assert "generalist" not in cfg.models
+
+
+def test_architect_is_build_role_with_coder_behaviors() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert cfg.story.build_role == "architect"
+    assert cfg.teams.role == "architect"
+    assert cfg.chat.task.default_role == "architect"
+    arch = cfg.roles["architect"]
+    tools = set(arch.tools or cfg.tools.builtin)
+    assert "write_file" in tools and "run_tests" in tools
+    assert arch.green_before_done is True
+    assert arch.think_when_red is True
+    assert arch.write_schedule is not None
+
+
+def test_coder_and_tester_roles_removed() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert "coder" not in cfg.roles
+    assert "tester" not in cfg.roles
+
+
+def test_repo_config_has_no_generalist_coder_tester_names() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert "generalist" not in cfg.models
+    assert "coder" not in cfg.roles
+    assert "tester" not in cfg.roles
+
+
+def test_generalist_model_key_rejected(tmp_path: Path) -> None:
+    rev = "a" * 40
+    data = {
+        **MINIMAL,
+        "models": {**MINIMAL["models"], "generalist": {"repo": "org/m", "revision": rev}},
+    }
+    with pytest.raises(ConfigError, match=r"generalist.*architect"):
+        load_config(write(tmp_path, data))
+
+
+def test_pipeline_package_critic_uses_architect() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert "tester" not in cfg.roles
+    arch = cfg.roles["architect"]
+    assert arch.skills is not None and cfg.story.architect_role == "architect"
+
+
+def test_generation_models_catalog_and_weights_engines() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    chroma = cfg.models["chroma_hd"]
+    assert chroma.repo == "tillknuesting/chroma1-hd-mlx"
+    assert chroma.revision == "0b794d9391239d85530d2db3b4091b8b093d1af6"
+    wan = cfg.models["wan_t2v"]
+    assert wan.repo == "PocketAiHub/Wan2.2-T2V-A14B-MLX"
+    assert wan.revision == "86bfc9847512a9eb66886388b8b92ba81e0b6729"
+    assert cfg.engines["chroma"].kind == "weights_only"
+    assert cfg.engines["chroma"].lifecycle == "on_demand"
+    assert cfg.engines["chroma"].models == ["chroma_hd"]
+    assert cfg.engines["wan"].kind == "weights_only"
+    assert cfg.engines["wan"].models == ["wan_t2v"]
+    load_check = cfg.validate_references()
+    assert not load_check, load_check
 
 
 def test_committed_default_config_is_valid() -> None:
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")  # never the person's own
-    assert {"coder", "summarizer", "judge", "aggregator"} <= set(cfg.roles)
-    assert {"generalist"} <= {n for n, m in cfg.models.items() if m.bench}
+    assert {"summarizer", "judge", "aggregator", "architect"} <= set(cfg.roles)
+    assert "coder" not in cfg.roles and "tester" not in cfg.roles
+    assert {"architect"} <= {n for n, m in cfg.models.items() if m.bench}
     assert cfg.engines["main"].kind == "mlx_vlm"
     for name, m in cfg.models.items():
         assert m.revision, f"models.{name} must pin a revision"
-    assert cfg.engine_for_role("coder") == "main" and cfg.engine_for_role("reviewer") == "gemma"
+    assert cfg.engine_for_role("architect") == "main" and cfg.engine_for_role("reviewer") == "gemma"
 
 
 # ---- a thinking role has room to answer (HDS-3, 2026-10-15) ----
 
 ROOT = Path(__file__).resolve().parents[2]
 NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
-
-
-def with_coder(**coder: object) -> dict:
-    """MINIMAL with `coder` set over the schema defaults."""
-    return {**MINIMAL, "roles": {**MINIMAL["roles"], "coder": {**MINIMAL["roles"]["coder"], **coder}}}
 
 
 def no_room(role: str, max_tokens: int, budget: int) -> str:
@@ -207,73 +305,78 @@ def no_room(role: str, max_tokens: int, budget: int) -> str:
 
 
 def test_a_role_given_only_a_prompt_and_a_model_has_room_to_answer(tmp_path: Path) -> None:
-    role = load_config(write(tmp_path, MINIMAL)).roles["coder"]
+    role = load_config(write(tmp_path, MINIMAL)).roles["architect"]
     assert (role.thinking, role.thinking_budget, role.max_tokens) == (True, 8192, 16384)
 
 
 def test_the_room_is_checked_after_a_profile_is_merged(tmp_path: Path) -> None:
     data = {
-        **with_coder(thinking=False, max_tokens=4096),
+        **with_architect(thinking=False, max_tokens=4096),
         "topology": {
             "kind": "single",
             "profiles": {
-                "think": {"roles": {"coder": {"thinking": True, "thinking_budget": 8192}}},
+                "think": {"roles": {"architect": {"thinking": True, "thinking_budget": 8192}}},
                 "roomy": {
-                    "roles": {"coder": {"thinking": True, "thinking_budget": 8192, "max_tokens": 16384}}
+                    "roles": {"architect": {"thinking": True, "thinking_budget": 8192, "max_tokens": 16384}}
                 },
             },
         },
     }
     p = write(tmp_path, data)
-    assert load_config(p).roles["coder"].thinking is False  # the file on its own is fine
-    with pytest.raises(ConfigError, match=no_room("coder", 4096, 8192)) as e:
+    assert load_config(p).roles["architect"].thinking is False  # the file on its own is fine
+    with pytest.raises(ConfigError, match=no_room("architect", 4096, 8192)) as e:
         load_config(p, topology="think")
-    assert str(e.value).startswith("config invalid:\n  roles.coder.max_tokens (4096)")
-    assert load_config(p, topology="roomy").roles["coder"].max_tokens == 16384
+    assert str(e.value).startswith("config invalid:\n  roles.architect.max_tokens (4096)")
+    assert load_config(p, topology="roomy").roles["architect"].max_tokens == 16384
 
 
 def test_a_profile_that_lowers_max_tokens_below_a_thinking_budget_is_checked_too(tmp_path: Path) -> None:
     data = {
-        **with_coder(thinking=True, thinking_budget=8192, max_tokens=16384),
+        **with_architect(thinking=True, thinking_budget=8192, max_tokens=16384),
         "topology": {
             "kind": "single",
             "profiles": {
-                "short": {"roles": {"coder": {"max_tokens": 2048}}},
-                "unthinking": {"roles": {"coder": {"thinking": False, "max_tokens": 2048}}},
+                "short": {"roles": {"architect": {"max_tokens": 2048}}},
+                "unthinking": {"roles": {"architect": {"thinking": False, "max_tokens": 2048}}},
             },
         },
     }
     p = write(tmp_path, data)
-    assert load_config(p).roles["coder"].max_tokens == 16384
-    with pytest.raises(ConfigError, match=no_room("coder", 2048, 8192)):
+    assert load_config(p).roles["architect"].max_tokens == 16384
+    with pytest.raises(ConfigError, match=no_room("architect", 2048, 8192)):
         load_config(p, topology="short")
-    assert load_config(p, topology="unthinking").roles["coder"].max_tokens == 2048
+    assert load_config(p, topology="unthinking").roles["architect"].max_tokens == 2048
 
 
 def test_a_profile_can_give_a_role_the_room_the_file_leaves_it(tmp_path: Path) -> None:
     data = {
-        **with_coder(thinking=True, thinking_budget=8192, max_tokens=4096),
-        "topology": {"kind": "single", "profiles": {"roomy": {"roles": {"coder": {"max_tokens": 16384}}}}},
+        **with_architect(thinking=True, thinking_budget=8192, max_tokens=4096),
+        "topology": {
+            "kind": "single",
+            "profiles": {"roomy": {"roles": {"architect": {"max_tokens": 16384}}}},
+        },
     }
     p = write(tmp_path, data)
-    with pytest.raises(ConfigError, match=no_room("coder", 4096, 8192)):
+    with pytest.raises(ConfigError, match=no_room("architect", 4096, 8192)):
         load_config(p)
-    assert load_config(p, topology="roomy").roles["coder"].max_tokens == 16384
+    assert load_config(p, topology="roomy").roles["architect"].max_tokens == 16384
 
 
 def test_the_room_is_checked_after_the_local_overrides_are_merged(tmp_path: Path) -> None:
-    base = write(tmp_path, with_coder(thinking=False, max_tokens=4096))
+    base = write(tmp_path, with_architect(thinking=False, max_tokens=4096))
     local = tmp_path / "airlie.local.yaml"
-    local.write_text(yaml.safe_dump({"roles": {"coder": {"thinking": True, "thinking_budget": 8192}}}))
-    with pytest.raises(ConfigError, match=no_room("coder", 4096, 8192)):
+    local.write_text(yaml.safe_dump({"roles": {"architect": {"thinking": True, "thinking_budget": 8192}}}))
+    with pytest.raises(ConfigError, match=no_room("architect", 4096, 8192)):
         load_config(base, local)
     local.write_text(
-        yaml.safe_dump({"roles": {"coder": {"thinking": True, "thinking_budget": 8192, "max_tokens": 9000}}})
+        yaml.safe_dump(
+            {"roles": {"architect": {"thinking": True, "thinking_budget": 8192, "max_tokens": 9000}}}
+        )
     )
-    assert load_config(base, local).roles["coder"].max_tokens == 9000
+    assert load_config(base, local).roles["architect"].max_tokens == 9000
 
 
-BELOW_ONE = "config invalid:\n  roles.coder.thinking_budget: Input should be greater than or equal to 1"
+BELOW_ONE = "config invalid:\n  roles.architect.thinking_budget: Input should be greater than or equal to 1"
 
 
 @pytest.mark.parametrize("thinking", [True, False])
@@ -284,24 +387,24 @@ def test_a_thinking_budget_below_one_is_a_config_error_at_load(
     """The engine refuses a thinking budget below 1 (a 422 on every request): airlie refuses it first, on any
     role, whether or not it thinks."""
     with pytest.raises(ConfigError) as e:
-        load_config(write(tmp_path, with_coder(thinking=thinking, thinking_budget=budget)))
+        load_config(write(tmp_path, with_architect(thinking=thinking, thinking_budget=budget)))
     assert str(e.value) == BELOW_ONE
 
 
 @pytest.mark.parametrize("budget", [1, None], ids=["one", "uncapped"])
 def test_a_thinking_budget_of_one_or_null_loads(tmp_path: Path, budget: int | None) -> None:
-    cfg = load_config(write(tmp_path, with_coder(thinking=True, thinking_budget=budget)))
-    assert cfg.roles["coder"].thinking_budget == budget
+    cfg = load_config(write(tmp_path, with_architect(thinking=True, thinking_budget=budget)))
+    assert cfg.roles["architect"].thinking_budget == budget
 
 
 def test_a_thinking_budget_below_one_from_a_profile_or_the_local_file_is_refused_too(tmp_path: Path) -> None:
-    profiles = {"zero": {"roles": {"coder": {"thinking_budget": 0}}}}
-    base = write(tmp_path, {**with_coder(), "topology": {"kind": "single", "profiles": profiles}})
+    profiles = {"zero": {"roles": {"architect": {"thinking_budget": 0}}}}
+    base = write(tmp_path, {**with_architect(), "topology": {"kind": "single", "profiles": profiles}})
     with pytest.raises(ConfigError) as e:
         load_config(base, topology="zero")
     assert str(e.value) == BELOW_ONE
     local = tmp_path / "airlie.local.yaml"
-    local.write_text(yaml.safe_dump({"roles": {"coder": {"thinking_budget": -5}}}))
+    local.write_text(yaml.safe_dump({"roles": {"architect": {"thinking_budget": -5}}}))
     with pytest.raises(ConfigError) as e:
         load_config(base, local)
     assert str(e.value) == BELOW_ONE
@@ -325,14 +428,10 @@ def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_w
     for name in ("chief", "research"):
         role = cfg.roles[name]
         assert (role.thinking, role.thinking_budget, role.max_tokens) == (True, 8192, 16384), name
-    # the architect thinks in 2,048 since 2026-10-26 (the roman bench, lever 1; 6,144 on 2026-11-04 only made
-    # its loop slower) and answers in up to 24,576 since 2026-11-01 (AIR-47 layer 02's package was cut off at
-    # 16,384); after three cut reads in a row it answers (AIR-54, AIR-55, AIR-59, 2026-11-04)
     architect = cfg.roles["architect"]
-    assert (architect.thinking, architect.thinking_budget, architect.max_tokens) == (True, 2048, 24576)
+    assert (architect.thinking, architect.thinking_budget, architect.max_tokens) == (True, 4096, 12288)
     assert (architect.answer_after_cuts, architect.last_turn_thinking) == (3, False)
-    coder = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"]
-    assert (coder.model, coder.thinking, coder.max_tokens) == ("generalist", False, 10240)  # no thinking
+    assert architect.think_when_red and architect.green_before_done
 
 
 def test_committed_config_declares_four_autostart_engines_and_the_bench_engines() -> None:
@@ -343,10 +442,12 @@ def test_committed_config_declares_four_autostart_engines_and_the_bench_engines(
         "small": "mlx_vlm",
         "decision": "mlx_vlm",
         "gemma": "mlx_vlm",
+        "chroma": "weights_only",
+        "wan": "weights_only",
     }
     autostart = [n for n, e in cfg.engines.items() if e.autostart]
     assert autostart == ["main", "small", "decision", "gemma"]
-    assert cfg.engines["main"].models == ["generalist"] and cfg.engines["main"].port == 8080
+    assert cfg.engines["main"].models == ["architect"] and cfg.engines["main"].port == 8080
     assert [n for n, e in cfg.engines.items() if e.decision] == ["decision"]
     assert cfg.engines["decision"].port == 8081 and cfg.router.model == "decider_2b"  # the 4b gate's pick
     decider = cfg.models["decider_2b"]
@@ -356,11 +457,13 @@ def test_committed_config_declares_four_autostart_engines_and_the_bench_engines(
     )
     assert (
         cfg.engines["main"]
-        .served_name("generalist")
-        .endswith(f"models--mlx-community--Qwen3.8-27B-4bit/snapshots/{cfg.models['generalist'].revision}")
+        .served_name("architect")
+        .endswith(
+            f"models--sh0wie--Qwen3.8-Flash-Next-REAP-288-MLX-4bit/snapshots/"
+            f"{cfg.models['architect'].revision}"
+        )
     )  # the HF-cache snapshot: the exact --model string
-    assert cfg.models["generalist"].tool_call_parser == "qwen3_coder"
-    assert cfg.models["reviewer"].tool_call_parser == "atem"
+    assert cfg.models["architect"].tool_call_parser == "qwen3_coder"
     gemma = cfg.models["gemma4"]
     assert (gemma.repo, gemma.revision, gemma.mtp, gemma.mtp_block_size, gemma.tool_call_parser) == (
         "mlx-community/gemma-4-26B-A4B-it-qat-8bit",
@@ -383,11 +486,13 @@ def test_profiles_carry_no_engine_or_model_overrides() -> None:
 
 def test_catalog_kv_constants_follow_each_models_attention_geometry() -> None:
     """kv_mb_per_1k_tokens is K and V in bf16 per token: the layers whose cache grows with the prompt × KV
-    heads × head dim × 4 bytes. The 2026-10-23 review (finding 8) found the generalist's copied from
+    heads × head dim × 4 bytes. The 2026-10-23 review (finding 8) found the architect's copied from
     Qwen2.5-32B, four times what its 16 full-attention layers hold, and the number had already shrunk a
     profile's KV."""
     models = load_config(ROOT / "airlie.yaml", NO_LOCAL).models
-    assert models["generalist"].kv_mb_per_1k_tokens == 64  # 16 full-attention layers × 4 heads × 256 dim
+    assert (
+        models["architect"].kv_mb_per_1k_tokens == 48
+    )  # Flash-Next hybrid; tighten after doctor documents layers
     assert models["small"].kv_mb_per_1k_tokens == 144  # 36 layers × 8 heads × 128 dim
     # 5 full-attention layers × 2 heads × 512 dim = 20, + the 25 sliding layers' fixed 1024-token window
     assert models["gemma4"].kv_mb_per_1k_tokens == 22
@@ -574,6 +679,7 @@ def test_a_profile_outside_the_kinds_can_be_a_parent_and_be_selected(tmp_path: P
 
 
 STUDIO_ROLES = {
+    "architect": {"prompt": "prompts/roles/architect.md", "model": "team", "tools": []},
     "chief": {"prompt": "prompts/roles/chief.md", "model": "team", "tools": []},
     "reviewer": {"prompt": "prompts/roles/reviewer.md", "model": "team", "tools": []},
     "security": {"prompt": "prompts/roles/security.md", "model": "team", "tools": ["read_file"]},
@@ -591,10 +697,10 @@ def test_studio_kind_loads_with_defaults_and_role_fields(tmp_path: Path) -> None
     (tmp_path / "skills" / "qa").mkdir(parents=True)
     cfg = load_config(write(tmp_path, data))
     assert cfg.topology.kind == "studio"
-    assert cfg.studio.chief_role == "chief" and cfg.studio.review.roles == ["coder", "security"]
+    assert cfg.studio.chief_role == "chief" and cfg.studio.review.roles == ["architect", "security"]
     assert cfg.studio.parallel == 3 and cfg.studio.review.rounds == 1
     assert cfg.roles["qa"].skills == (tmp_path / "skills" / "qa").resolve()
-    assert cfg.roles["qa"].tools == ["read_file", "run_tests"] and cfg.roles["coder"].tools is None
+    assert cfg.roles["qa"].tools == ["read_file", "run_tests"] and cfg.roles["architect"].tools == []
     assert cfg.roles["chief"].vision is False and cfg.roles["chief"].max_steps is None
 
 
@@ -607,18 +713,21 @@ def test_studio_kind_requires_chief_and_reviewer_roles(tmp_path: Path) -> None:
 def test_role_tools_must_be_known(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
-        "roles": {**MINIMAL["roles"], "coder": {**MINIMAL["roles"]["coder"], "tools": ["teleport"]}},
+        "roles": {**MINIMAL["roles"], "architect": {**MINIMAL["roles"]["architect"], "tools": ["teleport"]}},
     }
-    with pytest.raises(ConfigError, match=r"roles\.coder\.tools.*'teleport'"):
+    with pytest.raises(ConfigError, match=r"roles.architect\.tools.*'teleport'"):
         load_config(write(tmp_path, data))
 
 
 def test_role_skills_dir_must_exist(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
-        "roles": {**MINIMAL["roles"], "coder": {**MINIMAL["roles"]["coder"], "skills": "skills/nope"}},
+        "roles": {
+            **MINIMAL["roles"],
+            "architect": {**MINIMAL["roles"]["architect"], "skills": "skills/nope"},
+        },
     }
-    with pytest.raises(ConfigError, match=r"roles\.coder\.skills.*not a directory"):
+    with pytest.raises(ConfigError, match=r"roles.architect\.skills.*not a directory"):
         load_config(write(tmp_path, data))
 
 
@@ -645,7 +754,7 @@ def test_story_defaults(tmp_path: Path) -> None:
     assert (s.topology, s.trunk, s.remote) == ("studio", "main", "origin")
     assert (s.max_layers, s.stage_attempts, s.max_layer_criteria) == (5, 2, 3)
     roles = (s.product_role, s.architect_role, s.build_role)
-    assert roles == ("product", "architect", "coder")
+    assert roles == ("product", "architect", "architect")
     assert s.repo is None and s.test_cmd is None
     j = s.jira
     assert (j.site, j.project, j.email, j.token, j.jql, j.api_url) == (None,) * 6
@@ -1083,68 +1192,64 @@ def test_notifications_refuses_an_unknown_default_kind(tmp_path: Path) -> None:
 
 
 def test_a_role_without_on_context_full_defaults_to_stop(tmp_path: Path) -> None:
-    role = load_config(write(tmp_path, MINIMAL)).roles["coder"]
+    role = load_config(write(tmp_path, MINIMAL)).roles["architect"]
     assert role.on_context_full == "stop"
 
 
 def test_on_context_full_must_be_stop_or_trim(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
-        "roles": {**MINIMAL["roles"], "coder": {**MINIMAL["roles"]["coder"], "on_context_full": "pause"}},
+        "roles": {
+            **MINIMAL["roles"],
+            "architect": {**MINIMAL["roles"]["architect"], "on_context_full": "pause"},
+        },
     }
-    with pytest.raises(ConfigError, match=r"roles\.coder\.on_context_full must be one of: stop, trim"):
+    with pytest.raises(ConfigError, match=r"roles.architect\.on_context_full must be one of: stop, trim"):
         load_config(write(tmp_path, data))
 
 
 def test_on_context_full_trim_loads(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
-        "roles": {**MINIMAL["roles"], "coder": {**MINIMAL["roles"]["coder"], "on_context_full": "trim"}},
+        "roles": {
+            **MINIMAL["roles"],
+            "architect": {**MINIMAL["roles"]["architect"], "on_context_full": "trim"},
+        },
     }
-    assert load_config(write(tmp_path, data)).roles["coder"].on_context_full == "trim"
+    assert load_config(write(tmp_path, data)).roles["architect"].on_context_full == "trim"
 
 
-def test_the_committed_coder_has_a_write_schedule_and_a_schedule_must_put_tests_first(tmp_path: Path) -> None:
+def test_the_committed_architect_has_a_write_schedule_and_a_schedule_must_put_tests_first(
+    tmp_path: Path,
+) -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    ws = cfg.roles["coder"].write_schedule
+    ws = cfg.roles["architect"].write_schedule
     assert ws is not None and (ws.tests, ws.code) == (0.25, 0.75)
-    assert cfg.roles["architect"].write_schedule is None
     bad = {
         **MINIMAL,
         "roles": {
             **MINIMAL["roles"],
-            "coder": {**MINIMAL["roles"]["coder"], "write_schedule": {"tests": 0.8, "code": 0.5}},
+            "architect": {**MINIMAL["roles"]["architect"], "write_schedule": {"tests": 0.8, "code": 0.5}},
         },
     }
     with pytest.raises(ConfigError, match="write_schedule"):
         load_config(write(tmp_path, bad))
 
 
-def test_the_tester_is_a_read_only_critic_on_the_generalist() -> None:
-    """P2 (2026-10-24): the tester no longer writes tests; it is the third amigo and the package critic, with
-    the QA guidelines and read tools. On the generalist since 2026-10-26 (Noah): on the reviewer's model
-    (Muse) it lost the meeting's thread on airlie-sandbox; the layer's reviewer moved to Gemma 2026-11-12."""
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    tester = cfg.roles["tester"]
-    assert tester.model == "generalist" != cfg.roles["reviewer"].model and not tester.thinking
-    assert tester.tools == ["read_file", "list_dir", "grep", "compute"]  # compute writes nothing (bundle 6)
-    assert not MUTATING_TOOLS & set(tester.tools)
-    assert tester.skills is not None and tester.skills.name == "qa"
-
-
 def test_a_role_carries_1500_chars_of_cut_reasoning_unless_told_otherwise(tmp_path: Path) -> None:
     """AIR-30: on by default, so every thinking role (architect, chief, research) carries a cut
     deliberation to its next turn; it does nothing for a role that does not think."""
-    assert load_config(write(tmp_path, MINIMAL)).roles["coder"].carried_reasoning_chars == 1500
-    cfg = load_config(write(tmp_path, with_coder(carried_reasoning_chars=0)))
-    assert cfg.roles["coder"].carried_reasoning_chars == 0
+    assert load_config(write(tmp_path, MINIMAL)).roles["architect"].carried_reasoning_chars == 1500
+    cfg = load_config(write(tmp_path, with_architect(carried_reasoning_chars=0)))
+    assert cfg.roles["architect"].carried_reasoning_chars == 0
 
 
 def test_a_negative_carried_reasoning_chars_is_a_config_error_at_load(tmp_path: Path) -> None:
     with pytest.raises(ConfigError) as e:
-        load_config(write(tmp_path, with_coder(carried_reasoning_chars=-1)))
+        load_config(write(tmp_path, with_architect(carried_reasoning_chars=-1)))
     assert str(e.value) == (
-        "config invalid:\n  roles.coder.carried_reasoning_chars: Input should be greater than or equal to 0"
+        "config invalid:\n"
+        "  roles.architect.carried_reasoning_chars: Input should be greater than or equal to 0"
     )
 
 
@@ -1164,7 +1269,7 @@ def _minimal_without_roles() -> dict:
 
 def test_includes_merge_in_order_and_root_overrides_fragment(tmp_path: Path) -> None:
     (tmp_path / "inc").mkdir()
-    (tmp_path / "inc/a.yaml").write_text(yaml.safe_dump({"teams": {"k": 5, "role": "coder"}}))
+    (tmp_path / "inc/a.yaml").write_text(yaml.safe_dump({"teams": {"k": 5, "role": "architect"}}))
     (tmp_path / "inc/b.yaml").write_text(yaml.safe_dump({"teams": {"k": 4}}))
     base = write(
         tmp_path,
@@ -1185,7 +1290,7 @@ def test_merge_order_is_include_then_root_then_local_then_profile(tmp_path: Path
         {
             **_minimal_without_roles(),
             "includes": ["frag.yaml"],
-            "teams": {"k": 3},
+            "teams": {"k": 3, "role": "architect"},
             "topology": {
                 "kind": "single",
                 "profiles": {"pick": {"teams": {"k": 1}}},
@@ -1237,7 +1342,7 @@ def test_includes_key_never_reaches_schema(tmp_path: Path) -> None:
     (tmp_path / "frag.yaml").write_text(yaml.safe_dump({"teams": {"k": 1}}))
     base = write(
         tmp_path,
-        {**MINIMAL, "includes": ["frag.yaml"], "teams": {"k": 3}},
+        {**MINIMAL, "includes": ["frag.yaml"], "teams": {"k": 3, "role": "architect"}},
     )
     assert load_config(base).teams.k == 3
 
@@ -1260,7 +1365,7 @@ def test_included_role_prompt_resolves_against_root_config_dir(tmp_path: Path) -
         (tmp_path / role["prompt"]).write_text("# prompt\n")
     base = write(tmp_path, {**_minimal_without_roles(), "includes": ["config/roles.yaml"]})
     cfg = load_config(base)
-    assert cfg.roles["coder"].prompt == (tmp_path / "prompts/roles/coder.md").resolve()
+    assert cfg.roles["architect"].prompt == (tmp_path / "prompts/roles/architect.md").resolve()
 
 
 def test_story_specs_has_defaults_and_floors_and_names_only_roles(tmp_path: Path) -> None:
@@ -1364,7 +1469,7 @@ def _story(**overrides: object) -> dict:
         "topology": "studio",
         "product_role": "product",
         "architect_role": "architect",
-        "build_role": "coder",
+        "build_role": "architect",
     }
     base.update(overrides)
     return base
@@ -1429,7 +1534,7 @@ def test_a_glob_that_matches_nothing_is_an_error(tmp_path: Path) -> None:
 
 
 def test_the_shipped_story_workflow_declares_its_type() -> None:
-    assert load_config(Path("airlie.yaml")).workflows["story"].type == "story"
+    assert load_config(ROOT / "airlie.yaml", NO_LOCAL).workflows["story"].type == "story"
 
 
 def mlx(tmp_path: Path, engines: dict, *, roles: dict | None = None, models: dict | None = None):
@@ -1502,13 +1607,15 @@ def test_mlx_vlm_engine_defaults(tmp_path: Path) -> None:
 
 
 def test_a_role_on_an_mlx_vlm_engine_may_only_pass_known_template_arguments(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="roles.coder.chat_template_kwargs: mlx_vlm engines accept only"):
+    with pytest.raises(
+        ConfigError, match="roles.architect.chat_template_kwargs: mlx_vlm engines accept only"
+    ):
         mlx(
             tmp_path,
             {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team"}},
             roles={
-                "coder": {
-                    "prompt": "prompts/roles/coder.md",
+                "architect": {
+                    "prompt": "prompts/roles/architect.md",
                     "model": "team",
                     "chat_template_kwargs": {"foo": 1},
                 }
@@ -1570,12 +1677,6 @@ def test_hf_snapshot_dir_honours_an_explicit_cache(tmp_path: Path) -> None:
     assert got == tmp_path / "elsewhere" / "models--mlx-community--Qwen3.8-27B-4bit" / "snapshots" / "abc123"
 
 
-def test_gemma_serves_chat_at_262k() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    assert cfg.engines["gemma"].max_kv_size == 262144
-    assert cfg.roles["chat"].max_context == 262144
-
-
 # ---- engine lifecycles and the manager ----
 
 
@@ -1586,6 +1687,8 @@ def test_the_committed_lifecycles() -> None:
         "small": "on_demand",
         "decision": "pinned",
         "gemma": "pinned",
+        "chroma": "on_demand",
+        "wan": "on_demand",
     }
 
 
@@ -1712,10 +1815,20 @@ def test_superpowers_defaults(tmp_path: Path) -> None:
 
 
 def test_chat_task_defaults(tmp_path: Path) -> None:
-    task = load_config(write(tmp_path, MINIMAL)).chat.task
+    data = {
+        **MINIMAL,
+        "roles": {
+            **MINIMAL["roles"],
+            "architect": {"prompt": "prompts/roles/architect.md", "model": "team"},
+            "reviewer": {"prompt": "prompts/roles/reviewer.md", "model": "team"},
+            "product": {"prompt": "prompts/roles/product.md", "model": "team"},
+        },
+        "chat": {},
+    }
+    task = load_config(write(tmp_path, data)).chat.task
     assert (task.default_role, task.roles, task.max_steps, task.max_depth) == (
-        "coder",
-        ["coder", "reviewer", "tester", "architect"],
+        "architect",
+        ["architect", "reviewer", "product"],
         30,
         1,
     )
@@ -1723,21 +1836,23 @@ def test_chat_task_defaults(tmp_path: Path) -> None:
 
 def test_chat_task_rejects_a_role_that_does_not_exist(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"chat.task names role 'ghost', which is not in roles"):
-        load_config(_chat(tmp_path, {"task": {"roles": ["coder", "ghost"]}}))
+        load_config(_chat(tmp_path, {"task": {"roles": ["architect", "ghost"]}}))
 
 
 def test_chat_task_rejects_a_default_role_that_does_not_exist(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"chat.task names role 'ghost'"):
-        load_config(_chat(tmp_path, {"task": {"default_role": "ghost", "roles": ["coder"]}}))
+        load_config(_chat(tmp_path, {"task": {"default_role": "ghost", "roles": ["architect"]}}))
 
 
 def test_chat_task_default_role_must_be_one_a_model_may_choose(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"default_role 'judge' is not in chat.task.roles"):
-        load_config(_chat(tmp_path, {"task": {"default_role": "judge", "roles": ["coder"]}}))
+        load_config(_chat(tmp_path, {"task": {"default_role": "judge", "roles": ["architect"]}}))
 
 
 def test_chat_task_accepts_a_narrower_role_list(tmp_path: Path) -> None:
-    assert load_config(_chat(tmp_path, {"task": {"roles": ["coder"]}})).chat.task.roles == ["coder"]
+    assert load_config(
+        _chat(tmp_path, {"task": {"default_role": "architect", "roles": ["architect"]}})
+    ).chat.task.roles == ["architect"]
 
 
 @pytest.mark.parametrize("bad", [{"max_steps": 0}, {"max_depth": 2}, {"roles": []}])
@@ -1755,13 +1870,13 @@ def test_a_repository_chat_cannot_drop_a_confirmation_of_push_pr_or_build(
         load_config(_chat(tmp_path, {"kinds": {"repository": {"tools": ["skill"], "ask_first": listed}}}))
 
 
-def test_the_reviewer_is_a_different_lab_than_the_coder_and_runs_on_a_served_engine() -> None:
-    """Noah 2026-11-12: the reviewer (and the supervisor) run on gemma4 (Google), the coder on the generalist
-    (Qwen): a different lab on purpose, with no second model in memory; the Muse catalog entry stays."""
+def test_the_reviewer_is_a_different_lab_than_the_build_model_and_runs_on_a_served_engine() -> None:
+    """Noah 2026-11-12: the reviewer (and supervisor) run on gemma4; the architect on Qwen Flash-Next:
+    different labs on purpose, no second model in memory; Muse catalog dropped 2026-11-13."""
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     assert cfg.roles["reviewer"].model == cfg.roles["supervisor"].model == "gemma4"
-    assert "Qwen" in cfg.models["generalist"].repo and "gemma" in cfg.models["gemma4"].repo.lower()
-    assert "reviewer" not in cfg.engines and "reviewer" in cfg.models
+    assert "Qwen" in cfg.models["architect"].repo and "gemma" in cfg.models["gemma4"].repo.lower()
+    assert "reviewer" not in cfg.engines and "reviewer" not in cfg.models
 
 
 def test_github_app_source_needs_an_app_id(tmp_path: Path) -> None:

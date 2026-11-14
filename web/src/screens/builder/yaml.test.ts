@@ -89,7 +89,7 @@ test("the text looks like the shipped files: type and inputs first, flow lists a
   expect(text).toContain("        to:\n          - {node: gate, when: to_build}\n          - {node: request, when: config.story.survey}\n          - story_card\n");
   expect(text).toContain("        args: {stages: [survey, refine]}\n");
   expect(text).toContain("        events: {done: survey_done, failed: survey_failed}\n");
-  expect(text).toContain("        role: [product, architect, tester]\n");
+  expect(text).toContain("        role: [product, architect]\n");
   expect(text).toContain("      intake: {x: 0, y: 0}\n");
   expect(text.indexOf("    layout:")).toBeGreaterThan(text.indexOf("      review:"));
   expect(text).not.toContain("start");

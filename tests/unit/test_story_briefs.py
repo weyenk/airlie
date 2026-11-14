@@ -60,7 +60,7 @@ from tests.support.story_briefs import (
 
 PRS = [(11, "u11"), (12, "u12"), (13, "u13")]
 ROWS = [
-    {"id": "build", "role": "coder", "stop": "done", "review": "approve", "fix_rounds": 0, "findings": []}
+    {"id": "build", "role": "architect", "stop": "done", "review": "approve", "fix_rounds": 0, "findings": []}
 ]
 FOOT = "a human reviews and merges."
 
@@ -392,10 +392,10 @@ def test_the_package_brief_carries_the_rejection_feedback_when_asked_again() -> 
 
 
 def test_a_layer_plan_is_one_build_subtask_with_its_brief() -> None:
-    plan = layer_plan("the coder's brief", build_role="coder")
+    plan = layer_plan("the architect's brief", build_role="architect")
     [build] = plan.subtasks
-    assert (build.id, build.role_hint, build.depends_on, build.pinned) == ("build", "coder", (), False)
-    assert build.brief == "the coder's brief"
+    assert (build.id, build.role_hint, build.depends_on, build.pinned) == ("build", "architect", (), False)
+    assert build.brief == "the architect's brief"
     assert len(schedule(plan)) == 1
 
 
@@ -438,7 +438,7 @@ def test_pr_title_and_body() -> None:
         {"id": "tests", "role": "qa", "stop": "done", "review": "-", "fix_rounds": 0, "findings": []},
         {
             "id": "build",
-            "role": "coder",
+            "role": "architect",
             "stop": "done",
             "review": "approve",
             "fix_rounds": 1,
@@ -512,7 +512,7 @@ def test_model_text_stays_inside_its_section_of_the_pr() -> None:
     rows = [
         {
             "id": "build",
-            "role": "coder",
+            "role": "architect",
             "stop": "done",
             "review": "approve",
             "fix_rounds": 1,
@@ -534,7 +534,7 @@ def test_long_findings_are_cut_so_the_body_stays_under_the_limit() -> None:
     rows = [
         {
             "id": "build",
-            "role": "coder",
+            "role": "architect",
             "stop": "done",
             "review": "approve",
             "fix_rounds": 0,
@@ -560,7 +560,7 @@ def test_mentions_and_references_in_model_text_are_neutralised() -> None:
     rows = [
         {
             "id": "build",
-            "role": "coder",
+            "role": "architect",
             "stop": "done",
             "review": "approve",
             "fix_rounds": 0,
@@ -611,7 +611,7 @@ def _rows(*findings: str) -> list[dict[str, Any]]:
     return [
         {
             "id": "build",
-            "role": "coder",
+            "role": "architect",
             "stop": "done",
             "review": "approve",
             "fix_rounds": 1,
@@ -706,7 +706,7 @@ def test_a_finding_saved_with_a_lone_surrogate_still_makes_a_body_that_can_be_wr
     rows = [
         {
             "id": "build",
-            "role": "coder",
+            "role": "architect",
             "stop": "done",
             "review": "approve",
             "fix_rounds": 0,

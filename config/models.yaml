@@ -2,9 +2,9 @@
 # Spec 01 §1 names Llama-3.3-70B-Instruct-4bit or Qwen2.5-32B-Instruct-4bit for the base-model slot. Noah 2026-10-12:
 # a modern model for the same slot is fine as long as it stays configurable and benchmarkable; the spec's two left the
 # catalog with the mlx-vlm engine (design 2026-11-08), never benched.
-# The team model is `generalist` (Qwen3.8-27B, hybrid attention): the engine's hybrid prefix cache (engine/patches/
-# hybrid_prefix_cache.py) keeps a resumed turn from re-prefilling its whole prompt. Qwen3-Coder was dropped as the
-# team model (Noah 2026-10-18: AIR-5 showed its 6-bit fidelity too low for the speed).
+# The team model is `architect` (Qwen3.8-Flash-Next REAP, hybrid attention): the engine's hybrid prefix cache
+# (engine/patches/hybrid_prefix_cache.py) keeps a resumed turn from re-prefilling its whole prompt.
+# Qwen3-Coder was dropped as the team model (Noah 2026-10-18: AIR-5 showed its 6-bit fidelity too low for the speed).
 # To swap the team model: change `roles.coder.model`.
 models:
   small:
@@ -12,18 +12,18 @@ models:
     revision: 4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25   # 2025-04-28
     estimated_memory_gb: 3
     kv_mb_per_1k_tokens: 144
-  generalist:                      # Qwen3.8-27B: the team model (coder, security, aggregator) and the chief; vision; hybrid attention
-    repo: mlx-community/Qwen3.8-27B-4bit
-    label: Qwen 3.8
-    revision: 10c35caafbb80f7dc6a7a432cdd11af10a6d4818   # 2026-09-14
-    mtp:                           # its MTP head (BF16, 0.85 GB; the 4-bit build drops it): speculative decoding,
-      repo: mlx-community/Qwen3.8-27B-MTP-bf16                # the same output distribution, faster decode
-      revision: 9b1e8ab2bcfd157956a4d85927310de551fcdab1   # 2026-08-14
-      estimated_memory_gb: 0.85
+  architect:                       # Qwen3.8-Flash-Next REAP (team/coding model; same name as the role)
+    repo: sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit
+    label: Qwen 3.8 Flash Next
+    revision: 668f31bcc56bf9400e64c9463445eee47597c2d9   # 2026-11-13
+    mtp:
+      repo: sh0wie/Qwen3.8-Flash-Next-MTP-Drafter-MLX-bf16
+      revision: be6e2bc325d41ac7858b99269a96c495349b494d   # 2026-11-13
+      estimated_memory_gb: 0.6
     bench: true
-    estimated_memory_gb: 16.1
-    kv_mb_per_1k_tokens: 64
-    tool_call_parser: qwen3_coder  # Qwen3.8 writes Qwen3-Coder's XML
+    estimated_memory_gb: 10.5      # REAP 4-bit MoE; `task doctor` warns if pull differs — re-measure after first pull
+    kv_mb_per_1k_tokens: 48        # Flash-Next hybrid; tighten after doctor documents actual layers
+    tool_call_parser: qwen3_coder
     tags: [modern, coder, vision, hybrid-attention]
   gemma4:                          # Gemma 4 26B-A4B-it QAT 8-bit: chat, design, ux
     label: Gemma 4
@@ -36,13 +36,6 @@ models:
     kv_mb_per_1k_tokens: 22
     tool_call_parser: gemma4
     tags: [modern, vision, chat]
-  reviewer:                        # Muse Glimmer 30B (Meta, Apache 2.0): not served by default since 2026-11-12; the reviewer role is on gemma4
-    repo: mlx-community/Muse-Glimmer-30B-4bit
-    revision: 3e7677d7a40d348a3daba263a2b1c0aa41910710   # 2026-08-10
-    estimated_memory_gb: 19.4
-    kv_mb_per_1k_tokens: 64        # 2 KV heads × 128 dim × 52 layers, 3/4 of them sliding-window
-    tool_call_parser: atem         # mlx-vlm's name for Muse's tool-call format
-    tags: [modern, vision, reviewer]
   decider_2b:                      # the decision model (router, decide tool) on mlx-vlm's /v1/decisions
     repo: nativ-community/decider-2b   # the repo mlx-vlm documents; Mapika/decider-2b fails to load on 0.7.12 and
                                        # clef-flash-4bit is no decision model there. LiquidAI/d1-3B is the documented
@@ -53,3 +46,15 @@ models:
     repo: Qwen/Qwen3-0.6B
     revision: c1899de289a04d12100db370d81485cdf75e47ca
     estimated_memory_gb: 1.5
+  chroma_hd:
+    repo: tillknuesting/chroma1-hd-mlx
+    label: Chroma HD
+    revision: 0b794d9391239d85530d2db3b4091b8b093d1af6
+    estimated_memory_gb: 14.0
+    tags: [image-generation, mlx, diffusers]
+  wan_t2v:
+    repo: PocketAiHub/Wan2.2-T2V-A14B-MLX
+    label: Wan 2.2 T2V
+    revision: 86bfc9847512a9eb66886388b8b92ba81e0b6729
+    estimated_memory_gb: 32.0
+    tags: [video-generation, mlx, moe]

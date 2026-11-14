@@ -57,7 +57,7 @@ def make(routes: dict[str, Any] | None = None, spec: RoleSpec | None = None, **k
 
 def req(**kw: Any) -> GenRequest:
     base: dict[str, Any] = {
-        "role": "coder",
+        "role": "architect",
         "messages": [Message(role="user", content="hi")],
         "sampling": Sampling(),
         "max_tokens": 7,

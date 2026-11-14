@@ -17,7 +17,7 @@ engines:
   main:                            # the team model; its MTP head rides as the draft model
     kind: mlx_vlm
     port: 8080
-    model: generalist
+    model: architect
     max_num_seqs: 16               # docs/wiki/build-spec/02 §1
     max_kv_size: 131072
     kv_bits: 8
@@ -46,13 +46,25 @@ engines:
     port: 8084
     model: gemma4
     max_num_seqs: 8
-    max_kv_size: 262144
+    max_kv_size: 131072
     kv_bits: 8
     prefill_step_size: 2048
     prefix_cache: true              # same as main; mlx-vlm Gemma 4 MTP docs do not disable APC (issue #1471 is DFlash/EAGLE)
     cache_memory_gb: 4
     cache_checkpoints: 8
     max_image_px: 1536
+  chroma:
+    kind: weights_only
+    model: chroma_hd
+    lifecycle: on_demand
+    autostart: false
+    idle_unload_s: 300
+  wan:
+    kind: weights_only
+    model: wan_t2v
+    lifecycle: on_demand
+    autostart: false
+    idle_unload_s: 300
 
 
 # ---- Tools --------------------------------------------------------------------------------------------------------
@@ -107,8 +119,8 @@ chat:
     history_images: 4
     history_videos: 1
   task:                            # the repository chat's `task` tool: a fresh-context subagent in the session's VM
-    default_role: coder
-    roles: [coder, reviewer, tester, architect]
+    default_role: architect
+    roles: [architect, reviewer, product]
     max_steps: 30
     max_depth: 1
   sources: [github_app]            # the panel's repositories come from each person's linked GitHub account (device flow)
@@ -169,7 +181,7 @@ scheduler:
   starvation_ms: 30000
 teams:                             # k: 1 = single agent (bench 2026-10-13); spec: k: 3
   k: 1
-  role: coder
+  role: architect
   orchestrator: native
   max_steps: 40
   token_budget: 200000
@@ -209,6 +221,7 @@ observability:
 # repository's AGENTS.md "## Test gate". Personal settings go in airlie.local.yaml.
 story:
   topology: studio                 # the profile story runs load (start the engines with `task restart`)
+  build_role: architect
   trunk: main                      # the stack's base branch
   publish: single                  # one draft PR on the top layer's branch; stack = one per layer, the schema default
   max_layers: 5
@@ -296,7 +309,7 @@ line:
 #   heartbeat_s: 60                  # keeps a running job's hub lease alive (hub LEASE_SECONDS, default 300)
 #   kinds: [studio, llm]
 #   llm:                             # the llm kind: a raw catalog model, the job's persona is the only system text
-#     model: generalist
+#     model: architect
 #     max_tokens: 16384              # caps thinking plus answer; must exceed thinking_budget
 #     thinking: true
 #     thinking_budget: 8192

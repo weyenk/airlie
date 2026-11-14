@@ -1,28 +1,5 @@
 # ---- Roles --------------------------------------------------------------------------------------------------------
 roles:
-  coder:                           # the team agent: ReAct loop with repo tools
-    prompt: prompts/roles/coder.md
-    model: generalist
-    max_context: 65536
-    max_tokens: 10240                # the answer alone (no thinking): room for a whole-file write (HDS-5)
-    thinking: false                  # 2026-10-18: the architect's brief is the plan. A thinking coder (Qwen3.8) ran its
-                                     # budget out re-deliberating the brief every step and read instead of writing
-                                     # (AIR-7, AIR-28: 10 of 21 steps at the cap); its fast steps were the ones where
-                                     # it did not think
-    nudge_stuck: true              # told once to do something else when it repeats an action, not stopped
-    green_before_done: true        # told once to go on when it answers with run_tests failing (AIR-5 layer 02)
-    think_when_red: true           # thinks only while its last run_tests failed (and may only write then): roman 2026-10-28
-    thinking_budget: 4096          # rewrote the same wrong file three times red; at 2048 every red step was cut and read
-    write_schedule:                # a test written by a quarter of its steps, code by three quarters,
-      tests: 0.25                  # else told once, then write-only tools (AIR-28: it read 21 of 40 steps)
-      code: 0.75
-    sampling:                      # low temp; 1.05 guards against repetition collapse
-      temperature: 0.3
-      top_p: 0.8
-      top_k: 20
-      min_p: 0.0
-      presence_penalty: 0.0
-      repetition_penalty: 1.05
   summarizer:                      # LTS summary keys (15–20 words), stateless
     prompt: prompts/roles/summarizer.md
     model: small
@@ -64,7 +41,7 @@ roles:
   # (HDS-3, 2026-10-15). These roles use 16384 over a budget of 8192, which leaves up to 8192 tokens for the answer.
   chief:
     prompt: prompts/roles/chief.md
-    model: generalist
+    model: architect
     tools: [web_search, web_fetch]
     max_steps: 4
     max_context: 131072
@@ -83,7 +60,7 @@ roles:
     model: gemma4
     tools: []
     vision: true
-    max_context: 262144
+    max_context: 131072
     max_tokens: 16384
     thinking: true
     thinking_budget: 8192
@@ -95,7 +72,7 @@ roles:
       presence_penalty: 0.0
   lhr:                             # LHR authoring via lhr-office (Chat /lhr-publish only; not a chat model name)
     prompt: prompts/roles/lhr.md
-    model: generalist
+    model: architect
     tools:
       - lhr_create_draft
       - lhr_update_section
@@ -117,48 +94,32 @@ roles:
       presence_penalty: 0.0
   architect:
     prompt: prompts/roles/architect.md
-    model: generalist
-    tools: [read_file, list_dir, grep, compute]
+    model: architect
+    skills: skills/qa
+    tools: [read_file, write_file, edit_file, list_dir, grep, shell, run_tests, git, compute]
     max_context: 131072
-    # 16384 until 2026-11-01: AIR-47 layer 02's package (8 tests added to test_story_pipeline.py, 40k chars of
-    # tests + 13k of files, steps and covers) was cut off at the cap; the reply was the package, not a copied file
-    max_tokens: 24576
+    max_tokens: 12288                  # 4096 thinking_budget + 8192 answer headroom on package turns; build uses less
     thinking: true
-    # 8192 until 2026-10-26: the roman bench's architect wrote to the cap on nearly every call (lever 1 of 3,
-    # Noah). 6144 for a few hours on 2026-11-04 (PR 234) did not help: it thought to that cap too, four minutes
-    # a step, and began each step's design again; answer_after_cuts ends that loop instead
-    thinking_budget: 2048
-    # AIR-54, AIR-55, AIR-59 (2026-11-04): every cut package step began the design again behind a filler read
-    # until the repeat guard or max_steps (20 unusable packages against 17 ready since 2026-10-26); after three
-    # cut reads in a row it answers from all of its last reasoning. Not two: AIR-54's layer 02 would have
-    # answered having read two files
+    thinking_budget: 4096
     answer_after_cuts: 3
     last_turn_thinking: false
     nudge_stuck: true
-    max_steps: 20
+    green_before_done: true
+    think_when_red: true
+    write_schedule:
+      tests: 0.25
+      code: 0.75
+    max_steps: 40
     sampling:
       temperature: 0.3
-      top_p: 0.9
+      top_p: 0.8
       top_k: 20
       min_p: 0.0
       presence_penalty: 0.0
-  tester:                          # P2 (2026-10-24): the third amigo and the package critic; reads, never writes. On the generalist since 2026-10-26 (Noah): on Muse it lost the meeting's thread in runs 6, 8 and 10 on airlie-sandbox (empty turns, the opening echoed, its own proof never posted); the layer's reviewer stays on Muse
-    prompt: prompts/roles/tester.md
-    model: generalist
-    tools: [read_file, list_dir, grep, compute]
-    skills: skills/qa
-    max_context: 131072
-    max_tokens: 8192
-    thinking: false
-    sampling:
-      temperature: 0.2
-      top_p: 0.9
-      top_k: 20
-      min_p: 0.0
-      presence_penalty: 0.0
+      repetition_penalty: 1.05
   product:
     prompt: prompts/roles/product.md
-    model: generalist
+    model: gemma4
     tools: [read_file, list_dir, compute]
     max_tokens: 8192                # an epic set is longer than a story (the specs phase, 2026-10-25)
     max_context: 131072             # the imagining conversation holds the consultations
@@ -200,7 +161,7 @@ roles:
       presence_penalty: 0.0
   docs:
     prompt: prompts/roles/docs.md
-    model: generalist
+    model: architect
     tools: [read_file, list_dir, grep]
     max_tokens: 4096
     thinking: false
@@ -213,7 +174,7 @@ roles:
       presence_penalty: 0.0
   research:
     prompt: prompts/roles/research.md
-    model: generalist
+    model: architect
     tools: [read_file, list_dir, grep, search_knowledge, web_search, web_fetch]
     knowledge: knowledge/research
     max_tokens: 16384
@@ -228,7 +189,7 @@ roles:
       presence_penalty: 0.0
   security:
     prompt: prompts/roles/security.md
-    model: generalist
+    model: architect
     tools: [read_file, list_dir, grep]
     max_tokens: 4096
     thinking: false
@@ -240,7 +201,7 @@ roles:
       min_p: 0.0
       presence_penalty: 0.0
       repetition_penalty: 1.05
-  reviewer:                        # on Gemma since 2026-11-12 (Noah): a different lab than the coder's Qwen, already resident, so no second model in memory; Muse stays defined as the `reviewer` model
+  reviewer:                        # on Gemma since 2026-11-12 (Noah): a different lab than the coder's Qwen, already resident, so no second model in memory
     prompt: prompts/roles/reviewer.md
     model: gemma4
     tools: [web_search, web_fetch]
@@ -270,7 +231,7 @@ roles:
       presence_penalty: 0.0
   aggregator:                      # spec 01 §4 step 9: combines team outputs into the final verified answer
     prompt: prompts/roles/aggregator.md
-    model: generalist
+    model: architect
     max_context: 65536
     max_tokens: 4096
     thinking: false

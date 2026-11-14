@@ -42,7 +42,7 @@ def _prompt(tmp_path: Path, role: str, body: str) -> Path:
 
 def test_instruction_sets_hold_every_text_that_reaches_a_role(tmp_path: Path) -> None:
     roles = {
-        "coder": _prompt(tmp_path, "coder", "# coder\nWrite code."),
+        "coder": _prompt(tmp_path, "architect", "# coder\nWrite code."),
         "qa": _prompt(tmp_path, "qa", "# qa"),
     }
     texts = [
@@ -57,7 +57,7 @@ def test_instruction_sets_hold_every_text_that_reaches_a_role(tmp_path: Path) ->
 
     coder = sets["coder"]
     # the role prompt first, without its front matter; then the rules, then the steering, each by source
-    assert coder.startswith("## role:coder\n\n# coder\nWrite code.")
+    assert coder.startswith("## role:architect\n\n# coder\nWrite code.")
     assert "summary:" not in coder and "governs" not in coder
     names = ("coder-only", "for-everyone", "slow-down", "write-now")  # rules by id, then steering by id
     places = [coder.index(f"## {name}\n") for name in names]
@@ -105,9 +105,9 @@ def test_audit_can_be_limited_to_some_roles_and_reports_a_role_the_engine_failed
 
     report = _run(audit(cfg, engine, ["coder"], lambda role, reply: seen.append((role, reply))))
 
-    assert len(engine.requests) == 1 and "## role:coder" in engine.requests[0].messages[1].content
+    assert len(engine.requests) == 1 and "## role:architect" in engine.requests[0].messages[1].content
     assert re.findall(r"^## (\S+)$", report, flags=re.MULTILINE) == ["coder"]
-    assert len(seen) == 1 and seen[0][0] == "coder" and seen[0][1].startswith("(no reply")
+    assert len(seen) == 1 and seen[0][0] == "architect" and seen[0][1].startswith("(no reply")
 
     failing = FakeEngine()  # no script for the reviewer: every ask is an EngineError
     report = _run(audit(cfg, failing, ["coder", "qa"]))

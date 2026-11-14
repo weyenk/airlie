@@ -35,7 +35,7 @@ def repo_with_marker_tests(tmp_path: Path) -> Path:
 def cfg_for(tmp_path: Path, **fork: object):  # type: ignore[no-untyped-def]
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir(exist_ok=True)
-    for r in ("coder", "summarizer", "judge", "aggregator"):
+    for r in ("architect", "summarizer", "judge", "aggregator"):
         (cfg_dir / f"{r}.md").write_text(f"you are {r}")
     data = {
         "version": 1,
@@ -43,7 +43,7 @@ def cfg_for(tmp_path: Path, **fork: object):  # type: ignore[no-untyped-def]
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
-            for r in ("coder", "summarizer", "judge", "aggregator")
+            for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"orchestrator": "native", "max_steps": 10},
         "tools": {"builtin": ["write_file", "run_tests"]},

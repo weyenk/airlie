@@ -43,7 +43,7 @@ def steers(report):  # type: ignore[no-untyped-def]
 async def test_plan_route_run_review_synthesis(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     engine = FakeEngine(
-        {"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [APPROVE]}
+        {"chief": [PLAN, SYNTH], "architect": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [APPROVE]}
     )
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
@@ -64,14 +64,14 @@ async def test_a_step_event_names_the_model_role_and_topology_that_took_it(tmp_p
     slice a run by model. Each step names its own subtask's role, and that role's model."""
     repo = repo_with_marker_tests(tmp_path)
     engine = FakeEngine(
-        {"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [APPROVE]}
+        {"chief": [PLAN, SYNTH], "architect": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [APPROVE]}
     )
     report = await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task(
         "fix the build", repo=repo, test_cmd="./check.sh"
     )
     steps = [e for e in events(report) if e["kind"] == "step"]
     assert steps and {(e["team_id"], e["role"], e["model"], e["topology"]) for e in steps} == {
-        ("fix", "coder", "base", "studio")
+        ("fix", "architect", "base", "studio")
     }
 
 
@@ -84,7 +84,7 @@ async def test_a_subtask_that_follows_a_writer_starts_with_that_writers_files_as
     d = json.loads(PLAN.text)
     d["subtasks"] = [
         {"id": "t", "role": "qa", "brief": "write the test"},
-        {"id": "fix", "role": "coder", "brief": "make the check pass", "depends_on": ["t"]},
+        {"id": "fix", "role": "architect", "brief": "make the check pass", "depends_on": ["t"]},
     ]
     write_test = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "tests/test_x.py", "content": "x\n"}))]
@@ -93,7 +93,7 @@ async def test_a_subtask_that_follows_a_writer_starts_with_that_writers_files_as
         {
             "chief": [FakeReply(text=json.dumps(d)), SYNTH],
             "qa": [write_test, DONE],
-            "coder": [WRITE_PASS, RUN, DONE],
+            "architect": [WRITE_PASS, RUN, DONE],
             "reviewer": [APPROVE],
         }
     )
@@ -125,7 +125,7 @@ async def test_a_writers_files_committed_by_a_checkpoint_still_count_as_already_
     d = json.loads(PLAN.text)
     d["subtasks"] = [
         {"id": "t", "role": "qa", "brief": "write the test"},
-        {"id": "fix", "role": "coder", "brief": "make the check pass", "depends_on": ["t"]},
+        {"id": "fix", "role": "architect", "brief": "make the check pass", "depends_on": ["t"]},
     ]
     write_test = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "tests/test_x.py", "content": "x\n"}))]
@@ -134,7 +134,7 @@ async def test_a_writers_files_committed_by_a_checkpoint_still_count_as_already_
         {
             "chief": [FakeReply(text=json.dumps(d)), SYNTH],
             "qa": [write_test, DONE],
-            "coder": [WRITE_PASS, RUN, DONE],
+            "architect": [WRITE_PASS, RUN, DONE],
             "reviewer": [APPROVE],
         }
     )
@@ -173,7 +173,7 @@ async def test_prepare_runs_on_the_worktree_after_the_base_commit_and_before_the
     repo = repo_with_marker_tests(tmp_path)
     cfg = cfg_for(tmp_path, review={"enabled": False}, extra={"repo_map": {"enabled": True}})
     build = Plan((), (Subtask("build", "make the check pass", "coder"),))
-    engine = FakeEngine({"coder": [WRITE_PASS, RUN, DONE]})
+    engine = FakeEngine({"architect": [WRITE_PASS, RUN, DONE]})
     orch = StudioOrchestrator(cfg, engine, router=ChiefRouter())
     seen: list[Any] = []
     real_run = orch.team.run
@@ -217,7 +217,7 @@ async def test_a_done_coder_checks_its_diff_against_the_criteria_before_review(t
     engine = FakeEngine(
         {
             "chief": [plan_with_criteria(), SYNTH],
-            "coder": [WRITE_PASS, RUN, DONE, tick],
+            "architect": [WRITE_PASS, RUN, DONE, tick],
             "docs": [DONE],
             "reviewer": [APPROVE],
         }
@@ -236,12 +236,12 @@ async def test_a_done_coder_checks_its_diff_against_the_criteria_before_review(t
     kinds = [e["kind"] for e in ev]
     assert kinds.index("done_check") < kinds.index("done_check_done") < kinds.index("review")
     check = [e for e in ev if e["kind"] == "done_check"][0]
-    assert (check["subtask"], check["role"], check["fresh"]) == ("fix", "coder", False)
+    assert (check["subtask"], check["role"], check["fresh"]) == ("fix", "architect", False)
     done = [e for e in ev if e["kind"] == "done_check_done"][0]
     assert (done["stop_reason"], done["steps"], done["changed"]) == ("done", 0, False)
     fix_ctxs = [c for c in seen if c.team_id == "fix"]
     assert [(c.attempt, c.must_act, c.max_steps) for c in fix_ctxs] == [(0, True, 6), (1, False, 12)]
-    nudge = [r for r in engine.requests if r.role == "coder"][3].messages[-1].content
+    nudge = [r for r in engine.requests if r.role == "architect"][3].messages[-1].content
     assert nudge.startswith("Before review") and "```diff" in nudge and "+ok" in nudge
     assert [e["verdict"] for e in ev if e["kind"] == "review"] == ["approve"]
     assert report.final_answer == "all done"
@@ -253,7 +253,12 @@ async def test_the_done_check_is_off_by_config_and_off_for_a_brief_without_crite
         base.mkdir()
         repo = repo_with_marker_tests(base)
         engine = FakeEngine(
-            {"chief": [plan, SYNTH], "coder": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [APPROVE]}
+            {
+                "chief": [plan, SYNTH],
+                "architect": [WRITE_PASS, RUN, DONE],
+                "docs": [DONE],
+                "reviewer": [APPROVE],
+            }
         )
         orch = StudioOrchestrator(cfg_for(base, **studio), engine, router=ChiefRouter())
         report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
@@ -268,7 +273,7 @@ async def test_studio_done_check_emits_a_steer_event(tmp_path: Path) -> None:
     engine = FakeEngine(
         {
             "chief": [plan_with_criteria(), SYNTH],
-            "coder": [WRITE_PASS, RUN, DONE, FakeReply(text="AC1 met: `+ok` in PASS")],
+            "architect": [WRITE_PASS, RUN, DONE, FakeReply(text="AC1 met: `+ok` in PASS")],
             "docs": [DONE],
             "reviewer": [APPROVE],
         }
@@ -276,11 +281,11 @@ async def test_studio_done_check_emits_a_steer_event(tmp_path: Path) -> None:
     report = await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task(
         "fix the build", repo=repo, test_cmd="./check.sh"
     )
-    assert steers(report) == [{"id": "done-check", "role": "coder", "subtask": "fix"}]
+    assert steers(report) == [{"id": "done-check", "role": "architect", "subtask": "fix"}]
     ev = events(report)
     kinds = ["studio-steer" if e["kind"] == "steer" and "subtask" in e else e["kind"] for e in ev]
     assert kinds.index("studio-steer") < kinds.index("done_check") < kinds.index("done_check_done")
-    nudge = [r for r in engine.requests if r.role == "coder"][3].messages[-1].content
+    nudge = [r for r in engine.requests if r.role == "architect"][3].messages[-1].content
     assert nudge.startswith(f"{hub_text('done-check')}\n\n## Your diff\n```diff\n")
 
 
@@ -289,7 +294,7 @@ async def test_request_changes_gives_one_fix_round_then_continues(tmp_path: Path
     engine = FakeEngine(
         {
             "chief": [PLAN, SYNTH],
-            "coder": [WRITE_PASS, RUN, DONE, WRITE_PASS, DONE],  # second DONE ends the fix round
+            "architect": [WRITE_PASS, RUN, DONE, WRITE_PASS, DONE],  # second DONE ends the fix round
             "docs": [DONE],
             "reviewer": [CHANGES, APPROVE],
         }
@@ -313,7 +318,7 @@ async def test_request_changes_gives_one_fix_round_then_continues(tmp_path: Path
     assert [c.already_written for c in fix_ctxs] == [(), ("PASS",)]
     assert [c.attempt for c in fix_ctxs] == [0, 1]  # the fix round's steps are traced under fix/round-1
     assert all(c.must_act for c in seen)  # a build's first reply of prose is sent back once
-    nudge = [r for r in engine.requests if r.role == "coder"][3].messages[-1].content
+    nudge = [r for r in engine.requests if r.role == "architect"][3].messages[-1].content
     assert nudge.startswith("A reviewer found blocking problems") and "PASS:1" in nudge
     assert report.final_answer == "all done"
 
@@ -326,7 +331,7 @@ async def test_a_fix_round_on_a_long_conversation_starts_fresh_with_the_findings
     engine = FakeEngine(
         {
             "chief": [PLAN, SYNTH],
-            "coder": [WRITE_PASS, RUN, DONE, WRITE_PASS, DONE],
+            "architect": [WRITE_PASS, RUN, DONE, WRITE_PASS, DONE],
             "docs": [DONE],
             "reviewer": [CHANGES, APPROVE],
         }
@@ -342,13 +347,13 @@ async def test_a_fix_round_on_a_long_conversation_starts_fresh_with_the_findings
 
     orch.team.run = run  # type: ignore[method-assign]
     report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
-    fix_req = [r for r in engine.requests if r.role == "coder"][3]
+    fix_req = [r for r in engine.requests if r.role == "architect"][3]
     assert [m.role for m in fix_req.messages] == ["system", "user"]  # a new conversation, not the old one
     goal = str(fix_req.messages[1].content)
     assert "A reviewer found blocking problems" in goal and "PASS:1" in goal and "worktree" in goal
     fresh = [e for e in events(report) if e["kind"] == "fresh_continuation"]
     assert len(fresh) == 1 and fresh[0]["subtask"] == "fix"
-    assert steers(report) == [{"id": "fresh-continuation", "role": "coder", "subtask": "fix"}]
+    assert steers(report) == [{"id": "fresh-continuation", "role": "architect", "subtask": "fix"}]
     assert hub_text("fresh-continuation") in goal
     # a new conversation is still the second run of the team: its steps are traced apart from the first's
     # (AIR-7 layer 02 attempt 5, 2026-10-18: a fresh fix round wrote step-001.json over the build run's)
@@ -363,7 +368,7 @@ async def test_a_fix_round_on_a_short_conversation_continues_it(tmp_path: Path) 
     engine = FakeEngine(
         {
             "chief": [PLAN, SYNTH],
-            "coder": [WRITE_PASS, RUN, DONE, WRITE_PASS, DONE],
+            "architect": [WRITE_PASS, RUN, DONE, WRITE_PASS, DONE],
             "docs": [DONE],
             "reviewer": [CHANGES, APPROVE],
         }
@@ -371,7 +376,7 @@ async def test_a_fix_round_on_a_short_conversation_continues_it(tmp_path: Path) 
     report = await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task(
         "fix the build", repo=repo, test_cmd="./check.sh"
     )
-    fix_req = [r for r in engine.requests if r.role == "coder"][3]
+    fix_req = [r for r in engine.requests if r.role == "architect"][3]
     assert len(fix_req.messages) > 2  # the earlier turns are still there
     assert not [e for e in events(report) if e["kind"] == "fresh_continuation"]
     assert steers(report) == []  # a continued conversation is not told it is a fresh one
@@ -383,7 +388,7 @@ async def test_a_reviewer_reply_cut_off_with_no_visible_text_is_an_error_review_
     repo = repo_with_marker_tests(tmp_path)
     cut = FakeReply(reasoning="Checking the diff. ", finish_reason="length")
     engine = FakeEngine(
-        {"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [cut]}
+        {"chief": [PLAN, SYNTH], "architect": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [cut]}
     )
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
@@ -405,7 +410,7 @@ async def test_a_review_still_unparsable_after_its_fix_turn_skips_the_fix_round(
     engine = FakeEngine(
         {
             "chief": [PLAN, SYNTH],
-            "coder": [WRITE_PASS, RUN, DONE],
+            "architect": [WRITE_PASS, RUN, DONE],
             "docs": [DONE],
             "reviewer": [FakeReply(text="fine"), FakeReply(text="still fine")],
         }
@@ -434,7 +439,7 @@ async def test_hint_to_an_unroutable_role_is_ignored(tmp_path: Path) -> None:
             {"type": "plan", "subtasks": [{"id": "x", "role": "chief", "brief": "write docs for the repo"}]}
         )
     )
-    engine = FakeEngine({"chief": [plan, SYNTH], "docs": [DONE], "coder": [DONE]})
+    engine = FakeEngine({"chief": [plan, SYNTH], "docs": [DONE], "architect": [DONE]})
 
     class TopRouter:  # a jev-like router: ignores the hint when it is not in the closed set
         async def route(self, brief, criteria, hint=None, *, question="role", instructions=""):  # type: ignore[no-untyped-def]
@@ -454,8 +459,8 @@ async def test_writers_are_serialised_readers_run_in_parallel(tmp_path: Path) ->
             {
                 "type": "plan",
                 "subtasks": [
-                    {"id": "a", "role": "coder", "brief": "write a"},
-                    {"id": "b", "role": "coder", "brief": "write b"},
+                    {"id": "a", "role": "architect", "brief": "write a"},
+                    {"id": "b", "role": "architect", "brief": "write b"},
                     {"id": "r", "role": "docs", "brief": "read"},
                 ],
             }
@@ -470,7 +475,7 @@ async def test_writers_are_serialised_readers_run_in_parallel(tmp_path: Path) ->
             order.append(f"end:{req.role}")
             return await super().generate(req, on_token)
 
-    engine = SlowEngine({"chief": [plan, SYNTH], "coder": [DONE, DONE], "docs": [DONE]})
+    engine = SlowEngine({"chief": [plan, SYNTH], "architect": [DONE, DONE], "docs": [DONE]})
     cfg = cfg_for(tmp_path, review={"enabled": False})
     await StudioOrchestrator(cfg, engine, router=ChiefRouter()).execute_task("g", repo=repo)
     coder_starts = [i for i, x in enumerate(order) if x == "start:coder"]
@@ -497,7 +502,7 @@ async def test_delegate_may_depend_on_a_finished_subtask_and_reviews_are_traced(
     engine = FakeEngine(
         {
             "chief": [PLAN, delegate, SYNTH],
-            "coder": [WRITE_PASS, RUN, DONE],
+            "architect": [WRITE_PASS, RUN, DONE],
             "docs": [DONE, DONE],
             "reviewer": [APPROVE],
         }
@@ -519,7 +524,7 @@ async def test_every_hand_off_is_logged_with_what_was_handed_over(tmp_path: Path
     engine = FakeEngine(
         {
             "chief": [PLAN, SYNTH],
-            "coder": [
+            "architect": [
                 WRITE_PASS,
                 RUN,
                 FakeReply(text="wrote PASS"),
@@ -594,12 +599,12 @@ async def test_chief_router_without_a_usable_hint_falls_back_instead_of_raising(
     (tmp_path / "skills" / "unit.md").write_text("---\nsummary: Unit tests\n---\n# unit\n")
     cfg = cfg_for(tmp_path, review={"enabled": False})
     cfg.roles["qa"].skills = tmp_path / "skills"
-    engine = FakeEngine({"chief": [plan, SYNTH], "coder": [DONE, DONE], "qa": [DONE]})
+    engine = FakeEngine({"chief": [plan, SYNTH], "architect": [DONE, DONE], "qa": [DONE]})
     report = await StudioOrchestrator(cfg, engine, router=ChiefRouter()).execute_task("g", repo=repo)
     assert report.final_answer == "all done"
     routes = {e["subtask"]: e for e in events(report) if e["kind"] == "route"}
-    assert routes["a"]["chosen"] == "coder" and routes["a"]["decision"] == "fallback"
-    assert routes["b"]["chosen"] == "coder" and routes["b"]["decision"] == "fallback"
+    assert routes["a"]["chosen"] == "architect" and routes["a"]["decision"] == "fallback"
+    assert routes["b"]["chosen"] == "architect" and routes["b"]["decision"] == "fallback"
     skill = [e for e in events(report) if e["kind"] == "skill"][0]
     assert skill["subtask"] == "t" and skill["decision"] == "none"
 
@@ -607,14 +612,14 @@ async def test_chief_router_without_a_usable_hint_falls_back_instead_of_raising(
 async def test_engine_errors_in_chief_and_reviewer_do_not_kill_the_run(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     # no reviewer script: FakeEngine raises EngineError on the review call
-    engine = FakeEngine({"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, RUN, DONE], "docs": [DONE]})
+    engine = FakeEngine({"chief": [PLAN, SYNTH], "architect": [WRITE_PASS, RUN, DONE], "docs": [DONE]})
     report = await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task(
         "g", repo=repo, test_cmd="./check.sh"
     )
     assert report.final_answer == "all done"
     assert [e["verdict"] for e in events(report) if e["kind"] == "review"] == ["error"]
     # no chief script at all: the run ends with a readable failure, not a traceback
-    engine = FakeEngine({"coder": [DONE]})
+    engine = FakeEngine({"architect": [DONE]})
     report = await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task(
         "g", repo=repo
     )
@@ -631,7 +636,9 @@ async def test_delegating_every_round_still_ends_with_a_synthesis(tmp_path: Path
         text=json.dumps({"type": "delegate", "subtask": {"id": "x2", "role": "docs", "brief": "more"}})
     )
     cfg = cfg_for(tmp_path, review={"enabled": False}, max_rounds=2)
-    engine = FakeEngine({"chief": [PLAN, delegate, delegate2, SYNTH], "coder": [DONE], "docs": [DONE] * 3})
+    engine = FakeEngine(
+        {"chief": [PLAN, delegate, delegate2, SYNTH], "architect": [DONE], "docs": [DONE] * 3}
+    )
     report = await StudioOrchestrator(cfg, engine, router=ChiefRouter()).execute_task("g", repo=repo)
     assert report.final_answer == "all done"
     assert [e["kind"] for e in events(report)].count("synthesis") == 1
@@ -647,7 +654,7 @@ async def test_rejected_delegate_reason_is_fed_back_to_the_chief(tmp_path: Path)
         )
     )
     cfg = cfg_for(tmp_path, review={"enabled": False})
-    engine = FakeEngine({"chief": [PLAN, bad, SYNTH], "coder": [DONE], "docs": [DONE]})
+    engine = FakeEngine({"chief": [PLAN, bad, SYNTH], "architect": [DONE], "docs": [DONE]})
     report = await StudioOrchestrator(cfg, engine, router=ChiefRouter()).execute_task("g", repo=repo)
     assert report.final_answer == "all done"
     third = [r for r in engine.requests if r.role == "chief"][2].messages[-1].content
@@ -658,7 +665,10 @@ async def test_plan_rejected_twice_is_a_failed_run_with_feedback(tmp_path: Path)
     repo = repo_with_marker_tests(tmp_path)
     bad = FakeReply(
         text=json.dumps(
-            {"type": "plan", "subtasks": [{"id": "a", "role": "coder", "brief": "x", "depends_on": ["zz"]}]}
+            {
+                "type": "plan",
+                "subtasks": [{"id": "a", "role": "architect", "brief": "x", "depends_on": ["zz"]}],
+            }
         )
     )
     engine = FakeEngine({"chief": [bad, bad]})
@@ -711,7 +721,12 @@ async def test_the_plan_door_reports_a_cut_off_chief_as_failed_with_why(tmp_path
 async def test_a_chief_reply_cut_off_in_synthesis_is_an_error_answer_not_an_empty_one(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     engine = FakeEngine(
-        {"chief": [PLAN, CHIEF_CUT], "coder": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [APPROVE]}
+        {
+            "chief": [PLAN, CHIEF_CUT],
+            "architect": [WRITE_PASS, RUN, DONE],
+            "docs": [DONE],
+            "reviewer": [APPROVE],
+        }
     )
     orch = StudioOrchestrator(chief_as_hds_3(tmp_path), engine, router=ChiefRouter())
     report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
@@ -725,7 +740,7 @@ CHIEF_WHY_TEXT = (  # a reply with text was not still thinking when it was cut o
 )
 HALF_PLAN = (
     'I will split it.\n```json\n{"type": "plan", '
-    '"subtasks": [{"id": "fix", "role": "coder", "brief": "make the che'
+    '"subtasks": [{"id": "fix", "role": "architect", "brief": "make the che'
 )
 
 
@@ -753,7 +768,7 @@ async def test_a_chief_synthesis_cut_off_inside_its_json_is_an_error_answer(tmp_
         text='{"type": "synthesis", "answer": "All done and the tests pa', finish_reason="length"
     )
     engine = FakeEngine(
-        {"chief": [PLAN, half], "coder": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [APPROVE]}
+        {"chief": [PLAN, half], "architect": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [APPROVE]}
     )
     orch = StudioOrchestrator(chief_as_hds_3(tmp_path), engine, router=ChiefRouter())
     report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
@@ -796,7 +811,9 @@ async def test_failed_dependency_is_labelled_in_the_next_brief(tmp_path: Path) -
     )
     # offered no tools for its final answer, it calls one anyway, is told once, and does it again: no answer,
     # so it failed at max_steps
-    engine = FakeEngine({"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, note2, note2, note2], "docs": [DONE]})
+    engine = FakeEngine(
+        {"chief": [PLAN, SYNTH], "architect": [WRITE_PASS, note2, note2, note2], "docs": [DONE]}
+    )
     await StudioOrchestrator(cfg, engine, router=ChiefRouter()).execute_task("g", repo=repo)
     docs_goal = [r for r in engine.requests if r.role == "docs"][0].messages[1].content
     assert "FAILED: max_steps" in docs_goal
@@ -809,7 +826,7 @@ async def test_a_subtask_whose_reply_is_cut_off_failed_and_its_dependents_and_th
     and the events say how, the next brief says its result is unreliable, and the chief sees why."""
     repo = repo_with_marker_tests(tmp_path)
     cut = FakeReply(reasoning="Thinking about the fix. ", finish_reason="length")
-    engine = FakeEngine({"chief": [PLAN, SYNTH], "coder": [cut], "docs": [DONE]})
+    engine = FakeEngine({"chief": [PLAN, SYNTH], "architect": [cut], "docs": [DONE]})
     orch = StudioOrchestrator(cfg_for(tmp_path, review={"enabled": False}), engine, router=ChiefRouter())
     report = await orch.execute_task("g", repo=repo)
     fix, note = report.teams
@@ -821,7 +838,7 @@ async def test_a_subtask_whose_reply_is_cut_off_failed_and_its_dependents_and_th
     assert "FAILED: cut_off, treat as unreliable" in docs_goal and "cut off at max_tokens" in docs_goal
     asked = [r for r in engine.requests if r.role == "chief"][1].messages[-1].content
     assert "### fix (coder; cut_off, 0 steps)" in asked and "cut off at max_tokens" in asked
-    assert "| fix | coder |" in (report.run_dir.path / "report.md").read_text()
+    assert "| fix | architect |" in (report.run_dir.path / "report.md").read_text()
     assert report.any_ok  # the other subtask finished; the cut-off one is in the table, not hidden
 
 
@@ -832,8 +849,8 @@ async def test_each_review_sees_only_its_own_subtasks_diff(tmp_path: Path) -> No
             {
                 "type": "plan",
                 "subtasks": [
-                    {"id": "a", "role": "coder", "brief": "write PASS"},
-                    {"id": "b", "role": "coder", "brief": "write note", "depends_on": ["a"]},
+                    {"id": "a", "role": "architect", "brief": "write PASS"},
+                    {"id": "b", "role": "architect", "brief": "write note", "depends_on": ["a"]},
                 ],
             }
         )
@@ -842,7 +859,7 @@ async def test_each_review_sees_only_its_own_subtasks_diff(tmp_path: Path) -> No
         tool_calls=[ToolCall("n", "write_file", json.dumps({"path": "note.txt", "content": "second\n"}))]
     )
     engine = FakeEngine(
-        {"chief": [plan, SYNTH], "coder": [WRITE_PASS, DONE, note, DONE], "reviewer": [APPROVE, APPROVE]}
+        {"chief": [plan, SYNTH], "architect": [WRITE_PASS, DONE, note, DONE], "reviewer": [APPROVE, APPROVE]}
     )
     await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task("g", repo=repo)
     reviews = [r.messages[1].content for r in engine.requests if r.role == "reviewer"]
@@ -873,14 +890,16 @@ async def test_plan_returns_the_chiefs_plan_without_building_anything(tmp_path: 
 
 async def test_a_given_plan_skips_the_chief_and_its_roles_beat_the_router(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    given = Plan((), (Subtask("t", "write the tests", "qa"), Subtask("b", "make them pass", "coder", ("t",))))
+    given = Plan(
+        (), (Subtask("t", "write the tests", "qa"), Subtask("b", "make them pass", "architect", ("t",)))
+    )
 
     class Overrider:  # a router that is sure everything is docs work
         async def route(self, brief, criteria, hint=None, *, question="role", instructions=""):  # type: ignore[no-untyped-def]
             return RouteDecision(question, "docs", "docs", "clear", {"docs": 1.0}, 0.99, hint)
 
     # qa answers with text twice: a writer's first reply of prose is sent back once (must_act), then done
-    engine = FakeEngine({"qa": [DONE, DONE], "coder": [WRITE_PASS, RUN, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"qa": [DONE, DONE], "architect": [WRITE_PASS, RUN, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=Overrider())
     report = await orch.execute_task("g", repo=repo, test_cmd="./check.sh", plan=given, synthesise=False)
     routes = [e for e in events(report) if e["kind"] == "route"]
@@ -895,12 +914,12 @@ async def test_a_given_plan_that_cannot_run_raises_before_any_work(tmp_path: Pat
     with pytest.raises(PlanError, match="role 'chief'"):
         await orch.execute_task("g", repo=repo, plan=Plan((), (Subtask("a", "x", "chief"),)))
     with pytest.raises(PlanError, match="not in the plan"):
-        await orch.execute_task("g", repo=repo, plan=Plan((), (Subtask("a", "x", "coder", ("zz",)),)))
+        await orch.execute_task("g", repo=repo, plan=Plan((), (Subtask("a", "x", "architect", ("zz",)),)))
     two = Plan((), (Subtask("a", "x", "coder"), Subtask("b", "y", "coder")))
     with pytest.raises(PlanError, match="max_subtasks is 1"):
         await orch.execute_task("g", repo=repo, plan=two)
     with pytest.raises(PlanError, match="dependency cycle"):
-        await orch.execute_task("g", repo=repo, plan=Plan((), (Subtask("a", "x", "coder", ("a",)),)))
+        await orch.execute_task("g", repo=repo, plan=Plan((), (Subtask("a", "x", "architect", ("a",)),)))
     with pytest.raises(PlanError, match="no subtasks"):
         await orch.execute_task("g", repo=repo, plan=Plan((), ()))
     assert not (orch.run_dir.path / "studio").exists()
@@ -918,9 +937,9 @@ def test_check_plan_judges_a_plan_from_outside_the_chief_by_every_role_pinned_or
     with pytest.raises(PlanError, match="max_subtasks is 2"):
         check_plan(cfg, Plan((), tuple(Subtask(i, "x", "coder") for i in "abc")))
     with pytest.raises(PlanError, match="not in the plan"):
-        check_plan(cfg, Plan((), (Subtask("a", "x", "coder", ("zz",)),)))
+        check_plan(cfg, Plan((), (Subtask("a", "x", "architect", ("zz",)),)))
     with pytest.raises(PlanError, match="dependency cycle"):
-        check_plan(cfg, Plan((), (Subtask("a", "x", "coder", ("a",)),)))
+        check_plan(cfg, Plan((), (Subtask("a", "x", "architect", ("a",)),)))
 
 
 async def test_base_and_branch_place_the_worktree_and_detach_leaves_no_branch(tmp_path: Path) -> None:
@@ -930,7 +949,7 @@ async def test_base_and_branch_place_the_worktree_and_detach_leaves_no_branch(tm
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "later")  # HEAD moves past the base
     cfg = cfg_for(tmp_path, review={"enabled": False})
-    engine = FakeEngine({"coder": [WRITE_PASS, DONE], "docs": [DONE]})
+    engine = FakeEngine({"architect": [WRITE_PASS, DONE], "docs": [DONE]})
     one = Plan((), (Subtask("b", "write PASS", "coder"),))
     orch = StudioOrchestrator(cfg, engine, router=ChiefRouter())
     report = await orch.execute_task(
@@ -1095,7 +1114,7 @@ TESTS_THEN_BUILD = Plan(
     (),
     (
         Subtask("tests", "write the note", "qa", pinned=True),
-        Subtask("build", "make the check pass", "coder", ("tests",)),
+        Subtask("build", "make the check pass", "architect", ("tests",)),
     ),
 )
 WRITE_NOTE = FakeReply(
@@ -1105,7 +1124,7 @@ WRITE_NOTE = FakeReply(
 
 async def test_a_checkpoint_that_says_no_stops_the_plan_before_the_next_subtask(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"qa": [WRITE_NOTE, DONE], "coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"qa": [WRITE_NOTE, DONE], "architect": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     asked: list[str] = []
 
@@ -1132,7 +1151,7 @@ async def test_locked_files_are_refused_to_other_roles_and_put_back_before_the_g
         tool_calls=[ToolCall("o", "write_file", json.dumps({"path": "note.txt", "content": "weaker\n"}))]
     )
     engine = FakeEngine(
-        {"qa": [WRITE_NOTE, DONE], "coder": [overwrite, WRITE_PASS, DONE], "reviewer": [APPROVE]}
+        {"qa": [WRITE_NOTE, DONE], "architect": [overwrite, WRITE_PASS, DONE], "reviewer": [APPROVE]}
     )
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
 
@@ -1156,7 +1175,7 @@ async def test_locked_files_are_refused_to_other_roles_and_put_back_before_the_g
     )
     assert report.tests == {"studio": True}
     refused = [
-        m.content for r in engine.requests if r.role == "coder" for m in r.messages if m.role == "tool"
+        m.content for r in engine.requests if r.role == "architect" for m in r.messages if m.role == "tool"
     ]
     assert any("you cannot change them" in m for m in refused)
     assert orch.worktree is not None and (orch.worktree / "note.txt").read_text() == "the contract\n"
@@ -1188,7 +1207,7 @@ WRITE_TESTER = FakeReply(
 
 async def test_lock_records_the_testers_definitions(tmp_path: Path) -> None:
     repo = repo_with_a_test_file(tmp_path)
-    engine = FakeEngine({"qa": [WRITE_TESTER, DONE], "coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"qa": [WRITE_TESTER, DONE], "architect": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
 
     async def lock() -> bool:
@@ -1215,7 +1234,7 @@ async def test_a_shell_change_to_a_fake_survives_the_gate_and_one_to_a_test_is_p
     tmp_path: Path, changed: str
 ) -> None:
     repo = repo_with_a_test_file(tmp_path)
-    engine = FakeEngine({"qa": [WRITE_TESTER, DONE], "coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"qa": [WRITE_TESTER, DONE], "architect": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
 
     async def lock() -> bool:
@@ -1283,7 +1302,7 @@ async def test_the_coder_edits_a_fake_beside_the_testers_test_but_not_the_test(t
     engine = FakeEngine(
         {
             "qa": [write_tester, DONE],
-            "coder": [fix_the_fake, weaken_the_test, WRITE_PASS, DONE],
+            "architect": [fix_the_fake, weaken_the_test, WRITE_PASS, DONE],
             "reviewer": [APPROVE],
         }
     )
@@ -1313,7 +1332,7 @@ async def test_the_coder_edits_a_fake_beside_the_testers_test_but_not_the_test(t
     results = {
         m.tool_call_id: m.content
         for r in engine.requests
-        if r.role == "coder"
+        if r.role == "architect"
         for m in r.messages
         if m.role == "tool"
     }
@@ -1326,16 +1345,16 @@ async def test_the_coder_edits_a_fake_beside_the_testers_test_but_not_the_test(t
 
 async def test_a_failing_final_gate_sends_the_named_subtask_its_output_once(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"coder": [DONE, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"architect": [DONE, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     report = await orch.execute_task(
         "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, gate_follow_up="build"
     )
     assert report.tests == {"studio": True}
-    told = [r.messages[-1].content for r in engine.requests if r.role == "coder"]
+    told = [r.messages[-1].content for r in engine.requests if r.role == "architect"]
     assert sum("the whole suite fails with your change" in t and "1 failed" in t for t in told) == 1
     assert [e["follow_up"] for e in events(report) if e["kind"] == "gate_failed"] == ["build"]
-    assert steers(report) == [{"id": "gate-failed", "role": "coder", "subtask": "build"}]
+    assert steers(report) == [{"id": "gate-failed", "role": "architect", "subtask": "build"}]
     assert sum(t.startswith(hub_text("gate-failed")) for t in told) == 1
     gates = [(e["kind"], e["n"]) for e in events(report) if e["kind"] in ("gate_start", "gate_passed")]
     assert gates == [("gate_start", 1), ("gate_start", 2), ("gate_passed", 2)]
@@ -1343,7 +1362,7 @@ async def test_a_failing_final_gate_sends_the_named_subtask_its_output_once(tmp_
 
 async def test_a_gate_that_passes_at_once_logs_its_start_and_its_pass(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"architect": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     report = await orch.execute_task(
         "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, gate_follow_up="build"
@@ -1357,13 +1376,13 @@ async def gate_follow_up_with(tmp_path: Path, advisor: Any) -> tuple[Any, list[s
     """The run of the test above (the gate fails, the coder is sent its output, the gate passes) with
     `advisor` as the orchestrator's; what the coder was told at each request."""
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"coder": [DONE, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"architect": [DONE, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     orch.advisor = advisor
     report = await orch.execute_task(
         "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, gate_follow_up="build"
     )
-    told = [str(r.messages[-1].content) for r in engine.requests if r.role == "coder"]
+    told = [str(r.messages[-1].content) for r in engine.requests if r.role == "architect"]
     return report, told, orch
 
 
@@ -1374,7 +1393,7 @@ async def test_the_gate_follow_up_carries_the_advisors_section_and_its_outcome(t
     [follow_up] = [t for t in told if t.startswith(hub_text("gate-failed"))]
     assert follow_up.endswith(f"```\n\n{SUPERVISOR}\nFix rounding in mul.") and "1 failed" in follow_up
     [(trigger, subtask, role, text, kinds, evidence)] = adv.advised
-    assert (trigger, subtask, role, kinds) == ("gate_retry", "build", "coder", ("gate_fails",))
+    assert (trigger, subtask, role, kinds) == ("gate_retry", "build", "architect", ("gate_fails",))
     # the fixed text carries the gate's tail already: it is not sent to Muse a second time as evidence
     assert text == follow_up.split(f"\n\n{SUPERVISOR}")[0] and "1 failed" in text and evidence == ""
     assert adv.settled == [("gate_retry", "helped", "build")]
@@ -1382,7 +1401,7 @@ async def test_the_gate_follow_up_carries_the_advisors_section_and_its_outcome(t
 
 async def test_a_gate_follow_up_that_still_fails_is_settled_not_helped(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"coder": [DONE, DONE, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"architect": [DONE, DONE, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     adv = RecordingAdvisor(None)
     orch.advisor = adv
@@ -1411,7 +1430,7 @@ async def test_the_advisor_is_the_teams_repeat_guard_too(tmp_path: Path) -> None
     adv = RecordingAdvisor(None)
     seen: list[Any] = []
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"architect": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     orch.advisor = adv
     real_run = orch.team.run
@@ -1429,7 +1448,7 @@ async def test_run_tests_reports_each_gate_step_while_the_final_gate_runs_the_wh
     tmp_path: Path,
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"coder": [RUN, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"architect": [RUN, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     steps = ("echo first", "./check.sh", "echo third")
     report = await orch.execute_task(
@@ -1442,7 +1461,7 @@ async def test_run_tests_reports_each_gate_step_while_the_final_gate_runs_the_wh
 
 async def test_max_steps_limits_every_subtask_of_the_run_below_the_roles_own(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"coder": [RUN, RUN, RUN, RUN, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"architect": [RUN, RUN, RUN, RUN, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     report = await orch.execute_task(
         "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, max_steps=2
@@ -1455,7 +1474,7 @@ async def test_max_steps_limits_every_subtask_of_the_run_below_the_roles_own(tmp
 async def test_before_gate_can_send_a_subtask_back_once_more_before_the_gate(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     # the first run answers with text twice (sent back once, then done); the follow-up writes PASS
-    engine = FakeEngine({"coder": [DONE, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"architect": [DONE, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     seen: list[Any] = []
     real_run = orch.team.run
@@ -1481,7 +1500,7 @@ async def test_before_gate_can_send_a_subtask_back_once_more_before_the_gate(tmp
 
 async def test_a_before_gate_that_says_no_skips_the_gate(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"architect": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
 
     async def before_gate() -> bool:
@@ -1499,7 +1518,7 @@ async def test_a_malformed_tool_call_reaches_the_runs_events_with_its_text(tmp_p
     engine = FakeEngine(
         {
             "chief": [PLAN, SYNTH],
-            "coder": [FakeReply(text=bad), WRITE_PASS, RUN, DONE],
+            "architect": [FakeReply(text=bad), WRITE_PASS, RUN, DONE],
             "docs": [DONE],
             "reviewer": [APPROVE],
         }
@@ -1509,7 +1528,7 @@ async def test_a_malformed_tool_call_reaches_the_runs_events_with_its_text(tmp_p
         "fix the build", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh"
     )
     [ev] = [e for e in events(report) if e["kind"] == "malformed_call"]
-    assert (ev["team_id"], ev["role"], ev["step"], ev["text"]) == ("fix", "coder", 1, bad)
+    assert (ev["team_id"], ev["role"], ev["step"], ev["text"]) == ("fix", "architect", 1, bad)
     assert ev["repaired"] is False
 
 
@@ -1530,7 +1549,7 @@ async def test_a_relock_after_a_mend_keeps_the_coders_fake_out_of_the_testers_de
 ) -> None:
     old, new, expected = MENDS[mend]
     repo = repo_with_a_test_file(tmp_path)
-    engine = FakeEngine({"qa": [WRITE_TESTER, DONE], "coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"qa": [WRITE_TESTER, DONE], "architect": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     path = "tests/test_p.py"
 
@@ -1577,7 +1596,7 @@ async def test_the_chief_and_the_reviewer_record_no_more_tools_as_steer_events(t
     engine = FakeEngine(
         {
             "chief": [*looks, PLAN, SYNTH],
-            "coder": [WRITE_PASS, RUN, DONE],
+            "architect": [WRITE_PASS, RUN, DONE],
             "docs": [DONE],
             "reviewer": [*looks, APPROVE],
         }
@@ -1620,7 +1639,7 @@ async def fresh_follow_up(tmp_path: Path, threshold: int) -> list[str]:
     """A coder writes tests/test_x.py, then is sent back through `follow_up` with fresh_continuation_tokens
     at `threshold`; the user messages of the follow-up's request."""
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"coder": [WRITE_TEST_X, DONE, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"architect": [WRITE_TEST_X, DONE, DONE], "reviewer": [APPROVE]})
     teams = {"orchestrator": "native", "max_steps": 6, "fresh_continuation_tokens": threshold}
     orch = StudioOrchestrator(cfg_for(tmp_path, extra={"teams": teams}), engine, router=ChiefRouter())
 

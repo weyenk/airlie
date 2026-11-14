@@ -25,10 +25,10 @@ from airlie.serve.flow_parts import (
 )
 from airlie.story.state import STAGES
 
-MEETING_ROUND = ("product", "architect", "tester", "airlie")
-"""The order the three amigos and airlie's checker take their turns in."""
+MEETING_ROUND = ("product", "architect", "airlie")
+"""The order the two amigos and airlie's checker take their turns in."""
 
-VOTERS = ("product", "architect", "tester")
+VOTERS = ("product", "architect")
 """The roles that vote; airlie's checker takes turns but has no verdict."""
 
 

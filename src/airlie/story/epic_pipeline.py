@@ -230,11 +230,11 @@ class EpicPipeline:
         )
 
     def _conventions_text(self, repo: Path, sha: str) -> str:
-        """How `repo` is tested at `sha`, the tester's view the story meeting reads (P2), for the plan's
+        """How `repo` is tested at `sha`, the architect's view the story meeting reads (P2), for the plan's
         brief: the levels its test tree has, its guidelines and its own testing notes, with the gate its
         AGENTS.md names (none known when it has none: the story that is built reports that, not the plan)."""
-        tester = self.cfg.roles.get("tester")
-        found = conventions(repo, sha, tester.skills if tester is not None else None, None)
+        arch = self.cfg.roles.get(self.s.architect_role)
+        found = conventions(repo, sha, arch.skills if arch is not None else None, None)
         try:
             gate = read_gate(repo, sha).commands
         except NoTestGate:

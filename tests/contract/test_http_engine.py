@@ -176,7 +176,7 @@ def test_body_carries_repetition_penalty_when_set() -> None:
     role = RoleSpec(prompt=Path(__file__), model="base", thinking=False, max_tokens=64)
     eng = HTTPEngine("http://x/v1", served_name_for_role=lambda r: "base", role_spec_for=lambda r: role)
     req = GenRequest(
-        role="coder", messages=[Message(role="user", content="hi")], sampling=Sampling(), max_tokens=10
+        role="architect", messages=[Message(role="user", content="hi")], sampling=Sampling(), max_tokens=10
     )
     assert "repetition_penalty" not in eng._body(req, stream=False)  # noqa: SLF001 - 1.0 means off
     req.sampling = Sampling(repetition_penalty=1.05)

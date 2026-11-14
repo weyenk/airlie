@@ -22,10 +22,10 @@ from airlie.tools import ToolContext, ToolRegistry
 
 def test_pair_steps_matches_requests_with_results() -> None:
     req = ToolCallRequestEvent(
-        source="coder", content=[FunctionCall(id="c1", name="read_file", arguments='{"path": "a"}')]
+        source="architect", content=[FunctionCall(id="c1", name="read_file", arguments='{"path": "a"}')]
     )
     res = ToolCallExecutionEvent(
-        source="coder",
+        source="architect",
         content=[FunctionExecutionResult(call_id="c1", name="read_file", content="1: x", is_error=False)],
     )
     steps = pair_steps("team-1", 0, [req, res], assistant_text="")
@@ -38,14 +38,14 @@ def test_pair_steps_matches_requests_with_results() -> None:
 
 def test_pair_steps_marks_errors_and_orphans() -> None:
     req = ToolCallRequestEvent(
-        source="coder",
+        source="architect",
         content=[
             FunctionCall(id="c1", name="shell", arguments="{}"),
             FunctionCall(id="c2", name="shell", arguments="{}"),
         ],
     )
     res = ToolCallExecutionEvent(
-        source="coder",
+        source="architect",
         content=[FunctionExecutionResult(call_id="c1", name="shell", content="boom", is_error=True)],
     )
     steps = pair_steps("t", 5, [req, res], assistant_text="")
@@ -381,7 +381,7 @@ def test_a_clients_timeout_outlasts_its_roles_longest_reply(tmp_path: Path) -> N
 
 
 def test_each_message_carries_its_speaker_in_its_text(tmp_path: Path) -> None:
-    """The generalist's chat template never reads OpenAI's `name`, so in the story meeting every other role's
+    """The architect's chat template never reads OpenAI's `name`, so in the story meeting every other role's
     turn was anonymous text and the tester took product's proof for its own (roman, 2026-10-27/28)."""
     from autogen_core.models import UserMessage
     from autogen_ext.models.openai._openai_client import to_oai_type

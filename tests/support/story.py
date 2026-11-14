@@ -13,6 +13,9 @@ from autogen_ext.models.replay import ReplayChatCompletionClient
 
 from airlie.config import RoleSpec
 from airlie.engine import FakeEngine, FakeReply, ToolCall
+from airlie.engine.fake import _words
+from airlie.engine.protocol import OnToken
+from airlie.engine.types import EngineError, GenRequest, GenResult, Message, Sampling, TokenEvent
 from airlie.router import ChiefRouter
 from airlie.story.amigos import Agreement, Meeting
 from airlie.story.board import Board, BoardError, Card, Column, NullBoard, text_card
@@ -33,7 +36,10 @@ WORKFLOWS = Path(__file__).resolve().parents[2] / "config" / "workflows"
 STORY_ROLES = {
     **ROLES,
     "product": ("---\nsummary: Stories and acceptance criteria\n---\n# product", ["read_file", "list_dir"]),
-    "architect": ("---\nsummary: Layered plans for a change\n---\n# architect", ["read_file", "list_dir"]),
+    "architect": (
+        "---\nsummary: Layered plans, packages, and code\n---\n# architect",
+        ["read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git", "compute"],
+    ),
 }
 
 
@@ -70,6 +76,8 @@ LAYERS = fenced(
 NOTE = FakeReply(
     tool_calls=[ToolCall("n", "write_file", json.dumps({"path": "profile.txt", "content": "shown\n"}))]
 )
+
+PACK_OPEN = FakeReply(text="I read the repository.\n")
 
 B1, B2 = "add-avatar-upload-01-storage", "add-avatar-upload-02-profile"
 
@@ -173,8 +181,10 @@ def pipeline(
     settings = {
         "trunk": git(repo, "branch", "--show-current"),
         "plan_round_steps": 0,  # one go, no survey: the rounds and the survey have tests of their own
+        "stage_attempts": 1,  # one layer-plan ask; retries have tests of their own
+        "package_steps": 1,  # one turn per package draft (default 12 would drain the architect script)
         "survey": False,
-        "layer_attempts": 1,  # a layer that fails stops the story; re-planning has tests of its own
+        "layer_attempts": 1,  # a layer that fails stops the story; re-planning has tests of their own
         "amigos": {"enabled": False},  # the meeting has tests of its own (below)
         "composer": composer,
         **(story or {}),
@@ -188,6 +198,10 @@ def pipeline(
             for name, spec in yaml.safe_load((WORKFLOWS / f"{part}.yaml").read_text())["workflows"].items()
         }
     cfg = cfg_for(tmp_path, roles=roles, extra=extra, done_check=done_check)
+    # One model turn per pipeline ask so happy_engine's scripted replies stay aligned (build_role is also
+    # architect since the Qwen migration; the studio keeps teams.max_steps for subagents).
+    arch = cfg.roles["architect"]
+    cfg.roles["architect"] = arch.model_copy(update={"max_steps": 1})
     return StoryPipeline(
         cfg,
         board=board or NullBoard(cfg.observability.state_dir / "stories"),
@@ -216,15 +230,143 @@ def kinds(path: Path, kind: str) -> list[dict[str, Any]]:
     return [e for e in (json.loads(x) for x in path.read_text().splitlines()) if e["kind"] == kind]
 
 
-def happy_engine(**scripts: list[FakeReply]) -> FakeEngine:
-    """The replies of a story whose two layers build first time; a keyword replaces one role's script."""
-    base = {
+def is_plan_lane(req: GenRequest) -> bool:
+    """Whether this architect request is planning/packaging (not the studio build lane)."""
+    return _plan_lane_text(req)
+
+
+def build_architect_requests(engine: FakeEngine) -> list[GenRequest]:
+    return [r for r in engine.requests if r.role == "architect" and not is_plan_lane(r)]
+
+
+def _plan_lane_text(req: GenRequest) -> bool:
+    """True when the architect turn is planning or packaging, not the studio build subtask."""
+    user = "\n".join(m.content for m in req.messages if m.role == "user")
+    hints = (
+        "Split this story into a stack",
+        "You write the packages",
+        "next layer's package",
+        "package-fix",
+        "Do not plan and do not write JSON",
+        "critic",
+        "Critic",
+        "objection",
+        "verdict",
+        "survey the repository",
+        "Survey notes",
+    )
+    return any(h in user for h in hints)
+
+
+def pad_plan_script(replies: list[FakeReply]) -> list[FakeReply]:
+    """Studio layer-plan and package-drafting turns that share architect:plan need extra scripted replies."""
+    if not replies:
+        return replies
+    out: list[FakeReply] = []
+    i = 0
+    if '"layers"' in replies[0].text:
+        out.extend([replies[0], replies[0]])
+        i = 1
+    while i < len(replies):
+        r = replies[i]
+        if '"type": "package"' in r.text or "test file:" in r.text:
+            out.append(PACK_OPEN)
+        out.append(r)
+        i += 1
+    return out
+
+
+class StoryFakeEngine(FakeEngine):
+    """FakeEngine with separate plan and build scripts for the merged architect/build role."""
+
+    def __init__(self, scripts: dict[str, list[FakeReply]] | None = None) -> None:
+        raw = dict(scripts or {})
+        legacy = raw.pop("architect", None)
+        plan = raw.pop("architect:plan", None)
+        build = raw.pop("architect:build", [])
+        explicit_plan = plan is not None
+        if plan is None:
+            if legacy is not None:
+                split = next((i for i, r in enumerate(legacy) if r.tool_calls), len(legacy))
+                plan, build = legacy[:split], build if build else legacy[split:]
+            else:
+                plan = []
+        if not explicit_plan:
+            plan = pad_plan_script(list(plan))
+        merged: dict[str, list[FakeReply]] = {
+            **raw,
+            "architect:plan": list(plan),
+            "architect:build": list(build),
+        }
+        super().__init__(merged)
+
+    def _lane(self, role: str, req: GenRequest | None = None) -> str:
+        if role != "architect":
+            return role
+        assert req is not None
+        return "architect:plan" if _plan_lane_text(req) else "architect:build"
+
+    def _next(self, role: str) -> FakeReply:
+        if role not in self._scripts:
+            raise EngineError(f"no script for role '{role}'")
+        if not self._scripts[role]:
+            raise EngineError(f"script exhausted for role '{role}'")
+        return self._scripts[role].popleft()
+
+    async def generate(self, req: GenRequest, on_token: OnToken | None = None) -> GenResult:
+        lane = self._lane(req.role, req)
+        self.requests.append(req)
+        reply = self._next(lane)
+        self._stats.requests += 1
+        if on_token:
+            for w in _words(reply.reasoning) if reply.reasoning else []:
+                on_token(TokenEvent(text=w, reasoning=True))
+            for w in _words(reply.text) if reply.text else []:
+                on_token(TokenEvent(text=w))
+        completion = len(reply.text.split()) + len(reply.reasoning.split())
+        self._stats.tokens_out += completion
+        finish = reply.finish_reason or ("tool_calls" if reply.tool_calls else "stop")
+        prompt_tokens = sum(len(m.content.split()) for m in req.messages) or 1
+        return GenResult(
+            text=reply.text,
+            reasoning=reply.reasoning,
+            tool_calls=list(reply.tool_calls),
+            finish_reason=finish,  # type: ignore[arg-type]
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion,
+            cached_tokens=reply.cached_tokens,
+            accepted_draft_tokens=reply.accepted_draft_tokens,
+            draft_tokens=reply.draft_tokens,
+            ttft_ms=1.0,
+            decode_tps=1000.0,
+            raw_finish=finish,
+        )
+
+    async def yes_no(self, role: str, messages: list[Message]) -> tuple[float, float]:
+        req = GenRequest(role=role, messages=messages, sampling=Sampling(), max_tokens=1)
+        lane = self._lane(role, req)
+        reply = self._next(lane)
+        self._stats.requests += 1
+        if reply.p_yes is not None:
+            return reply.p_yes, 1.0 - reply.p_yes
+        yes = reply.text.strip().upper().startswith("YES")
+        return (1.0, 0.0) if yes else (0.0, 1.0)
+
+
+def happy_engine(**scripts: list[FakeReply]) -> StoryFakeEngine:
+    """The replies of a story whose two layers build first time; a keyword replaces one role's script.
+
+      ``architect=`` overrides the plan/package replies; ``build=`` or legacy ``coder=`` overrides the layer
+    build lane (same ``architect`` role since the Qwen migration)."""
+    scripts = dict(scripts)
+    build = scripts.pop("build", scripts.pop("coder", [WRITE_PASS, RUN, DONE, NOTE, DONE]))
+    plan = scripts.pop("architect", [LAYERS, *PKGS])
+    base: dict[str, list[FakeReply]] = {
         "product": [STORY],
-        "architect": [LAYERS, *PKGS],
-        "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+        "architect": list(plan) + list(build),
         "reviewer": [APPROVE, APPROVE],
     }
-    return FakeEngine({**base, **scripts})
+    return StoryFakeEngine({**base, **scripts})
 
 
 def worktrees(repo: Path) -> int:
@@ -361,10 +503,7 @@ def card_of_epic(key: str, ps: PlannedStory, after: tuple[str, ...] = ()) -> Car
     return Card(key, key, key, ps.title, render_story_card(ps, HEADER, after), None, (), labels)
 
 
-MEETING_ROLES = {
-    **STORY_ROLES,
-    "tester": ("---\nsummary: Proof planning\n---\n# tester", ["read_file", "list_dir"]),
-}
+MEETING_ROLES = STORY_ROLES
 
 MEETING = {"amigos": {"enabled": True}}
 
@@ -493,6 +632,9 @@ def replay_meeting(
 
 EASY_MEETING = {
     "product": [spoken("Reworded nothing.", block(REWORDED_STORY), AGREE_V), spoken("ok", AGREE_V)],
-    "architect": [spoken("Files named.", block(AGREED_SPLIT), AGREE_V), spoken("ok", AGREE_V)],
-    "tester": [spoken("The proof.", block(AGREED_PROOF), AGREE_V)],
+    "architect": [
+        spoken("Files named.", block(AGREED_SPLIT), AGREE_V),
+        spoken("The proof.", block(AGREED_PROOF), AGREE_V),
+        spoken("ok", AGREE_V),
+    ],
 }

@@ -14,7 +14,7 @@ MINIMAL: dict = {
     "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
     "models": {"team": {"repo": "mlx-community/Qwen3.8-27B-4bit", "revision": "abc123"}},
     "roles": {
-        "coder": {"prompt": "prompts/roles/coder.md", "model": "team"},
+        "architect": {"prompt": "prompts/roles/architect.md", "model": "team"},
         "summarizer": {"prompt": "prompts/roles/summarizer.md", "model": "team"},
         "judge": {"prompt": "prompts/roles/judge.md", "model": "team"},
         "aggregator": {"prompt": "prompts/roles/aggregator.md", "model": "team"},
@@ -37,8 +37,8 @@ def test_web_tools_with_a_mutating_tool_are_refused(tmp_path: Path) -> None:
         **MINIMAL,
         "roles": {
             **MINIMAL["roles"],
-            "coder": {
-                "prompt": "prompts/roles/coder.md",
+            "architect": {
+                "prompt": "prompts/roles/architect.md",
                 "model": "team",
                 "tools": ["read_file", "write_file", "web_search", "web_fetch"],
             },
@@ -48,7 +48,7 @@ def test_web_tools_with_a_mutating_tool_are_refused(tmp_path: Path) -> None:
         load_config(write(tmp_path, data))
     msg = str(ei.value)
     assert "web tools cannot be combined with mutating tools" in msg
-    assert "coder" in msg
+    assert "architect" in msg
 
 
 def test_web_tools_inherited_from_builtin_are_refused(tmp_path: Path) -> None:
@@ -64,7 +64,7 @@ def test_web_tools_inherited_from_builtin_are_refused(tmp_path: Path) -> None:
         load_config(write(tmp_path, data))
     msg = str(ei.value)
     assert "web tools cannot be combined with mutating tools" in msg
-    assert "coder" in msg
+    assert "architect" in msg
 
 
 def test_web_rule_reports_the_specific_mutating_tools(tmp_path: Path) -> None:
@@ -73,8 +73,8 @@ def test_web_rule_reports_the_specific_mutating_tools(tmp_path: Path) -> None:
         **MINIMAL,
         "roles": {
             **MINIMAL["roles"],
-            "coder": {
-                "prompt": "prompts/roles/coder.md",
+            "architect": {
+                "prompt": "prompts/roles/architect.md",
                 "model": "team",
                 "tools": ["read_file", "git", "web_search"],
             },
@@ -84,7 +84,7 @@ def test_web_rule_reports_the_specific_mutating_tools(tmp_path: Path) -> None:
         load_config(write(tmp_path, data))
     msg = str(ei.value)
     assert "web tools cannot be combined with mutating tools" in msg
-    assert "coder" in msg
+    assert "architect" in msg
     assert "git" in msg
 
 
@@ -115,8 +115,8 @@ def test_empty_tools_list_is_not_treated_as_inheriting_builtin(tmp_path: Path) -
         },
         "roles": {
             **MINIMAL["roles"],
-            "coder": {
-                "prompt": "prompts/roles/coder.md",
+            "architect": {
+                "prompt": "prompts/roles/architect.md",
                 "model": "team",
                 "tools": [],
             },
@@ -144,8 +144,8 @@ def test_web_fetch_alone_beside_a_mutating_tool_is_refused_naming_exactly_the_mu
         **MINIMAL,
         "roles": {
             **MINIMAL["roles"],
-            "coder": {
-                "prompt": "prompts/roles/coder.md",
+            "architect": {
+                "prompt": "prompts/roles/architect.md",
                 "model": "team",
                 "tools": ["read_file", "web_fetch", "git", "edit_file"],
             },
@@ -153,4 +153,6 @@ def test_web_fetch_alone_beside_a_mutating_tool_is_refused_naming_exactly_the_mu
     }
     with pytest.raises(ConfigError) as ei:
         load_config(write(tmp_path, data))
-    assert "role 'coder': web tools cannot be combined with mutating tools (edit_file, git)" in str(ei.value)
+    assert "role 'architect': web tools cannot be combined with mutating tools (edit_file, git)" in str(
+        ei.value
+    )

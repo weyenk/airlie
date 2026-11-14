@@ -9,18 +9,11 @@
         "apiKey": "airlie-local"
       },
       "models": {
-        "coder": {
-          "name": "coder",
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          }
-        },
         "architect": {
           "name": "architect",
           "limit": {
             "context": 131072,
-            "output": 24576
+            "output": 16384
           }
         },
         "security": {
@@ -65,13 +58,6 @@
             "output": 2048
           }
         },
-        "generalist": {
-          "name": "generalist",
-          "limit": {
-            "context": 131072,
-            "output": 24576
-          }
-        },
         "small": {
           "name": "small",
           "limit": {
@@ -101,5 +87,5 @@
       }
     }
   },
-  "model": "airlie/generalist"
+  "model": "airlie/architect"
 }
