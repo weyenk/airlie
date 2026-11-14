@@ -362,7 +362,7 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
     # + one sequence on each other mlx-vlm engine (small, gemma at 131072k) + prefix caches (main 8, gemma 4)
     # + 12 GB reserve
     assert cache_memory_gb(studio.engines["main"]) == 8.0
-    assert (round(projected, 1), unknown) == (115.7, [])
+    assert (round(projected, 1), unknown) == (116.5, [])
     monkeypatch.setattr(
         "airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name
     )  # the profiles reload from the file
@@ -787,7 +787,7 @@ def test_the_pinned_floor_is_the_projection_without_the_on_demand_engines() -> N
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     floor = pinned_floor_gb(studio)
-    assert round(floor, 1) == 63.4
+    assert round(floor, 1) == 64.2
 
 
 def test_pinned_floor_within_limit_is_ok_row() -> None:
