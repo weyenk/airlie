@@ -12,7 +12,10 @@ from airlie.engine import FakeReply, ToolCall
 
 ROLES: dict[str, tuple[str, list[str] | None]] = {
     "chief": ("---\nsummary: no\nroutable: false\n---\n# chief\nJSON only.", []),
-    "architect": ("---\nsummary: Implement or change code\n---\n# architect", None),
+    "architect": (
+        "---\nsummary: Implement or change code\n---\n# architect",
+        ["read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git", "compute"],
+    ),
     "qa": ("---\nsummary: Tests and edge cases\n---\n# qa", ["read_file", "write_file", "run_tests"]),
     "docs": ("---\nsummary: README and guides\n---\n# docs", ["read_file", "list_dir"]),
     "reviewer": ("---\nsummary: no\nroutable: false\n---\n# reviewer", []),

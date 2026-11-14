@@ -207,7 +207,7 @@ async def test_the_coder_cannot_change_the_packages_tests_with_the_file_tools(tm
     st, engine = await run(tmp_path, [weaker, FEATURE, DONE])
     assert st.blocked is None and "01" in st.built
     refused = [
-        m.content for r in engine.requests if r.role == "coder" for m in r.messages if m.role == "tool"
+        m.content for r in engine.requests if r.role == "architect" for m in r.messages if m.role == "tool"
     ]
     assert any("you cannot change them" in m for m in refused)
     assert built_file(tmp_path, st, "tests/test_calc.py") == TEST_MUL.rstrip("\n")
@@ -418,9 +418,7 @@ async def agreed_run(
     engine = FakeEngine(
         {
             "product": [STORY, *product],
-            "architect": [LAYERS, *packages],
-            "tester": tester,
-            "coder": coder,
+            "architect": [LAYERS, *packages, *tester, *coder],
             "reviewer": [APPROVE, APPROVE],
         }
     )
@@ -454,13 +452,13 @@ async def test_the_critics_objection_gives_the_architect_one_revision_before_the
     drafts = [r for r in engine.requests if r.role == "architect"][1:]
     assert len(drafts[1].messages) > len(drafts[0].messages)
     assert "objects" in drafts[1].messages[-1].content
-    critic = prompts(engine, "tester")[0]
+    critic = prompts(engine, "architect")[0]
     assert "Read these tests against the agreed proof" in critic and "def test_mul_zero" in critic
     assert f"{ID_ZERO} (proves AC2" in critic
     events = st.path / "events.jsonl"
     [objection] = kinds(events, "amigos_objection")
     assert (objection["role"], objection["part"], objection["about"], objection["layer"]) == (
-        "tester",
+        "architect",
         "proof",
         ID_ZERO,
         "01",
@@ -492,7 +490,7 @@ async def test_the_critic_reads_the_packages_test_files_on_disk_as_in_its_brief(
     look = FakeReply(tool_calls=[ToolCall("r", "read_file", json.dumps({"path": "tests/test_calc.py"}))])
     st, engine = await agreed_run(tmp_path, [two()], [look, AGREE_ALL], [FEATURE, DONE])
     assert st.blocked is None and st.stage == "review", st.blocked
-    second = engine.requests[[r.role for r in engine.requests].index("tester") + 1]
+    second = engine.requests[[r.role for r in engine.requests].index("architect") + 1]
     [result] = [m.content for m in second.messages if m.role == "tool"]
     assert "def test_mul_zero" in str(result), result
 
@@ -606,7 +604,7 @@ async def test_a_proof_change_reply_revises_the_layers_proof_through_the_tester_
     asked = prompts(engine, "architect")
     assert len(asked) == 3 and ID_ONE in asked[2] and "asserts: mul(7, 1) is 7" in asked[2]
     assert "The tester has revised this layer's agreed tests" in asked[2]
-    revision = prompts(engine, "tester")[0]
+    revision = prompts(engine, "architect")[0]
     assert "> " + ID_ZERO + ": zero is covered by test_mul's operands" in revision
     assert st.agreement is not None
     assert [t["name"] for t in st.agreement["proof"]] == ["test_mul_by_one", "test_mul"]
@@ -662,7 +660,7 @@ async def test_a_criterion_the_architect_finds_false_is_reworded_by_product_then
     assert "AC2: it asks for a profile page" in revision
     assert st.story is not None and st.story["acceptance"][1]["when"] == "mul(7, 1) is asked"
     assert st.agreement is not None and st.agreement["story"]["acceptance"][1]["then"] == "it is 7"
-    tester = prompts(engine, "tester")[0]
+    tester = prompts(engine, "architect")[0]
     assert "mul(7, 1) is asked" in tester and "AC2: (criterion, now reworded)" in tester
     events = st.path / "events.jsonl"
     [revised] = kinds(events, "story_criteria_revised")

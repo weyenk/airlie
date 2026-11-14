@@ -25,7 +25,7 @@ def config(tmp_path: Path, *, reviewer_engine: bool = True):  # type: ignore[no-
     data = {
         "version": 1,
         "engines": {
-            "main": {"kind": "mlx_vlm", "port": 8080, "model": "generalist"},
+            "main": {"kind": "mlx_vlm", "port": 8080, "model": "architect"},
             **(
                 {"reviewer": {"kind": "mlx_vlm", "port": 8082, "model": "reviewer"}}
                 if reviewer_engine
@@ -33,13 +33,13 @@ def config(tmp_path: Path, *, reviewer_engine: bool = True):  # type: ignore[no-
             ),
         },
         "models": {
-            "generalist": {"repo": "org/g", "revision": "r", "path": "/models/generalist"},
+            "architect": {"repo": "org/g", "revision": "r", "path": "/models/architect"},
             "reviewer": {"repo": "org/r", "revision": "r", "path": "/models/reviewer"},
         },
         "roles": {
             r: {
                 "prompt": f"{r}.md",
-                "model": "reviewer" if r == "reviewer" and reviewer_engine else "generalist",
+                "model": "reviewer" if r == "reviewer" and reviewer_engine else "architect",
             }
             for r in ROLES
         },
@@ -73,7 +73,7 @@ async def test_each_role_goes_to_the_engine_that_serves_its_model(tmp_path: Path
     await eng.generate(plain_request("coder"))
     assert [(u, b["model"]) for u, b in seen] == [
         ("http://127.0.0.1:8082/v1/chat/completions", "/models/reviewer"),
-        ("http://127.0.0.1:8080/v1/chat/completions", "/models/generalist"),
+        ("http://127.0.0.1:8080/v1/chat/completions", "/models/architect"),
     ]
     assert list((await eng.health()).models) == ["8080"]  # main's
     assert eng.stats().requests == 2
@@ -86,7 +86,7 @@ def test_one_engine_serving_every_role_stays_one_http_engine(tmp_path: Path) -> 
 
 
 def test_a_model_override_is_one_http_engine_even_with_roles_elsewhere(tmp_path: Path) -> None:
-    eng = cli._http_engine(config(tmp_path), "main", "generalist")
+    eng = cli._http_engine(config(tmp_path), "main", "architect")
     assert isinstance(eng, ManagedEngine) and isinstance(eng._inner, HTTPEngine)
 
 

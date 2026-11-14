@@ -107,7 +107,7 @@ async def test_orchestrator_runs_k_teams_in_worktrees_and_reports(tmp_path: Path
     cfg = load_config(cfg_dir / "airlie.yaml")
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(
                     tool_calls=[
                         ToolCall("a1", "write_file", json.dumps({"path": "t1.txt", "content": "one"}))
@@ -165,7 +165,7 @@ async def test_orchestrator_aggregates_and_writes_report(tmp_path: Path) -> None
     cfg = load_config(cfg_dir / "airlie.yaml")
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(
                     tool_calls=[ToolCall("a1", "write_file", json.dumps({"path": "ok.txt", "content": "1"}))]
                 ),
@@ -276,7 +276,7 @@ async def test_a_single_agent_cut_off_at_max_tokens_is_reported_as_cut_off_not_d
     }
     (cfg_dir / "airlie.yaml").write_text(yaml.safe_dump(data))
     cfg = load_config(cfg_dir / "airlie.yaml")
-    engine = FakeEngine({"coder": [FakeReply(reasoning="Thinking, still. ", finish_reason="length")]})
+    engine = FakeEngine({"architect": [FakeReply(reasoning="Thinking, still. ", finish_reason="length")]})
     report = await ParallelAgentTeamOrchestrator(cfg, engine, run_id="r12").execute_task("do it", repo=repo)
     [team] = report.teams
     assert (team.ok, team.stop_reason) == (False, "cut_off") and not report.any_ok
@@ -342,7 +342,7 @@ async def test_a_parallel_teams_malformed_tool_call_reaches_the_runs_events(tmp_
     }
     (cfg_dir / "airlie.yaml").write_text(yaml.safe_dump(data))
     bad = "<function=write_file>\n<file>t.txt</file>\n<content>one</content>\n</function>"
-    engine = FakeEngine({"coder": [FakeReply(text=bad), FakeReply(text="done")]})
+    engine = FakeEngine({"architect": [FakeReply(text=bad), FakeReply(text="done")]})
     orch = ParallelAgentTeamOrchestrator(load_config(cfg_dir / "airlie.yaml"), engine, run_id="r10")
     report = await orch.execute_task("do the thing", repo=repo, test_cmd="true")
     events = [json.loads(x) for x in report.run_dir.events_path.read_text().splitlines()]

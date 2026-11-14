@@ -37,7 +37,7 @@ def test_a_running_studio_job_shows_the_chief_its_specialists_and_who_is_working
     assert list(n) == ["chief", "fix", "note", "reviewer"]  # chief, the plan's subtasks in order, reviewer
     assert n["chief"]["state"] == "idle" and n["chief"]["model"] == "qwen-27b"  # its specialists work now
     fix = n["fix"]
-    assert fix["state"] == "active" and fix["label"] == "Coder" and fix["role"] == "coder"
+    assert fix["state"] == "active" and fix["label"] == "Coder" and fix["role"] == "architect"
     assert fix["skill"] == "python" and fix["model"] == "qwen-coder"
     assert fix["steps"] == 2 and fix["tokens"] == {"prompt": 2000, "completion": 200}
     assert fix["current"] == {"step": 2, "tool": "write_file", "ok": True}
@@ -111,7 +111,15 @@ def test_a_failed_subtask_and_a_failed_run_say_so() -> None:
     tree = build_tree(
         [
             *STUDIO_START,
-            ev("subtask_done", 5.0, subtask="fix", role="coder", ok=False, stop_reason="max_steps", steps=2),
+            ev(
+                "subtask_done",
+                5.0,
+                subtask="fix",
+                role="architect",
+                ok=False,
+                stop_reason="max_steps",
+                steps=2,
+            ),
             ev("run_done", 6.0, ok=False, wall_ms=5000.0, subtasks=1, tests=False),
         ]
     )
@@ -126,7 +134,7 @@ def test_a_plan_only_job_is_the_chief_and_the_subtasks_it_planned() -> None:
     tree = build_tree(
         [
             ev("run_start", 1.0, goal="g", k=1, repo="/r", orchestrator="studio", mode="plan"),
-            ev("plan", 2.0, subtasks=["a"], roles=["coder"]),
+            ev("plan", 2.0, subtasks=["a"], roles=["architect"]),
             ev("run_done", 3.0, ok=True, wall_ms=2000.0, subtasks=0, tests=None),
         ]
     )

@@ -36,7 +36,7 @@ def state_dir(root: Path, name: str, *, outcome: Outcome = "helped", extra_node:
         )
     )
     ledger = Ledger(state / "supervisor.sqlite")
-    row = Intervention("air-1", "01", "r", "s", "coder", "red_streak", (), None, "no answer", "m", 0.0, 0)
+    row = Intervention("air-1", "01", "r", "s", "architect", "red_streak", (), None, "no answer", "m", 0.0, 0)
     ledger.outcome(ledger.record(row), outcome)
     ledger.close()
     return state
@@ -129,16 +129,18 @@ def test_a_ledger_row_for_another_subtask_role_kinds_owner_or_layer_is_not_clean
     b = state_dir(tmp_path, "b")
     ledger = Ledger(b / "supervisor.sqlite")
     other = Intervention(
-        "air-1", "02", "r", "fix", "tester", "red_streak", ("x",), None, "no answer", "m", 0.0, 0
+        "air-1", "02", "r", "fix", "architect", "red_streak", ("x",), None, "no answer", "m", 0.0, 0
     )
     ledger.outcome(ledger.record(other), "helped")
     ledger.close()
     ledger = Ledger(a / "supervisor.sqlite")
-    same = Intervention("air-1", "01", "r", "s", "coder", "red_streak", (), None, "no answer", "m", 0.0, 0)
+    same = Intervention(
+        "air-1", "01", "r", "s", "architect", "red_streak", (), None, "no answer", "m", 0.0, 0
+    )
     ledger.outcome(ledger.record(same), "helped")
     ledger.close()
     [line] = diff_story_runs(a, b).ledger
-    assert line.startswith("ledger row 1: ") and "'tester'" in line and "'02'" in line
+    assert line.startswith("ledger row 1: ") and "'architect'" in line and "'02'" in line
 
 
 def test_a_prompt_for_another_role_or_attempt_or_without_messages_is_not_clean(tmp_path: Path) -> None:

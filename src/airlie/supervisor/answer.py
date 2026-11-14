@@ -23,8 +23,8 @@ CATEGORIES: tuple[str, ...] = (
     "not_this_roles_test",
     "environment",
 )
-OWNERS: tuple[str, ...] = ("tester", "coder", "existing_code", "environment", "unknown")
-_ROUTES = ("tester", "coder")
+OWNERS: tuple[str, ...] = ("architect", "existing_code", "environment", "unknown")
+_ROUTES = ("architect",)
 _CATEGORY = re.compile(r"^[a-z][a-z0-9_]{2,39}$")
 
 
@@ -77,7 +77,7 @@ def parse_answer(text: str, *, block: bool) -> Answer:
         raise AnswerError("message is empty")
     route = _text(data, "would_route_to")
     if route is not None and route not in _ROUTES:
-        raise AnswerError(f"would_route_to {route!r} is not tester or coder")
+        raise AnswerError(f"would_route_to {route!r} is not architect")
     raw = data.get("evidence")
     if raw is None:
         raw = []

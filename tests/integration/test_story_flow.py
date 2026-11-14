@@ -174,10 +174,10 @@ def test_a_story_recorded_before_the_package_still_renders_its_tests_job(state_d
     assert layer["title"] == "The seam" and layer["acceptance"] == ["AC1"]
     assert [j["id"] for j in layer["jobs"]] == ["tests", "checks", "build"]
     tests, checks, build = layer["jobs"]
-    assert tests["role"] == "tester" and tests["status"] == "passed"
+    assert tests["role"] == "architect" and tests["status"] == "passed"
     assert tests["tokens"]["tps"] == pytest.approx(50.0)
     assert checks["status"] == "passed" and checks["attempts"] == 1
-    assert build["role"] == "coder" and build["status"] == "passed" and build["fix_rounds"] == 1
+    assert build["role"] == "architect" and build["status"] == "passed" and build["fix_rounds"] == 1
 
 
 def test_a_layer_that_stopped_shows_which_job_failed_and_why(state_dir: Path) -> None:
@@ -323,7 +323,7 @@ def test_a_layer_is_a_lane_of_jobs_with_package_and_coder_stats(state_dir: Path)
     assert package["duration_s"] == pytest.approx(60.0)  # from package_start to package_ready
     assert checks["status"] == "passed" and checks["retries"] == [] and checks["label"] == "checks"
     assert place["status"] == "passed" and place["sub"] == "1 test file"
-    assert build["role"] == "coder" and build["status"] == "passed"
+    assert build["role"] == "architect" and build["status"] == "passed"
     assert squash["status"] == "passed"
 
 
@@ -1063,8 +1063,7 @@ async def test_a_layer_sent_back_to_the_architect_runs_the_same_through_the_comp
         engine = FakeEngine(
             {
                 "product": [STORY],
-                "architect": [CALC_LAYERS, RED, OTHER_RED],
-                "coder": [BROKEN, DONE, STILL_BROKEN, DONE, *second],
+                "architect": [CALC_LAYERS, RED, OTHER_RED, BROKEN, DONE, STILL_BROKEN, DONE, *second],
                 "reviewer": [APPROVE, APPROVE],
             }
         )
@@ -1262,15 +1261,18 @@ def run_kinds(st: StoryState, root: Path) -> list[list[str]]:
 
 def engine_of(**scripts: list[Any]) -> Callable[[], FakeEngine]:
     """A fresh engine on the calc story's replies (`scripted`'s), any role's replaced by `scripts`."""
+    from tests.support.story import StoryFakeEngine
+
     scripts = dict(scripts)
-    build = scripts.pop("coder", [])
+    build = scripts.pop("build", scripts.pop("coder", []))
     plan = scripts.pop("architect", [CALC_LAYERS, RED])
     base = {
         "product": [STORY],
-        "architect": list(plan) + list(build),
+        "architect:plan": list(plan),
+        "architect:build": list(build),
         "reviewer": [APPROVE, APPROVE],
     }
-    return lambda: FakeEngine({role: list(replies) for role, replies in {**base, **scripts}.items()})
+    return lambda: StoryFakeEngine({role: list(replies) for role, replies in {**base, **scripts}.items()})
 
 
 async def test_the_dissolved_layer_runs_the_golden_script_the_same_either_way(tmp_path: Path) -> None:
@@ -1425,7 +1427,7 @@ async def test_a_run_killed_after_the_coder_turn_resumes_from_place_either_way(t
         assert saved.built == {} and saved.attempt is not None and Path(saved.attempt["worktree"]).is_dir()
         log = saved.path / "events.jsonl"
         before = len(log.read_text().splitlines())
-        engine = FakeEngine({"architect": [RED], "coder": [FEATURE, DONE], "reviewer": [APPROVE]})
+        engine = FakeEngine({"architect": [RED, FEATURE, DONE], "reviewer": [APPROVE]})
         st = await pipeline(root, repo, engine, **kw).build(card)
         assert st.blocked is None and list(st.built) == ["01"], st.blocked
         starts = kinds(log, "layer_start")
@@ -1764,7 +1766,7 @@ async def test_a_write_node_yields_its_diff_its_account_and_a_session_a_later_no
     assert c.store.get("account") == "done" and c.store.get("account.fix") == "added MORE"
     assert isinstance(held[0], Session) and held[1] is held[0]  # one session, continued
     assert len(st.runs) == 1 and c.sessions.get("coding") is None  # one studio run, closed at the end
-    assert "Now write MORE after: done" in briefs_to(engine, "coder")[-1]
+    assert "Now write MORE after: done" in briefs_to(engine, "architect")[-1]
 
 
 async def test_a_write_node_starts_from_the_head_of_the_worktree_its_input_names(tmp_path: Path) -> None:
@@ -1828,7 +1830,7 @@ async def test_a_write_that_fails_continues_or_names_an_output_it_cannot_fill(tm
     st = bare_state(tmp_path, repo)
     node = v2(
         type="write",
-        role="coder",
+        role="architect",
         prompt="Write PASS.",
         outputs={"diff": "text", "account": "text"},
         on_fail="continue",
@@ -1900,8 +1902,7 @@ async def test_a_package_retry_continues_the_drafting_session(tmp_path: Path) ->
         engine = FakeEngine(
             {
                 "product": [STORY],
-                "architect": [CALC_LAYERS, RED, OTHER_RED],
-                "coder": [BROKEN, DONE, STILL_BROKEN, DONE, FEATURE, DONE],
+                "architect": [CALC_LAYERS, RED, OTHER_RED, BROKEN, DONE, STILL_BROKEN, DONE, FEATURE, DONE],
                 "reviewer": [APPROVE, APPROVE],
             }
         )
@@ -1934,8 +1935,7 @@ async def test_a_lost_session_falls_back_to_a_fresh_package_ask(tmp_path: Path) 
         first = FakeEngine(
             {
                 "product": [STORY],
-                "architect": [CALC_LAYERS, RED],
-                "coder": [BROKEN, DONE, STILL_BROKEN, DONE],
+                "architect": [CALC_LAYERS, RED, BROKEN, DONE, STILL_BROKEN, DONE],
                 "reviewer": [APPROVE],
             }
         )
@@ -1946,8 +1946,7 @@ async def test_a_lost_session_falls_back_to_a_fresh_package_ask(tmp_path: Path) 
         before = len(log.read_text().splitlines())
         again = FakeEngine(
             {
-                "architect": [RED, OTHER_RED],
-                "coder": [BROKEN, DONE, STILL_BROKEN, DONE, FEATURE, DONE],
+                "architect": [RED, OTHER_RED, BROKEN, DONE, STILL_BROKEN, DONE, FEATURE, DONE],
                 "reviewer": [APPROVE, APPROVE],
             }
         )
@@ -2167,7 +2166,7 @@ async def test_the_meeting_runner_holds_its_meeting_from_the_saved_state_through
     assert turned == [("turn", {"n": 1})]
     with pytest.raises(ValueError, match="product, architect"):  # the protocol's seats
         await meeting_runner(
-            node.model_copy(update={"role": ["product", "coder"]}),
+            node.model_copy(update={"role": ["product", "architect"]}),
             run_context(pipe, Registry(), store, "amigos"),
             agree=agree,
             meeting=factory,

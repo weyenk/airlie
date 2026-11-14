@@ -14,7 +14,7 @@ def test_web_section_with_searxng_backend_parses(tmp_path: Path) -> None:
         "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
         "models": {"team": {"repo": "mlx-community/Qwen3.8-27B-4bit", "revision": "abc123"}},
         "roles": {
-            "coder": {"prompt": "prompts/roles/coder.md", "model": "team"},
+            "architect": {"prompt": "prompts/roles/architect.md", "model": "team"},
             "summarizer": {"prompt": "prompts/roles/summarizer.md", "model": "team"},
             "judge": {"prompt": "prompts/roles/judge.md", "model": "team"},
             "aggregator": {"prompt": "prompts/roles/aggregator.md", "model": "team"},
@@ -29,7 +29,7 @@ def test_web_section_with_searxng_backend_parses(tmp_path: Path) -> None:
 
     # Create prompt files
     (tmp_path / "prompts/roles").mkdir(parents=True)
-    (tmp_path / "prompts/roles/coder.md").write_text("# Coder Prompt")
+    (tmp_path / "prompts/roles/architect.md").write_text("# Coder Prompt")
     (tmp_path / "prompts/roles/summarizer.md").write_text("# Summarizer Prompt")
     (tmp_path / "prompts/roles/judge.md").write_text("# Judge Prompt")
     (tmp_path / "prompts/roles/aggregator.md").write_text("# Aggregator Prompt")
@@ -51,7 +51,7 @@ def test_web_section_defaults_when_not_present(tmp_path: Path) -> None:
         "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
         "models": {"team": {"repo": "mlx-community/Qwen3.8-27B-4bit", "revision": "abc123"}},
         "roles": {
-            "coder": {"prompt": "prompts/roles/coder.md", "model": "team"},
+            "architect": {"prompt": "prompts/roles/architect.md", "model": "team"},
             "summarizer": {"prompt": "prompts/roles/summarizer.md", "model": "team"},
             "judge": {"prompt": "prompts/roles/judge.md", "model": "team"},
             "aggregator": {"prompt": "prompts/roles/aggregator.md", "model": "team"},
@@ -64,7 +64,7 @@ def test_web_section_defaults_when_not_present(tmp_path: Path) -> None:
 
     # Create prompt files
     (tmp_path / "prompts/roles").mkdir(parents=True)
-    (tmp_path / "prompts/roles/coder.md").write_text("# Coder Prompt")
+    (tmp_path / "prompts/roles/architect.md").write_text("# Coder Prompt")
     (tmp_path / "prompts/roles/summarizer.md").write_text("# Summarizer Prompt")
     (tmp_path / "prompts/roles/judge.md").write_text("# Judge Prompt")
     (tmp_path / "prompts/roles/aggregator.md").write_text("# Aggregator Prompt")
@@ -86,7 +86,7 @@ def test_web_search_and_fetch_tools_in_known_tools(tmp_path: Path) -> None:
         "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
         "models": {"team": {"repo": "mlx-community/Qwen3.8-27B-4bit", "revision": "abc123"}},
         "roles": {
-            "coder": {"prompt": "prompts/roles/coder.md", "model": "team"},
+            "architect": {"prompt": "prompts/roles/architect.md", "model": "team"},
             "summarizer": {"prompt": "prompts/roles/summarizer.md", "model": "team"},
             "judge": {"prompt": "prompts/roles/judge.md", "model": "team"},
             "aggregator": {"prompt": "prompts/roles/aggregator.md", "model": "team"},
@@ -104,7 +104,7 @@ def test_web_search_and_fetch_tools_in_known_tools(tmp_path: Path) -> None:
 
     # Create prompt files
     (tmp_path / "prompts/roles").mkdir(parents=True)
-    (tmp_path / "prompts/roles/coder.md").write_text("# Coder Prompt")
+    (tmp_path / "prompts/roles/architect.md").write_text("# Coder Prompt")
     (tmp_path / "prompts/roles/summarizer.md").write_text("# Summarizer Prompt")
     (tmp_path / "prompts/roles/judge.md").write_text("# Judge Prompt")
     (tmp_path / "prompts/roles/aggregator.md").write_text("# Aggregator Prompt")

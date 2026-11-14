@@ -56,7 +56,7 @@ def test_routable_roles_need_a_summary(tmp_path: Path) -> None:
     }
     (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
     cfg = load_config(tmp_path / "airlie.yaml")
-    assert routable_roles(cfg, exclude={"chief"}) == {"coder": "Implement code", "qa": "Tests"}
+    assert routable_roles(cfg, exclude={"chief"}) == {"architect": "Implement code", "qa": "Tests"}
 
 
 def test_load_skills_reads_summaries_and_skips_files_without(tmp_path: Path) -> None:
@@ -71,7 +71,7 @@ def test_load_skills_reads_summaries_and_skips_files_without(tmp_path: Path) -> 
 
 def test_routable_false_in_frontmatter_excludes_the_role(tmp_path: Path) -> None:
     (tmp_path / "chief.md").write_text("---\nsummary: the chief\nroutable: false\n---\n# chief\n")
-    (tmp_path / "coder.md").write_text("---\nsummary: Implement code\n---\n# coder\n")
+    (tmp_path / "architect.md").write_text("---\nsummary: Implement code\n---\n# coder\n")
     for n in ("summarizer", "judge", "aggregator"):
         (tmp_path / f"{n}.md").write_text(f"# {n}\n")
     data = {
@@ -84,4 +84,4 @@ def test_routable_false_in_frontmatter_excludes_the_role(tmp_path: Path) -> None
         },
     }
     (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
-    assert routable_roles(load_config(tmp_path / "airlie.yaml")) == {"coder": "Implement code"}
+    assert routable_roles(load_config(tmp_path / "airlie.yaml")) == {"architect": "Implement code"}

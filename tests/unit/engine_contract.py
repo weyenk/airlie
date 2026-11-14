@@ -6,7 +6,7 @@ from airlie.config import Sampling
 from airlie.engine import GenRequest, Message, TokenEvent
 
 
-def plain_request(role: str = "coder") -> GenRequest:
+def plain_request(role: str = "architect") -> GenRequest:
     return GenRequest(
         role=role,
         messages=[

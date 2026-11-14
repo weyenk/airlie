@@ -119,11 +119,11 @@ def noop(turn: Turn, state: Mapping[str, Any]) -> None:
 
 
 def _two_seat(script: Mapping[str, list[Any]]) -> dict[str, list[Any]]:
-    if "tester" not in script:
+    if "architect" not in script:
         return {k: list(v) for k, v in script.items()}
-    out = {k: list(v) for k, v in script.items() if k != "tester"}
+    out = {k: list(v) for k, v in script.items() if k != "architect"}
     arch = out.get("architect", [])
-    proof = list(script["tester"])
+    proof = list(script["architect"])
     out["architect"] = [arch[0], *proof, *arch[1:]] if arch else proof
     return out
 
@@ -195,8 +195,9 @@ async def test_a_part_posted_again_unchanged_is_no_revision_and_costs_no_round(t
     split = fence({"layers": [x.to_dict() for x in LAYERS]})
     again = {
         "product": [say("The criteria read fine.", AGREE)] * 4,
-        "architect": [say("The split holds.", split, AGREE)] * 4,
-        "tester": [say("Here is the proof.", fence(PROOF), AGREE)] + [say("Still good.", AGREE)] * 3,
+        "architect": [say("The split holds.", split, AGREE)] * 4
+        + [say("Here is the proof.", fence(PROOF), AGREE)]
+        + [say("Still good.", AGREE)] * 3,
     }
     out = await agree(meeting(again), tmp_path)
     assert out.turns == 7 and out.layers == LAYERS
@@ -236,8 +237,8 @@ async def test_a_turn_without_a_verdict_whose_role_gives_none_when_asked_is_a_fi
     script = {
         "product": [say("Looks fine to me.", ""), "still no verdict", say("Verdict this time.", AGREE)]
         + [say("ok", AGREE)] * 2,
-        "architect": [say("ok", AGREE)] * 3,
-        "tester": [say("Proof.", fence(PROOF), AGREE), say("ok", AGREE), say("ok", AGREE)],
+        "architect": [say("ok", AGREE)] * 3
+        + [say("Proof.", fence(PROOF), AGREE), say("ok", AGREE), say("ok", AGREE)],
     }
     seen: list[Turn] = []
     out = await agree(meeting(script, on_turn=lambda t, s: seen.append(t)), tmp_path)
@@ -401,8 +402,7 @@ async def test_a_dropped_criterion_in_the_meeting_leaves_findings_until_the_owne
 async def test_product_blocking_the_request_stops_the_meeting(tmp_path: Path) -> None:
     script = {
         "product": [say("Cannot build.", fence({"type": "blocked", "reason": "which sizes?"}), AGREE)],
-        "architect": [say("ok", AGREE)],
-        "tester": [say("ok", AGREE)],
+        "architect": [say("ok", AGREE), *say("ok", AGREE)],
     }
     with pytest.raises(NotActionable, match="which sizes"):
         await agree(meeting(script), tmp_path)

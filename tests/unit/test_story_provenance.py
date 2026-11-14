@@ -51,7 +51,7 @@ def state(tmp_path: Path, *, package: bool = True) -> StoryState:
     st.path.mkdir(parents=True)
     st.base = {"ref": "origin/main", "sha": BASE}
     finding = "minor store.py:3: name"
-    review = {"id": "build", "role": "coder", "stop": "done", "review": "approve", "fix_rounds": 1}
+    review = {"id": "build", "role": "architect", "stop": "done", "review": "approve", "fix_rounds": 1}
     row: dict[str, Any] = {
         "branch": "AIR-9-x-01-storage",
         "sha": SHA1,

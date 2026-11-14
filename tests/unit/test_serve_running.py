@@ -28,8 +28,8 @@ def ev(kind: str, ts: float, **fields: Any) -> dict[str, Any]:
 STUDIO_START = ev("run_start", 1.0, goal="fix the build", k=1, repo="/r", orchestrator="studio")
 STUDIO_ONE_OF_FOUR_DONE = [
     STUDIO_START,
-    ev("plan", 2.0, subtasks=["fix", "note"], roles=["coder", "docs"]),
-    ev("subtask_start", 3.0, subtask="fix", role="coder"),
+    ev("plan", 2.0, subtasks=["fix", "note"], roles=["architect", "docs"]),
+    ev("subtask_start", 3.0, subtask="fix", role="architect"),
     ev("subtask_done", 4.0, subtask="fix", ok=True, steps=3, stop_reason="done"),
 ]
 """A studio run part way: the chief, two subtasks and the reviewer, one subtask finished."""

@@ -75,12 +75,12 @@ class NotingEngine(FakeEngine):
         return await super().yes_no(role, messages)
 
 
-def request(role: str = "coder") -> GenRequest:
+def request(role: str = "architect") -> GenRequest:
     return GenRequest(role, [Message("user", "hi")], Sampling(), 16)
 
 
 def managed(events: list[str], reply: FakeReply | None = None) -> ManagedEngine:
-    inner = NotingEngine(events, {"coder": [reply or FakeReply(text="ok")]})
+    inner = NotingEngine(events, {"architect": [reply or FakeReply(text="ok")]})
     return ManagedEngine(inner, "main", RecordingHolder(events))
 
 
@@ -88,14 +88,14 @@ async def test_generate_runs_inside_a_hold() -> None:
     events: list[str] = []
     res = await managed(events).generate(request())
     assert res.text == "ok"
-    assert events == ["enter main role:coder", "generate", "exit main"]
+    assert events == ["enter main role:architect", "generate", "exit main"]
 
 
 async def test_yes_no_runs_inside_a_hold() -> None:
     events: list[str] = []
     p = await managed(events, FakeReply(p_yes=0.75)).yes_no("coder", [Message("user", "ok?")])
     assert p == (0.75, 0.25)
-    assert events == ["enter main role:coder", "yes_no", "exit main"]
+    assert events == ["enter main role:architect", "yes_no", "exit main"]
 
 
 async def test_other_methods_do_not_hold() -> None:
@@ -115,7 +115,7 @@ async def test_the_hold_is_released_when_the_call_raises() -> None:
     e = ManagedEngine(NotingEngine(events, {}), "main", RecordingHolder(events))  # no script: generate raises
     with pytest.raises(EngineError, match="no script"):
         await e.generate(request())
-    assert events == ["enter main role:coder", "generate", "exit main"]
+    assert events == ["enter main role:architect", "generate", "exit main"]
 
 
 # ---- holder_for ----
@@ -138,14 +138,14 @@ async def test_holder_for_uses_the_in_process_manager_when_given(tmp_path: Path)
     h = holder_for(make_cfg(tmp_path), manager=manager, transport=serve_transport(200, seen))
     assert isinstance(h, InProcessHolder)
     assert seen == []  # serve is not even asked
-    async with h.hold("main", "role:coder"):
-        assert manager.status()[0].holders == ("role:coder",)
+    async with h.hold("main", "role:architect"):
+        assert manager.status()[0].holders == ("role:architect",)
     assert manager.status()[0].holders == ()
 
 
 async def test_the_in_process_holder_leaves_an_engine_the_manager_does_not_run() -> None:
     manager = Manager([], budget_gb=100.0, clock=FakeClock())
-    async with InProcessHolder(manager).hold("elsewhere", "role:coder"):
+    async with InProcessHolder(manager).hold("elsewhere", "role:architect"):
         pass
 
 
@@ -209,7 +209,7 @@ def lease_holder(serve: FakeServe, clock: FakeClock, key: str | None = "k") -> L
 async def test_a_lease_is_taken_renewed_every_third_of_its_ttl_and_deleted() -> None:
     serve, clock = FakeServe(ttl_s=90.0), FakeClock()
     holder = lease_holder(serve, clock)
-    async with holder.hold("main", "role:coder"):
+    async with holder.hold("main", "role:architect"):
         while len([c for c in serve.calls if c[0] == "PUT"]) < 2:
             await asyncio.sleep(0)
     assert clock.sleeps[0] == 30.0
@@ -217,13 +217,13 @@ async def test_a_lease_is_taken_renewed_every_third_of_its_ttl_and_deleted() -> 
     assert serve.calls[0] == ("POST", base)
     assert ("PUT", f"{base}/lease-1") in serve.calls
     assert serve.calls[-1] == ("DELETE", f"{base}/lease-1")
-    assert serve.owners == ['{"owner":"role:coder"}']
+    assert serve.owners == ['{"owner":"role:architect"}']
     assert set(serve.keys) == {"Bearer k"}
 
 
 async def test_no_key_sends_no_authorization() -> None:
     serve = FakeServe()
-    async with lease_holder(serve, FakeClock(), key=None).hold("main", "role:coder"):
+    async with lease_holder(serve, FakeClock(), key=None).hold("main", "role:architect"):
         pass
     assert set(serve.keys) == {None}
 
@@ -231,7 +231,7 @@ async def test_no_key_sends_no_authorization() -> None:
 async def test_a_failed_lease_start_raises_what_serve_said() -> None:
     serve = FakeServe(grant=httpx.Response(503, json={"error": "out of memory", "engine": "main"}))
     with pytest.raises(EngineError, match="main: out of memory"):
-        async with lease_holder(serve, FakeClock()).hold("main", "role:coder"):
+        async with lease_holder(serve, FakeClock()).hold("main", "role:architect"):
             raise AssertionError("not held")
     assert [m for m, _ in serve.calls] == ["POST"]
 
@@ -244,14 +244,14 @@ async def test_a_serve_that_stops_answering_the_lease_request_is_an_engine_error
         "http://serve.test", None, httpx.AsyncClient(transport=httpx.MockTransport(refuse)), FakeClock()
     )
     with pytest.raises(EngineError, match="did not answer"):
-        async with holder.hold("main", "role:coder"):
+        async with holder.hold("main", "role:architect"):
             raise AssertionError("not held")
 
 
 async def test_the_lease_is_deleted_when_the_body_raises() -> None:
     serve = FakeServe()
     with pytest.raises(ValueError):
-        async with lease_holder(serve, FakeClock()).hold("main", "role:coder"):
+        async with lease_holder(serve, FakeClock()).hold("main", "role:architect"):
             raise ValueError("boom")
     assert serve.calls[-1][0] == "DELETE"
 
@@ -265,7 +265,7 @@ async def test_a_failed_delete_does_not_hide_the_result() -> None:
     holder = LeaseHolder(
         "http://serve.test", None, httpx.AsyncClient(transport=httpx.MockTransport(answer)), FakeClock()
     )
-    async with holder.hold("main", "role:coder"):
+    async with holder.hold("main", "role:architect"):
         pass
 
 
@@ -306,7 +306,7 @@ def restarted_holder(serve: RestartedServe) -> LeaseHolder:
 
 async def test_a_lease_serve_has_forgotten_is_taken_again_and_renewed() -> None:
     serve = RestartedServe()
-    async with restarted_holder(serve).hold("main", "role:coder"):
+    async with restarted_holder(serve).hold("main", "role:architect"):
         while serve.puts("l2") < 2:
             await asyncio.sleep(0)
     assert serve.calls[:5] == [
@@ -317,12 +317,12 @@ async def test_a_lease_serve_has_forgotten_is_taken_again_and_renewed() -> None:
         ("PUT", "l2"),
     ]
     assert serve.calls[-1] == ("DELETE", "l2")
-    assert serve.owners == ['{"owner":"role:coder"}'] * 2
+    assert serve.owners == ['{"owner":"role:architect"}'] * 2
 
 
 async def test_a_new_lease_serve_does_not_answer_is_asked_for_again_each_interval() -> None:
     serve = RestartedServe(refuse_posts=[None, 503])
-    async with restarted_holder(serve).hold("main", "role:coder"):
+    async with restarted_holder(serve).hold("main", "role:architect"):
         while serve.puts("l2") < 1:
             await asyncio.sleep(0)
     assert [m for m, _ in serve.calls[:6]] == ["POST", "PUT", "POST", "POST", "POST", "PUT"]
@@ -345,7 +345,7 @@ async def test_a_renewal_that_fails_is_tried_again() -> None:
     holder = LeaseHolder(
         "http://serve.test", None, httpx.AsyncClient(transport=httpx.MockTransport(answer)), clock
     )
-    async with holder.hold("main", "role:coder"):
+    async with holder.hold("main", "role:architect"):
         while len(puts) < 2:
             await asyncio.sleep(0)
 
@@ -353,7 +353,7 @@ async def test_a_renewal_that_fails_is_tried_again() -> None:
 async def test_a_503_without_a_json_body_is_still_an_engine_error() -> None:
     serve = FakeServe(grant=httpx.Response(502, text="bad gateway"))
     with pytest.raises(EngineError, match="main: serve answered 502"):
-        async with lease_holder(serve, FakeClock()).hold("main", "role:coder"):
+        async with lease_holder(serve, FakeClock()).hold("main", "role:architect"):
             raise AssertionError("not held")
 
 
@@ -380,7 +380,7 @@ def local(tmp_path: Path, prober: FakeProber, runner: FakeRunner) -> LocalHolder
 async def test_local_holder_starts_a_down_engine_and_leaves_it(tmp_path: Path) -> None:
     runner = FakeRunner()
     prober = FakeProber(health=[False, True], loaded=[["/models/base"]])
-    async with local(tmp_path, prober, runner).hold("main", "role:coder"):
+    async with local(tmp_path, prober, runner).hold("main", "role:architect"):
         assert len(runner.spawned) == 1
     assert runner.killed == []  # serve's reaper stops it, not the caller
     assert runner.alive == {4242}
@@ -388,7 +388,7 @@ async def test_local_holder_starts_a_down_engine_and_leaves_it(tmp_path: Path) -
 
 async def test_local_holder_leaves_a_running_engine_alone(tmp_path: Path) -> None:
     runner = FakeRunner()
-    async with local(tmp_path, FakeProber(health=[True]), runner).hold("main", "role:coder"):
+    async with local(tmp_path, FakeProber(health=[True]), runner).hold("main", "role:architect"):
         pass
     assert runner.spawned == [] and runner.killed == []
 
@@ -396,7 +396,7 @@ async def test_local_holder_leaves_a_running_engine_alone(tmp_path: Path) -> Non
 async def test_local_holder_raises_when_the_start_fails(tmp_path: Path) -> None:
     runner = FakeRunner(port_holder=999)
     with pytest.raises(EngineError, match="port 8080 is held"):
-        async with local(tmp_path, FakeProber(health=[False]), runner).hold("main", "role:coder"):
+        async with local(tmp_path, FakeProber(health=[False]), runner).hold("main", "role:architect"):
             raise AssertionError("not held")
 
 
@@ -526,7 +526,7 @@ async def test_concurrent_local_holds_start_the_engine_once(tmp_path: Path) -> N
     holder = local(tmp_path, Loading(health=[], loaded=[["/models/base"]]), runner)
 
     async def one() -> None:
-        async with holder.hold("main", "role:coder"):
+        async with holder.hold("main", "role:architect"):
             await asyncio.sleep(0)
 
     await asyncio.gather(one(), one())
@@ -540,6 +540,6 @@ async def test_a_start_that_loses_the_race_is_not_an_error(tmp_path: Path) -> No
     holder = local(tmp_path, FakeProber(health=[False, True]), runner)
     (tmp_path / "state" / "engines" / "main").mkdir(parents=True)
     (tmp_path / "state" / "engines" / "main" / "pid").write_text("77\n")
-    async with holder.hold("main", "role:coder"):
+    async with holder.hold("main", "role:architect"):
         pass
     assert runner.spawned == []

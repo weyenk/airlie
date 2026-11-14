@@ -780,14 +780,14 @@ def test_the_pinned_floor_counts_on_demand_engines_separately() -> None:
 
 
 def test_the_pinned_floor_is_the_projection_without_the_on_demand_engines() -> None:
-    """The floor is the 85.0 GB projection (110.1 before the reviewer engine was dropped, 2026-11-12) minus
-    small's 6.3 GB (3 + 2.3 + 1), yielding 78.7 GB."""
+    """The floor is the pinned main (+gemma/decision, no on-demand small) projection minus small's 6.3 GB;
+    architect swap (2026-11-13) lowered main weights vs generalist — re-check after doctor pulls."""
     from airlie.doctor import engine_footprint_gb, pinned_floor_gb, project_memory_gb
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, _ = project_memory_gb(studio, "main")
     floor = pinned_floor_gb(studio)
-    assert round(floor, 1) == 78.7
+    assert round(floor, 1) == 72.2
     assert floor == pytest.approx(projected - engine_footprint_gb(studio, "small"))
 
 

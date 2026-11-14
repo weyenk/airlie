@@ -21,7 +21,7 @@ from airlie.topology.studio import StudioOrchestrator
 
 def _write_config(tmp_path: Path, research_tools: list[str] | None, web: dict | None = None) -> Path:
     roles = {
-        "coder": {"prompt": "prompts/roles/coder.md", "model": "team"},
+        "architect": {"prompt": "prompts/roles/architect.md", "model": "team"},
         "summarizer": {"prompt": "prompts/roles/summarizer.md", "model": "team"},
         "judge": {"prompt": "prompts/roles/judge.md", "model": "team"},
         "aggregator": {"prompt": "prompts/roles/aggregator.md", "model": "team"},

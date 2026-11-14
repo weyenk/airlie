@@ -52,21 +52,21 @@ def task(cfg: AirlieConfig, engine: FakeEngine) -> Task:
 
 
 async def test_task_runs_a_fresh_context_and_returns_its_final_text(cfg: AirlieConfig) -> None:
-    engine = FakeEngine({"coder": [FakeReply(text="  all done  ")]})
-    result = await task(cfg, engine).run({"role": "coder", "prompt": "fix the bug"}, ctx_for(vm()))
+    engine = FakeEngine({"architect": [FakeReply(text="  all done  ")]})
+    result = await task(cfg, engine).run({"role": "architect", "prompt": "fix the bug"}, ctx_for(vm()))
     (req,) = engine.requests
     assert (result.ok, result.output) == (True, "all done")
     assert [(m.role, m.content) for m in req.messages] == [
-        ("system", prompt_text(cfg.roles["coder"].prompt).rstrip() + "\n"),
+        ("system", prompt_text(cfg.roles["architect"].prompt).rstrip() + "\n"),
         ("user", "fix the bug"),
     ]
-    assert req.role == "coder"
+    assert req.role == "architect"
 
 
 async def test_task_tools_run_in_the_same_vm(cfg: AirlieConfig) -> None:
     box = vm()
     engine = FakeEngine(
-        {"coder": [call("write_file", path="new.txt", content="hi\n"), FakeReply(text="wrote it")]}
+        {"architect": [call("write_file", path="new.txt", content="hi\n"), FakeReply(text="wrote it")]}
     )
     result = await task(cfg, engine).run({"prompt": "write"}, ctx_for(box))
     assert (result.output, box.files[f"{VM}/new.txt"]) == ("wrote it", b"hi\n")
@@ -92,7 +92,7 @@ async def test_task_holds_its_roles_engine_through_the_manager(cfg: AirlieConfig
 
 
 async def test_task_has_no_task_push_or_pr_tool_and_none_the_kind_asks_first(cfg: AirlieConfig) -> None:
-    engine = FakeEngine({"coder": [FakeReply(text="ok")]})
+    engine = FakeEngine({"architect": [FakeReply(text="ok")]})
     cfg = cfg.model_copy(deep=True)
     cfg.chat.kinds.repository.ask_first = ["push_branch", "open_pr", "build_image", "shell"]
     await task(cfg, engine).run({"prompt": "go"}, ctx_for(vm()))
@@ -111,9 +111,9 @@ async def test_task_has_no_task_push_or_pr_tool_and_none_the_kind_asks_first(cfg
 
 
 async def test_task_without_a_role_uses_the_default_role(cfg: AirlieConfig) -> None:
-    engine = FakeEngine({"coder": [FakeReply(text="by the coder")]})
+    engine = FakeEngine({"architect": [FakeReply(text="by the architect")]})
     result = await task(cfg, engine).run({"prompt": "go"}, ctx_for(vm()))
-    assert (result.output, engine.requests[0].role) == ("by the coder", "coder")
+    assert (result.output, engine.requests[0].role) == ("by the architect", "architect")
 
 
 async def test_task_with_an_unknown_role_lists_the_allowed_ones(cfg: AirlieConfig) -> None:
@@ -121,12 +121,12 @@ async def test_task_with_an_unknown_role_lists_the_allowed_ones(cfg: AirlieConfi
     result = await task(cfg, engine).run({"role": "chief", "prompt": "go"}, ctx_for(vm()))
     assert result.ok is False
     assert "unknown role 'chief'" in result.output
-    assert "coder, reviewer, tester, architect" in result.output
+    assert "architect, reviewer, product" in result.output
     assert engine.requests == []
 
 
 async def test_task_with_no_prompt_is_an_error(cfg: AirlieConfig) -> None:
-    result = await task(cfg, FakeEngine({})).run({"role": "coder"}, ctx_for(vm()))
+    result = await task(cfg, FakeEngine({})).run({"role": "architect"}, ctx_for(vm()))
     assert (result.ok, result.output) == (False, "error: prompt is required")
 
 
@@ -134,7 +134,7 @@ async def test_task_stops_at_max_steps_and_still_returns_an_answer(cfg: AirlieCo
     cfg = cfg.model_copy(deep=True)
     cfg.chat.task.max_steps = 2
     engine = FakeEngine(
-        {"coder": [call("list_dir", path="."), call("list_dir", path="."), FakeReply(text="best effort")]}
+        {"architect": [call("list_dir", path="."), call("list_dir", path="."), FakeReply(text="best effort")]}
     )
     result = await task(cfg, engine).run({"prompt": "loop"}, ctx_for(vm()))
     assert (result.ok, result.output) == (True, "best effort")
@@ -143,7 +143,7 @@ async def test_task_stops_at_max_steps_and_still_returns_an_answer(cfg: AirlieCo
 
 async def test_task_skips_the_superpowers_bootstrap(cfg: AirlieConfig) -> None:
     cfg = cfg.model_copy(deep=True)
-    cfg.chat.task.roles = ["coder", "chat"]
+    cfg.chat.task.roles = ["architect", "chat"]
     library = SuperpowersLibrary(ROOT / "vendor/superpowers")
     engine = FakeEngine({"chat": [FakeReply(text="ok")]})
     await Task(cfg, lambda role: engine, library=library).run({"role": "chat", "prompt": "x"}, ctx_for(vm()))
@@ -154,13 +154,13 @@ async def test_task_skips_the_superpowers_bootstrap(cfg: AirlieConfig) -> None:
 
 
 async def test_task_caps_its_answer_at_the_output_cap(cfg: AirlieConfig) -> None:
-    engine = FakeEngine({"coder": [FakeReply(text="x" * 50)]})
+    engine = FakeEngine({"architect": [FakeReply(text="x" * 50)]})
     result = await task(cfg, engine).run({"prompt": "go"}, ctx_for(vm(), output_cap_chars=10))
     assert result.output == "x" * 10 + "\n[the answer was cut]"
 
 
 async def test_task_with_no_answer_says_so(cfg: AirlieConfig) -> None:
-    engine = FakeEngine({"coder": [FakeReply(text="")]})
+    engine = FakeEngine({"architect": [FakeReply(text="")]})
     result = await task(cfg, engine).run({"prompt": "go"}, ctx_for(vm()))
     assert (result.ok, result.output) == (True, "(the subagent gave no answer)")
 
@@ -168,7 +168,7 @@ async def test_task_with_no_answer_says_so(cfg: AirlieConfig) -> None:
 async def test_a_failed_engine_is_an_error_result_not_a_raise(cfg: AirlieConfig) -> None:
     result = await task(cfg, FakeEngine({})).run({"prompt": "go"}, ctx_for(vm()))
     assert result.ok is False
-    assert "the coder subagent failed" in result.output and "no script" in result.output
+    assert "the architect subagent failed" in result.output and "no script" in result.output
 
 
 async def test_a_context_without_a_vm_is_an_error_result(cfg: AirlieConfig) -> None:
@@ -178,14 +178,14 @@ async def test_a_context_without_a_vm_is_an_error_result(cfg: AirlieConfig) -> N
 
 def test_the_schema_offers_the_configured_roles_and_requires_the_prompt(cfg: AirlieConfig) -> None:
     t = task(cfg, FakeEngine({}))
-    assert t.parameters["properties"]["role"]["enum"] == ["coder", "reviewer", "tester", "architect"]
+    assert t.parameters["properties"]["role"]["enum"] == ["architect", "reviewer", "product"]
     assert t.parameters["required"] == ["prompt"]
 
 
 def test_a_role_the_config_lacks_is_not_offered(cfg: AirlieConfig) -> None:
     cfg = cfg.model_copy(deep=True)
-    cfg.chat.task.roles = ["coder", "nonesuch"]
-    assert task(cfg, FakeEngine({})).roles == ["coder"]
+    cfg.chat.task.roles = ["architect", "nonesuch"]
+    assert task(cfg, FakeEngine({})).roles == ["architect"]
 
 
 @pytest.mark.parametrize(
@@ -258,7 +258,7 @@ async def test_each_subagent_call_is_reported_to_the_observer(cfg: AirlieConfig)
     async def after_call(call: ToolCall, result: ToolResult) -> None:
         seen.append((call.id, result.ok))
 
-    engine = FakeEngine({"coder": [call("write_file", path="a", content="x"), FakeReply(text="ok")]})
+    engine = FakeEngine({"architect": [call("write_file", path="a", content="x"), FakeReply(text="ok")]})
     token = OBSERVER.set(TaskObserver(after_call))
     try:
         await task(cfg, engine).run({"prompt": "go"}, ctx_for(vm()))
@@ -277,13 +277,13 @@ def test_a_task_with_no_role_the_config_has_is_not_usable(cfg: AirlieConfig, rol
 def test_a_task_whose_default_role_is_not_offered_is_not_usable(cfg: AirlieConfig) -> None:
     cfg = cfg.model_copy(deep=True)
     cfg.chat.task.roles = ["reviewer"]
-    cfg.chat.task.default_role = "coder"
+    cfg.chat.task.default_role = "architect"
     assert task(cfg, FakeEngine({})).usable is False
 
 
 def test_the_engines_of_its_roles_are_listed_for_the_status_relay(cfg: AirlieConfig) -> None:
     assert task(cfg, FakeEngine({})).engines == sorted(
-        {cfg.engine_for_role(r) for r in ["coder", "reviewer", "tester", "architect"]}
+        {cfg.engine_for_role(r) for r in ["architect", "reviewer", "product"]}
     )
 
 
@@ -307,7 +307,7 @@ def test_the_description_names_the_roles_and_the_default(cfg: AirlieConfig) -> N
         "Run a subagent with a fresh context on a role, in this VM, and get its final answer back. It sees "
         "only the prompt you give it (write it so it stands alone: what to do, which files, what to "
         "return), has the file, shell and git tools but cannot push, open a pull request or start another "
-        "task. Roles: coder, reviewer, tester, architect; none means coder."
+        "task. Roles: architect, reviewer, product; none means architect."
     )
 
 
@@ -319,7 +319,7 @@ def test_the_parameters_are_an_object_of_a_role_and_a_prompt(cfg: AirlieConfig) 
         "properties": {
             "role": {
                 "type": "string",
-                "enum": ["coder", "reviewer", "tester", "architect"],
+                "enum": ["architect", "reviewer", "product"],
                 "description": "the role to run the task as",
             },
             "prompt": {"type": "string", "description": "the task, complete in itself"},
@@ -332,7 +332,7 @@ async def test_a_chat_role_subagent_gets_the_slash_command_list_but_no_bootstrap
     cfg: AirlieConfig, tmp_path: Path
 ) -> None:
     cfg = cfg.model_copy(deep=True)
-    cfg.chat.task.roles = ["coder", "chat"]
+    cfg.chat.task.roles = ["architect", "chat"]
     skills = {"story": Skill("story", "Draft a story", "BODY", tmp_path / "story.md")}
     engine = FakeEngine({"chat": [FakeReply(text="ok")]})
     t = Task(cfg, lambda role: engine, chat_skills=skills)
@@ -346,7 +346,7 @@ async def test_a_role_other_than_chat_gets_only_its_own_prompt_even_with_skills(
     cfg: AirlieConfig, tmp_path: Path
 ) -> None:
     skills = {"story": Skill("story", "Draft a story", "BODY", tmp_path / "story.md")}
-    engine = FakeEngine({"coder": [FakeReply(text="ok")]})
+    engine = FakeEngine({"architect": [FakeReply(text="ok")]})
 
     await Task(cfg, lambda role: engine, chat_skills=skills).run({"prompt": "x"}, ctx_for(vm()))
 
@@ -357,10 +357,10 @@ async def test_the_subagent_generates_with_its_roles_own_sampling_limits_and_thi
     cfg: AirlieConfig,
 ) -> None:
     cfg = cfg.model_copy(deep=True)
-    spec = cfg.roles["coder"]
+    spec = cfg.roles["architect"]
     spec.thinking = True
     spec.max_tokens = 1234
-    engine = FakeEngine({"coder": [FakeReply(text="ok")]})
+    engine = FakeEngine({"architect": [FakeReply(text="ok")]})
 
     await task(cfg, engine).run({"prompt": "go"}, ctx_for(vm()))
 
@@ -422,7 +422,7 @@ async def test_a_stop_still_propagates_when_cancelling_the_engine_itself_fails(c
 
 
 async def test_an_answer_exactly_at_the_output_cap_is_kept_whole(cfg: AirlieConfig) -> None:
-    engine = FakeEngine({"coder": [FakeReply(text="x" * 10)]})
+    engine = FakeEngine({"architect": [FakeReply(text="x" * 10)]})
 
     result = await task(cfg, engine).run({"prompt": "go"}, ctx_for(vm(), output_cap_chars=10))
 

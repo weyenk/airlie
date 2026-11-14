@@ -24,7 +24,7 @@ def test_each_type_requires_its_fields():
         c=NodeSpec(type="conversation", role="architect"),
         wr=NodeSpec(type="write", prompt="p"),
         m=NodeSpec(type="meeting", role="product", prompt="p"),
-        t=NodeSpec(type="team", role=TeamRole(supervisor="architect", worker="coder"), prompt="p"),
+        t=NodeSpec(type="team", role=TeamRole(supervisor="architect", worker="architect"), prompt="p"),
         k=NodeSpec(type="check"),
         g=NodeSpec(type="gate"),
         b=NodeSpec(type="bundle"),

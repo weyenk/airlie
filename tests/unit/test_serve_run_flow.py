@@ -86,7 +86,7 @@ def test_a_studio_run_part_way_has_plan_specialists_and_who_is_working(tmp_path:
     assert fix == {
         "id": "fix",
         "label": "Coder",
-        "role": "coder",
+        "role": "architect",
         "status": "running",
         "attempts": 1,
         "fix_rounds": 0,
@@ -120,7 +120,7 @@ def test_a_failed_subtask_fails_its_stage_and_a_run_that_ended_with_no_review_ha
 ) -> None:
     events = [
         *STUDIO_START,
-        ev("subtask_done", 5.0, subtask="fix", role="coder", ok=False, stop_reason="max_steps", steps=2),
+        ev("subtask_done", 5.0, subtask="fix", role="architect", ok=False, stop_reason="max_steps", steps=2),
         ev("run_done", 6.0, ok=False, wall_ms=5000.0, subtasks=1, tests=False),
     ]
     f = run_flow(write_run(tmp_path, "r1", events), "r1")
@@ -142,7 +142,7 @@ def test_a_failed_job_beats_a_running_one_and_some_passed_with_some_waiting_is_p
     assert lanes(running_and_failed)[1] == ("specialists", "failed", [("fix", "running"), ("note", "failed")])
     done = [
         *STUDIO_START,
-        ev("subtask_done", 5.0, subtask="fix", role="coder", ok=True, stop_reason="done", steps=2),
+        ev("subtask_done", 5.0, subtask="fix", role="architect", ok=True, stop_reason="done", steps=2),
     ]
     passed_and_waiting = run_flow(write_run(tmp_path, "r2", done), "r2")
     assert lanes(passed_and_waiting)[1] == (
@@ -161,7 +161,7 @@ def test_a_studio_run_still_planning_has_no_specialists_yet(tmp_path: Path) -> N
 def test_a_plan_mode_run_has_only_its_plan(tmp_path: Path) -> None:
     events = [
         ev("run_start", 1.0, goal="g", k=1, repo="/r", orchestrator="studio", mode="plan"),
-        ev("plan", 2.0, subtasks=["a"], roles=["coder"]),
+        ev("plan", 2.0, subtasks=["a"], roles=["architect"]),
         ev("run_done", 3.0, ok=True, wall_ms=2000.0, subtasks=0, tests=None),
     ]
     f = run_flow(write_run(tmp_path, "r1", events), "r1")
@@ -196,7 +196,7 @@ def test_a_teams_run_has_a_lane_per_team_and_the_judge(tmp_path: Path) -> None:
     ]
     t1, t2 = node(f, "teams")["jobs"]
     assert (t1["label"], t1["won"]) == ("Team 1", False) and (t2["label"], t2["won"]) == ("Team 2", True)
-    assert t1["tokens"] == {"prompt": 1000, "completion": 100} and t1["role"] == "coder"
+    assert t1["tokens"] == {"prompt": 1000, "completion": 100} and t1["role"] == "architect"
     assert [n["label"] for n in f["nodes"]] == ["Teams", "Judge"] and f["progress"] == 1.0
 
 
@@ -322,14 +322,14 @@ def test_a_run_with_no_start_yet_has_no_stages_and_an_unknown_run_is_not_found(t
 def test_a_run_job_detail_gives_its_prompt_and_every_attempts_steps(tmp_path: Path) -> None:
     state = write_run(tmp_path, "r1", STUDIO_DONE)
     trace = state / "runs" / "r1" / "trace" / "fix"
-    write_json(trace / "prompt.json", {"role": "coder", "attempt": 0, "messages": [{"role": "user"}]})
+    write_json(trace / "prompt.json", {"role": "architect", "attempt": 0, "messages": [{"role": "user"}]})
     step_one = {"u_t": {"name": "read_file", "arguments": "{}"}, "o_t": "x", "ok": True}
     write_json(trace / "step-001.json", {**step_one, "assistant_text": "looked", "reasoning": "r"})
     long = {"u_t": {"name": "write_file", "arguments": "{}"}, "o_t": "y" * 5000, "ok": False}
     write_json(trace / "round-1" / "step-001.json", {**long, "assistant_text": "fixed", "reasoning": None})
     d = run_job_detail(state, "r1", "specialists", "fix")
     assert d["node"] == "specialists" and d["job"] == node(run_flow(state, "r1"), "specialists")["jobs"][0]
-    assert d["input"] == {"role": "coder", "attempt": 0, "messages": [{"role": "user"}]}
+    assert d["input"] == {"role": "architect", "attempt": 0, "messages": [{"role": "user"}]}
     assert d["input_note"] is None and d["output"] == {"final_text": "fixed"}
     assert [(s["attempt"], s["n"], s["tool"], s["ok"]) for s in d["steps"]] == [
         (0, 1, "read_file", True),
@@ -353,7 +353,7 @@ def test_a_run_job_detail_404s_what_is_not_in_the_flow(tmp_path: Path) -> None:
 def test_a_job_whose_name_would_leave_the_trace_folder_reads_nothing(tmp_path: Path) -> None:
     events = [
         ev("run_start", 1.0, goal="g", k=1, repo="/r", orchestrator="studio"),
-        ev("plan", 2.0, subtasks=[".."], roles=["coder"]),
+        ev("plan", 2.0, subtasks=[".."], roles=["architect"]),
     ]
     state = write_run(tmp_path, "r1", events)
     (state / "runs" / "r1" / "trace").mkdir()  # as every run directory has (RunDir.create)
@@ -364,10 +364,10 @@ def test_a_job_whose_name_would_leave_the_trace_folder_reads_nothing(tmp_path: P
 
 def test_trace_of_reads_one_subtask_and_refuses_names_that_are_not_one_folder(tmp_path: Path) -> None:
     trace = tmp_path / "runs" / "r1" / "trace" / "fix"
-    write_json(trace / "prompt.json", {"role": "coder"})
+    write_json(trace / "prompt.json", {"role": "architect"})
     write_json(trace / "step-002.json", {"u_t": {"name": "run_tests"}, "o_t": "ok", "ok": True})
     prompt, steps = trace_of(tmp_path, "r1", "fix")
-    assert prompt == {"role": "coder"} and [(s["n"], s["tool"]) for s in steps] == [(2, "run_tests")]
+    assert prompt == {"role": "architect"} and [(s["n"], s["tool"]) for s in steps] == [(2, "run_tests")]
     assert trace_of(tmp_path, "r1", "missing") == (None, [])
     for leak in ("runs/r1/trace", "runs/r1", "runs", "trace/x"):  # where each name below would lead
         write_json(tmp_path / leak / "prompt.json", {"leak": leak})
@@ -410,7 +410,7 @@ def test_story_job_detail_is_unchanged_after_the_trace_helper(tmp_path: Path) ->
         "job": {
             "id": "tests",
             "label": "Tests",
-            "role": "tester",
+            "role": "architect",
             "status": "passed",
             "attempts": 1,
             "fix_rounds": 0,
@@ -432,7 +432,11 @@ def test_story_job_detail_is_unchanged_after_the_trace_helper(tmp_path: Path) ->
             "tags": [],
             "card": None,
         },
-        "input": {"role": "tester", "attempt": 0, "messages": [{"role": "user", "content": "write tests"}]},
+        "input": {
+            "role": "architect",
+            "attempt": 0,
+            "messages": [{"role": "user", "content": "write tests"}],
+        },
         "input_note": None,
         "output": {"final_text": "", "layer": layer},
         "steps": [
@@ -453,7 +457,7 @@ def test_story_job_detail_is_unchanged_after_the_trace_helper(tmp_path: Path) ->
         "job": {
             "id": "build",
             "label": "Build",
-            "role": "coder",
+            "role": "architect",
             "status": "passed",
             "attempts": 1,
             "fix_rounds": 1,

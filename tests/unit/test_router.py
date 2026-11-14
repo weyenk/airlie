@@ -11,7 +11,11 @@ import pytest
 from airlie.router import ChiefRouter, JevClient, JevRouter, RoutingLog, policy, ranked
 from tests.support.router import _decision_cfg, decisions
 
-CRITERIA = {"coder": "Implement or change code", "qa": "Tests and edge cases", "docs": "README and guides"}
+CRITERIA = {
+    "architect": "Implement or change code",
+    "qa": "Tests and edge cases",
+    "docs": "README and guides",
+}
 
 
 def jev(handler, **kw) -> JevRouter:  # type: ignore[no-untyped-def]
@@ -33,7 +37,7 @@ def test_policy_matches_ai_mode() -> None:
 
 
 async def test_client_posts_the_system_one_request_shape() -> None:
-    handler, seen = decisions({"coder": 0.9, "qa": 0.1}, 0.95)
+    handler, seen = decisions({"architect": 0.9, "qa": 0.1}, 0.95)
     client = JevClient("http://decider.test/v1", model="decider", transport=httpx.MockTransport(handler))
     ans = await client.ask("fix the 500", "role", "Which specialist should handle this task?", CRITERIA)
     assert seen[0] == {
@@ -47,36 +51,36 @@ async def test_client_posts_the_system_one_request_shape() -> None:
             }
         },
     }
-    assert ans.choice == "coder" and ans.confidence == 0.95 and ans.input_tokens == 42
+    assert ans.choice == "architect" and ans.confidence == 0.95 and ans.input_tokens == 42
 
 
 async def test_clear_decision_takes_the_choice_over_the_hint() -> None:
-    handler, _ = decisions({"coder": 0.9, "qa": 0.1}, 0.95)
+    handler, _ = decisions({"architect": 0.9, "qa": 0.1}, 0.95)
     d = await jev(handler).route("fix the 500", CRITERIA, hint="docs")
-    assert d.decision == "clear" and d.chosen == "coder" and d.hint == "docs"
+    assert d.decision == "clear" and d.chosen == "architect" and d.hint == "docs"
 
 
 async def test_ambiguous_takes_the_hint_when_it_is_in_the_top_two() -> None:
-    handler, _ = decisions({"coder": 0.45, "qa": 0.4, "docs": 0.15}, 0.9)
+    handler, _ = decisions({"architect": 0.45, "qa": 0.4, "docs": 0.15}, 0.9)
     r = jev(handler)
     assert (await r.route("add tests for the fix", CRITERIA, hint="qa")).chosen == "qa"
-    assert (await r.route("add tests for the fix", CRITERIA, hint="docs")).chosen == "coder"
-    assert (await r.route("add tests for the fix", CRITERIA)).chosen == "coder"
+    assert (await r.route("add tests for the fix", CRITERIA, hint="docs")).chosen == "architect"
+    assert (await r.route("add tests for the fix", CRITERIA)).chosen == "architect"
 
 
 async def test_low_confidence_takes_the_hint_else_top() -> None:
-    handler, _ = decisions({"coder": 0.8, "qa": 0.2}, 0.2)
+    handler, _ = decisions({"architect": 0.8, "qa": 0.2}, 0.2)
     r = jev(handler)
     assert (await r.route("x", CRITERIA, hint="docs")).chosen == "docs"
-    assert (await r.route("x", CRITERIA)).chosen == "coder"
+    assert (await r.route("x", CRITERIA)).chosen == "architect"
 
 
 async def test_choice_outside_closed_set_falls_back() -> None:
-    handler, _ = decisions({"coder": 0.6, "qa": 0.4}, 0.9, choice="chief")
+    handler, _ = decisions({"architect": 0.6, "qa": 0.4}, 0.9, choice="chief")
     r = jev(handler)
     d = await r.route("x", CRITERIA, hint="qa")
     assert d.decision == "invalid" and d.chosen == "qa"
-    assert (await r.route("x", CRITERIA)).chosen == "coder"  # top in-set probability
+    assert (await r.route("x", CRITERIA)).chosen == "architect"  # top in-set probability
 
 
 async def test_transport_error_is_a_decision_not_an_exception() -> None:

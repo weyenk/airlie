@@ -51,7 +51,7 @@ test("the recorded server payload is a Catalog, and the client returns what the 
   expect(got.kinds.length).toBeGreaterThan(0);
   const check = got.checks.find((c) => c.name === "story.intake")!;
   expect(check).toMatchObject({ inputs: ["card"], every_run: true, args: [] });
-  expect(got.meetings[0]).toEqual({ roles: ["product", "architect", "tester"], inputs: ["story", "layers"] });
+  expect(got.meetings[0]).toEqual({ roles: ["product", "architect"], inputs: ["story", "layers"] });
 });
 
 test("adoptWorkflow posts to the story's adopt-workflow route and returns the move", async () => {

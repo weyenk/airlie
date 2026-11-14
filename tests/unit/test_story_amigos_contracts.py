@@ -161,9 +161,9 @@ def test_a_verdict_is_read_from_the_last_json_fence_whatever_surrounds_it() -> N
     assert v.objections == (Objection("proof", "AC2", "no test", "add one", "product"),)
     assert parse_verdict(f"fine\n{_fence(VERDICT)}", "architect").agrees_to_all()
     with pytest.raises(StoryError, match="verdict"):  # the last fence is a part: no verdict follows it
-        parse_verdict(f"{_fence(VERDICT)}\nand then\n{_fence(GOOD)}", "tester")
+        parse_verdict(f"{_fence(VERDICT)}\nand then\n{_fence(GOOD)}", "architect")
     with pytest.raises(StoryError, match="verdict"):
-        parse_verdict("I agree with everything.", "tester")
+        parse_verdict("I agree with everything.", "architect")
     assert '"type": "verdict"' in VERDICT_CONTRACT and "End every turn with your verdict" in VERDICT_CONTRACT
 
 
@@ -187,7 +187,7 @@ def test_a_verdict_that_objects_to_the_speakers_own_part_or_objects_with_nothing
         "objections": [{"part": "proof", "about": "AC1", "claim": "c", "suggest": "s"}],
     }
     with pytest.raises(StoryError, match="your own part"):
-        parse_verdict(_fence(mine), "tester")
+        parse_verdict(_fence(mine), "architect")
     parse_verdict(_fence(mine), "product")  # another's part is fair game
     with pytest.raises(StoryError, match="no objection"):
         parse_verdict(_fence({**VERDICT, "changes": "object"}), "product")
@@ -204,7 +204,7 @@ def test_a_verdict_that_objects_to_the_speakers_own_part_or_objects_with_nothing
             ),
             "product",
         )
-    assert OWNER == {"requirements": "product", "changes": "architect", "proof": "tester"}
+    assert OWNER == {"requirements": "product", "changes": "architect", "proof": "architect"}
 
 
 def test_an_agreement_round_trips_through_its_dict_and_knows_each_layers_proof() -> None:
@@ -240,7 +240,7 @@ def test_the_package_critics_verdict_is_on_the_proof_alone_and_read_from_the_las
     )
     got = parse_critic_verdict(noisy)
     assert got == (
-        Objection("proof", "tests/unit/test_x.py::test_a", "asserts nothing", "assert 1", "tester"),
+        Objection("proof", "tests/unit/test_x.py::test_a", "asserts nothing", "assert 1", "architect"),
     )
     assert parse_critic_verdict(_fence({"type": "verdict", "proof": "agree", "objections": []})) == ()
     assert '"type": "verdict"' in CRITIC_CONTRACT and "agree" in CRITIC_CONTRACT

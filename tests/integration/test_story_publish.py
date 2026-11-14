@@ -1790,8 +1790,9 @@ def _happy_engine() -> FakeEngine:
     return FakeEngine(
         {
             "product": [story],
-            "architect": [layers, *pkgs],
-            "coder": [
+            "architect": [
+                layers,
+                *pkgs,
                 WRITE_PASS,
                 RUN,
                 DONE,

@@ -31,8 +31,8 @@ def _cfg(tmp_path: Path, *, main: dict[str, Any]) -> AirlieConfig:
             r: {"prompt": "p.md", "model": main["model"]}
             for r in ("architect", "summarizer", "judge", "aggregator")
         },
-        "teams": {"role": "coder"},
-        "chat": {"task": {"default_role": "coder", "roles": ["coder"]}},
+        "teams": {"role": "architect"},
+        "chat": {"task": {"default_role": "architect", "roles": ["architect"]}},
     }
     (tmp_path / "p.md").write_text("x")
     (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))

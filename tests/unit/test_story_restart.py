@@ -102,8 +102,7 @@ async def stopped(
     engine = FakeEngine(
         {
             "product": [STORY],
-            "architect": [LAYERS, *PKGS],
-            "coder": [WRITE_PASS, RUN, DONE, DONE],
+            "architect": [LAYERS, *PKGS, WRITE_PASS, RUN, DONE, DONE],
             "reviewer": [APPROVE, APPROVE],
         }
     )
@@ -334,7 +333,10 @@ async def test_a_story_started_over_from_its_packages_builds_every_layer_on_its_
     repo, board, store, card, st = await stopped(tmp_path)
     await start_over(tmp_path, card, board, GitHubPrs(), "packages")
     again = FakeEngine(
-        {"architect": [*PKGS], "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE], "reviewer": [APPROVE, APPROVE]}
+        {
+            "architect": [*PKGS, WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "reviewer": [APPROVE, APPROVE],
+        }
     )
     st = await pipeline(tmp_path, repo, again, board=board).run(await board.card(card.key))
     assert st.blocked is None and sorted(st.built) == ["01", "02"]
@@ -351,7 +353,7 @@ async def test_a_story_started_over_from_a_layer_keeps_the_layers_below_it(tmp_p
     assert built_01["branch"] in branches(repo) and attempt not in branches(repo)
     assert done.branches == [attempt]
     # the next run builds layer 02 on layer 01 as it stands
-    again = FakeEngine({"architect": [PKG2], "coder": [NOTE, DONE], "reviewer": [APPROVE]})
+    again = FakeEngine({"architect": [PKG2, NOTE, DONE], "reviewer": [APPROVE]})
     st = await pipeline(tmp_path, repo, again, board=board).run(await board.card(card.key))
     assert st.blocked is None and "02" in st.built and st.built["01"] == built_01
 
@@ -391,7 +393,7 @@ async def test_a_layer_restart_replays_the_layers_below_it_onto_a_moved_trunk(tm
     assert b2 not in branches(repo) and done.closed == [11, 12] and done.branches == [b2]
     assert now.prs == [] and now.stage == "layers"
     assert "layers 01 to 01, replayed on it, are kept" in store.get(card.key).comments[-1].text
-    again = FakeEngine({"architect": [PKG2], "coder": [NOTE, DONE], "reviewer": [APPROVE]})
+    again = FakeEngine({"architect": [PKG2, NOTE, DONE], "reviewer": [APPROVE]})
     st = await pipeline(tmp_path, repo, again, board=board).run(await board.card(card.key))
     assert st.blocked is None and git(repo, "rev-parse", f"{st.built['02']['branch']}^") == new_01
 

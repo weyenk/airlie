@@ -27,6 +27,8 @@ def cfg_for(tmp_path: Path, *, extra: dict[str, Any] | None = None, **kw: Any) -
     # no tester: it is a subtask per layer with scripted replies of its own (one test runs with it)
     extra["story"] = {
         "plan_round_steps": 0,
+        "stage_attempts": 1,
+        "package_steps": 1,
         "survey": False,
         "amigos": {"enabled": False},  # the story meeting has tests of its own (test_story_pipeline.py)
         **extra.get("story", {}),

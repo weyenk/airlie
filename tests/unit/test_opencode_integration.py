@@ -301,7 +301,7 @@ def code_mode_problems(body: str, schemas: dict[str, dict[str, Any]]) -> list[st
 
 async def test_the_chief_and_the_commands_reach_airlie_through_code_mode_with_the_schemas_names() -> None:
     """OpenCode 2.0 shows the model its own tools and one `execute` tool; airlie's MCP tools are reachable
-    only inside its JavaScript (asked for `airlie_run` by name, the generalist said it had no such tool:
+    only inside its JavaScript (asked for `airlie_run` by name, the architect said it had no such tool:
     2.0.29, live). So the chief and both commands say how, with the tool and argument names of the schemas
     that `airlie mcp` lists."""
     async with airlie_http({}) as http:

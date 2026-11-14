@@ -37,7 +37,7 @@ def test_http_engine_reads_draft_counters_from_timings(tmp_path: Path) -> None:
         "http://e/v1", lambda r: "base", lambda r: role_spec(tmp_path), transport=httpx.MockTransport(handler)
     )
     req = GenRequest(
-        role="coder",
+        role="architect",
         messages=[Message(role="user", content="hi")],
         sampling=Sampling(),
         max_tokens=8,
@@ -84,7 +84,7 @@ async def test_orchestrator_updates_hal_from_steps_and_emits_budgets(tmp_path: P
     cfg = load_config(cfg_dir / "airlie.yaml")
     engine = FakeEngine(
         {
-            "coder": [
+            "architect": [
                 FakeReply(
                     tool_calls=[ToolCall("a", "write_file", json.dumps({"path": "a", "content": "1"}))],
                     accepted_draft_tokens=12,

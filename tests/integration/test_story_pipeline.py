@@ -15,7 +15,7 @@ import pytest
 
 from airlie.board import BoardStore
 from airlie.config import RoleSpec
-from airlie.engine import FakeEngine, FakeReply, ToolCall
+from airlie.engine import FakeReply, ToolCall
 from airlie.report import RunReport
 from airlie.story import pipeline as pipeline_module
 from airlie.story.amigos import (
@@ -75,13 +75,16 @@ from tests.support.story import (
     ReadingGh,
     RecordedGh,
     RecordingBoard,
+    StoryFakeEngine,
     agents_md,
     block,
+    build_architect_requests,
     card_of_epic,
     commit_file,
     fenced,
     gated,
     happy_engine,
+    is_plan_lane,
     kinds,
     kinds_all,
     layer,
@@ -130,7 +133,7 @@ async def test_each_layer_is_built_from_its_package_drafted_with_the_others_up_f
     assert [row["id"] for row in st.built["01"]["subtasks"]] == ["build"]
     assert st.built["01"]["tests"] == ["tests/unit/test_storage.py::test_stores_an_avatar"]
     assert st.built["01"]["package"]["files"] == [{"path": "feature.py", "action": "create", "why": ""}]
-    build_goal = [r for r in engine.requests if r.role == "coder"][0].messages[-1].content
+    build_goal = build_architect_requests(engine)[0].messages[-1].content
     assert "## The tests you make pass" in build_goal
     assert "tests/unit/test_storage.py::test_stores_an_avatar" in build_goal and "## Steps" in build_goal
     assert "tests/unit/test_storage.py" in git(repo, "show", "--name-only", "--format=", B1)
@@ -146,11 +149,21 @@ async def test_each_layer_is_built_from_its_package_drafted_with_the_others_up_f
         ["tests/unit/test_profile.py"],
     ]
     assert st.drafted and st.drafts == {}  # each layer took its draft
-    # one conversation: layer 02 is asked as a follow-up to layer 01's reply, before the coder starts
-    roles = [r.role for r in engine.requests]
-    architect = [r for r in engine.requests if r.role == "architect"]
-    assert roles.index("coder") > [n for n, r in enumerate(roles) if r == "architect"][2]
-    first, second = architect[1], architect[2]
+    # one conversation: layer 02 is asked as a follow-up to layer 01's reply, before the build starts
+    plan_reqs = [r for r in engine.requests if r.role == "architect" and is_plan_lane(r)]
+    build_at = next(i for i, r in enumerate(engine.requests) if r.role == "architect" and not is_plan_lane(r))
+    assert build_at > [i for i, r in enumerate(engine.requests) if r in plan_reqs][2]
+    package = [
+        r
+        for r in engine.requests
+        if r.role == "architect"
+        and any(
+            "You write the packages" in m.content or "next layer's package" in m.content
+            for m in r.messages
+            if m.role == "user"
+        )
+    ]
+    first, second = package[0], package[1]
     assert "packages of all 2 layers" in first.messages[1].content
     assert "This is layer 1 of 2: Storage" in first.messages[1].content
     asked = second.messages[-1].content
@@ -225,7 +238,7 @@ async def test_a_package_the_parser_refuses_is_asked_again_with_the_reason_then_
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
     nonsense = FakeReply(text="Here is my plan, no package.")
-    engine = FakeEngine({"product": [STORY], "architect": [LAYERS, nonsense, nonsense]})
+    engine = StoryFakeEngine({"product": [STORY], "architect": [LAYERS, nonsense, nonsense]})
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
     assert st.blocked is not None
     assert st.blocked.startswith(
@@ -241,7 +254,7 @@ async def test_a_package_the_parser_refuses_is_asked_again_with_the_reason_then_
         ["package_unusable"],
         ["package_unusable"],
     ]
-    assert not [r for r in engine.requests if r.role == "coder"]  # the coder never started
+    assert not [r for r in engine.requests if r.role == "architect"]  # the coder never started
     assert worktrees(repo) == 1  # a rejected package costs no branch
 
 
@@ -251,7 +264,7 @@ async def test_a_rejected_package_records_a_lesson_and_the_next_layers_brief_car
     repo = repo_with_marker_tests(tmp_path)
     nonsense = FakeReply(text="no package")
     pipe = pipeline(
-        tmp_path, repo, FakeEngine({"product": [STORY], "architect": [LAYERS, nonsense, nonsense]})
+        tmp_path, repo, StoryFakeEngine({"product": [STORY], "architect": [LAYERS, nonsense, nonsense]})
     )
     st = await pipe.run(text_card("avatars"))
     assert st.blocked is not None
@@ -390,7 +403,7 @@ async def stopped_with(tmp_path: Path, reason: str) -> tuple[StoryState, Recordi
     tmp_path.mkdir(exist_ok=True)
     repo = repo_with_marker_tests(tmp_path)
     board = RecordingBoard()
-    pipe = pipeline(tmp_path, repo, FakeEngine(), board=board)
+    pipe = pipeline(tmp_path, repo, StoryFakeEngine(), board=board)
     card = text_card("avatars")
     st = StoryState.open(tmp_path / "s", card, pipe.repo)
     await pipe._block(st, card, reason)
@@ -429,7 +442,7 @@ async def test_a_cancel_while_muse_reads_the_block_puts_the_issue_back_in_intake
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
     board = RecordingBoard()
-    pipe = pipeline(tmp_path, repo, FakeEngine(), board=board)
+    pipe = pipeline(tmp_path, repo, StoryFakeEngine(), board=board)
 
     async def cancelled(*args: object, **kwargs: object) -> None:
         raise asyncio.CancelledError
@@ -449,11 +462,10 @@ async def test_a_request_becomes_two_stacked_layers_and_the_card_reaches_review(
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
     trunk = git(repo, "branch", "--show-current")
-    engine = FakeEngine(
+    engine = StoryFakeEngine(
         {
             "product": [STORY],
-            "architect": [LAYERS, *PKGS],
-            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "architect": [LAYERS, *PKGS, WRITE_PASS, RUN, DONE, NOTE, DONE],
             "reviewer": [APPROVE, APPROVE],
         }
     )
@@ -490,11 +502,10 @@ async def test_publish_writes_a_body_with_the_contract_from_the_layers_package(t
     """The PR of a layer carries what the architect's package named (P6, 2026-10-25): the tests under their
     criterion, the files, the steps and when it is done, and what the layer's run recorded."""
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine(
+    engine = StoryFakeEngine(
         {
             "product": [STORY],
-            "architect": [LAYERS, *PKGS],
-            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "architect": [LAYERS, *PKGS, WRITE_PASS, RUN, DONE, NOTE, DONE],
             "reviewer": [APPROVE, APPROVE],
         }
     )
@@ -617,11 +628,10 @@ async def test_a_satisfied_reply_naming_a_layer_that_is_not_below_it_is_asked_ag
 async def test_a_layers_commit_carries_the_story_layer_and_run_trailers(tmp_path: Path) -> None:
     """Each layer's commit ends in trailers (P6, 2026-10-25): keys, numbers and shas, no model text."""
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine(
+    engine = StoryFakeEngine(
         {
             "product": [STORY],
-            "architect": [LAYERS, *PKGS],
-            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "architect": [LAYERS, *PKGS, WRITE_PASS, RUN, DONE, NOTE, DONE],
             "reviewer": [APPROVE, APPROVE],
         }
     )
@@ -643,7 +653,7 @@ async def test_a_layers_commit_names_its_epic_when_the_local_board_has_one(tmp_p
     store = BoardStore(tmp_path / "board.sqlite")
     epic = store.create(level="epic", title="Avatars")
     story = store.create(level="story", title="Avatars upload", parent=epic.key)
-    pl = pipeline(tmp_path, repo_with_marker_tests(tmp_path), FakeEngine(), board=LocalBoard(store))
+    pl = pipeline(tmp_path, repo_with_marker_tests(tmp_path), StoryFakeEngine(), board=LocalBoard(store))
     pkg = Package.from_dict(
         {"layer": "x", "tests": {"t.py": ""}, "files": [], "interfaces": [], "steps": [], "covers": {}}
     )
@@ -655,7 +665,7 @@ async def test_a_layers_commit_names_its_epic_when_the_local_board_has_one(tmp_p
 
 async def test_product_can_stop_a_request_it_cannot_build(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"product": [fenced({"type": "blocked", "reason": "which image sizes?"})]})
+    engine = StoryFakeEngine({"product": [fenced({"type": "blocked", "reason": "which image sizes?"})]})
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
     assert st.stage == "intake" and st.blocked is not None and "which image sizes?" in st.blocked
     notes = (st.path / "notes.md").read_text()
@@ -669,7 +679,7 @@ async def test_product_can_stop_a_request_it_cannot_build(tmp_path: Path) -> Non
 async def test_unusable_replies_are_retried_with_feedback_then_stop_the_story(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     half = fenced({"type": "story", "title": "x", "summary": "y"})
-    engine = FakeEngine({"product": [FakeReply(text="Sounds good to me."), half]})
+    engine = StoryFakeEngine({"product": [FakeReply(text="Sounds good to me."), half]})
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
     assert st.blocked is not None and "usable story" in st.blocked and "acceptance" in st.blocked
     second = [r for r in engine.requests if r.role == "product"][1].messages[1].content
@@ -697,7 +707,7 @@ async def test_an_architect_cut_off_twice_at_max_tokens_stops_the_story_and_is_n
     and the story stopped with "no JSON object in the reply". Now the cut-off is named. A first cut-off is
     asked again, shorter (2026-10-30: two stories blocked on one long-winded reply each); a second stops."""
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"product": [STORY], "architect": [cut, cut, cut]})
+    engine = StoryFakeEngine({"product": [STORY], "architect": [cut, cut, cut]})
     st = await pipeline(tmp_path, repo, engine, story={"stage_attempts": 3}).run(text_card("avatars"))
     assert st.stage == "refine" and st.blocked == f"the architect did not finish: {cut_off_why('architect')}"
     assert [r.role for r in engine.requests].count("architect") == 2
@@ -712,7 +722,7 @@ async def test_a_reply_cut_off_in_a_loop_of_repeats_is_asked_again_with_the_reas
     runaway repeat is not a reply too long for its room, so another try is worth it: it is a StoryError."""
     repo = repo_with_marker_tests(tmp_path)
     looped = FakeReply(text='{"acceptance": [{"when": "from_roman(\\"' + "I" * 600, finish_reason="length")
-    engine = FakeEngine({"product": [looped, STORY], "architect": [LAYERS, *PKGS]})
+    engine = StoryFakeEngine({"product": [looped, STORY], "architect": [LAYERS, *PKGS]})
     st = await pipeline(tmp_path, repo, engine, story={"stage_attempts": 3}).run(text_card("avatars"))
     assert st.blocked is None or "repeated" not in st.blocked, st.blocked
     asked = [r.messages[1].content for r in engine.requests if r.role == "product"]
@@ -726,7 +736,7 @@ async def test_a_retry_prompt_has_no_operator_advice_and_a_cut_off_is_asked_agai
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
     replies = [FakeReply(text="Sounds good to me."), CUT_THINKING, LAYERS]
-    engine = FakeEngine({"product": [STORY], "architect": replies})
+    engine = StoryFakeEngine({"product": [STORY], "architect": replies})
     st = await pipeline(tmp_path, repo, engine, story={"stage_attempts": 3}).run(text_card("avatars"))
     asked = [r.messages[1].content for r in engine.requests if r.role == "architect"]
     assert len(asked) >= 3 and (st.blocked is None or "did not finish" not in st.blocked), st.blocked
@@ -741,21 +751,19 @@ async def test_a_retry_prompt_has_no_operator_advice_and_a_cut_off_is_asked_agai
 async def test_a_failing_layer_stops_and_a_resume_rebuilds_only_that_layer(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     card = text_card("Let users upload an avatar")
-    first = FakeEngine(
+    first = StoryFakeEngine(
         {
             "product": [STORY],
-            "architect": [LAYERS, PKG1],
-            "coder": [NOTE, DONE],  # a change, but not the one the tests need
+            "architect": [LAYERS, PKG1, NOTE, DONE],  # a change, but not the one the tests need
             "reviewer": [APPROVE],
         }
     )
     st = await pipeline(tmp_path, repo, first).run(card)
     assert st.stage == "layers" and st.blocked is not None and "./check.sh` fails" in st.blocked
     assert st.attempt is not None and git(repo, "rev-parse", "--verify", B1)  # kept for inspection
-    again = FakeEngine(
+    again = StoryFakeEngine(
         {
-            "architect": [PKG1, PKG2],  # the failed layer is planned again, as a resume rebuilds it
-            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "architect": [PKG1, PKG2, WRITE_PASS, RUN, DONE, NOTE, DONE],
             "reviewer": [APPROVE, APPROVE],
         }
     )
@@ -776,9 +784,7 @@ async def test_a_failing_layer_stops_and_a_resume_rebuilds_only_that_layer(tmp_p
 
 async def test_a_layer_that_changes_nothing_stops_the_story(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine(
-        {"product": [STORY], "architect": [LAYERS, PKG1], "coder": [DONE], "reviewer": [APPROVE]}
-    )
+    engine = StoryFakeEngine({"product": [STORY], "architect": [LAYERS, PKG1, DONE], "reviewer": [APPROVE]})
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
     assert st.blocked is not None and "changed nothing" in st.blocked
 
@@ -828,7 +834,7 @@ async def test_a_layer_stop_with_no_cut_off_subtask_says_nothing_of_one(tmp_path
 async def test_a_git_failure_stops_the_story_with_gits_own_words(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     git(repo, "branch", B1)  # a leftover branch holds the first layer's name
-    engine = FakeEngine({"product": [STORY], "architect": [LAYERS, PKG1]})
+    engine = StoryFakeEngine({"product": [STORY], "architect": [LAYERS, PKG1]})
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
     assert st.blocked is not None and f"a branch named '{B1}' already exists" in st.blocked
     assert "CalledProcessError" not in st.blocked
@@ -936,7 +942,7 @@ async def test_the_stop_note_tells_a_person_how_to_resume(tmp_path: Path) -> Non
         (ISSUE, "Resume: `task story -- AIR-7`."),
         (text_card("avatars"), "Resume: the same `task story -- --text ...` command."),
     ):
-        engine = FakeEngine({"product": [fenced({"type": "blocked", "reason": "which image sizes?"})]})
+        engine = StoryFakeEngine({"product": [fenced({"type": "blocked", "reason": "which image sizes?"})]})
         st = await pipeline(tmp_path, repo, engine).run(card)
         notes = (st.path / "notes.md").read_text()
         assert (
@@ -1006,7 +1012,7 @@ async def test_a_layer_over_the_criteria_cap_the_reviewer_would_split_goes_back_
 
 async def _over_cap_plan_accepted(
     tmp_path: Path, architect: list[FakeReply], reviewer: list[FakeReply]
-) -> tuple[StoryState, FakeEngine]:
+) -> tuple[StoryState, StoryFakeEngine]:
     """A story whose layer plan is over a cap of 1 and accepted: it stops at the package (no script left)."""
     repo = repo_with_marker_tests(tmp_path)
     engine = happy_engine(architect=architect, reviewer=reviewer)
@@ -1081,7 +1087,7 @@ async def test_the_trunk_is_the_remote_branch_just_fetched_and_a_fetch_that_fail
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
     trunk = git(repo, "branch", "--show-current")
-    pipe = pipeline(tmp_path, repo, FakeEngine(), RecordedGh(fetch="real"))
+    pipe = pipeline(tmp_path, repo, StoryFakeEngine(), RecordedGh(fetch="real"))
     st = StoryState.open(tmp_path / "s", text_card("x"), pipe.repo)
     with pytest.raises(StoryBlocked, match=f"^the trunk {trunk} could not be fetched from origin"):
         await pipe._trunk_ref(st)  # no remote: no trunk to build on, and the local one is no stand-in
@@ -1138,7 +1144,7 @@ async def test_a_failed_fetch_is_masked_in_its_event_and_in_the_stop_reason(tmp_
             url = "https://user:secret@example.com/o/r.git"
             raise PublishError(f"`git fetch -q origin main` exited 128: fatal: repository '{url}/' not found")
 
-    st = await pipeline(tmp_path, repo, FakeEngine(), Refuses()).run(text_card("x"))
+    st = await pipeline(tmp_path, repo, StoryFakeEngine(), Refuses()).run(text_card("x"))
     [failed] = kinds(st.path / "events.jsonl", "fetch_failed")
     for said in (failed["error"], st.blocked or ""):
         assert "https://***@example.com/o/r.git/" in said and "secret" not in said
@@ -1221,7 +1227,7 @@ async def test_a_password_is_masked_before_the_reason_is_cut(tmp_path: Path) -> 
 
 async def test_url_credentials_in_a_git_failure_reach_neither_the_board_nor_the_logs(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    st = await pipeline(tmp_path, repo, FakeEngine(), studio=GitFails).run(text_card("avatars"))
+    st = await pipeline(tmp_path, repo, StoryFakeEngine(), studio=GitFails).run(text_card("avatars"))
     assert st.blocked is not None and "https://***@example.com/o/r.git" in st.blocked
     for name in ("state.json", "events.jsonl", "notes.md"):
         assert "secret" not in (st.path / name).read_text(), name
@@ -1236,10 +1242,10 @@ async def test_a_resume_through_another_spelling_of_the_repository_path_is_not_r
     link.symlink_to(repo)
     card = text_card("avatars")
     unbuildable = fenced({"type": "blocked", "reason": "which image sizes?"})
-    st = await pipeline(tmp_path, link, FakeEngine({"product": [unbuildable]})).run(card)
+    st = await pipeline(tmp_path, link, StoryFakeEngine({"product": [unbuildable]})).run(card)
     assert st.blocked is not None and st.repo == str(repo.resolve())  # one spelling, the resolved one
     unbuildable = fenced({"type": "blocked", "reason": "which formats?"})
-    st = await pipeline(tmp_path, repo, FakeEngine({"product": [unbuildable]})).run(card)
+    st = await pipeline(tmp_path, repo, StoryFakeEngine({"product": [unbuildable]})).run(card)
     # it ran again: a second spelling of the path did not raise StorySetupError
     assert st.blocked is not None and "which formats?" in st.blocked
 
@@ -1263,7 +1269,7 @@ async def test_a_failed_publish_stops_after_the_build_and_a_resume_publishes_wit
     # both layers are kept, and the publish worktree is gone
     assert set(st.built) == {"01", "02"} and worktrees(repo) == 1
     # the same command again: nothing is asked of the models or rebuilt, the stack is published
-    idle, gh = FakeEngine(), RecordedGh()
+    idle, gh = StoryFakeEngine(), RecordedGh()
     st = await pipeline(tmp_path, repo, idle, gh).run(card)
     assert st.blocked is None and st.stage == "review" and idle.requests == []
     assert [p["number"] for p in st.prs] == [11, 12] and worktrees(repo) == 1
@@ -1289,7 +1295,7 @@ async def test_a_branch_that_was_already_there_is_never_deleted_by_a_resume(tmp_
     mine = git(repo, "rev-parse", B1)
     card = text_card("avatars")
     scripts = ({"product": [STORY], "architect": [LAYERS, PKG1]}, {"architect": [PKG1]})
-    for engine in (FakeEngine(scripts[0]), FakeEngine(scripts[1])):  # then a resume
+    for engine in (StoryFakeEngine(scripts[0]), StoryFakeEngine(scripts[1])):  # then a resume
         st = await pipeline(tmp_path, repo, engine).run(card)
         assert st.blocked is not None and f"a branch named '{B1}' already exists" in st.blocked
         assert st.attempt is None  # the branch was not made by this story, so it is not recorded as its own
@@ -1299,7 +1305,7 @@ async def test_a_branch_that_was_already_there_is_never_deleted_by_a_resume(tmp_
 async def test_a_board_that_is_down_does_not_hide_the_reason(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     board = DownBoard(tmp_path / "state" / "stories")
-    st = await pipeline(tmp_path, repo, FakeEngine(), board=board).run(text_card("avatars"))
+    st = await pipeline(tmp_path, repo, StoryFakeEngine(), board=board).run(text_card("avatars"))
     assert st.blocked == "BoardError: jira is unreachable"
     failed = kinds(st.path / "events.jsonl", "board_error")
     assert [(e["call"], e["error"]) for e in failed] == [  # the fix card's note, the stop's note, the move
@@ -1312,7 +1318,7 @@ async def test_a_board_that_is_down_does_not_hide_the_reason(tmp_path: Path) -> 
 
 async def test_a_role_that_cannot_run_a_stage_stops_the_story_with_a_readable_reason(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    pipe = pipeline(tmp_path, repo, FakeEngine(), story={"product_role": "nonesuch"})
+    pipe = pipeline(tmp_path, repo, StoryFakeEngine(), story={"product_role": "nonesuch"})
     st = await pipe.run(text_card("avatars"))
     assert st.blocked is not None
     assert st.blocked.startswith("PlanError: subtask 'refine' names role 'nonesuch'; use one of: ")
@@ -1327,7 +1333,7 @@ async def test_a_role_that_cannot_run_a_stage_stops_the_story_with_a_readable_re
 
 async def test_a_studio_that_crashes_leaves_no_read_only_worktree_behind(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    st = await pipeline(tmp_path, repo, FakeEngine(), studio=Crashes).run(text_card("avatars"))
+    st = await pipeline(tmp_path, repo, StoryFakeEngine(), studio=Crashes).run(text_card("avatars"))
     assert st.blocked == "RuntimeError: the engine fell over"
     assert worktrees(repo) == 1
     [crashed] = st.runs  # the run that died is on record, with the event that names it
@@ -1377,10 +1383,9 @@ async def test_a_note_that_cannot_be_posted_is_not_a_reason_to_ask_the_models_ag
     st = await pipeline(tmp_path, repo, happy_engine(), board=story_note).run(card)
     assert st.stage == "refine" and st.story is not None  # finish came first, so the story is kept
     assert st.blocked == "BoardError: jira refused it"
-    again = FakeEngine(
+    again = StoryFakeEngine(
         {
-            "architect": [LAYERS, *PKGS],
-            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "architect": [LAYERS, *PKGS, WRITE_PASS, RUN, DONE, NOTE, DONE],
             "reviewer": [APPROVE, APPROVE],
         }
     )
@@ -1433,10 +1438,9 @@ async def test_a_resume_builds_on_the_base_the_story_started_from_not_on_a_newer
     assert st.stage == "layers" and st.blocked is not None
     assert st.base == {"ref": f"origin/{trunk}", "sha": news}
     later = push_news(tmp_path, trunk, "LATER")  # the remote moves on while the story is stopped
-    again = FakeEngine(
+    again = StoryFakeEngine(
         {
-            "architect": PKGS,
-            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "architect": [*PKGS, WRITE_PASS, RUN, DONE, NOTE, DONE],
             "reviewer": [APPROVE, APPROVE],
         }
     )
@@ -1469,14 +1473,16 @@ async def test_a_note_or_a_move_that_fails_does_not_keep_the_other_from_happenin
     no_note = FlakyBoard(
         lambda kind, what: kind == "comment" and "stopped after" in what, f"{secret_url} said no"
     )
-    st = await pipeline(tmp_path, repo, FakeEngine(unbuildable), board=no_note).run(text_card("avatars"))
+    st = await pipeline(tmp_path, repo, StoryFakeEngine(unbuildable), board=no_note).run(text_card("avatars"))
     assert no_note.moves == ["building", "blocked"]  # the note failed, and the issue still moved
     [failed] = kinds(st.path / "events.jsonl", "board_error")
     assert (
         failed["call"] == "comment" and failed["error"] == "BoardError: https://***@jira.example/rest said no"
     )
     no_move = FlakyBoard(lambda kind, what: kind == "move" and what == "blocked")
-    st = await pipeline(tmp_path, repo, FakeEngine(unbuildable), board=no_move).run(text_card("more avatars"))
+    st = await pipeline(tmp_path, repo, StoryFakeEngine(unbuildable), board=no_move).run(
+        text_card("more avatars")
+    )
     assert any("stopped after 'intake'" in n for n in no_move.notes)  # the move failed, and the note is there
     [failed] = kinds(st.path / "events.jsonl", "board_error")
     assert failed["call"] == "move" and st.blocked is not None
@@ -1510,7 +1516,7 @@ async def test_the_build_stage_is_recorded_even_when_the_last_layers_note_could_
     no_last_note = FlakyBoard(lambda kind, what: kind == "comment" and "layer 02/02 built" in what)
     st = await pipeline(tmp_path, repo, happy_engine(), board=no_last_note).run(card)
     assert st.blocked is not None and st.stage == "layers" and set(st.built) == {"01", "02"}
-    st = await pipeline(tmp_path, repo, FakeEngine(), board=RecordingBoard()).run(card)
+    st = await pipeline(tmp_path, repo, StoryFakeEngine(), board=RecordingBoard()).run(card)
     assert st.blocked is None and st.stage == "review"
     stages = [e["stage"] for e in kinds(st.path / "events.jsonl", "stage")]
     assert stages == ["intake", "refine", "layers", "build", "publish", "review"]
@@ -1520,7 +1526,7 @@ async def test_a_stopped_story_stays_stopped_until_its_issue_is_moved_back(tmp_p
     repo = repo_with_marker_tests(tmp_path)
     card = text_card("avatars")
     unbuildable = fenced({"type": "blocked", "reason": "which image sizes?"})
-    st = await pipeline(tmp_path, repo, FakeEngine({"product": [unbuildable]})).run(card)
+    st = await pipeline(tmp_path, repo, StoryFakeEngine({"product": [unbuildable]})).run(card)
     reason = st.blocked
     assert reason is not None
 
@@ -1539,7 +1545,7 @@ async def test_a_stopped_story_stays_stopped_until_its_issue_is_moved_back(tmp_p
 
     signalled = SignalledOnTheMove()
     with pytest.raises(asyncio.CancelledError):
-        await pipeline(tmp_path, repo, FakeEngine(), board=signalled).run(card)
+        await pipeline(tmp_path, repo, StoryFakeEngine(), board=signalled).run(card)
     assert seen == [reason] and on_disk() == reason  # still a stopped story: the issue never left Blocked
     assert signalled.moves == ["intake"]  # and the cancel put the issue back where story:tick looks
     board = RecordingBoard()
@@ -1617,7 +1623,9 @@ async def test_a_story_cancelled_while_it_refines_goes_back_to_intake_and_the_ne
     started = asyncio.Event()
     board = RecordingBoard()
     studio = studio_failing_from(0, hangs(started))
-    task = asyncio.create_task(pipeline(tmp_path, repo, FakeEngine(), board=board, studio=studio).run(card))
+    task = asyncio.create_task(
+        pipeline(tmp_path, repo, StoryFakeEngine(), board=board, studio=studio).run(card)
+    )
     await asyncio.wait_for(started.wait(), 30)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -1693,7 +1701,9 @@ async def test_a_board_in_trouble_neither_holds_up_nor_changes_a_cancel(
     card = text_card("avatars")
     started = asyncio.Event()
     studio = studio_failing_from(0, hangs(started))
-    task = asyncio.create_task(pipeline(tmp_path, repo, FakeEngine(), board=board, studio=studio).run(card))
+    task = asyncio.create_task(
+        pipeline(tmp_path, repo, StoryFakeEngine(), board=board, studio=studio).run(card)
+    )
     await asyncio.wait_for(started.wait(), 30)
     task.cancel()
     t0 = time.perf_counter()
@@ -1742,7 +1752,7 @@ async def test_a_cancel_while_a_stop_is_told_to_the_board_still_puts_the_issue_b
     board = HangsWhileTold()
     unbuildable = fenced({"type": "blocked", "reason": "which image sizes?"})
     task = asyncio.create_task(
-        pipeline(tmp_path, repo, FakeEngine({"product": [unbuildable]}), board=board).run(card)
+        pipeline(tmp_path, repo, StoryFakeEngine({"product": [unbuildable]}), board=board).run(card)
     )
     await asyncio.wait_for(telling.wait(), 30)
     task.cancel()
@@ -1770,9 +1780,9 @@ async def test_a_story_that_was_killed_is_resumed_with_its_issue_moved_to_buildi
 
     board = RecordingBoard()
     with pytest.raises(Killed):
-        await pipeline(tmp_path, repo, FakeEngine(), board=board, studio=studio_failing_from(0, die)).run(
-            card
-        )
+        await pipeline(
+            tmp_path, repo, StoryFakeEngine(), board=board, studio=studio_failing_from(0, die)
+        ).run(card)
     assert board.moves == ["building"] and worktrees(repo) == 1  # nothing said, nothing moved back
     again = RecordingBoard()
     st = await pipeline(tmp_path, repo, happy_engine(), board=again).run(card)
@@ -1999,7 +2009,7 @@ async def test_a_resumed_story_pins_its_repository_before_the_runs_first_model_w
     repo = on_github(tmp_path)
     trunk = git(repo, "branch", "--show-current")
     card = text_card("avatars")
-    stories = pipeline(tmp_path, repo, FakeEngine()).stories_dir
+    stories = pipeline(tmp_path, repo, StoryFakeEngine()).stories_dir
     st = StoryState.open(stories / card.key, card, repo.resolve(), github_repo="o/r")
     st.base = {"ref": trunk, "sha": git(repo, "rev-parse", trunk)}
     st.finish("intake")  # started, and stopped before refine
@@ -2044,7 +2054,7 @@ async def test_a_story_that_has_published_needs_no_working_app_nor_its_remote(
         git(repo, "remote", "set-url", "origin", "git@github.com:o/moved.git")
     github = FakeGitHub(installed=())  # an app that cannot get a token now
     after = RecordedGh()
-    st = await pipeline(tmp_path, repo, FakeEngine(), after, app=fake_app(tmp_path, github)).run(card)
+    st = await pipeline(tmp_path, repo, StoryFakeEngine(), after, app=fake_app(tmp_path, github)).run(card)
     assert st.blocked is None and st.stage == "review"
     assert github.requests == [] and after.calls == []
     assert "stopped after" not in (st.path / "notes.md").read_text()
@@ -2168,11 +2178,10 @@ async def test_a_resume_builds_with_the_gate_the_story_read_when_it_started(
 
     monkeypatch.setattr(pipeline_module, "read_gate", counted)
     card = text_card("Let users upload an avatar")
-    first = FakeEngine(
+    first = StoryFakeEngine(
         {
             "product": [STORY],
-            "architect": [LAYERS, PKG1],
-            "coder": [NOTE, DONE],
+            "architect": [LAYERS, PKG1, NOTE, DONE],
             "reviewer": [APPROVE],
         }
     )
@@ -2180,10 +2189,9 @@ async def test_a_resume_builds_with_the_gate_the_story_read_when_it_started(
     assert st.stage == "layers" and st.blocked is not None and "`./check.sh` fails" in st.blocked
     assert st.base is not None and reads == [st.base["sha"]]
     commit_file(repo, "AGENTS.md", agents_md("false"), "a stricter gate on the trunk")  # the trunk moves on
-    again = FakeEngine(
+    again = StoryFakeEngine(
         {
-            "architect": PKGS,
-            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "architect": [*PKGS, WRITE_PASS, RUN, DONE, NOTE, DONE],
             "reviewer": [APPROVE, APPROVE],
         }
     )
@@ -2260,7 +2268,7 @@ async def test_each_pr_body_names_the_gate_its_own_layer_passed(tmp_path: Path) 
     card = text_card("Let users upload an avatar")
     st = await pipeline(tmp_path, repo, happy_engine(), test_cmd=None).run(card)
     assert st.stage == "layers" and st.blocked is not None and list(st.built) == ["01"]
-    again = FakeEngine({"architect": [PKG2], "coder": [NOTE, DONE], "reviewer": [APPROVE]})
+    again = StoryFakeEngine({"architect": [PKG2, NOTE, DONE], "reviewer": [APPROVE]})
     st = await pipeline(tmp_path, repo, again, test_cmd="./check.sh").run(card)
     assert st.blocked is None and st.stage == "review"
     assert [st.built[n]["gate"] for n in ("01", "02")] == [
@@ -2279,7 +2287,7 @@ async def test_a_story_whose_layers_are_all_built_publishes_without_reading_a_ga
     card = text_card("Let users upload an avatar")
     st = await pipeline(tmp_path, repo, happy_engine(), FailingGh("the network fell over")).run(card)
     assert st.stage == "build" and st.blocked is not None and st.gate is None
-    st = await pipeline(tmp_path, repo, FakeEngine(), test_cmd=None).run(card)
+    st = await pipeline(tmp_path, repo, StoryFakeEngine(), test_cmd=None).run(card)
     assert st.blocked is None and st.stage == "review" and st.gate is None
     assert "Tests: `./check.sh` passes on this branch." in (st.path / "pr-02.md").read_text(encoding="utf-8")
 
@@ -2297,7 +2305,7 @@ async def test_a_layer_whose_state_kept_no_gate_is_published_with_a_tests_line_t
     for row in saved["built"].values():
         del row["gate"]
     (st.path / "state.json").write_text(json.dumps(saved))
-    st = await pipeline(tmp_path, repo, FakeEngine()).run(card)
+    st = await pipeline(tmp_path, repo, StoryFakeEngine()).run(card)
     assert st.blocked is None and st.stage == "review"
     for n in (1, 2):
         body = (st.path / f"pr-0{n}.md").read_text(encoding="utf-8")
@@ -2337,13 +2345,13 @@ async def test_a_tag_named_like_a_layers_branch_is_not_the_next_layers_base(tmp_
     st = await pipeline(tmp_path, repo, first).run(card)
     assert list(st.built) == ["01"] and st.blocked is not None and "changed nothing" in st.blocked
     git(repo, "tag", B1, trunk)
-    again = FakeEngine({"architect": [PKG2], "coder": [NOTE, DONE], "reviewer": [APPROVE]})
+    again = StoryFakeEngine({"architect": [PKG2, NOTE, DONE], "reviewer": [APPROVE]})
     st = await pipeline(tmp_path, repo, again).run(card)
     assert st.blocked is None and st.stage == "review"
     git(repo, "merge-base", "--is-ancestor", f"refs/heads/{B1}", f"refs/heads/{B2}")  # on layer 01's work
 
 
-def architect_requests(engine: FakeEngine) -> list[Any]:
+def architect_requests(engine: StoryFakeEngine) -> list[Any]:
     return [r for r in engine.requests if r.role == "architect"]
 
 
@@ -2506,7 +2514,7 @@ async def test_a_dependent_story_bases_on_its_dependencys_top_branch_and_publish
     write_view = FakeReply(
         tool_calls=[ToolCall("n", "write_file", json.dumps({"path": "view.txt", "content": "view\n"}))]
     )
-    engine = FakeEngine({"architect": [layer_reply, pkg], "coder": [write_view, DONE], "reviewer": [APPROVE]})
+    engine = StoryFakeEngine({"architect": [layer_reply, pkg, write_view, DONE], "reviewer": [APPROVE]})
     gh = RecordedGh()
     st = await pipeline(tmp_path, repo, engine, gh).run(high)
     assert st.blocked is None and st.stage == "review", st.blocked
@@ -2531,7 +2539,7 @@ async def test_a_dependent_story_bases_on_its_dependencys_top_branch_and_publish
 async def test_a_dependency_not_yet_in_review_is_a_wait_not_a_build(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     high = card_of_epic("AIR-5", planned("S2", "Show the avatar"), after=("AIR-4",))
-    engine = FakeEngine({"architect": []})
+    engine = StoryFakeEngine({"architect": []})
     gh = RecordedGh()
     st = await pipeline(tmp_path, repo, engine, gh).run(high)
     assert st.stage == "new" and st.blocked is None and st.base is None
@@ -2541,11 +2549,11 @@ async def test_a_dependency_not_yet_in_review_is_a_wait_not_a_build(tmp_path: Pa
     assert "waiting for AIR-4" in (st.path / "notes.md").read_text()
     # a dependency that has started but is not in review yet is a wait too
     low = card_of_epic("AIR-4", planned("S1", "Add avatar upload"))
-    stopped = await pipeline(tmp_path, repo, FakeEngine({"architect": [FakeReply(text="no plan")] * 2})).run(
-        low
-    )
+    stopped = await pipeline(
+        tmp_path, repo, StoryFakeEngine({"architect": [FakeReply(text="no plan")] * 2})
+    ).run(low)
     assert stopped.blocked is not None and stopped.stage != "review"
-    again = await pipeline(tmp_path, repo, FakeEngine({"architect": []})).run(high)
+    again = await pipeline(tmp_path, repo, StoryFakeEngine({"architect": []})).run(high)
     assert again.stage == "new" and again.blocked is None and again.base is None
 
 
@@ -2588,7 +2596,7 @@ async def test_a_story_is_agreed_between_its_layers_and_its_first_build_and_the_
     assert [e["role"] for e in events if e["kind"] == "amigos_turn"] == [
         "product",
         "architect",
-        "tester",
+        "architect",
         "airlie",
         "product",
         "architect",
@@ -2746,11 +2754,10 @@ async def test_a_story_killed_mid_meeting_resumes_the_meeting_from_its_saved_his
     thread = saved.meeting["agent_states"]["RoundRobinGroupChatManager"]["message_thread"]
     assert sum(1 for m in thread if m["source"] != "user") == 5
     # what each role has left to say: product has spoken twice, the architect once, the tester once
-    left = {"product": [], "architect": EASY_MEETING["architect"][1:], "tester": []}
-    resumed_engine = FakeEngine(
+    left = {"product": [], "architect": EASY_MEETING["architect"][1:]}
+    resumed_engine = StoryFakeEngine(
         {
-            "architect": [PKG1, PKG2],
-            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "architect": [PKG1, PKG2, WRITE_PASS, RUN, DONE, NOTE, DONE],
             "reviewer": [APPROVE, APPROVE],
         }
     )
@@ -2765,7 +2772,14 @@ async def test_a_story_killed_mid_meeting_resumes_the_meeting_from_its_saved_his
     st = await second.run(text_card("avatars"))
     assert st.blocked is None and st.stage == "review", st.blocked
     turns = kinds(st.path / "events.jsonl", "amigos_turn")
-    assert [e["role"] for e in turns] == ["product", "architect", "tester", "airlie", "product", "architect"]
+    assert [e["role"] for e in turns] == [
+        "product",
+        "architect",
+        "architect",
+        "airlie",
+        "product",
+        "architect",
+    ]
     assert st.agreement is not None and st.agreement["turns"] == 6 and st.meeting is None
     assert not [r for r in resumed_engine.requests if r.role == "product"]
 
@@ -2777,8 +2791,8 @@ async def test_a_meeting_that_ends_by_owner_decides_records_a_lesson_and_the_obj
     object_ = verdict_block(proof="object")
     script = {
         "product": [spoken("The proof is thin.", object_)] * 2,
-        "architect": [spoken("ok", AGREE_V)] * 2,
-        "tester": [spoken("The proof.", block(AGREED_PROOF), AGREE_V), spoken("Same.", AGREE_V)],
+        "architect": [spoken("ok", AGREE_V)] * 2
+        + [spoken("The proof.", block(AGREED_PROOF), AGREE_V), spoken("Same.", AGREE_V)],
     }
     board = RecordingBoard()
     pipe = pipeline(
@@ -2811,8 +2825,7 @@ async def test_a_blocked_reply_from_product_in_the_meeting_stops_the_story(tmp_p
     blocked = block({"type": "blocked", "reason": "which sizes?"})
     script = {
         "product": [spoken("Cannot build this.", blocked, AGREE_V)],
-        "architect": [spoken("ok", AGREE_V)],
-        "tester": [spoken("ok", AGREE_V)],
+        "architect": [spoken("ok", AGREE_V), spoken("ok", AGREE_V)],
     }
     pipe = pipeline(
         tmp_path,
@@ -2835,8 +2848,7 @@ async def test_a_meeting_that_stops_the_story_leaves_its_transcript_on_disk(tmp_
     repo = repo_with_levels(tmp_path)
     script = {
         "product": [spoken("Fine by me.", AGREE_V)] * 2,
-        "architect": [spoken("ok", AGREE_V)] * 2,
-        "tester": ["I would test the storage first."] * 4,  # each turn, and its answer to the verdict ask
+        "architect": [spoken("ok", AGREE_V)] * 2 + ["I would test the storage first."] * 4,
     }
     pipe = pipeline(
         tmp_path,
@@ -2883,7 +2895,7 @@ async def test_a_story_saved_before_the_meeting_existed_resumes_with_its_split_a
     again = pipeline(
         tmp_path,
         repo,
-        FakeEngine({}),
+        StoryFakeEngine({}),
         story=MEETING,
         roles=MEETING_ROLES,
         meeting=never,
@@ -2898,7 +2910,9 @@ async def test_a_meeting_without_a_tester_role_stops_the_story_before_any_model_
     repo = repo_with_levels(tmp_path)
     pipe = pipeline(tmp_path, repo, happy_engine(), story=MEETING, meeting=never)  # STORY_ROLES: no tester
     st = await pipe.run(text_card("avatars"))
-    assert st.blocked is not None and "story.amigos is on, but the config has no 'tester' role" in st.blocked
+    assert (
+        st.blocked is not None and "story.amigos is on, but the config has no 'architect' role" in st.blocked
+    )
     assert st.agreement is None and st.stage == "refine"
 
 
@@ -2932,7 +2946,7 @@ async def test_the_meeting_opens_with_the_repositorys_test_levels_and_the_tester
         roles=MEETING_ROLES,
         meeting=lambda cfg, tools, on_turn: Spy(Agreement(story, split, proof, 4)),
     )
-    pipe.cfg.roles["tester"].skills = lib
+    pipe.cfg.roles["architect"].skills = lib
     st = await pipe.run(text_card("avatars"))
     assert st.blocked is None and st.stage == "review", st.blocked
     [opening] = opened
@@ -3146,7 +3160,7 @@ async def test_no_agreement_comment_after_meeting_settles(tmp_path: Path) -> Non
         tuple(Layer.from_dict(x) for x in AGREED_SPLIT["layers"]),
         tuple(ProofTest.from_dict(t) for t in AGREED_PROOF["tests"]),
         turns=3,
-        unresolved=(Objection("proof", "AC2", "the proof is thin", "assert the alt text", "tester"),),
+        unresolved=(Objection("proof", "AC2", "the proof is thin", "assert the alt text", "architect"),),
     )
 
     def make_meeting(cfg: Any, tools: Any, on_turn: Any) -> FakeMeeting:
@@ -3160,7 +3174,7 @@ async def test_no_agreement_comment_after_meeting_settles(tmp_path: Path) -> Non
         engine,
         board=board,
         story={"amigos": {"enabled": True}},
-        roles={**STORY_ROLES, "tester": ("---\nsummary: Proof\n---\n# tester", ["read_file", "list_dir"])},
+        roles={**STORY_ROLES, "architect": ("---\nsummary: Proof\n---\n# tester", ["read_file", "list_dir"])},
         meeting=make_meeting,
     )
     st = await pipe.run(text_card("avatars"))

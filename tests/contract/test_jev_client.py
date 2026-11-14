@@ -12,7 +12,7 @@ import pytest
 from airlie.router import JevClient, JevRouter
 from airlie.router.protocol import ROLE_QUESTION, RouteDecision
 
-CRITERIA = {"coder": "write code", "qa": "test it"}
+CRITERIA = {"architect": "write code", "qa": "test it"}
 
 
 def answering(payload: dict[str, Any], status: int = 200, text: str | None = None):  # type: ignore[no-untyped-def]
@@ -33,7 +33,12 @@ def ok_payload(question: str = "role", **ans: Any) -> dict[str, Any]:
         ans = {**ans, "metadata": {"confidence": ans.pop("confidence")}}
     return {
         "answers": {
-            question: {"type": "choice", "value": "coder", "probabilities": {"coder": 0.9, "qa": 0.1}, **ans}
+            question: {
+                "type": "choice",
+                "value": "coder",
+                "probabilities": {"architect": 0.9, "qa": 0.1},
+                **ans,
+            }
         }
     }
 
@@ -100,7 +105,7 @@ async def test_missing_usage_defaults_to_zero_tokens() -> None:
 async def test_answer_without_probabilities_is_empty() -> None:
     transport, _ = answering({"answers": {"role": {"value": "coder"}}})
     ans = await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
-    assert ans.probabilities == {} and ans.choice == "coder"
+    assert ans.probabilities == {} and ans.choice == "architect"
 
 
 async def test_confidence_is_read_from_the_answers_metadata() -> None:
@@ -111,10 +116,10 @@ async def test_confidence_is_read_from_the_answers_metadata() -> None:
 
 async def test_a_value_answer_without_confidence_uses_its_top_probability() -> None:
     transport, _ = answering(
-        {"answers": {"role": {"value": "coder", "probabilities": {"coder": 0.8, "qa": 0.2}}}}
+        {"answers": {"role": {"value": "coder", "probabilities": {"architect": 0.8, "qa": 0.2}}}}
     )
     ans = await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
-    assert ans.choice == "coder" and ans.confidence == 0.8
+    assert ans.choice == "architect" and ans.confidence == 0.8
 
 
 async def test_a_value_answer_without_probabilities_has_zero_confidence() -> None:
@@ -124,7 +129,7 @@ async def test_a_value_answer_without_probabilities_has_zero_confidence() -> Non
 
 
 async def test_an_answer_with_no_value_is_refused() -> None:
-    transport, _ = answering({"answers": {"role": {"choice": "coder", "probabilities": {"coder": 1.0}}}})
+    transport, _ = answering({"answers": {"role": {"choice": "coder", "probabilities": {"architect": 1.0}}}})
     with pytest.raises(ValueError, match="answered without 'role'"):
         await JevClient("http://k/v1", transport=transport).ask("s", "role", "i", CRITERIA)
 
@@ -204,7 +209,7 @@ async def test_off_set_choice_uses_hint_then_top_and_reports_every_field() -> No
     transport, _ = answering(payload)
     probs = {"zzz": 0.5, "qa": 0.3, "coder": 0.2}
     d = await router(transport).route("s", CRITERIA, "coder")
-    assert d == RouteDecision("role", "zzz", "coder", "invalid", probs, 0.8, "coder", 42)
+    assert d == RouteDecision("role", "zzz", "architect", "invalid", probs, 0.8, "architect", 42)
     d = await router(transport).route("s", CRITERIA)
     assert d == RouteDecision("role", "zzz", "qa", "invalid", probs, 0.8, None, 42)
     d = await router(transport).route("s", CRITERIA, "not-a-role")
@@ -225,7 +230,9 @@ async def test_clear_decision_reports_every_field() -> None:
     payload = {**ok_payload(confidence=0.95), "usage": {"input_tokens": 42}}
     transport, _ = answering(payload)
     d = await router(transport).route("s", CRITERIA, "qa")
-    assert d == RouteDecision("role", "coder", "coder", "clear", {"coder": 0.9, "qa": 0.1}, 0.95, "qa", 42)
+    assert d == RouteDecision(
+        "role", "architect", "architect", "clear", {"architect": 0.9, "qa": 0.1}, 0.95, "qa", 42
+    )
 
 
 def test_only_slashes_are_stripped_from_the_base_url() -> None:
@@ -237,7 +244,12 @@ def mlx_vlm_payload(**ans: Any) -> dict[str, Any]:
     return {
         "model": "/models/clef",
         "answers": {
-            "role": {"type": "choice", "value": "coder", "probabilities": {"coder": 0.8, "qa": 0.2}, **ans}
+            "role": {
+                "type": "choice",
+                "value": "coder",
+                "probabilities": {"architect": 0.8, "qa": 0.2},
+                **ans,
+            }
         },
         "usage": {"input_tokens": 42},
     }
@@ -246,9 +258,9 @@ def mlx_vlm_payload(**ans: Any) -> dict[str, Any]:
 async def test_ask_reads_an_mlx_vlm_decision_answer() -> None:
     transport, seen = answering(mlx_vlm_payload(metadata={"confidence": 0.8}))
     client = JevClient("http://d/v1", model="/models/clef", transport=transport, endpoint="/decisions")
-    ans = await client.ask("state", "role", "which seat", {"coder": "writes", "qa": "tests"})
+    ans = await client.ask("state", "role", "which seat", {"architect": "writes", "qa": "tests"})
     assert (ans.choice, ans.confidence, ans.input_tokens) == ("coder", 0.8, 42)
-    assert ans.probabilities == {"coder": 0.8, "qa": 0.2}
+    assert ans.probabilities == {"architect": 0.8, "qa": 0.2}
     assert seen[0].url.path == "/v1/decisions" and json.loads(seen[0].content)["model"] == "/models/clef"
 
 

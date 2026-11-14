@@ -138,7 +138,7 @@ def _mini_cfg(tmp_path: Path) -> Path:
         "engines": {"main": {"kind": "openai_http", "base_url": "http://engine.test/v1", "models": ["base"]}},
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
-            "coder": {"prompt": "prompts/roles/coder.md", "model": "base"},
+            "architect": {"prompt": "prompts/roles/architect.md", "model": "base"},
             "summarizer": {"prompt": "prompts/roles/summarizer.md", "model": "base"},
             "judge": {"prompt": "prompts/roles/judge.md", "model": "base"},
             "aggregator": {"prompt": "prompts/roles/aggregator.md", "model": "base"},

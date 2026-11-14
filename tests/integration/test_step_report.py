@@ -70,8 +70,8 @@ def _by_seg(segments: list[Segment]) -> dict[str, Segment]:
 
 def test_segment_counts_reads_pages_and_repeats_before_the_first_write(tmp_path: Path) -> None:
     state, repo = _fixture(tmp_path)
-    seg = _by_seg(story_segments(state, STORY, repo, {"tester": 4}))["tests"]
-    assert (seg.role, seg.layer, seg.steps) == ("tester", "01", 4)
+    seg = _by_seg(story_segments(state, STORY, repo, {"architect": 4}))["tests"]
+    assert (seg.role, seg.layer, seg.steps) == ("architect", "01", 4)
     assert seg.first_write == 4
     assert seg.reads_before_write == 3
     assert seg.pages == 1
@@ -158,4 +158,4 @@ def test_a_killed_run_s_partial_lines_and_step_files_are_skipped(tmp_path: Path)
     story_events.write_text(story_events.read_text() + "{not json\n")
     (state / "runs" / RUN / "trace" / "tests" / "step-005.json").write_text('{"u_t": "{\'name')
     seg = _by_seg(story_segments(state, STORY, repo, {}))["tests"]
-    assert (seg.role, seg.layer, seg.steps, seg.first_write) == ("tester", "01", 4, 4)
+    assert (seg.role, seg.layer, seg.steps, seg.first_write) == ("architect", "01", 4, 4)

@@ -79,7 +79,7 @@ def test_a_running_run_moves_when_its_log_grows(
             "run_id": TOPO_LIVE,
             "kind": "subtask_done",
             "subtask": "fix",
-            "role": "coder",
+            "role": "architect",
             "ok": True,
             "stop_reason": "done",
             "steps": 2,

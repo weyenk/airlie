@@ -96,8 +96,6 @@ def scripts() -> dict[str, list[FakeReply]]:
                 interfaces=[{"file": "calc.py", "signature": "def subtract(a, b)", "behaviour": "a - b"}],
                 steps=["add subtract(a, b) to calc.py returning a - b"],
             ),
-        ],
-        "coder": [
             write("c", "calc.py", SUBTRACT),
             FakeReply(tool_calls=[ToolCall("r", "run_tests", "{}")]),
             FakeReply(text="done: subtract added, tests pass"),

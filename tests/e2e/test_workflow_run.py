@@ -203,7 +203,7 @@ def test_a_finished_plan_job_shows_the_plan_card_and_Change_it_checks_the_json(
         json.dumps(
             {
                 "assumptions": ["Edited."],
-                "subtasks": [{"id": "only", "role": "coder", "brief": "Do the one thing."}],
+                "subtasks": [{"id": "only", "role": "architect", "brief": "Do the one thing."}],
             }
         )
     )
@@ -223,7 +223,7 @@ def test_Approve_plan_starts_the_edited_plan_and_opens_the_new_run_where_Stop_as
     card = app_page.locator("section[aria-label=Plan]")
     card.get_by_role("button", name="Change it").click()
     app_page.get_by_label("Plan as JSON").fill(
-        json.dumps({"subtasks": [{"id": "only", "role": "coder", "brief": "Do the one thing."}]})
+        json.dumps({"subtasks": [{"id": "only", "role": "architect", "brief": "Do the one thing."}]})
     )
     app_page.get_by_role("button", name="Use this plan").click()
     card.get_by_role("button", name="Approve plan").click()

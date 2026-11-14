@@ -35,7 +35,7 @@ def _cfg(tmp_path: Path) -> object:
         },
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
-            "coder": {"prompt": "coder.md", "model": "base"},
+            "architect": {"prompt": "coder.md", "model": "base"},
             "summarizer": {"prompt": "summarizer.md", "model": "base"},
             "judge": {"prompt": "judge.md", "model": "base"},
             "aggregator": {"prompt": "aggregator.md", "model": "base"},
@@ -78,7 +78,7 @@ def test_summary_body_shape_and_by_role(tmp_path: Path) -> None:
     for key in ("generation_tps", "prefill_tps", "stories", "fix_rounds_per_layer"):
         assert key in body
     # the fixture is copied into runs/ and stories/, so each event counts twice: 8 steps, 2 roles
-    assert set(body["by"]) == {"coder", "reviewer"}
+    assert set(body["by"]) == {"architect", "reviewer"}
     for entry in body["by"].values():
         assert "generation_tps" in entry and "prefill_tps" in entry
     # coder: (200+100) tokens / (100+50) ms, doubled in both files -> 2000 tok/s
@@ -107,7 +107,7 @@ def test_series_rows_one_bucket_per_width_and_quantiles_ordered(tmp_path: Path) 
         assert row["t"] == 1000.0
         assert row["p10"] <= row["p50"] <= row["p90"]
     by_role = {row["role"]: row for row in rows}
-    assert set(by_role) == {"coder", "reviewer"}
+    assert set(by_role) == {"architect", "reviewer"}
     # coder: 200/100 and 100/50 -> both 2000 tok/s; reviewer: 400/80 and 200/40 -> both 5000 tok/s
     assert by_role["coder"]["p50"] == pytest.approx(2000.0)
     assert by_role["reviewer"]["p50"] == pytest.approx(5000.0)

@@ -21,6 +21,14 @@ MINIMAL: dict = {
 }
 
 
+def with_architect(**architect: object) -> dict:
+    """MINIMAL with patched ``architect`` fields (thinking-budget and similar tests)."""
+    return {
+        **MINIMAL,
+        "roles": {**MINIMAL["roles"], "architect": {**MINIMAL["roles"]["architect"], **architect}},
+    }
+
+
 def write(tmp_path: Path, data: dict, name: str = "airlie.yaml") -> Path:
     p = tmp_path / name
     p.parent.mkdir(parents=True, exist_ok=True)

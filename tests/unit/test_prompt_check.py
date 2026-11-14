@@ -19,7 +19,7 @@ def _text(
     governs: dict[str, str],
     *,
     kind: Kind = "rule",
-    roles: tuple[str, ...] = ("coder",),
+    roles: tuple[str, ...] = ("architect",),
     yields_to: tuple[str, ...] = (),
 ) -> PromptText:
     return PromptText(
@@ -45,13 +45,13 @@ def _role_prompt(tmp_path: Path, name: str, *tags: str) -> Path:
 
 
 def test_two_rules_that_disagree_conflict(tmp_path: Path) -> None:
-    coder = _role_prompt(tmp_path, "coder", "governs.tests.location: named-file")
+    architect = _role_prompt(tmp_path, "architect", "governs.tests.location: named-file")
     rule = _text("x", {"tests.location": "new-file"})
-    assert conflicts([rule], {"coder": coder}) == [
+    assert conflicts([rule], {"architect": architect}) == [
         Conflict(
-            role="coder",
+            role="architect",
             subject="tests.location",
-            a="role:coder",
+            a="role:architect",
             a_value="named-file",
             b="x",
             b_value="new-file",
@@ -60,42 +60,42 @@ def test_two_rules_that_disagree_conflict(tmp_path: Path) -> None:
 
 
 def test_two_rules_that_agree_do_not_conflict(tmp_path: Path) -> None:
-    coder = _role_prompt(tmp_path, "coder", "governs.tests.location: new-file")
-    assert conflicts([_text("x", {"tests.location": "new-file"})], {"coder": coder}) == []
+    architect = _role_prompt(tmp_path, "architect", "governs.tests.location: new-file")
+    assert conflicts([_text("x", {"tests.location": "new-file"})], {"architect": architect}) == []
 
 
 def test_rules_on_different_subjects_do_not_conflict(tmp_path: Path) -> None:
-    coder = _role_prompt(tmp_path, "coder", "governs.tests.location: named-file")
-    assert conflicts([_text("x", {"reading": "first"})], {"coder": coder}) == []
+    architect = _role_prompt(tmp_path, "architect", "governs.tests.location: named-file")
+    assert conflicts([_text("x", {"reading": "first"})], {"architect": architect}) == []
 
 
 def test_yields_to_settles_it(tmp_path: Path) -> None:
-    coder = _role_prompt(tmp_path, "coder", "governs.tests.location: named-file")
-    rule = _text("x", {"tests.location": "new-file"}, yields_to=("role:coder",))
-    assert conflicts([rule], {"coder": coder}) == []
+    architect = _role_prompt(tmp_path, "architect", "governs.tests.location: named-file")
+    rule = _text("x", {"tests.location": "new-file"}, yields_to=("role:architect",))
+    assert conflicts([rule], {"architect": architect}) == []
 
 
 def test_a_role_prompt_can_be_the_one_that_yields(tmp_path: Path) -> None:
-    coder = _role_prompt(tmp_path, "coder", "governs.tests.location: new-file", "yields_to: x")
+    architect = _role_prompt(tmp_path, "architect", "governs.tests.location: new-file", "yields_to: x")
     rule = _text("x", {"tests.location": "named-file"})
-    assert conflicts([rule], {"coder": coder}) == []
+    assert conflicts([rule], {"architect": architect}) == []
 
 
 def test_yielding_to_a_third_text_settles_nothing(tmp_path: Path) -> None:
-    coder = _role_prompt(tmp_path, "coder", "governs.tests.location: named-file")
+    architect = _role_prompt(tmp_path, "architect", "governs.tests.location: named-file")
     rule = _text("x", {"tests.location": "new-file"}, yields_to=("y",))
-    assert len(conflicts([rule], {"coder": coder})) == 1
+    assert len(conflicts([rule], {"architect": architect})) == 1
 
 
 def test_a_yields_to_that_settles_a_disagreement_is_not_idle(tmp_path: Path) -> None:
-    coder = _role_prompt(tmp_path, "coder", "governs.tests.location: new-file", "yields_to: x")
+    architect = _role_prompt(tmp_path, "architect", "governs.tests.location: new-file", "yields_to: x")
     rule = _text("x", {"tests.location": "named-file"})
-    assert idle_yields([rule], {"coder": coder}) == []
+    assert idle_yields([rule], {"architect": architect}) == []
 
 
 def test_yields_to_texts_that_never_meet_is_idle() -> None:
     a = _text("a", {"reading": "named-only"}, kind="steering", roles=("architect",), yields_to=("b",))
-    b = _text("b", {"reading": "stop"}, kind="steering", roles=("coder",))
+    b = _text("b", {"reading": "stop"}, kind="steering", roles=("product",))
     assert idle_yields([a, b], {}) == [("a", "b")]
 
 
@@ -113,8 +113,8 @@ def test_yields_to_across_kinds_is_idle() -> None:
 
 
 def test_yields_to_an_unknown_source_is_idle(tmp_path: Path) -> None:
-    coder = _role_prompt(tmp_path, "coder", "governs.reading: first", "yields_to: nowhere")
-    assert idle_yields([], {"coder": coder}) == [("role:coder", "nowhere")]
+    architect = _role_prompt(tmp_path, "architect", "governs.reading: first", "yields_to: nowhere")
+    assert idle_yields([], {"architect": architect}) == [("role:architect", "nowhere")]
 
 
 def test_steering_never_conflicts_with_a_rule() -> None:
@@ -124,9 +124,9 @@ def test_steering_never_conflicts_with_a_rule() -> None:
 
 
 def test_steering_never_conflicts_with_a_role_prompt(tmp_path: Path) -> None:
-    coder = _role_prompt(tmp_path, "coder", "governs.reading: first")
+    architect = _role_prompt(tmp_path, "architect", "governs.reading: first")
     steer = _text("stop-reading", {"reading": "stop"}, kind="steering")
-    assert conflicts([steer], {"coder": coder}) == []
+    assert conflicts([steer], {"architect": architect}) == []
 
 
 def test_two_steering_texts_that_disagree_conflict() -> None:
@@ -134,7 +134,7 @@ def test_two_steering_texts_that_disagree_conflict() -> None:
     b = _text("stop-reading", {"reading": "stop"}, kind="steering")
     assert conflicts([b, a], {}) == [
         Conflict(
-            role="coder",
+            role="architect",
             subject="reading",
             a="keep-reading",
             a_value="first",
@@ -151,14 +151,14 @@ def test_steering_yields_to_steering() -> None:
 
 
 def test_any_reaches_every_role_in_role_prompts(tmp_path: Path) -> None:
-    coder = _role_prompt(tmp_path, "coder", "governs.tests.location: named-file")
-    tester = _role_prompt(tmp_path, "tester", "governs.tests.location: named-file")
+    architect = _role_prompt(tmp_path, "architect", "governs.tests.location: named-file")
+    product = _role_prompt(tmp_path, "product", "governs.tests.location: named-file")
     docs = _role_prompt(tmp_path, "docs", "governs.tests.location: new-file")
     rule = _text("x", {"tests.location": "new-file"}, roles=("any",))
-    found = conflicts([rule], {"coder": coder, "tester": tester, "docs": docs})
+    found = conflicts([rule], {"architect": architect, "product": product, "docs": docs})
     assert [(c.role, c.a, c.b) for c in found] == [
-        ("coder", "role:coder", "x"),
-        ("tester", "role:tester", "x"),
+        ("architect", "role:architect", "x"),
+        ("product", "role:product", "x"),
     ]
 
 
@@ -169,39 +169,42 @@ def test_any_reaches_a_role_that_only_other_texts_name() -> None:
 
 
 def test_texts_for_different_roles_do_not_conflict(tmp_path: Path) -> None:
-    coder = _role_prompt(tmp_path, "coder", "governs.tests.location: named-file")
+    architect = _role_prompt(tmp_path, "architect", "governs.tests.location: named-file")
     rule = _text("x", {"tests.location": "new-file"}, roles=("reviewer",))
-    assert conflicts([rule], {"coder": coder}) == []
+    assert conflicts([rule], {"architect": architect}) == []
 
 
 def test_a_role_prompt_reaches_only_its_own_role(tmp_path: Path) -> None:
-    coder = _role_prompt(tmp_path, "coder", "governs.tests.location: named-file")
-    tester = _role_prompt(tmp_path, "tester", "governs.tests.location: new-file")
-    assert conflicts([], {"coder": coder, "tester": tester}) == []
+    architect = _role_prompt(tmp_path, "architect", "governs.tests.location: named-file")
+    product = _role_prompt(tmp_path, "product", "governs.tests.location: new-file")
+    assert conflicts([], {"architect": architect, "product": product}) == []
 
 
 def test_a_text_for_two_roles_conflicts_once_in_each() -> None:
-    a = _text("a", {"reading": "first"}, roles=("coder", "tester"))
-    b = _text("b", {"reading": "stop"}, roles=("tester", "coder"))
-    assert [(c.role, c.a, c.b) for c in conflicts([a, b], {})] == [("coder", "a", "b"), ("tester", "a", "b")]
+    a = _text("a", {"reading": "first"}, roles=("architect", "product"))
+    b = _text("b", {"reading": "stop"}, roles=("product", "architect"))
+    assert [(c.role, c.a, c.b) for c in conflicts([a, b], {})] == [
+        ("architect", "a", "b"),
+        ("product", "a", "b"),
+    ]
 
 
 def test_conflicts_are_sorted_by_role_subject_then_source(tmp_path: Path) -> None:
-    coder = _role_prompt(tmp_path, "coder", "governs.b.subject: 1", "governs.a.subject: 1")
+    architect = _role_prompt(tmp_path, "architect", "governs.b.subject: 1", "governs.a.subject: 1")
     z = _text("z", {"b.subject": "2", "a.subject": "2"})
     m = _text("m", {"a.subject": "3"})
-    found = conflicts([z, m], {"coder": coder})
+    found = conflicts([z, m], {"architect": architect})
     assert [(c.subject, c.a, c.b) for c in found] == [
-        ("a.subject", "m", "role:coder"),
+        ("a.subject", "m", "role:architect"),
         ("a.subject", "m", "z"),
-        ("a.subject", "role:coder", "z"),
-        ("b.subject", "role:coder", "z"),
+        ("a.subject", "role:architect", "z"),
+        ("b.subject", "role:architect", "z"),
     ]
 
 
 def test_role_tags_reads_flat_governs_keys_and_keeps_the_summary(tmp_path: Path) -> None:
     path = _role_prompt(
-        tmp_path, "coder", "governs.tests.location: new-file", "yields_to: brief-named-test-file"
+        tmp_path, "architect", "governs.tests.location: new-file", "yields_to: brief-named-test-file"
     )
     text = path.read_text().replace("summary: the role", "summary: a: b")
     path.write_text(text)
@@ -210,8 +213,8 @@ def test_role_tags_reads_flat_governs_keys_and_keeps_the_summary(tmp_path: Path)
 
 
 def test_role_tags_splits_yields_to_on_commas(tmp_path: Path) -> None:
-    path = _role_prompt(tmp_path, "coder", "yields_to: a, role:tester ,b,")
-    assert role_tags(path) == ({}, ("a", "role:tester", "b"))
+    path = _role_prompt(tmp_path, "architect", "yields_to: a, role:product ,b,")
+    assert role_tags(path) == ({}, ("a", "role:product", "b"))
 
 
 def test_role_tags_of_an_untagged_prompt_are_empty(tmp_path: Path) -> None:
@@ -221,26 +224,28 @@ def test_role_tags_of_an_untagged_prompt_are_empty(tmp_path: Path) -> None:
 
 
 def test_role_tags_rejects_a_governs_key_with_no_subject(tmp_path: Path) -> None:
-    path = _role_prompt(tmp_path, "coder", "governs: tests.location=new-file")
-    with pytest.raises(PromptError, match="coder.md.*governs.<subject>"):
+    path = _role_prompt(tmp_path, "architect", "governs: tests.location=new-file")
+    with pytest.raises(PromptError, match="architect.md.*governs.<subject>"):
         role_tags(path)
 
 
 def test_subjects_lists_each_subject_with_its_sources(tmp_path: Path) -> None:
-    coder = _role_prompt(tmp_path, "coder", "governs.tests.location: named-file", "governs.edits: exact")
+    architect = _role_prompt(
+        tmp_path, "architect", "governs.tests.location: named-file", "governs.edits: exact"
+    )
     reviewer = _role_prompt(tmp_path, "reviewer", "governs.verdict: json")
     texts = [
         _text("write-now", {"edits": "now", "test.location": "new-file"}, kind="steering"),
         _text("brief", {"tests.location": "new-file"}, roles=("any",)),
         _text("silent", {}),
     ]
-    assert subjects(texts, {"reviewer": reviewer, "coder": coder}) == {
-        "edits": ["role:coder", "write-now"],
+    assert subjects(texts, {"reviewer": reviewer, "architect": architect}) == {
+        "edits": ["role:architect", "write-now"],
         "test.location": ["write-now"],
-        "tests.location": ["brief", "role:coder"],
+        "tests.location": ["brief", "role:architect"],
         "verdict": ["role:reviewer"],
     }
-    assert list(subjects(texts, {"reviewer": reviewer, "coder": coder})) == [
+    assert list(subjects(texts, {"reviewer": reviewer, "architect": architect})) == [
         "edits",
         "test.location",
         "tests.location",

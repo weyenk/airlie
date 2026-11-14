@@ -24,9 +24,9 @@ def test_build_prompt_without_corpus_uses_synthetic_text(tmp_path: Path) -> None
 
 
 async def test_run_case_reports_aggregate_and_per_stream_numbers() -> None:
-    eng = FakeEngine({"coder": [FakeReply(text="w " * 40)] * 3})
+    eng = FakeEngine({"architect": [FakeReply(text="w " * 40)] * 3})
     res = await run_case(
-        eng, BenchCase(role="coder", ctx=100, concurrency=3, gen=40), sampling=Sampling(), corpus_dir=None
+        eng, BenchCase(role="architect", ctx=100, concurrency=3, gen=40), sampling=Sampling(), corpus_dir=None
     )
     assert res.concurrency == 3 and res.completion_tokens == 120
     assert res.agg_decode_tps > 0 and res.decode_tps_per_stream > 0
@@ -34,18 +34,18 @@ async def test_run_case_reports_aggregate_and_per_stream_numbers() -> None:
 
 
 async def test_run_matrix_covers_every_ctx_and_concurrency() -> None:
-    eng = FakeEngine({"coder": [FakeReply(text="x y z")] * 100})
+    eng = FakeEngine({"architect": [FakeReply(text="x y z")] * 100})
     results = await run_matrix(
-        eng, role="coder", ctxs=[50, 100], ns=[1, 2], gen=3, runs=1, sampling=Sampling(), corpus_dir=None
+        eng, role="architect", ctxs=[50, 100], ns=[1, 2], gen=3, runs=1, sampling=Sampling(), corpus_dir=None
     )
     assert sorted((r.ctx, r.concurrency) for r in results) == [(50, 1), (50, 2), (100, 1), (100, 2)]
 
 
 async def test_resume_case_measures_two_turns() -> None:
-    eng = FakeEngine({"coder": [FakeReply(text="ok"), FakeReply(text="ok again")]})
+    eng = FakeEngine({"architect": [FakeReply(text="ok"), FakeReply(text="ok again")]})
     res = await run_case(
         eng,
-        BenchCase(role="coder", ctx=100, concurrency=1, gen=4, resume=True),
+        BenchCase(role="architect", ctx=100, concurrency=1, gen=4, resume=True),
         sampling=Sampling(),
         corpus_dir=None,
     )
@@ -58,7 +58,7 @@ def test_render_and_compare(tmp_path: Path) -> None:
     a = [
         BenchResult(
             model="m",
-            role="coder",
+            role="architect",
             ctx=4000,
             concurrency=1,
             gen=64,
@@ -75,7 +75,7 @@ def test_render_and_compare(tmp_path: Path) -> None:
     b = [
         BenchResult(
             model="n",
-            role="coder",
+            role="architect",
             ctx=4000,
             concurrency=1,
             gen=64,
@@ -103,7 +103,7 @@ def test_load_results_round_trips_resume(tmp_path: Path) -> None:
 
     r = BenchResult(
         model="m",
-        role="coder",
+        role="architect",
         ctx=4000,
         concurrency=1,
         gen=64,

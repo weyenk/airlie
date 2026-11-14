@@ -21,7 +21,7 @@ def write_events(path: Path, events: list[dict[str, Any]]) -> None:
     path.write_text("".join(json.dumps(e) + "\n" for e in events))
 
 
-def step(prompt: int, completion: int, role: str = "coder", ts: float = 0.0) -> dict[str, Any]:
+def step(prompt: int, completion: int, role: str = "architect", ts: float = 0.0) -> dict[str, Any]:
     return {"ts": ts, "kind": "step", "prompt_tokens": prompt, "completion_tokens": completion, "role": role}
 
 

@@ -48,7 +48,7 @@ def chat_calls_task() -> list[Step]:
 
 def write_then_answer() -> FakeEngine:
     write = ToolCall("w1", "write_file", json.dumps({"path": "a.txt", "content": "hi\n"}))
-    return FakeEngine({"coder": [FakeReply(tool_calls=[write]), FakeReply(text="wrote a.txt")]})
+    return FakeEngine({"architect": [FakeReply(tool_calls=[write]), FakeReply(text="wrote a.txt")]})
 
 
 def with_task(rig: Rig, cfg: AirlieConfig, engine: Any) -> FakeBox:
@@ -94,7 +94,9 @@ async def test_the_status_of_an_engine_a_subagent_waits_on_is_relayed_with_its_r
     rig = Rig(tmp_path, role, chat_calls_task())
     rig.holder = InProcessHolder(manager)  # type: ignore[assignment]
     rig.status = manager.status  # type: ignore[method-assign]
-    engine = ManagedEngine(FakeEngine({"coder": [FakeReply(text="reviewed")]}), sub, InProcessHolder(manager))
+    engine = ManagedEngine(
+        FakeEngine({"architect": [FakeReply(text="reviewed")]}), sub, InProcessHolder(manager)
+    )
     with_task(rig, cfg, engine)
     release = asyncio.Event()
 
