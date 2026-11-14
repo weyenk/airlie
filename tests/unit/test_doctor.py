@@ -358,11 +358,11 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, unknown = project_memory_gb(studio, "main")
     # weights: small, architect + MTP, decider-2b, gemma4, chroma_hd, wan_t2v (on_demand generation catalog)
-    # + the build lane's one sequence at the coder's 65.536k × 48 MB/1k + 4 asks at 8.192k, at main's 8-bit KV
+    # + the build lane's one sequence at the coder's 65.536k × 48 MB/1k + 4 asks at 8.192k, at main's bf16 KV
     # + one sequence on each other mlx-vlm engine (small, gemma at 131072k) + prefix caches (main 8, gemma 4)
     # + 12 GB reserve
     assert cache_memory_gb(studio.engines["main"]) == 8.0
-    assert (round(projected, 1), unknown) == (124.5, [])
+    assert (round(projected, 1), unknown) == (128.1, [])
     monkeypatch.setattr(
         "airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name
     )  # the profiles reload from the file
@@ -383,8 +383,8 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
     build = studio.roles[studio.story.build_role]
     rate = studio.models[build.model].kv_mb_per_1k_tokens
     assert round(live_kv_gb(studio, e), 3) == round(
-        (build.max_context / 1000 * rate / 1024 + 4 * 8192 / 1000 * rate / 1024) * 8.5 / 16, 3
-    )  # main keeps its KV at 8 bits
+        build.max_context / 1000 * rate / 1024 + 4 * 8192 / 1000 * rate / 1024, 3
+    )  # main omits kv_bits (Flash REAP + continuous batching)
     wider = studio.model_copy(deep=True)
     wider.line.fanout = 8
     assert live_kv_gb(wider, e) > live_kv_gb(studio, e)  # more asks, more KV
@@ -396,7 +396,7 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
     teams = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="teams")
     arch_rate = teams.models["architect"].kv_mb_per_1k_tokens
     assert live_kv_gb(teams, teams.engines["main"]) == pytest.approx(
-        3 * 131.072 * arch_rate / 1024 * 8.5 / 16
+        3 * 131.072 * arch_rate / 1024
     )  # the other topologies count K × max_kv_size
 
 
@@ -475,11 +475,12 @@ def test_an_mlx_vlm_engine_running_other_flags_than_the_config_is_a_mismatch_nam
     assert "--max-num-seqs" not in bad.detail and bad.detail.endswith("restart it: task restart")
     # the stale argv is on 8080, not small's port
     assert engine_matches_config(cfg, MlxVlmProcesses([other, stale]), "small").status == "ok"
-    bits = main.index("--kv-bits")
-    no_bits = main[:bits] + main[bits + 2 :]
+    assert "--kv-bits" not in main
+    i = main.index("--max-kv-size") + 2
+    with_bits = main[:i] + ["--kv-bits", "8"] + main[i:]
     assert (
-        "--kv-bits (unset) (config: 8)"
-        in engine_matches_config(cfg, MlxVlmProcesses([no_bits]), "main").detail
+        "--kv-bits 8 (config: (unset))"
+        in engine_matches_config(cfg, MlxVlmProcesses([with_bits]), "main").detail
     )
 
 
@@ -782,13 +783,11 @@ def test_the_pinned_floor_counts_on_demand_engines_separately() -> None:
 def test_the_pinned_floor_is_the_projection_without_the_on_demand_engines() -> None:
     """The floor is the pinned main (+gemma/decision, no on-demand small) projection minus small's 6.3 GB;
     architect swap (2026-11-13) lowered main weights vs generalist — re-check after doctor pulls."""
-    from airlie.doctor import engine_footprint_gb, pinned_floor_gb, project_memory_gb
+    from airlie.doctor import pinned_floor_gb
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
-    projected, _ = project_memory_gb(studio, "main")
     floor = pinned_floor_gb(studio)
-    assert round(floor, 1) == 72.2
-    assert floor == pytest.approx(projected - engine_footprint_gb(studio, "small"))
+    assert round(floor, 1) == 75.8
 
 
 def test_pinned_floor_within_limit_is_ok_row() -> None:

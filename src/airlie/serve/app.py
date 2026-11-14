@@ -119,14 +119,51 @@ if TYPE_CHECKING:
     from airlie.manager.core import Manager
 
 
-class ToolCallStreamRepair:
-    """Give every streamed tool-call delta an `id` and `type`. the engine sometimes streams a call's deltas
-    without them (seen 2026-10-14 when Qwen3-Coder opened a call with a bare `<function=...>`), and the
-    Vercel AI SDK behind OpenCode rejects such a chunk ("Expected 'id' to be a string").
+def _openai_error_frame(value: Any) -> dict[str, Any] | None:
+    """@ai-sdk/openai-compatible accepts only `error: {message: …}`; mlx-vlm sometimes sends a string."""
+    if isinstance(value, str) and value:
+        return {"message": value, "type": "server_error"}
+    if isinstance(value, dict) and value.get("message") is not None:
+        return value
+    if value is not None:
+        return {"message": str(value), "type": "server_error"}
+    return None
 
-    A choice that ends with finish_reason "tool_calls" but sent no call with a name (the engine's parser
-    dropped a malformed one) ends with "stop" instead: OpenCode 2.0 fails the turn otherwise ("OpenAI Chat
-    tool call delta is missing id or name"), while a "stop" reaches it as a reply with no tool call."""
+
+def _coerce_openai_delta_content(content: Any) -> tuple[Any, str | None, bool]:
+    """Coerce typed content parts to the string / reasoning fields OpenAI-compatible clients expect."""
+    if content is None or isinstance(content, str):
+        return content, None, False
+    if not isinstance(content, list):
+        return str(content), None, True
+    texts: list[str] = []
+    reasoning_parts: list[str] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        kind = part.get("type")
+        if kind == "text" and isinstance(part.get("text"), str):
+            texts.append(part["text"])
+        elif kind == "thinking":
+            thinking = part.get("thinking")
+            if isinstance(thinking, list):
+                for chunk in thinking:
+                    if isinstance(chunk, dict) and isinstance(chunk.get("text"), str):
+                        reasoning_parts.append(chunk["text"])
+            elif isinstance(thinking, str):
+                reasoning_parts.append(thinking)
+        elif isinstance(part.get("text"), str):
+            texts.append(part["text"])
+    text = "".join(texts) if texts else None
+    reasoning = "".join(reasoning_parts) if reasoning_parts else None
+    return text, reasoning, True
+
+
+class ToolCallStreamRepair:
+    """Normalize mlx-vlm SSE for OpenAI-compatible clients (OpenCode, Cursor on `task serve`).
+
+    Give every streamed tool-call delta an `id` and `type` (2026-10-14 Qwen3-Coder). Coerce engine errors,
+    reasoning fields, and typed `delta.content` arrays so `@ai-sdk/openai-compatible` accepts every frame."""
 
     def __init__(self) -> None:
         self.ids: dict[tuple[int, int], str] = {}
@@ -134,27 +171,54 @@ class ToolCallStreamRepair:
 
     def frame(self, frame: bytes) -> bytes:
         text = frame.decode("utf-8", "replace")
-        if not text.startswith("data: {") or '"tool_calls"' not in text:
+        if not text.startswith("data: {"):
             return frame
         try:
             obj = json.loads(text[6:])
         except ValueError:
             return frame
         changed = False
+        err = _openai_error_frame(obj.get("error"))
+        if err is not None and obj.get("error") is not err:
+            obj["error"] = err
+            changed = True
+        if "choices" not in obj and "error" not in obj:
+            obj["choices"] = []
+            changed = True
         for choice in obj.get("choices") or []:
             n = int(choice.get("index", 0))
-            for tc in (choice.get("delta") or {}).get("tool_calls") or []:
-                key = (n, int(tc.get("index", 0)))
-                if tc.get("id"):
-                    self.ids.setdefault(key, str(tc["id"]))
-                else:
-                    tc["id"] = self.ids.setdefault(key, f"call_{uuid.uuid4().hex[:24]}")
+            delta = choice.get("delta")
+            if isinstance(delta, dict):
+                content, extra_reasoning, coerced = _coerce_openai_delta_content(delta.get("content"))
+                if coerced:
+                    delta["content"] = content
                     changed = True
-                if not tc.get("type"):
-                    tc["type"] = "function"
+                if extra_reasoning:
+                    base = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                    if not isinstance(base, str):
+                        base = ""
+                    merged = base + extra_reasoning
+                    delta["reasoning_content"] = merged
+                    if "reasoning" in delta:
+                        delta["reasoning"] = merged
                     changed = True
-                if (tc.get("function") or {}).get("name"):
-                    self.named.add(n)
+                for field in ("reasoning", "reasoning_content"):
+                    val = delta.get(field)
+                    if val is not None and not isinstance(val, str):
+                        delta[field] = str(val)
+                        changed = True
+                for tc in delta.get("tool_calls") or []:
+                    tc_key = (n, int(tc.get("index", 0)))
+                    if tc.get("id"):
+                        self.ids.setdefault(tc_key, str(tc["id"]))
+                    else:
+                        tc["id"] = self.ids.setdefault(tc_key, f"call_{uuid.uuid4().hex[:24]}")
+                        changed = True
+                    if not tc.get("type"):
+                        tc["type"] = "function"
+                        changed = True
+                    if (tc.get("function") or {}).get("name"):
+                        self.named.add(n)
             if choice.get("finish_reason") == "tool_calls" and n not in self.named:
                 choice["finish_reason"] = "stop"
                 changed = True
