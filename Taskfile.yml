@@ -253,7 +253,7 @@ tasks:
       - '{{.RUN}} airlie board import-jira {{.CLI_ARGS}}'
 
   serve:
-    desc: "OpenAI-compatible endpoint on 127.0.0.1:8090 (roles + catalog models; POST /v1/airlie/run). task serve -- --api-key SECRET before a tunnel"
+    desc: "OpenAI-compatible endpoint on 127.0.0.1:8090 (roles + catalog models; POST /v1/airlie/run). Foreground only — for launchd use serve:launchd:restart. task serve -- --api-key SECRET before a tunnel"
     deps: [web:build]
     cmds:
       - '{{.RUN}} airlie serve {{.CLI_ARGS}}'
@@ -263,20 +263,66 @@ tasks:
     cmds:
       - '{{.RUN}} airlie bridge {{.CLI_ARGS}}'
 
+  # Shared by install/restart/uninstall: stop a leftover `airlie serve` on 8090 so launchd can bind (and so
+  # uninstall does not leave an orphan). Only signals listeners whose cmdline is airlie serve — never a random PID.
+  # Prefer the `uv run` parent when present so the child does not get reaped into a weird half-state.
+  serve:free-8090:
+    internal: true
+    cmds:
+      - |
+        _airlie_serve_pids() {
+          for pid in $(lsof -nP -iTCP:8090 -sTCP:LISTEN -t 2>/dev/null); do
+            cmd=$(ps -p "$pid" -o command= 2>/dev/null || true)
+            case "$cmd" in
+              *'airlie serve'*|*'/bin/airlie'*'serve'*)
+                ppid=$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d ' ')
+                pcmd=$(ps -p "$ppid" -o command= 2>/dev/null || true)
+                case "$pcmd" in
+                  *'uv run'*airlie*serve*|*uv*airlie\ serve*) echo "$ppid" ;;
+                esac
+                echo "$pid"
+                ;;
+            esac
+          done | awk 'NF && !seen[$0]++'
+        }
+        for pid in $(_airlie_serve_pids); do
+          kill -TERM "$pid" 2>/dev/null || true
+        done
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+          lsof -nP -iTCP:8090 -sTCP:LISTEN -t >/dev/null 2>&1 || exit 0
+          sleep 0.2
+        done
+        for pid in $(_airlie_serve_pids); do
+          kill -KILL "$pid" 2>/dev/null || true
+        done
+
   serve:launchd:install:
-    desc: "Load launchd KeepAlive agent for task serve (log ~/.local/state/airlie/serve.log); stop any task serve in a terminal first"
+    desc: "Load launchd KeepAlive for task serve (log ~/.local/state/airlie/serve.log); frees airlie on 8090 first — do not use sudo"
     cmds:
       - mkdir -p ~/Library/LaunchAgents ~/.local/state/airlie
       - sed -e 's|__AIRLIE_DIR__|{{.ROOT_DIR}}|g' -e "s|__HOME__|$HOME|g" docs/integrations/serve.plist > ~/Library/LaunchAgents/dev.airlie.serve.plist
       - plutil -lint ~/Library/LaunchAgents/dev.airlie.serve.plist
       - launchctl bootout gui/$(id -u)/dev.airlie.serve 2>/dev/null || true
-      - launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.airlie.serve.plist
+      - task: serve:free-8090
+      - |
+        # bootstrap exit 5 (I/O error) is often a transient gui-domain race after bootout; retry once.
+        # Never sudo: gui/$(id -u) rejects root with exit 125.
+        if ! launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.airlie.serve.plist; then
+          sleep 1
+          launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.airlie.serve.plist
+        fi
       - echo "loaded; the log is ~/.local/state/airlie/serve.log"
 
+  serve:launchd:restart:
+    desc: "Reload the serve launchd agent so it picks up this checkout's code (same as install after a free of 8090)"
+    cmds:
+      - task: serve:launchd:install
+
   serve:launchd:uninstall:
-    desc: "Unload the serve launchd agent and remove its plist"
+    desc: "Unload the serve launchd agent, free airlie on 8090 if still listening, remove its plist"
     cmds:
       - launchctl bootout gui/$(id -u)/dev.airlie.serve 2>/dev/null || true
+      - task: serve:free-8090
       - rm -f ~/Library/LaunchAgents/dev.airlie.serve.plist
 
   bridge:launchd:install:

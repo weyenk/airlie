@@ -22,6 +22,9 @@ MLX_VLM_REASONING_EFFORT: dict[str, str] = {
 MLX_VLM_TOOL_TURN_USER = "Continue."
 """User turn appended after tool results when the client omits the next user message (OpenCode)."""
 
+_QWEN_TOOL_RESPONSE_PREFIX = "<tool_response>"
+_QWEN_TOOL_RESPONSE_SUFFIX = "</tool_response>"
+
 
 def dialect_for(kind: str) -> Dialect:
     """The dialect an engine kind speaks: mlx-vlm's, or plain OpenAI-compatible for an external server."""
@@ -67,11 +70,47 @@ def remap_mlx_vlm_reasoning_effort(body: dict[str, Any]) -> None:
                 body["chat_template_kwargs"] = {**kwargs, "reasoning_strength": mapped}
 
 
+def _user_message_text(content: object) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") in ("text", "input_text", "output_text"):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts).strip()
+    return ""
+
+
+def _is_qwen_tool_response_user(text: str) -> bool:
+    return text.startswith(_QWEN_TOOL_RESPONSE_PREFIX) and text.endswith(_QWEN_TOOL_RESPONSE_SUFFIX)
+
+
+def mlx_vlm_needs_user_query(messages: list[dict[str, Any]]) -> bool:
+    """True when Qwen3's chat template would raise 'No user query found in messages.'."""
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        text = _user_message_text(message.get("content"))
+        if text and not _is_qwen_tool_response_user(text):
+            return False
+    return True
+
+
 def normalize_mlx_vlm_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Qwen3's template errors when a tool-loop turn has no user message; OpenCode often omits that turn."""
+    """Keep Qwen3 tool-loop histories valid for mlx-vlm generation and compaction renders."""
     if not messages:
         return messages
     out = [dict(m) for m in messages if isinstance(m, dict)]
-    if out and out[-1].get("role") == "tool":
+    if not out:
+        return out
+    last = out[-1]
+    role = last.get("role")
+    needs_follow_up = role == "tool" or (role == "assistant" and last.get("tool_calls"))
+    if needs_follow_up or mlx_vlm_needs_user_query(out):
         out.append({"role": "user", "content": MLX_VLM_TOOL_TURN_USER})
     return out
