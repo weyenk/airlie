@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from airlie.obs.step_report import Segment, render, story_segments
+from airlie.obs.step_report import Segment, story_segments
 from tests.support.git import git
 
 STORY = "AIR-1"

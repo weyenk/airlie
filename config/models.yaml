@@ -36,9 +36,7 @@ models:
     tool_call_parser: gemma4
     tags: [modern, vision, chat]
   decider:                      # the decision model (router, decide tool) on mlx-vlm's /v1/decisions
-    repo: nativ-community/decider-2b   # the repo mlx-vlm documents; Mapika/decider-2b fails to load on 0.7.12 and
-                                       # clef-flash-4bit is no decision model there. LiquidAI/d1-3B is the documented
-                                       # alternative, not in the catalog.
+    repo: nativ-community/decider-2b  
     revision: acbae4ecce4dbcc0aea8c5a501c9f54008458a70
     estimated_memory_gb: 3.5
   controller_base:                 # M5: base for the learned LTS admission controller (LoRA r=16)
