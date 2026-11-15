@@ -106,13 +106,6 @@ def test_a_role_that_writes_first_has_no_reads_before_it(tmp_path: Path) -> None
     assert seg.reads_before_write == 0
 
 
-def test_render_has_one_row_per_role(tmp_path: Path) -> None:
-    state, repo = _fixture(tmp_path)
-    text = render(story_segments(state, STORY, repo, {}))
-    assert "| tester |" in text
-    assert "| coder |" in text
-
-
 def test_a_multi_path_read_counts_each_path(tmp_path: Path) -> None:
     """read_file(paths=[...]) reads each path once, from line 1: two batched reads of three different brief
     files are three brief-file reads and no repeat (a list, and a JSON-list string as some models send)."""

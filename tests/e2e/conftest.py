@@ -159,7 +159,7 @@ def _seed_story(state: Path) -> None:
             "completion_tokens": 100,
             "prefill_ms": 500.0,
             "gen_ms": 2000.0,
-            "role": "architect" if team == "package" else "coder",
+            "role": "architect" if team == "package" else "fast",
             "model": "base",
         }
 

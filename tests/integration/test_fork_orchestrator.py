@@ -220,10 +220,10 @@ async def test_a_branch_nudge_with_a_hypothesis_is_a_steer_event_per_hub_sentenc
         "make check.sh pass", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh"
     )
     assert branch_steers(report) == [
-        ("branch-start", "r1-1", "coder"),
-        ("branch-finish", "r1-1", "coder"),
-        ("branch-start", "r1-2", "coder"),
-        ("branch-finish", "r1-2", "coder"),
+        ("branch-start", "r1-1", "architect"),
+        ("branch-finish", "r1-1", "architect"),
+        ("branch-start", "r1-2", "architect"),
+        ("branch-finish", "r1-2", "architect"),
     ]
     sent = [r.messages[-1].content for r in engine.requests if "You are now branch" in r.messages[-1].content]
     [first] = [n for n in sent if n.startswith(text("branch-start", label="r1-1", width=2))]
