@@ -145,7 +145,7 @@ def test_body_has_every_sampling_field_and_the_served_name() -> None:
     e, _ = make()
     r = req(sampling=Sampling(temperature=0.3, top_p=0.9, top_k=5, min_p=0.1, presence_penalty=0.2))
     assert e._body(r, stream=False) == {
-        "model": "served-coder",
+        "model": "served-architect",
         "messages": [{"role": "user", "content": "hi"}],
         "stream": False,
         "max_tokens": 7,
