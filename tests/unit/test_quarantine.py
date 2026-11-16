@@ -40,7 +40,7 @@ def test_an_entry_no_collected_test_matches_is_stale_parametrized_cases_exactly(
 def test_a_reason_without_its_tag_is_refused(tmp_path: Path) -> None:
     bad = tmp_path / "q.toml"
     bad.write_text('[quarantine]\n"tests/unit/test_x.py::test_y" = "too slow"\n')
-    with pytest.raises(pytest.UsageError, match="slow: or clock:"):
+    with pytest.raises(pytest.UsageError, match="slow:, unknown: or clock:"):
         load_quarantine(bad)
 
 

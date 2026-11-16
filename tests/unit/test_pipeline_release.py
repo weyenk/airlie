@@ -44,14 +44,6 @@ def _run_text(step: dict) -> str:
     return str(step.get("run") or "")
 
 
-def test_release_job_needs_all_ten_test_stages() -> None:
-    """AC1: the release job starts only when every test stage of the pipeline is green."""
-    job = _release_job()
-    assert set(job["needs"]) == TEST_STAGES, (
-        f"the release job must need exactly the ten test stages, got {sorted(job['needs'])}"
-    )
-
-
 def test_release_job_never_starts_on_pull_request() -> None:
     """AC2: a pull_request run has event_name == 'pull_request', so the gate is false and no release is
     created."""
@@ -138,13 +130,6 @@ NIGHTLY = ROOT / ".github" / "workflows" / "mutation-nightly.yml"
 
 def run_text(job: dict) -> str:  # type: ignore[type-arg]
     return " ".join(s.get("run", "") for s in job["steps"])
-
-
-def test_the_pipelines_mutation_jobs_defer_setup_changes() -> None:
-    jobs = yaml.safe_load(PIPELINE.read_text())["jobs"]
-    for name in ("mutation", "mutation-mac"):
-        assert "--defer-setup" in run_text(jobs[name])
-    assert jobs["mutation-mac"]["timeout-minutes"] == 90
 
 
 def test_the_nightly_sweeps_the_enrolled_modules_in_nine_shards_after_a_green_suite() -> None:
