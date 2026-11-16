@@ -44,13 +44,18 @@ QUARANTINE_TAGS = ("slow:", "clock:", "unknownn:")
 
 
 def load_quarantine(path: Path = QUARANTINE_FILE) -> dict[str, str]:
-    """{node id or file: reason}; a reason that is not `slow: ...`, `unknown: ...` or `clock: ...` is an error."""
+    """{node id or file: reason}; 
+    a reason that is not `slow: ...`, 
+    `unknown: ...` 
+    or `clock: ...` is an error."""
     import tomllib
 
     entries: dict[str, str] = tomllib.loads(path.read_text(encoding="utf-8")).get("quarantine", {})
     bad = [k for k, why in entries.items() if not str(why).startswith(QUARANTINE_TAGS)]
     if bad:
-        raise pytest.UsageError(f"{path.name}: a reason must start with slow:, unknown: or clock: ({', '.join(bad)})")
+        raise pytest.UsageError(
+            f"{path.name}: a reason must start with slow:, unknown: or clock: ({', '.join(bad)})"
+            )
     return entries
 
 
