@@ -40,13 +40,13 @@ QUARANTINE_FILE = Path(__file__).with_name("quarantine.toml")
 `--quarantined include` (or AIRLIE_RUN_QUARANTINED=1) runs them with the rest. mutmut runs pytest with this
 conftest, so its stats run and its mutants skip them too: code only a quarantined test reaches has no mutation
 coverage until it is released. To release one, make it fast and clock-free, then delete its line."""
-QUARANTINE_TAGS = ("slow:", "clock:", "unknownn:")
+QUARANTINE_TAGS = ("slow:", "clock:", "unknown:")
 
 
 def load_quarantine(path: Path = QUARANTINE_FILE) -> dict[str, str]:
-    """{node id or file: reason}; 
-    a reason that is not `slow: ...`, 
-    `unknown: ...` 
+    """{node id or file: reason};
+    a reason that is not `slow: ...`,
+    `unknown: ...`
     or `clock: ...` is an error."""
     import tomllib
 
@@ -55,7 +55,7 @@ def load_quarantine(path: Path = QUARANTINE_FILE) -> dict[str, str]:
     if bad:
         raise pytest.UsageError(
             f"{path.name}: a reason must start with slow:, unknown: or clock: ({', '.join(bad)})"
-            )
+        )
     return entries
 
 

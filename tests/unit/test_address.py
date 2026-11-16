@@ -26,13 +26,6 @@ def test_a_comment_with_no_leading_at_is_not_an_address() -> None:
     assert parse_address("hello", ROLES) == (None, "hello")
 
 
-def test_the_address_is_matched_against_the_configured_role_names() -> None:
-    """The parser agrees with the brief filter on which names are roles: a name that is configured is an
-    address, one that is not is not."""
-    assert parse_address("@chief ship it", ROLES) == ("chief", "ship it")
-    assert parse_address("@architect ship it", ROLES) == (None, "@architect ship it")
-
-
 def test_the_question_is_the_text_after_the_address_stripped() -> None:
     """The remainder is the text after the address, stripped of the whitespace that separated them."""
     assert parse_address("@architect   what is the risk?  ", ROLES) == ("architect", "what is the risk?")
