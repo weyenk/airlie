@@ -5,6 +5,7 @@ from __future__ import annotations
 from airlie.engine.dialect import (
     MLX_VLM_TOOL_TURN_USER,
     dialect_for,
+    mlx_vlm_needs_user_query,
     normalize_mlx_vlm_messages,
     remap_mlx_vlm_reasoning_effort,
     thinking_fields,
@@ -58,6 +59,36 @@ def test_mlx_vlm_messages_gain_a_user_turn_after_tool_results() -> None:
     assert out[-1] == {"role": "user", "content": MLX_VLM_TOOL_TURN_USER}
     alone = [{"role": "user", "content": "hi"}]
     assert normalize_mlx_vlm_messages(alone) == alone
+
+
+def test_mlx_vlm_messages_without_user_gain_continue() -> None:
+    thread = [
+        {"role": "system", "content": "you are helpful"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1", "type": "function", "function": {}}]},
+        {"role": "tool", "tool_call_id": "1", "content": "ok"},
+    ]
+    assert mlx_vlm_needs_user_query(thread)
+    out = normalize_mlx_vlm_messages(thread)
+    assert out[-1] == {"role": "user", "content": MLX_VLM_TOOL_TURN_USER}
+
+
+def test_mlx_vlm_messages_after_pending_tool_calls_gain_continue() -> None:
+    thread = [
+        {"role": "user", "content": "run bash"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "bash"}}],
+        },
+    ]
+    out = normalize_mlx_vlm_messages(thread)
+    assert out[-1] == {"role": "user", "content": MLX_VLM_TOOL_TURN_USER}
+
+
+def test_mlx_vlm_messages_skip_tool_response_only_users() -> None:
+    wrapped = [{"role": "user", "content": "<tool_response>\ndata\n</tool_response>"}]
+    assert mlx_vlm_needs_user_query(wrapped)
+    assert normalize_mlx_vlm_messages(wrapped)[-1]["content"] == MLX_VLM_TOOL_TURN_USER
 
 
 def test_the_openai_dialect_sends_only_template_kwargs() -> None:

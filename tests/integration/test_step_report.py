@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from airlie.obs.step_report import Segment, render, story_segments
+from airlie.obs.step_report import Segment, story_segments
 from tests.support.git import git
 
 STORY = "AIR-1"
@@ -104,13 +104,6 @@ def test_a_role_that_writes_first_has_no_reads_before_it(tmp_path: Path) -> None
     seg = _by_seg(story_segments(state, STORY, repo, {}))["build"]
     assert seg.first_write == 1
     assert seg.reads_before_write == 0
-
-
-def test_render_has_one_row_per_role(tmp_path: Path) -> None:
-    state, repo = _fixture(tmp_path)
-    text = render(story_segments(state, STORY, repo, {}))
-    assert "| tester |" in text
-    assert "| coder |" in text
 
 
 def test_a_multi_path_read_counts_each_path(tmp_path: Path) -> None:

@@ -229,6 +229,47 @@ def test_tool_loop_follow_ups_gain_a_user_turn_on_the_proxy(tmp_path: Path) -> N
     assert sent[-1] == {"role": "user", "content": "Continue."}
 
 
+def test_pending_tool_calls_gain_continue_on_the_proxy(tmp_path: Path) -> None:
+    up, client, _ = mlx_vlm_upstream(tmp_path)
+    body = {
+        "model": "architect",
+        "messages": [
+            {"role": "user", "content": "run"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+                ],
+            },
+        ],
+    }
+    client.post("/v1/chat/completions", json=body)
+    sent = json.loads(up.requests[0].content)["messages"]
+    assert sent[-1] == {"role": "user", "content": "Continue."}
+
+
+def test_tool_only_threads_gain_continue_on_the_proxy(tmp_path: Path) -> None:
+    up, client, _ = mlx_vlm_upstream(tmp_path)
+    body = {
+        "model": "architect",
+        "messages": [
+            {"role": "system", "content": "you are helpful"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "timed out"},
+        ],
+    }
+    client.post("/v1/chat/completions", json=body)
+    sent = json.loads(up.requests[0].content)["messages"]
+    assert sent[-1] == {"role": "user", "content": "Continue."}
+
+
 def test_an_mlx_vlm_role_gets_its_tool_parser_when_tools_are_sent_and_its_reasoning_effort(
     tmp_path: Path,
 ) -> None:

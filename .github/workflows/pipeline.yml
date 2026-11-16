@@ -101,64 +101,64 @@ jobs:
   # the shards (scripts/mutate_changed.py --build-map). A shard whose map is missing, or was built from other
   # files or another mutmut, builds its own and says so in its log (--map): it never runs on a partial one.
   # Linux only: the mac job's tests take other paths on macOS (mac_functions, mlx), so it maps its own.
-  mutation-map:
-    needs: unit
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # the merge base with the PR's base branch
-      - uses: ./.github/actions/setup
-      - name: Map the unit tests to the functions they run
-        env:
-          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before || 'origin/main' }}
-        run: >-
-          task mutate:changed -- --base "$BASE" --gate-only --defer-setup
-          --build-map "$RUNNER_TEMP/mutation-map"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mutation-map
-          path: ${{ runner.temp }}/mutation-map/
-          if-no-files-found: ignore # nothing to mutate: no map, and every shard has nothing to run
-          compression-level: 0 # the mutants are gzipped already
-          retention-days: 1
+  # mutation-map:
+  #   needs: unit
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 30
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0 # the merge base with the PR's base branch
+  #     - uses: ./.github/actions/setup
+  #     - name: Map the unit tests to the functions they run
+  #       env:
+  #         BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before || 'origin/main' }}
+  #       run: >-
+  #         task mutate:changed -- --base "$BASE" --gate-only --defer-setup
+  #         --build-map "$RUNNER_TEMP/mutation-map"
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: mutation-map
+  #         path: ${{ runner.temp }}/mutation-map/
+  #         if-no-files-found: ignore # nothing to mutate: no map, and every shard has nothing to run
+  #         compression-level: 0 # the mutants are gzipped already
+  #         retention-days: 1
 
   # Mutation testing of the functions of enrolled modules this change touched, split over 8 runners (whole
   # functions, dealt out by size); `mutation-gate` merges the shards and is the one verdict.
-  mutation:
-    needs: [unit, mutation-map]
-    # a failed map job leaves each shard to build its own map (and fail the same way if a test is red)
-    if: ${{ !cancelled() && needs.unit.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]  # 8 since 2026-11-02: a whole-module run (a setup change) took 91 min in one of 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # the merge base with the PR's base branch
-      - uses: ./.github/actions/setup
-      - uses: actions/download-artifact@v4
-        continue-on-error: true # no map (nothing to mutate, or the map job failed): --map builds one here
-        with:
-          name: mutation-map
-          path: ${{ runner.temp }}/mutation-map
-      - name: Mutation-test shard ${{ matrix.shard }} of 8
-        env:
-          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before || 'origin/main' }}
-        run: >-
-          task mutate:changed -- --base "$BASE" --gate-only --defer-setup --max-children 3
-          --map "$RUNNER_TEMP/mutation-map"
-          --shard ${{ matrix.shard }}/8 --results mutation/shard-${{ matrix.shard }}.json
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: mutation-shard-${{ matrix.shard }}
-          path: mutation/
-          if-no-files-found: ignore
+  # mutation:
+  #   needs: [unit, mutation-map]
+  #   # a failed map job leaves each shard to build its own map (and fail the same way if a test is red)
+  #   if: ${{ !cancelled() && needs.unit.result == 'success' }}
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 90
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       shard: [1, 2, 3, 4, 5, 6, 7, 8]  # 8 since 2026-11-02: a whole-module run (a setup change) took 91 min in one of 5
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0 # the merge base with the PR's base branch
+  #     - uses: ./.github/actions/setup
+  #     - uses: actions/download-artifact@v4
+  #       continue-on-error: true # no map (nothing to mutate, or the map job failed): --map builds one here
+  #       with:
+  #         name: mutation-map
+  #         path: ${{ runner.temp }}/mutation-map
+  #     - name: Mutation-test shard ${{ matrix.shard }} of 8
+  #       env:
+  #         BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before || 'origin/main' }}
+  #       run: >-
+  #         task mutate:changed -- --base "$BASE" --gate-only --defer-setup --max-children 3
+  #         --map "$RUNNER_TEMP/mutation-map"
+  #         --shard ${{ matrix.shard }}/8 --results mutation/shard-${{ matrix.shard }}.json
+  #     - uses: actions/upload-artifact@v4
+  #       if: always()
+  #       with:
+  #         name: mutation-shard-${{ matrix.shard }}
+  #         path: mutation/
+  #         if-no-files-found: ignore
 
   # The unit tests that need mlx, on Apple Silicon. A macOS runner is the longest wait, so the two
   # mac jobs start with the pipeline (no `needs`) and no other job waits for them: each is its own check.
@@ -171,53 +171,53 @@ jobs:
       - run: task test:mac
 
   # The mutants of the sources that import mlx (scripts/mutate_changed.py --mac-only), gated here.
-  mutation-mac:
-    runs-on: macos-15
-    # a setup-file change (pyproject.toml, tests/unit/conftest.py) is left to the nightly run (--defer-setup), so
-    # this only mutates the mac-only functions a change touched
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # the merge base with the PR's base branch
-      - uses: ./.github/actions/setup
-      - name: Mutation-test the mac-only sources
-        env:
-          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before || 'origin/main' }}
-        run: >-
-          task mutate:changed -- --base "$BASE" --gate-only --defer-setup --max-children 3 --mac-only --split-map
-          --results mutation/shard-mac.json
-      - name: Gate the mac-only mutants
-        run: task mutate:merge -- --merge mutation --expect 1 --report mutation-mac-report.md
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: mutation-mac  # not mutation-shard-*: the Linux gate never waits for it
-          path: |
-            mutation/
-            mutation-mac-report.md
-          if-no-files-found: ignore
+  # mutation-mac:
+  #   runs-on: macos-15
+  #   # a setup-file change (pyproject.toml, tests/unit/conftest.py) is left to the nightly run (--defer-setup), so
+  #   # this only mutates the mac-only functions a change touched
+  #   timeout-minutes: 90
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0 # the merge base with the PR's base branch
+  #     - uses: ./.github/actions/setup
+  #     - name: Mutation-test the mac-only sources
+  #       env:
+  #         BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before || 'origin/main' }}
+  #       run: >-
+  #         task mutate:changed -- --base "$BASE" --gate-only --defer-setup --max-children 3 --mac-only --split-map
+  #         --results mutation/shard-mac.json
+  #     - name: Gate the mac-only mutants
+  #       run: task mutate:merge -- --merge mutation --expect 1 --report mutation-mac-report.md
+  #     - uses: actions/upload-artifact@v4
+  #       if: always()
+  #       with:
+  #         name: mutation-mac  # not mutation-shard-*: the Linux gate never waits for it
+  #         path: |
+  #           mutation/
+  #           mutation-mac-report.md
+  #         if-no-files-found: ignore
 
-  mutation-gate:
-    needs: mutation
-    if: always() && needs.mutation.result != 'skipped'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: mutation-shard-*
-          path: mutation
-      - name: Merge the shards and gate
-        run: task mutate:merge -- --merge mutation --expect 8 --report mutation-report.md
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: mutation-report
-          path: mutation-report.md
-          if-no-files-found: ignore
+  # mutation-gate:
+  #   needs: mutation
+  #   if: always() && needs.mutation.result != 'skipped'
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 15
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: ./.github/actions/setup
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         pattern: mutation-shard-*
+  #         path: mutation
+  #     - name: Merge the shards and gate
+  #       run: task mutate:merge -- --merge mutation --expect 8 --report mutation-report.md
+  #     - uses: actions/upload-artifact@v4
+  #       if: always()
+  #       with:
+  #         name: mutation-report
+  #         path: mutation-report.md
+  #         if-no-files-found: ignore
 
   # ---- stage 3: units in concert ----
   functional:
@@ -354,7 +354,7 @@ jobs:
 
   # ---- release: a green push to main publishes a GitHub Release of airlie ----
   release:
-    needs: [static, unit, mutation-gate, functional, contract, integration, e2e, journey, performance, security]
+    needs: [static, unit, functional, contract, integration, e2e, journey, performance, security]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15

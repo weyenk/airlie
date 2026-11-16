@@ -63,6 +63,29 @@ def client() -> RepairingOpenAIClient:
     )
 
 
+async def test_the_tool_turn_end_is_normalized_to_continue(served: Any) -> None:
+    """macmon-live-metrics: an AutoGen tool turn ends the history on a function result, so mlx-vlm's
+    Qwen3 chat template rejects the request with "No user query found in messages."; the client must
+    still get a user turn in front of super().create() even when tools are offered (the function_calling
+    path never fires the not-tools branch)."""
+    from autogen_core import FunctionCall as Call
+    from autogen_core.models import AssistantMessage, FunctionExecutionResult, FunctionExecutionResultMessage
+
+    history = [
+        UserMessage(content="go", source="u"),
+        AssistantMessage(content=[Call(id="1", name="read_file", arguments="{}")], source="a"),
+        FunctionExecutionResultMessage(
+            content=[FunctionExecutionResult(call_id="1", content="x", name="read_file")]
+        ),
+    ]
+    served.answers.append(reply("done"))
+    c = client()
+    c.dialect = "mlx_vlm"  # this client talks to mlx-vlm's Qwen3 template
+    await c.create(history, tools=[object()])  # tools offered: function_calling path, not reflection
+    sent, _ = served[0]
+    assert sent[-1].content == "Continue."  # the normalization must run even with tools offered
+
+
 async def test_the_tool_less_request_after_a_tool_round_says_no_tools_are_left(served: Any) -> None:
     """Wiki run B (2026-10-27): after its tool rounds, AutoGen's reflection request offers no tools, and the
     role answered "Let me read the files I haven't seen yet" in prose, with no verdict, in 6 of 8 meeting

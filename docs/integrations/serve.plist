@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- task serve: keeps airlie's loopback server (127.0.0.1:8090) and its managed engine running, so the Job Bus bridge
-     and the line always have something to call. `task serve:launchd:install` fills __AIRLIE_DIR__ and __HOME__, writes
-     ~/Library/LaunchAgents and loads it. A login shell gives it the same PATH (uv, task, node) as a terminal; serve
-     reads its API key from ~/.config/airlie/bridge.env itself. -->
+     and the line always have something to call. `task serve:launchd:install` (or `:restart`) fills __AIRLIE_DIR__ and
+     __HOME__, writes ~/Library/LaunchAgents, frees any leftover airlie on 8090, and loads it — never with sudo (gui
+     domain). A login shell gives it the same PATH (uv, task, node) as a terminal; serve reads its API key from
+     ~/.config/airlie/bridge.env itself. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>dev.airlie.serve</string>

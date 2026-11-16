@@ -220,10 +220,10 @@ async def test_a_branch_nudge_with_a_hypothesis_is_a_steer_event_per_hub_sentenc
         "make check.sh pass", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh"
     )
     assert branch_steers(report) == [
-        ("branch-start", "r1-1", "coder"),
-        ("branch-finish", "r1-1", "coder"),
-        ("branch-start", "r1-2", "coder"),
-        ("branch-finish", "r1-2", "coder"),
+        ("branch-start", "r1-1", "architect"),
+        ("branch-finish", "r1-1", "architect"),
+        ("branch-start", "r1-2", "architect"),
+        ("branch-finish", "r1-2", "architect"),
     ]
     sent = [r.messages[-1].content for r in engine.requests if "You are now branch" in r.messages[-1].content]
     [first] = [n for n in sent if n.startswith(text("branch-start", label="r1-1", width=2))]
@@ -245,7 +245,7 @@ async def test_a_branch_nudge_naming_a_repeated_call_without_a_hypothesis_is_fou
     orch.cfg.tools.builtin = ["write_file", "read_file", "run_tests"]
     report = await orch.execute_task("goal", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh")
     ids = ("branch-start", "branch-stalled", "branch-different", "branch-finish")
-    assert branch_steers(report) == [(i, b, "coder") for b in ("r1-1", "r1-2") for i in ids]
+    assert branch_steers(report) == [(i, b, "architect") for b in ("r1-1", "r1-2") for i in ids]
     sent = [r.messages[-1].content for r in engine.requests if "You are now branch" in r.messages[-1].content]
     rep = next(e for e in events(report) if e["kind"] == "fork_point")["repeated"]
     stalled = text("branch-stalled", name=rep["name"], args=rep["arguments"], out=rep["output"])

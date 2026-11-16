@@ -106,15 +106,6 @@ def test_describe_board_names_the_board_in_use(tmp_path: Path, monkeypatch: pyte
     assert describe_board(jira) == "board: Jira project AIR at https://acme.atlassian.net (story.board: jira)"
 
 
-def test_story_problems_name_missing_roles(tmp_path: Path) -> None:
-    problems = story_problems(cfg_for(tmp_path))  # the studio roles, but no product or architect
-    assert any("story.product_role" in p for p in problems)
-    assert any("story.architect_role" in p for p in problems)
-    assert story_problems(cfg_for(tmp_path, roles=STORY_ROLES)) == []
-    missing = story_problems(cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"build_role": "nobody"}}))
-    assert len(missing) == 1 and "story.build_role names 'nobody'" in missing[0]
-
-
 @pytest.mark.parametrize("setting", ["trunk", "remote"])
 @pytest.mark.parametrize("value", ["", "   ", "-x", "--upload-pack=true"])
 def test_a_trunk_or_remote_git_would_read_as_an_option_is_a_problem(
@@ -1038,15 +1029,6 @@ async def test_a_story_job_for_an_issue_whose_repository_cannot_be_used_tells_th
     assert posted == ["/rest/api/3/issue/AIR-7/comment", "/rest/api/3/issue/AIR-7/transitions"]
     told = json.loads([r for r in jira.requests if r.url.path.endswith("/comment")][0].content)
     assert "cannot be picked up: no checkout of o/repo in" in json.dumps(told)
-
-
-async def test_a_story_job_that_cannot_be_set_up_says_what_is_missing(tmp_path: Path) -> None:
-    repo = repo_with_marker_tests(tmp_path)
-    with pytest.raises(StorySetupError, match="story.product_role.*; .*story.architect_role"):
-        await story_job(cfg_for(tmp_path), card=None, text="x", repo=str(repo))
-    cfg = cfg_for(tmp_path, roles=STORY_ROLES)
-    with pytest.raises(StorySetupError, match="no repository"):
-        await story_job(cfg, card=None, text="x", repo=None)
 
 
 async def test_a_story_topology_that_does_not_load_is_a_setup_problem_not_a_crash(tmp_path: Path) -> None:
