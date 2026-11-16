@@ -30,7 +30,7 @@ def test_the_address_is_matched_against_the_configured_role_names() -> None:
     """The parser agrees with the brief filter on which names are roles: a name that is configured is an
     address, one that is not is not."""
     assert parse_address("@chief ship it", ROLES) == ("chief", "ship it")
-    assert parse_address("@coder ship it", ROLES) == (None, "@coder ship it")
+    assert parse_address("@architect ship it", ROLES) == (None, "@architect ship it")
 
 
 def test_the_question_is_the_text_after_the_address_stripped() -> None:
