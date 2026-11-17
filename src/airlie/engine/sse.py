@@ -18,7 +18,7 @@ async def iter_sse(
 
     Raises EngineError on an `{"error": …}` frame, on non-JSON data, and (by default) when the stream ends
     without `[DONE]`, so a dropped connection never looks like a clean finish."""
-    buf = b""
+    buf =
     async for chunk in byte_chunks:
         buf += chunk
         while b"\n\n" in buf:
