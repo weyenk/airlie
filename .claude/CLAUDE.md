@@ -1,8 +1,4 @@
----
-trigger: always
----
-
-# CONTINUE.md — airlie project guide
+# CLAUDE.md — airlie project guide
 
 > This file is loaded into context for every conversation in this workspace.
 > Keep it accurate; verify anything marked "needs verification" before relying on it.
@@ -130,7 +126,7 @@ Slow/clock-dependent tests are quarantined in `tests/unit/quarantine.toml`
 | `docs/bench/`, `evals/` | benchmark records + graded tasks |
 | `ops/test`, `ops/e2e`, `ops/searxng` | Containerfiles for CI/test images |
 | `vendor/superpowers/` | pinned skills copy (`PIN.md`, `MANIFEST.sha256`) — verify with `task superpowers:verify`, never edit |
-| `.claude/skills/using-superpowers/SKILL.md`, `src/airlie/skills/` | skills used by the chat `skill` tool |
+| `src/airlie/skills/` | skills used by the chat `skill` tool |
 
 ## 4. Development Workflow
 
