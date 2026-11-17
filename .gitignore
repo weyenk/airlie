@@ -17,3 +17,4 @@ src/airlie/serve/web_next/
 web/node_modules/
 hub/node_modules/
 .task/
+.continue
