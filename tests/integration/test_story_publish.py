@@ -273,9 +273,20 @@ async def test_a_command_that_cannot_start_is_a_publish_error_so_check_can_repor
 
 
 def _gh_stack() -> bool:
+    """Whether the gh-stack extension is installed. With none installed, `gh stack --help` does not fail: it
+    prints a 'to install it, run gh extension install github/gh-stack' notice and exits 0, so that notice
+    — not the return code — is the sign there is no gh-stack to run."""
     if shutil.which("gh") is None:
         return False
-    return subprocess.run(["gh", "stack", "--help"], capture_output=True).returncode == 0
+    probe = subprocess.run(
+        ["gh", "stack", "--help"],
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        text=True,
+    )
+    if probe.returncode != 0:
+        return False
+    return "available as an official extension" not in probe.stdout + probe.stderr
 
 
 @pytest.mark.skipif(not _gh_stack(), reason="needs gh with the gh-stack extension")
