@@ -28,6 +28,7 @@ from .spec import (
     load_workflow,
     validate_workflow,
 )
+from .trigger import start_workflow
 
 __all__ = [
     "Condition",
@@ -40,6 +41,7 @@ __all__ = [
     "StoryBlocked",
     "WorkflowResult",
     "run_workflow",
+    "start_workflow",
     "FormatSpec",
     "GateEvidence",
     "KIndependentTeamsNode",
