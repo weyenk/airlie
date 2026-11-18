@@ -148,7 +148,7 @@ _BRACE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_.]*)\}")
 def _render(text: str, ctx: RunContext) -> str:
     """Substitute `{name}` with the value of `name` (unresolved placeholders are left alone)."""
 
-    def repl(m: re.Match) -> str:
+    def repl(m: re.Match[str]) -> str:
         name = m.group(1)
         if name == "item":
             return ctx.item or ""
@@ -288,7 +288,9 @@ class _Run:
         self.workdir, self.item, self.texts, self.held, self.until = workdir, item, texts or {}, held, until
         self.nodes = spec.nodes
         self.names = list(spec.nodes)
-        self.formats = {o: s.format for n in self.nodes.values() for o, s in n.outputs.items()}
+        self.formats: dict[str, str] = {
+            o: s.format for n in self.nodes.values() for o, s in n.outputs.items()
+        }
         self.producers: dict[str, set[str]] = {}
         self.into: dict[str, list[LineId]] = {n: [] for n in self.names}
         self.lines: dict[LineId, WireSpec] = {}
@@ -302,11 +304,11 @@ class _Run:
         self.state: dict[str, State] = dict.fromkeys(self.names, "pending")
         self.line_state: dict[LineId, Literal["fired", "dead"] | None] = dict.fromkeys(self.lines, None)
         self.forced: set[str] = set()
-        self.running: dict[asyncio.Task, str] = {}
+        self.running: dict[asyncio.Task[Any], str] = {}
         self.last: str | None = None
         self._below: dict[str, set[str]] = {}
         self._conditions: dict[str, Condition] = {}
-        self.loops: dict[tuple, int] = {}
+        self.loops: dict[tuple[str, str | None, str, str], int] = {}
 
     def name(self, name: str) -> str:
         return name.replace("{item}", self.item) if self.item is not None else name
@@ -418,7 +420,7 @@ class _Run:
         node = self.nodes[name]
         return await _RUNNERS[node.kind](node, self.ctx(name))
 
-    async def cancel(self, tasks: list[asyncio.Task]) -> None:
+    async def cancel(self, tasks: list[asyncio.Task[Any]]) -> None:
         for task in tasks:
             task.cancel()
             self.running.pop(task, None)
