@@ -1,156 +1,64 @@
-# The story workflow, schema v2: typed nodes joined by lines. A line carries the artifacts its source makes to
-# the node it names, a `when` is a condition on it, and a node whose every line in died is skipped (with all
-# below it that nothing else reaches). Design: docs/superpowers/specs/2026-11-08-nodes-are-config-design.md
-# ("The story workflow rewritten", D10-D20). refine, layers (the plan in rounds) and the layer's drafts stay
-# named catalog operations until Part 2 makes them model nodes; the survey is a model node (protocol ask).
+# The story workflow on the four kinds: every node is a self-contained unit. `check` is gone (a step is a
+# WORK node that runs its own command or prompt); `bundle` is removed for now (revisit later), so the lane
+# ends at the agreement and building a layer is a separate workflow a future change runs per layer.
+# Design: docs/superpowers/specs/2026-11-19-legacy-story-removal-design.md
 workflows:
   story:
-    type: story
+    title: story
     inputs: [card, repo]
+    outputs: [story, layers, agreement]
     nodes:
       intake:
-        type: check
-        run: story.intake
+        kind: WORK
+        run: "story intake"
         inputs: [card]
-        to: [base]
       base:
-        type: check
-        run: story.base
+        kind: WORK
+        run: "story base"
         inputs: [card, repo]
         outputs: {base: json}
-        to: [to_build, build_layers]
-      to_build:  # the layers are not planned yet, or one is neither built nor satisfied
-        type: check
-        run: story.to_build
+      to_build:
+        kind: WORK
+        run: "story to_build"
         inputs: [layers, built, satisfied]
-        outputs: {to_build: {format: bool, transient: true}}  # recomputed every run, never saved
-        to:
-          - {node: gate, when: to_build}
-          - {node: request, when: config.story.survey}
-          - story_card
-      gate:  # each built layer keeps the gate it passed: publishing needs none
-        type: check
-        run: story.gate
-        inputs: [repo, base]
-        outputs: {gate: json}
-        to:
-          - {node: request, when: config.story.survey}
-          - story_card
-          - build_layers
-      request:  # the card as the survey's brief quotes it (D13)
-        type: check
-        run: story.request
-        inputs: [card]
-        outputs: {request: {format: text, transient: true}}  # the card as it is now, every run
-        to: [story_card]
-      story_card:
-        type: check
-        run: story.is_story_card  # false once a story is stored: a resume never reads the block again
-        inputs: [card, story]
-        outputs: {is_story_card: {format: bool, transient: true}}
-        to:
-          - {node: take_card_as_story, when: is_story_card}
-          # refine is listed before the survey: the driver starts it first (the same event order)
-          - {node: refine, when: not is_story_card}
-          - node: survey  # a story surveyed or refined already (a resume) is not surveyed again
-            when: not is_story_card and config.story.survey and not survey exists and not story exists
-      take_card_as_story:  # an epic's story card is the story: refine (and the survey beside it) skip
-        type: check
-        run: story.take_card_as_story
-        inputs: [card]
-        outputs: {story: json}
-        to: [costed_refine]
-      refine:  # interim, until Part 2 makes it an ask node with its prompt file
-        type: check
-        run: story.refine
-        inputs: [card]
-        outputs: {story: json}
-        to: [costed_refine]
-      survey:  # runs beside refine; a survey that fails is no notes, and the story goes on
-        type: model
-        protocol: ask
+        outputs: {to_build: {format: bool, transient: true}}
+      survey:
+        kind: WORK
+        prompt_id: story-survey
         role: architect
-        prompt: prompt:story-survey
-        inputs: [request]
+        inputs: [card]
         outputs: {survey: markdown}
-        steps: 8
-        on_fail: continue
-        events: {done: survey_done, failed: survey_failed}  # the driver's events, with its fields
-        to: [survey_note]
-      survey_note:
-        type: check
-        run: story.survey_note
-        inputs: [survey]
-        to: [costed_refine]
-      costed_refine:
-        type: check
-        run: story.costed
+      refine:
+        kind: WORK
+        run: "story refine"
         inputs: [card]
-        args: {stages: [survey, refine]}
-        to: [layers]
-      layers:  # interim: the plan in rounds (story.plan_round_steps) and its size review, until Part 2
-        type: check
-        run: story.plan_layers
-        inputs: [card, repo, story, base, survey]
+        outputs: {story: json}
+      layers:
+        kind: WORK
+        run: "story plan_layers"
+        inputs: [card, story, base, survey]
         outputs: {layers: list}
-        to: [costed_plan]
-      costed_plan:
-        type: check
-        run: story.costed
-        inputs: [card]
-        args: {stages: [plan]}
-        to:
-          - {node: agree_plain, when: not config.story.amigos.enabled}
-          - {node: amigos, when: config.story.amigos.enabled}
-      agree_plain:  # no meeting: the split is the agreement, with no proof plan
-        type: check
-        run: story.agree_plain
+      agree_plain:
+        kind: WORK
+        run: "story agree_plain"
         inputs: [story, layers]
         outputs: {agreement: json}
-        to: [costed_amigos]
-      amigos:  # its protocol is the meeting type's (D20); the agreement rewrites the story and the layers
-        type: meeting
-        role: [product, architect]
-        prompt: prompt:amigos-opening
+      amigos:  # the meeting: its own kind, agents take turns until they agree
+        kind: ROUND_ROBIN
+        roles: [product, architect]
+        prompt: "align on {story} and {layers}"
+        agreement_when: "agreement"
         inputs: [story, layers, base]
-        outputs: {agreement: json, story: json, layers: list}
-        steps: story.amigos.max_turns
-        to: [costed_amigos, build_layers]
-      costed_amigos:
-        type: check
-        run: story.costed
-        inputs: [card]
-        args: {stages: [amigos]}
-        to: [planned]
-      planned:  # the planning lane's last node
-        type: check
-        run: story.planned
-        inputs: [layers]
-        to: [build_layers]
-      build_layers:  # the layer bundle, once per layer
-        type: bundle
-        workflow: layer
-        each: layers
-        inputs: [card, repo, story, layers, base, gate, agreement]
-        outputs: {built: json, satisfied: json}
-        to: [built]
-      built:
-        type: check
-        run: story.build_done
-        to: [publish]
-      publish:
-        type: check
-        run: story.publish
-        inputs: [card, repo, story, layers]
-        outputs: {prs: list}
-        to: [costed_publish]
-      costed_publish:
-        type: check
-        run: story.costed
-        inputs: [card]
-        args: {stages: [publish]}
-        to: [review]
-      review:
-        type: gate
-        run: story.finish
-        inputs: [card]
+        outputs: {agreement: json}
+        steps: 12
+    edges:
+      intake: [{target: base}]
+      base: [{target: to_build}]
+      to_build:
+        - {target: refine, when: "to_build"}
+        - {target: survey, when: "to_build"}
+      refine: [{target: layers}]
+      survey: [{target: layers}]
+      layers:
+        - {target: agree_plain, when: "not config.story.amigos.enabled"}
+        - {target: amigos, when: "config.story.amigos.enabled"}

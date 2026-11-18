@@ -10,25 +10,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from airlie.teams.worktree import (
-    add_worktree,
-    commit_wip,
-    diff_between,
-    remove_worktree,
-)
-
 LOCK_NAME = ".airlie-run.lock"
 
-__all__ = [
-    "LOCK_NAME",
-    "add_worktree",
-    "acquire_lock",
-    "commit_wip",
-    "diff_between",
-    "lock_path",
-    "release_lock",
-    "remove_worktree",
-]
+__all__ = ["LOCK_NAME", "acquire_lock", "lock_path", "release_lock"]
 
 
 def lock_path(workdir: Path) -> Path:

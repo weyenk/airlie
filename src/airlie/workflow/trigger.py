@@ -8,9 +8,10 @@ that the workflow is already running.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from airlie.engine.protocol import Engine
+if TYPE_CHECKING:  # Engine is only an annotation; importing it at module load would cycle with airlie.config
+    from airlie.engine.protocol import Engine
 
 from .runner import WorkflowResult, run_workflow
 from .spec import WorkflowSpec

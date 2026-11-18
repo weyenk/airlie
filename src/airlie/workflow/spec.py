@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 
 class Strict(BaseModel):
@@ -26,6 +26,14 @@ class FormatSpec(Strict):
 
     format: FormatKind
     transient: bool = False
+
+
+def _format_value(value: Any) -> Any:
+    """The shorthand `name: json` and the full `name: {format, transient}` both give a FormatSpec."""
+    return {"format": value} if isinstance(value, str) else value
+
+
+FormatValue = Annotated[FormatSpec, BeforeValidator(_format_value)]
 
 
 class ScriptEvidence(Strict):
@@ -77,7 +85,7 @@ class WorkNode(Strict):
     prompt_id: str | None = None
     run: str | None = None
     inputs: list[str] = []
-    outputs: dict[str, FormatSpec] = {}
+    outputs: dict[str, FormatValue] = {}
     steps: int | str | None = None
     on_fail: Literal["block", "continue"] = "block"
     gate: GateEvidence | None = None
@@ -98,7 +106,7 @@ class RoundRobinNode(Strict):
     roles: list[str]
     prompt: str
     agreement_when: str
-    outputs: dict[str, FormatSpec] = {}
+    outputs: dict[str, FormatValue] = {}
     inputs: list[str] = []
     steps: int | str = 12
     on_fail: Literal["block", "continue"] = "block"
@@ -119,7 +127,7 @@ class SupervisorWorkersNode(Strict):
     worker: str
     workers: int = 5
     prompt: str
-    outputs: dict[str, FormatSpec] = {}
+    outputs: dict[str, FormatValue] = {}
     inputs: list[str] = []
     steps: int | str = 12
     on_fail: Literal["block", "continue"] = "block"
@@ -139,7 +147,7 @@ class KIndependentTeamsNode(Strict):
     teams: int = 2
     roles: list[str]
     prompt: str
-    outputs: dict[str, FormatSpec] = {}
+    outputs: dict[str, FormatValue] = {}
     inputs: list[str] = []
     steps: int | str = 12
     aggregate: Literal["test-score", "llm"] = "test-score"

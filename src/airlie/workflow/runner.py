@@ -29,13 +29,15 @@ import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 
-from airlie.config import Sampling
-from airlie.engine.protocol import Engine
-from airlie.engine.types import GenRequest, Message
+if (
+    TYPE_CHECKING
+):  # imported only for annotations; engine/config at module load would cycle with airlie.config
+    from airlie.engine.protocol import Engine
+    from airlie.engine.types import GenRequest
 
 from .conditions import Condition
 from .conditions import parse as parse_condition
@@ -189,6 +191,9 @@ def _parse(text: str, fmt: str) -> Any:
 
 
 def _gen_request(role: str, text: str) -> GenRequest:
+    from airlie.config import Sampling
+    from airlie.engine.types import GenRequest, Message
+
     return GenRequest(
         role=role, messages=[Message(role="user", content=text)], sampling=Sampling(), max_tokens=4096
     )
@@ -219,6 +224,8 @@ async def _gate(node: WorkNode, ctx: RunContext) -> tuple[bool, str]:
         code = await _run_shell(gate.cmd, ctx)
         return code == 0, (f"gate '{gate.cmd}' exited {code}" if code else "")
     if gate.type == "prompt":
+        from airlie.engine.types import Message
+
         p_yes, _ = await ctx.engine.yes_no("judge", [Message(role="user", content=gate.prompt)])
         return p_yes > 0.5, ("" if p_yes > 0.5 else "the judge says it is not done")
     if gate.type == "steps":
