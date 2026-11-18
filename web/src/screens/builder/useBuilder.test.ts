@@ -20,9 +20,9 @@ test("placing a bundle item adds a bundle node that runs it, with no each box", 
   await flushPromises();
   b.place({ bundle: "layer" });
   const [node] = b.graph.value.nodes;
-  expect(node.type).toBe("work");
+  expect(node.kind).toBe("work");
   expect(node.spec).toMatchObject({ workflow: "layer" });
-  expect(b.graph.value.nodes.map((n) => n.type)).toEqual(["bundle"]);
+  expect(b.graph.value.nodes.map((n) => n.kind)).toEqual(["bundle"]);
   expect(b.selected.value).toBe(node.id);
 });
 
@@ -104,7 +104,7 @@ test("loading the shipped story reads the ports of the bundle its build_layers b
   await b.load("story");
   await flushPromises();
   expect(api.getWorkflowDef).toHaveBeenCalledWith("layer");
-  expect(b.graph.value.bundles.layer).toEqual({ inputs: ["card", "repo", "story", "layers", "base", "gate", "agreement"], outputs: ["drafted", "built.{item}", "satisfied.{item}"] });
+  expect((b.graph.value?.bundles ?? {}).layer).toEqual({ inputs: ["card", "repo", "story", "layers", "base", "gate", "agreement"], outputs: ["drafted", "built.{item}", "satisfied.{item}"] });
   expect(b.dirty.value).toBe(false);
   expect(b.yamlText.value).not.toContain("bundles");
 });
@@ -123,7 +123,7 @@ test("a bundle box placed from the palette gets its bundle's ports: it offers th
   b.edit((g) => updateNode(g, id, { ...g.nodes[0].spec, workflow: "story" }));
   await flushPromises();
   expect(api.getWorkflowDef).toHaveBeenCalledWith("story");
-  expect(b.graph.value.bundles.story).toEqual({ inputs: ["card", "repo"], outputs: [] });
+  expect((b.graph.value?.bundles ?? {}).story).toEqual({ inputs: ["card", "repo"], outputs: [] });
 });
 
 test("a bundle that cannot be read leaves its box without ports, and is not asked for again until the next load", async () => {
@@ -135,6 +135,6 @@ test("a bundle that cannot be read leaves its box without ports, and is not aske
   b.place({ bundle: "layer" });
   await flushPromises();
   expect(api.getWorkflowDef).toHaveBeenCalledTimes(1);
-  expect(b.graph.value.bundles).toEqual({});
+  expect(b.graph.value?.bundles ?? {}).toEqual({});
   expect(b.error.value).toBeNull();
 });

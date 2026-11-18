@@ -1,9 +1,9 @@
 // The builder's YAML: read one workflow's file (schema v2) into the spec the graph is made from, and write a graph
 // back as the file the canvas would save, shaped like the shipped config/workflows/*.yaml. Pure: no Vue.
-import { Document, isMap, isScalar, isSeq, parse, visit } from "yaml";
+import { Document, isMap, isScalar, parse, visit } from "yaml";
 import type { YAMLMap } from "yaml";
 import { hasMax, isNodeKind, toWorkflow } from "./graph";
-import type { Graph, Layout, WorkflowSpec } from "./graph";
+import type { Graph, Layout, Line, WorkflowSpec } from "./graph";
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -41,7 +41,7 @@ export function parseWorkflow(text: string): { name: string; spec: WorkflowSpec;
   if (isRecord(raw.edges)) {
     for (const [from, lines] of Object.entries(raw.edges)) {
       if (!Array.isArray(lines)) throw new Error(`${w}: edges.${from} must be a list`);
-      const parsed: WorkflowSpec["edges"][string] = [];
+      const parsed: Line[] = [];
       for (const line of lines) {
         if (typeof line === "string") { parsed.push(line); continue; }
         if (!isRecord(line) || typeof line.target !== "string") throw new Error(`${w}: edge from ${from} needs a target`);
@@ -73,7 +73,7 @@ export function toYaml(graph: Graph): string {
     ...(spec.inputs.length ? { inputs: spec.inputs } : {}),
     ...(spec.outputs.length ? { outputs: spec.outputs } : {}),
     nodes: spec.nodes,
-    ...(Object.keys(spec.edges).length ? { edges: spec.edges } : {}),
+    ...(Object.keys(spec.edges ?? {}).length ? { edges: spec.edges! } : {}),
     layout,
   };
 

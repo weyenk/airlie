@@ -83,7 +83,7 @@ const bundles = computed(() => defs.value.map((d) => d.name).filter((n) => n !==
 const cardTypes = computed(() => [...new Set(defs.value.map((d) => d.type).filter((t): t is string => !!t))]);
 
 const title = computed(() => detail.value?.name ?? name.value);
-const typeLabel = computed(() => (detail.value ? (detail.value.type ?? "bundle") : null));
+const typeLabel = computed(() => (detail.value ? (detail.value.type ?? "") : null));
 const nodeOf = (id: string) => graph.value.nodes.find((n) => n.id === id);
 
 /** The box whose fields the modal shows; null while it is closed. */
@@ -111,7 +111,7 @@ function openBox(id: string) {
  * that exists, so its name can be fixed) opens its fields. */
 function enterBox(id: string) {
   const node = nodeOf(id);
-  const target = node?.type === "bundle" ? node.spec.workflow : undefined;
+  const target = node?.kind === "WORK" ? node.spec.workflow : undefined;
   if (typeof target === "string" && defs.value.some((d) => d.name === target)) {
     selected.value = id;
     selectedEdge.value = null;
@@ -211,13 +211,13 @@ async function saveClick() {
     asking.value = true;
     return;
   }
-  await saveAs(detail.value?.name ?? name.value, graph.value.type);
+  await saveAs(detail.value?.name ?? name.value, graph.value.title);
 }
 /** The workflow's own fields, in the modal the title bar opens: its type, the inputs its caller supplies and the
  * outputs it hands back. */
 const editingWorkflow = ref(false);
 function updateWorkflow(change: { type?: string | null; inputs?: string[]; outputs?: string[] }) {
-  b.edit((g) => ({ ...g, ...(change.type !== undefined ? { type: change.type } : {}), ...(change.inputs ? { inputs: change.inputs } : {}), ...(change.outputs ? { outputs: change.outputs } : {}) }));
+  b.edit((g) => ({ ...g, ...(change.type !== undefined ? { kind: change.type } : {}), ...(change.inputs ? { inputs: change.inputs } : {}), ...(change.outputs ? { outputs: change.outputs } : {}) }));
 }
 
 // Delete draft: asked first; the draft goes (an edit of a file leaves the file as it is) and the builder returns
@@ -430,8 +430,8 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       @apply="applyWire"
       @remove="dropWire"
     />
-    <WorkflowModal v-model:open="editingWorkflow" :type="graph.type" :inputs="graph.inputs" :outputs="graph.outputs" :types="cardTypes" @update="updateWorkflow" />
-    <SaveDialog v-model:open="asking" :taken="taken" :files="files" :types="cardTypes" :type="graph.type" :reason="reason" @save="saveAs" />
+    <WorkflowModal v-model:open="editingWorkflow" :type="graph.title" :inputs="graph.inputs" :outputs="graph.outputs" :types="cardTypes" @update="updateWorkflow" />
+    <SaveDialog v-model:open="asking" :taken="taken" :files="files" :types="cardTypes" :type="graph.title" :reason="reason" @save="saveAs" />
     <Dialog :open="deleting" @update:open="(v) => !v && (deleting = false)">
       <DialogContent :show-close-button="false">
         <DialogHeader>

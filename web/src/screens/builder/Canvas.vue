@@ -151,8 +151,7 @@ function cardAt(id: string) {
 function inTitle(n: GNode): string {
   const reads = inputsOf(n.spec);
   if (reads.length) return `reads ${reads.join(", ")}`;
-  const run = props.graph.bundles[typeof n.spec.workflow === "string" ? n.spec.workflow : ""];
-  return run?.inputs.length ? `takes ${run.inputs.join(", ")}` : "reads nothing";
+  return (props.graph.bundles ?? {})[(n.spec.workflow as string) || ""]?.inputs.length ? `takes ${(props.graph.bundles ?? {})[(n.spec.workflow as string)]?.inputs.join(", ")}` : "reads nothing";
 }
 
 /** A client point as a point on the canvas (the canvas's own pixels, margin included). */

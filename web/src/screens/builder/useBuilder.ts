@@ -71,10 +71,10 @@ export function useBuilder(name: Ref<string>) {
   const unreadable = new Set<string>();
   function fillBundles(): void {
     for (const n of bundleNames(graph.value)) {
-      if (graph.value.bundles[n]) continue;
+      if ((graph.value.bundles ?? {})[n]) continue;
       const known = ports.get(n);
       if (known) {
-        graph.value = withBundle(graph.value, n, known);
+        graph.value = graph.value = withBundle(graph.value, n, known);
         continue;
       }
       if (asking.has(n) || unreadable.has(n)) continue;
@@ -84,7 +84,7 @@ export function useBuilder(name: Ref<string>) {
         .then((def) => {
           const found = portsOf(parseWorkflow(def.yaml).spec);
           ports.set(n, found);
-          if (bundleNames(graph.value).includes(n) && !graph.value.bundles[n]) graph.value = withBundle(graph.value, n, found);
+          if (bundleNames(graph.value).includes(n) && !(graph.value.bundles ?? {})[n]) graph.value = graph.value = withBundle(graph.value, n, found);
         })
         .catch(() => unreadable.add(n)) // the box says its ports are unknown; the next load asks again
         .finally(() => asking.delete(n));
@@ -92,7 +92,7 @@ export function useBuilder(name: Ref<string>) {
   }
   const missingBundles = () =>
     bundleNames(graph.value)
-      .filter((n) => !graph.value.bundles[n])
+      .filter((n) => !(graph.value.bundles ?? {})[n])
       .join("\n");
   watch(missingBundles, (missing) => missing && fillBundles(), { immediate: true });
 
@@ -164,13 +164,13 @@ export function useBuilder(name: Ref<string>) {
   }
 
   /** A box of `type` (or a bundle box running `bundle`) at (x, y), selected; without a place, right of the rest. */
-  function place(item: { type: NodeKind } | { bundle: string }, x?: number, y?: number) {
-    const type: NodeKind = "type" in item ? item.type : "bundle";
+  function place(item: { kind: NodeKind } | { bundle: string }, x?: number, y?: number) {
+    const type: NodeKind = "kind" in item ? item.kind : "WORK";
     const id = freeId(graph.value, type);
     const at = x !== undefined && y !== undefined ? { x, y } : { x: graph.value.nodes.length ? Math.max(...graph.value.nodes.map((n) => n.x)) + COLUMN : 0, y: 0 };
     // a meeting sits the protocol's roles and reads its inputs (the catalog's); a bundle box runs its bundle
     const meeting = catalog.value.meetings[0];
-    const spec: NodeSpec = "bundle" in item ? { workflow: item.bundle } : type === "meeting" && meeting ? { role: [...meeting.roles], inputs: [...meeting.inputs] } : {};
+    const spec: NodeSpec = "bundle" in item ? { workflow: item.bundle } : type === "ROUND_ROBIN" && meeting ? { role: [...meeting.roles], inputs: [...meeting.inputs] } : {};
     if (edit((g) => addNode(g, type, at.x, at.y, spec))) {
       selected.value = id;
       selectedEdge.value = null;
@@ -206,7 +206,7 @@ export function useBuilder(name: Ref<string>) {
    * YAML does not read; 409 kept for an older server), for the name dialog to ask again; false on any other failure (shown as the error). An
    * unchanged draft sends its own text, so a hand-written file keeps its comments. */
   async function save(as: string, type: string | null): Promise<boolean | { refused: string }> {
-    const g: Graph = { ...graph.value, name: as, type };
+    const g: Graph = { ...graph.value, name: as, title: type };
     const same = !dirty.value && detail.value?.source === "draft" && detail.value.name === as && detail.value.type === type;
     saving.value = true;
     try {

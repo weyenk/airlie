@@ -42,7 +42,7 @@ test("a loop line is dashed and runs below the boxes; a line's condition shows o
   expect(loop.attributes("stroke-dasharray")).toBeTruthy();
   const ys = (loop.attributes("d") ?? "").match(/V (\d+)/)?.[1];
   expect(Number(ys)).toBeGreaterThan(24 + 56);
-  const text = "workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a, to: [{node: b, when: v == yes}]}\n      b: {type: check, run: x.b}\n";
+  const text = "workflows:\n  w:\n    nodes:\n      a: {title: check, run: x.a, to: [{node: b, when: v == yes}]}\n      b: {title: check, run: x.b}\n";
   expect(mountCanvas(graphOf(text)).get("[data-edge-label]").text()).toBe("if v == yes · order");
 });
 
@@ -55,7 +55,7 @@ test("a click on a box selects it; the selected box shows pressed", async () => 
 });
 
 test("an empty graph says how to start", () => {
-  const empty: Graph = { name: "new", type: null, inputs: [], outputs: [], nodes: [], edges: [], bundles: {} };
+  const empty: Graph = { name: "new", title: null, inputs: [], outputs: [], nodes: [], edges: [],  };
   expect(mountCanvas(empty).text()).toContain("No boxes yet");
 });
 
@@ -213,7 +213,7 @@ test("a box has an out-port per output, one edge port and one in-port", () => {
 });
 
 test("a box with several outputs stacks one port each down its right edge, inside the box", () => {
-  const text = "workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a, outputs: {one: text, two: text, three: text}}\n      b: {type: check, run: x.b}\n";
+  const text = "workflows:\n  w:\n    nodes:\n      a: {title: check, run: x.a, outputs: {one: text, two: text, three: text}}\n      b: {title: check, run: x.b}\n";
   const w = editable(graphOf(text));
   expect(outs(w, "a")).toEqual(["one", "two", "three"]);
   const ports = w.findAll("[data-node=a]").filter((p) => ["out", "edge"].includes(p.attributes("data-port") ?? ""));
@@ -265,13 +265,13 @@ test("every line is labelled with what it carries, or order", () => {
   expect(labels).toHaveLength(graph.edges.length);
   expect(labels.some((t) => t.includes("survey") && !t.startsWith("if"))).toBe(true);
   expect(labels).toContain("order");
-  const order = editable(graphOf("workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a}\n      b: {type: check, run: x.b}\n      a2: {type: check, run: x.c}\n"));
+  const order = editable(graphOf("workflows:\n  w:\n    nodes:\n      a: {title: check, run: x.a}\n      b: {title: check, run: x.b}\n      a2: {title: check, run: x.c}\n"));
   expect(order.findAll("[data-edge-label]")).toHaveLength(0);
 });
 
 test("a condition shows as an if prefix and a loop as dashed with its bound, together", () => {
   const text =
-    "workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a, outputs: {v: text}, to: [{node: b, when: v == no}]}\n      b: {type: check, run: x.b, inputs: [v], to: [{node: a, when: v == no, loop: {max: 2}}]}\n";
+    "workflows:\n  w:\n    nodes:\n      a: {title: check, run: x.a, outputs: {v: text}, to: [{node: b, when: v == no}]}\n      b: {title: check, run: x.b, inputs: [v], to: [{node: a, when: v == no, loop: {max: 2}}]}\n";
   const w = editable(graphOf(text));
   expect(w.get("[data-edge=loop][data-from=b][data-to=a]").attributes("stroke-dasharray")).toBeTruthy();
   const labels = w.findAll("[data-edge-label]").map((l) => l.text());
@@ -312,7 +312,7 @@ test("the bundle box shows built.{item} and satisfied.{item} out-ports", () => {
 });
 
 test("a bundle box that declares no outputs shows the workflow's declared ones", () => {
-  const graph = graphOf("workflows:\n  w:\n    nodes:\n      b: {type: bundle, workflow: layer, each: layers}\n");
+  const graph = graphOf("workflows:\n  w:\n    nodes:\n      b: {title: bundle, workflow: layer, each: layers}\n");
   const layer = graphOf(LAYER_YAML);
   const w = editable({ ...graph, bundles: { layer } });
   expect(w.findAll("[data-port=out][data-node=b]").map((p) => p.text())).toEqual(["drafted.{item}", "built.{item}", "satisfied.{item}"]);
@@ -351,7 +351,7 @@ test("a drag from the layer bundle's built port to a downstream box connects wit
 });
 
 test("a bundle box that declares no outputs offers the workflow's, and a drag from one connects", async () => {
-  const graph = graphOf("workflows:\n  w:\n    nodes:\n      b: {type: bundle, workflow: layer, each: layers}\n      c: {type: check, run: x.c}\n");
+  const graph = graphOf("workflows:\n  w:\n    nodes:\n      b: {title: bundle, workflow: layer, each: layers}\n      c: {title: check, run: x.c}\n");
   const layer = graphOf(LAYER_YAML);
   const w = editable({ ...graph, bundles: { layer } });
   const to = pos(graph, "c");
@@ -378,7 +378,7 @@ test("the box card stays inside the canvas, even for the lowest box", () => {
 });
 
 test("a line whose first artifact is not one of the source's ports leaves from the edge port", () => {
-  const text = "workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a, outputs: {one: text, two: text}, to: [b]}\n      b: {type: check, run: x.b, inputs: [one]}\n";
+  const text = "workflows:\n  w:\n    nodes:\n      a: {title: check, run: x.a, outputs: {one: text, two: text}, to: [b]}\n      b: {title: check, run: x.b, inputs: [one]}\n";
   const graph = graphOf(text);
   const stray = { ...graph, edges: graph.edges.map((e) => ({ ...e, artifacts: ["ghost"] })) };
   const w = editable(stray);
@@ -387,7 +387,7 @@ test("a line whose first artifact is not one of the source's ports leaves from t
 });
 
 test("the ports of a box do not overlap", () => {
-  const text = "workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a, outputs: {one: text, two: text, three: text}}\n";
+  const text = "workflows:\n  w:\n    nodes:\n      a: {title: check, run: x.a, outputs: {one: text, two: text, three: text}}\n";
   const w = editable(graphOf(text));
   const tops = w
     .findAll("[data-node=a]")

@@ -33,10 +33,11 @@ export type Line = string | { target: string; when?: string; loop?: LoopBound };
 /** One workflow's mapping in the YAML, its layout aside. */
 export type WorkflowSpec = {
   title?: string | null;
+  type?: string | null;
   inputs: string[];
   outputs: string[];
-  nodes: Record<string, NodeSpec & { kind: NodeKind }>;
-  edges: Record<string, Line[]>;
+  nodes: Record<string, NodeSpec>;
+  edges?: Record<string, Line[]>;
 };
 
 /** A box: `placed` is false until a layout gives it a place (autoLayout places the rest). */
@@ -49,6 +50,7 @@ export type Ports = { inputs: string[]; outputs: string[] };
 export type Graph = {
   name: string;
   title: string | null;
+  bundles?: Record<string, Ports>;
   /** What the caller supplies (card, repo). */
   inputs: string[];
   /** What the workflow hands back. */
@@ -129,7 +131,7 @@ export function fromWorkflow(name: string, spec: WorkflowSpec, layout: Layout = 
   });
   const edges: GEdge[] = [];
   // New schema: edges at workflow level
-  for (const [from, lines] of Object.entries(spec.edges)) {
+  for (const [from, lines] of Object.entries(spec.edges ?? {})) {
     for (const entry of lines) {
       const edge = lineOf(from, entry);
       if (edge) edges.push(edge);
@@ -272,8 +274,14 @@ export function outputsOfNode(graph: Graph, id: string): string[] {
   return outputsOf(spec);
 }
 
-/** The names of the workflows the graph's bundle boxes run, each once. (No bundles in the four-kind model.) */
-export const bundleNames = (graph: Graph): string[] => [];
+/** Set the ports of bundle `name` on the graph (no-op in the four-kind model: kept for backward compat). */
+export function withBundle(graph: Graph, name: string, ports: Ports): Graph {
+  const bundles = { ...(graph.bundles ?? {}), [name]: portsOf(ports) };
+  return relabel({ ...graph, bundles });
+}
+
+/** The names of the workflows the graph's bundle boxes run, each once. */
+export const bundleNames = (_graph: Graph): string[] => [];
 /** A workflow's ports: what it is handed and what it hands back. */
 export const portsOf = (spec: { inputs?: string[]; outputs?: string[] }): Ports => ({ inputs: [...(spec.inputs ?? [])], outputs: [...(spec.outputs ?? [])] });
 
@@ -364,7 +372,7 @@ function renamePlaceholders(text: string, old: string, to: string): string {
 const CONDITION_WORDS = new Set(["and", "or", "not", "exists"]);
 const CONDITION_TOKEN = /(==|!=|\(|\))|("[^"]*"|'[^']*')|([^\s()=!"']+)/g;
 /** A line's condition with every path headed by `old` (`old`, `old.field`) headed by `to` instead. */
-function renameInCondition(when: string, old: string, to: string): string {
+export function renameInCondition(when: string, old: string, to: string): string {
   let out = "";
   let last = 0;
   let afterCompare = false;

@@ -21,7 +21,7 @@ test("the node types are schema v2's: no parallel or each, a team and a bundle",
 test("the shipped story workflow: a node per entry, in the file's order, with its type, inputs and fields", () => {
   const g = graphOf(STORY_YAML);
   expect(g.name).toBe("story");
-  expect(g.type).toBe("story");
+  expect(g.title).toBe("story");
   expect(g.inputs).toEqual(["card", "repo"]);
   expect(g.outputs).toEqual([]);
   expect(g.nodes.map((n) => n.id)).toEqual([
@@ -85,7 +85,7 @@ test("build_layers is a bundle node naming its workflow and the list it runs ove
 
 test("the layer bundle: its inputs and outputs, item-scoped artifacts as written, and a loop line with its bound", () => {
   const g = graphOf(LAYER_YAML);
-  expect(g.type).toBeNull();
+  expect(g.title).toBeNull();
   expect(g.inputs).toEqual(["card", "repo", "story", "layers", "base", "gate", "agreement"]);
   expect(g.outputs).toEqual(["drafted", "built.{item}", "satisfied.{item}"]);
   expect(line(g, "package", "place")).toEqual([{ from: "package", to: "place", artifacts: ["package.{item}"], when: "package.{item} exists and not satisfied.{item} exists" }]);

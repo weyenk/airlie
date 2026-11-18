@@ -3,6 +3,7 @@
 import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
 import {
   addNode,
+  withBundle,
   bundleNames,
   connect,
   emptyGraph,
@@ -19,7 +20,7 @@ import {
   toWorkflow,
   updateEdge,
   updateNode,
-  withBundle,
+  
 } from "./graph";
 import type { Graph } from "./graph";
 import { parseWorkflow } from "./yaml";
@@ -191,23 +192,23 @@ test("renameOutput of a bundle workflow's declared output renames it there too",
 });
 
 test("addNode gives each type its default fields, names it <type>-N and puts it last, with no line", () => {
-  let g = addNode(small(), "check", 480, 0);
+  let g = addNode(small(), "WORK", 480, 0);
   expect(g.nodes.at(-1)).toMatchObject({ id: "check-1", kind: "WORK", spec: { run: "", inputs: [], outputs: {} }, x: 480, y: 0, placed: true });
   expect(g.edges).toEqual(small().edges);
   const blank = (type: Parameters<typeof addNode>[1]) => specOf(addNode(emptyGraph("w"), type, 0, 0), `${type}-1`);
-  expect(blank("model")).toEqual({ protocol: "ask", role: "", prompt: "", inputs: [], outputs: {} });
-  expect(blank("ask")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });
-  expect(blank("conversation")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });
-  expect(blank("write")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });
-  expect(blank("meeting")).toEqual({ role: [], prompt: "", inputs: [], outputs: {} });
-  expect(blank("team")).toEqual({ role: { supervisor: "", worker: "" }, prompt: "", worker: "", inputs: [], outputs: {} });
-  expect(blank("gate")).toEqual({ run: "", inputs: [], outputs: {} });
-  expect(blank("bundle")).toEqual({ workflow: "", inputs: [], outputs: {} });
+  expect(blank("WORK")).toEqual({ protocol: "WORK", role: "", prompt: "", inputs: [], outputs: {} });
+  expect(blank("WORK")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });
+  expect(blank("WORK")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });
+  expect(blank("WORK")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });
+  expect(blank("ROUND_ROBIN")).toEqual({ role: [], prompt: "", inputs: [], outputs: {} });
+  expect(blank("SUPERVISOR_WORKERS")).toEqual({ role: { supervisor: "", worker: "" }, prompt: "", worker: "", inputs: [], outputs: {} });
+  expect(blank("WORK")).toEqual({ run: "", inputs: [], outputs: {} });
+  expect(blank("WORK")).toEqual({ workflow: "", inputs: [], outputs: {} });
   // the caller hands in what the catalog says (a meeting's seats and inputs, a bundle's workflow)
-  g = addNode(emptyGraph("w"), "meeting", 0, 0, { role: ["product", "architect", "tester"], inputs: ["story", "layers"] });
+  g = addNode(emptyGraph("w"), "ROUND_ROBIN", 0, 0, { role: ["product", "architect", "tester"], inputs: ["story", "layers"] });
   expect(specOf(g, "meeting-1")).toEqual({ role: ["product", "architect", "tester"], prompt: "", inputs: ["story", "layers"], outputs: {} });
-  g = addNode(addNode(addNode(g, "check", 0, 0), "check", 0, 0), "check", 0, 0);
-  expect(addNode(removeNode(g, "check-2"), "check", 0, 0).nodes.map((n) => n.id)).toEqual(["meeting-1", "check-1", "check-3", "check-2"]);
+  g = addNode(addNode(addNode(g, "WORK", 0, 0), "WORK", 0, 0), "WORK", 0, 0);
+  expect(addNode(removeNode(g, "check-2"), "WORK", 0, 0).nodes.map((n) => n.id)).toEqual(["meeting-1", "check-1", "check-3", "check-2"]);
 });
 
 test("removeNode drops the box and every line into or out of it", () => {
@@ -277,7 +278,7 @@ test("a bundle box with no outputs of its own writes the outputs of the workflow
   expect(() => connect(base, "b", "c", { artifacts: ["built"] })).toThrow(/b writes no built/); // not known yet
   // the fill useBuilder makes: the shipped layer file's ports, by name; the YAML is unchanged
   const known = withBundle(base, "layer", portsOf(parseWorkflow(LAYER_YAML).spec));
-  expect(known.bundles.layer).toEqual({ inputs: ["card", "repo", "story", "layers", "base", "gate", "agreement"], outputs: ["drafted", "built.{item}", "satisfied.{item}"] });
+  expect(known.bundles!.layer).toEqual({ inputs: ["card", "repo", "story", "layers", "base", "WORK", "agreement"], outputs: ["drafted", "built.{item}", "satisfied.{item}"] });
   expect(toWorkflow(known)).toEqual(toWorkflow(base));
   const g = connect(known, "b", "c", { artifacts: ["built"] });
   expect(lineOf(g, "b", "c")[0].artifacts).toEqual(["built"]);

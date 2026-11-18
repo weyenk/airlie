@@ -36,7 +36,7 @@ function add(item: { kind: NodeKind } | { bundle: string }) {
           :title="readonly ? t : `Drag onto the canvas, or click to add a ${t} box`"
           :class="['truncate text-left text-xs font-semibold', SHAPE_CLASS[shapeOf(t)], readonly ? 'cursor-default' : 'cursor-grab']"
           @dragstart="carry($event, 'node', t)"
-          @click="add({ type: t })"
+          @click="add({ kind: t })"
         >
           {{ paletteLabel(t) }}
         </button>
