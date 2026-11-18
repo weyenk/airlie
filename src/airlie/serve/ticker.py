@@ -20,7 +20,7 @@ from typing import Any
 
 from airlie.config import AirlieConfig, ConfigError
 from airlie.serve.jobs import Jobs
-from airlie.story import factory
+from airlie.story import jobs as factory
 from airlie.story.board import Board
 from airlie.story.fixes import line_event
 from airlie.story.line import Job, Line, Spawn

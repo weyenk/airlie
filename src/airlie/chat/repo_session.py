@@ -372,7 +372,7 @@ def default_repo_sessions(
     from airlie.boxes.mirror import MirrorError
     from airlie.boxes.tart import SOFTNET_HINT, TartBox, softnet_installed
     from airlie.story.checkout import find_checkout
-    from airlie.story.factory import github_app
+    from airlie.story.jobs import github_app
     from airlie.story.model import RepositoryError
     from airlie.story.publish import run_cmd
 

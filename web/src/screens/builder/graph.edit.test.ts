@@ -192,7 +192,7 @@ test("renameOutput of a bundle workflow's declared output renames it there too",
 
 test("addNode gives each type its default fields, names it <type>-N and puts it last, with no line", () => {
   let g = addNode(small(), "check", 480, 0);
-  expect(g.nodes.at(-1)).toMatchObject({ id: "check-1", type: "check", spec: { run: "", inputs: [], outputs: {} }, x: 480, y: 0, placed: true });
+  expect(g.nodes.at(-1)).toMatchObject({ id: "check-1", kind: "WORK", spec: { run: "", inputs: [], outputs: {} }, x: 480, y: 0, placed: true });
   expect(g.edges).toEqual(small().edges);
   const blank = (type: Parameters<typeof addNode>[1]) => specOf(addNode(emptyGraph("w"), type, 0, 0), `${type}-1`);
   expect(blank("model")).toEqual({ protocol: "ask", role: "", prompt: "", inputs: [], outputs: {} });
@@ -257,7 +257,7 @@ test("toWorkflow: the inputs, outputs and nodes in the graph's order; a line is 
   expect(spec.inputs).toEqual(["card"]);
   expect(spec.outputs).toEqual([]);
   expect(Object.keys(spec.nodes)).toEqual(["a", "b", "c", "d"]);
-  expect(spec.nodes.a).toMatchObject({ type: "check", run: "x.a", to: ["b", { node: "c", when: "verdict == yes" }] });
+  expect(spec.nodes.a).toMatchObject({ kind: "WORK", run: "x.a", to: ["b", { node: "c", when: "verdict == yes" }] });
   expect(spec.nodes.c).not.toHaveProperty("to");
   expect(layout.a).toEqual({ x: 480, y: 0 });
   expect(toWorkflow(emptyGraph("new")).spec).toEqual({ inputs: ["card", "repo"], outputs: [], nodes: {} });
@@ -272,7 +272,7 @@ test("connect merges into the line between a pair: artifacts join, when and loop
 });
 
 test("a bundle box with no outputs of its own writes the outputs of the workflow it runs, once its ports are known", () => {
-  const base = fromWorkflow("w", { inputs: [], outputs: [], nodes: { b: { type: "bundle", workflow: "layer", each: "layers" }, c: { type: "check", run: "x" } } });
+  const base = fromWorkflow("w", { inputs: [], outputs: [], nodes: { b: { kind: "WORK", workflow: "layer", each: "layers" }, c: { kind: "WORK", run: "x" } } });
   expect(bundleNames(base)).toEqual(["layer"]);
   expect(() => connect(base, "b", "c", { artifacts: ["built"] })).toThrow(/b writes no built/); // not known yet
   // the fill useBuilder makes: the shipped layer file's ports, by name; the YAML is unchanged

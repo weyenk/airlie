@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { NodeType } from "./graph";
+import type { NodeKind } from "./graph";
 import { PALETTE_TYPES, paletteLabel } from "./palette_types";
 import { SHAPE_CLASS, shapeOf } from "./shapes";
 
@@ -11,14 +11,14 @@ defineOptions({ name: "AirlieBuilderPalette" });
 const props = defineProps<{ bundles: string[]; failed?: boolean; readonly?: boolean }>();
 /** A bundle box is placed from the bundles below, which name the workflow it runs. */
 const TYPES = PALETTE_TYPES;
-const emit = defineEmits<{ retry: []; add: [item: { type: NodeType } | { bundle: string }] }>();
+const emit = defineEmits<{ retry: []; add: [item: { kind: NodeKind } | { bundle: string }] }>();
 
 function carry(e: DragEvent, kind: "node" | "bundle", value: string) {
   if (props.readonly || !e.dataTransfer) return;
   e.dataTransfer.setData(`application/x-airlie-${kind}`, value);
   e.dataTransfer.effectAllowed = "copy";
 }
-function add(item: { type: NodeType } | { bundle: string }) {
+function add(item: { kind: NodeKind } | { bundle: string }) {
   if (!props.readonly) emit("add", item);
 }
 </script>

@@ -2,17 +2,12 @@
 // back as the file the canvas would save, shaped like the shipped config/workflows/*.yaml. Pure: no Vue.
 import { Document, isMap, isScalar, isSeq, parse, visit } from "yaml";
 import type { YAMLMap } from "yaml";
-import { hasMax, isNodeType, normalizeTopologyTypes, toWorkflow } from "./graph";
+import { hasMax, isNodeKind, toWorkflow } from "./graph";
 import type { Graph, Layout, WorkflowSpec } from "./graph";
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-/** The old schema's fields and types, which the server refuses (airlie.flow.spec `_OLD_*`), in its words. */
-const OLD_NODE_FIELDS = ["parse", "after", "done", "when", "next", "on", "branch", "loop", "nodes", "over"];
-const OLD_WORKFLOW_FIELDS = ["start", "loose"];
-const OLD_TYPES = ["parallel", "each"];
-const old = (what: string, then = "write a `to` line") => `${what} is the old schema; run the workflow upgrade or ${then}`;
-const WORKFLOW_FIELDS = new Set(["type", "inputs", "outputs", "nodes", "layout"]);
+const WORKFLOW_FIELDS = new Set(["title", "inputs", "outputs", "nodes", "edges", "layout"]);
 
 const names = (v: unknown, what: string): string[] => {
   if (v === undefined || v === null) return [];
@@ -21,9 +16,8 @@ const names = (v: unknown, what: string): string[] => {
 };
 
 /** The one workflow under `workflows:` in `text`: its name, its spec (layout aside) and its layout. Throws when
- * the text does not parse, holds no `workflows:` mapping, holds other than one workflow, uses the old schema
- * (start, loose, next, branch, loop, parallel, each, ...), has a field the schema does not know, a node with no
- * type or one the builder does not know, or a `to` line that names no node. */
+ * the text does not parse, holds no `workflows:` mapping, holds other than one workflow, has a field the schema
+ * does not know, a node with no kind or one the builder does not know, or an edge that names no node. */
 export function parseWorkflow(text: string): { name: string; spec: WorkflowSpec; layout: Layout } {
   const doc: unknown = parse(text);
   if (!isRecord(doc) || !isRecord(doc.workflows)) throw new Error("the text has no workflows: mapping");
@@ -33,51 +27,53 @@ export function parseWorkflow(text: string): { name: string; spec: WorkflowSpec;
   const raw = doc.workflows[name];
   if (!isRecord(raw)) throw new Error(`workflow ${name} is not a mapping`);
   const w = `workflow ${name}`;
-  for (const f of OLD_WORKFLOW_FIELDS) if (f in raw) throw new Error(`${w}: ${old(`field '${f}'`)}`);
   for (const f of Object.keys(raw)) if (!WORKFLOW_FIELDS.has(f)) throw new Error(`${w}: unknown field '${f}'`);
   if (!isRecord(raw.nodes)) throw new Error(`${w} has no nodes: mapping`);
 
   const nodes: WorkflowSpec["nodes"] = {};
   for (const [id, n] of Object.entries(raw.nodes)) {
     const at = `${w}: node ${id}`;
-    if (!isRecord(n) || typeof n.type !== "string") throw new Error(`${at} has no type`);
-    if (OLD_TYPES.includes(n.type)) throw new Error(`${at}: ${old(`type '${n.type}'`)}`);
-    if (!isNodeType(n.type)) throw new Error(`${at} has unknown type '${n.type}'`);
-    for (const f of OLD_NODE_FIELDS) if (f in n) throw new Error(`${at}: ${old(`field '${f}'`)}`);
-    if (isRecord(n.on_fail)) throw new Error(`${at}: ${old("field 'on_fail'", "draw a loop line")}`);
-    if (n.to !== undefined) {
-      if (!Array.isArray(n.to)) throw new Error(`${at}: to must be a list of lines`);
-      for (const line of n.to) {
-        if (typeof line === "string") continue;
-        if (!(isRecord(line) && typeof line.node === "string")) throw new Error(`${at}: a to line needs a node`);
-        if (line.loop !== undefined && !(isRecord(line.loop) && hasMax(line.loop.max))) throw new Error(`${at}: the line to ${line.node}: loop needs max`);
+    if (!isRecord(n) || typeof n.kind !== "string") throw new Error(`${at} has no kind`);
+    if (!isNodeKind(n.kind)) throw new Error(`${at} has unknown kind '${n.kind}'`);
+    nodes[id] = { ...n, kind: n.kind };
+  }
+  const edges: WorkflowSpec["edges"] = {};
+  if (isRecord(raw.edges)) {
+    for (const [from, lines] of Object.entries(raw.edges)) {
+      if (!Array.isArray(lines)) throw new Error(`${w}: edges.${from} must be a list`);
+      const parsed: WorkflowSpec["edges"][string] = [];
+      for (const line of lines) {
+        if (typeof line === "string") { parsed.push(line); continue; }
+        if (!isRecord(line) || typeof line.target !== "string") throw new Error(`${w}: edge from ${from} needs a target`);
+        if (line.loop !== undefined && !(isRecord(line.loop) && hasMax(line.loop.max))) throw new Error(`${w}: edge from ${from}: loop needs max`);
+        parsed.push(line as any);
       }
+      edges[from] = parsed;
     }
-    nodes[id] = { ...n, type: n.type };
   }
   const layout: Layout = {};
   for (const [id, at] of Object.entries(isRecord(raw.layout) ? raw.layout : {})) {
     if (isRecord(at) && typeof at.x === "number" && typeof at.y === "number") layout[id] = { x: at.x, y: at.y };
   }
-  const type = typeof raw.type === "string" ? raw.type : null;
-  const spec: WorkflowSpec = { ...(type ? { type } : {}), inputs: names(raw.inputs, `${w}: inputs`), outputs: names(raw.outputs, `${w}: outputs`), nodes };
+  const title = typeof raw.title === "string" ? raw.title : null;
+  const spec: WorkflowSpec = { ...(title ? { title } : {}), inputs: names(raw.inputs, `${w}: inputs`), outputs: names(raw.outputs, `${w}: outputs`), nodes, edges };
   return { name, spec, layout };
 }
 
 /** Node fields that are maps written on one line, as the shipped files write them. */
 const FLOW_MAPS = new Set(["outputs", "args", "events", "role"]);
 
-/** The file the canvas would save: `type:`, the workflow's `inputs` and `outputs` (each when it has any), the nodes
- * in the file's order with their `to` lines last, and `layout:` last. Lists, and the short maps a node carries, go
- * on one line; a `to` list holding a condition or a loop goes a line per entry. */
+/** The file the canvas would save: `title:`, the workflow's `inputs` and `outputs` (each when it has any), the
+ * nodes in the file's order, the `edges` mapping, and `layout:` last. Lists go on one line; an edges list holding
+ * a condition or a loop goes a line per entry. */
 export function toYaml(graph: Graph): string {
   const { spec, layout } = toWorkflow(graph);
-  const normalized = normalizeTopologyTypes(spec);
   const wf: Record<string, unknown> = {
-    ...(normalized.type ? { type: normalized.type } : {}),
-    ...(normalized.inputs.length ? { inputs: normalized.inputs } : {}),
-    ...(normalized.outputs.length ? { outputs: normalized.outputs } : {}),
-    nodes: normalized.nodes,
+    ...(spec.title ? { title: spec.title } : {}),
+    ...(spec.inputs.length ? { inputs: spec.inputs } : {}),
+    ...(spec.outputs.length ? { outputs: spec.outputs } : {}),
+    nodes: spec.nodes,
+    ...(Object.keys(spec.edges).length ? { edges: spec.edges } : {}),
     layout,
   };
 
@@ -88,7 +84,7 @@ export function toYaml(graph: Graph): string {
     },
   });
   const w = doc.getIn(["workflows", graph.name]) as YAMLMap;
-  for (const key of ["nodes", "layout"]) {
+  for (const key of ["nodes", "layout", "edges"]) {
     const map = w.get(key);
     if (!isMap(map)) continue;
     for (const entry of map.items) {
@@ -97,14 +93,14 @@ export function toYaml(graph: Graph): string {
         entry.value.flow = true;
         continue;
       }
+      if (key === "edges") {
+        // edges values are Seqs (list of edge entries), keep them flow for simple ones
+        continue;
+      }
       for (const field of entry.value.items) {
         if (!isScalar(field.key)) continue;
         const k = String(field.key.value);
         if (FLOW_MAPS.has(k) && isMap(field.value)) field.value.flow = true;
-        if (k === "to" && isSeq(field.value) && field.value.items.some((i) => isMap(i))) {
-          field.value.flow = false;
-          for (const i of field.value.items) if (isMap(i)) i.flow = true;
-        }
       }
     }
   }

@@ -13,7 +13,7 @@ from typing import Any
 
 from airlie.board import BoardStore
 from airlie.config import AirlieConfig
-from airlie.story import factory
+from airlie.story import jobs as factory
 from airlie.story.budgets import card_dir
 from airlie.story.costs import queue_hours, size_of_story
 from airlie.story.diagnosis import latest

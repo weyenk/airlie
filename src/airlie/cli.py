@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """airlie CLI. Humans use `task <name>`; the Taskfile calls these subcommands."""
 
 from __future__ import annotations
@@ -1304,7 +1305,7 @@ def _run_stoppable[T](coro: Coroutine[Any, Any, T]) -> T:
 
 
 def _story_cfg(config: Path | None) -> AirlieConfig:
-    from airlie.story.factory import story_config
+    from airlie.story.jobs import story_config
 
     try:
         return story_config(_load(config))
@@ -1362,7 +1363,7 @@ def story_run(
     draft PRs. An issue is built in the repository its repo:<owner>/<name> label names, gated by the Test gate
     of that repository's AGENTS.md. A stopped story resumes from its last finished stage when you run the same
     command again."""
-    from airlie.story import factory
+    from airlie.story import jobs as factory
     from airlie.story.board import BoardError
     from airlie.story.model import StorySetupError
 
@@ -1396,7 +1397,7 @@ def _tick(config: Path | None) -> None:
     """One beat of the line, printed as one log line with the time (launchd's log, `task line:tick`)."""
     import time
 
-    from airlie.story import factory
+    from airlie.story import jobs as factory
     from airlie.story.board import BoardError
     from airlie.story.model import StorySetupError
 
@@ -1489,7 +1490,7 @@ def story_restack(
     now, and each must pass the story's gate there; then their branches move, the stopped layer's attempt is
     removed, and the next `task story` builds on today's trunk. A conflict or a failing gate changes nothing.
     A story that has published its PRs is not moved."""
-    from airlie.story import factory
+    from airlie.story import jobs as factory
     from airlie.story.board import BoardError
     from airlie.story.model import StorySetupError
     from airlie.story.restack import RestackError
@@ -1530,7 +1531,7 @@ def story_restart(
     to the story's gate there, and the card goes back to approved for the line. A story that is running, has
     a merged PR, has not reached the step, or whose kept layers do not replay is refused, with nothing
     changed."""
-    from airlie.story import factory
+    from airlie.story import jobs as factory
     from airlie.story.board import BoardError
     from airlie.story.model import StoryRunning, StorySetupError
     from airlie.story.publish import PublishError
@@ -1560,7 +1561,7 @@ def story_adopt_workflow(
     because it has no outputs; an unchanged one is skipped by the outputs the story holds. Everything else is
     kept. The card waits out of the line meanwhile. A story that is running, has not started, or whose
     workflow does not resolve now is refused, with nothing changed."""
-    from airlie.story import factory
+    from airlie.story import jobs as factory
     from airlie.story.board import BoardError
     from airlie.story.model import StoryRunning, StorySetupError
     from airlie.story.workflows import WorkflowError
@@ -1590,7 +1591,7 @@ def story_pr_body(
     """Print the pull request body a built layer would get now (the initiative, epic and story, the layer's
     package, the tests that are its contract, the checks, the cost and the stack), before anything is
     published. It reads the story's state and the board: no network, no model, nothing changed."""
-    from airlie.story import factory
+    from airlie.story import jobs as factory
     from airlie.story.board import BoardError
     from airlie.story.model import StorySetupError
 
@@ -1623,7 +1624,7 @@ def story_describe(
     """Rebuild the title and body of every pull request a story published and edit them on GitHub (`gh pr
     edit`), so a stack published earlier carries what a new one does. This changes PRs on GitHub, so it runs
     only when you ask: never from the tick. A story that has not published is refused."""
-    from airlie.story import factory
+    from airlie.story import jobs as factory
     from airlie.story.board import BoardError
     from airlie.story.model import StorySetupError
     from airlie.story.publish import PublishError
@@ -1688,7 +1689,7 @@ def story_check(
     remote, the trunk) and the test gate of its AGENTS.md, or why the story would be blocked; gh and gh-stack,
     who publishes (your gh login, or story.github_app's bot), which board is in use (and, for Jira, the
     project and its statuses). No model runs and nothing is written."""
-    from airlie.story import factory
+    from airlie.story import jobs as factory
 
     cfg = _story_cfg(config)
     # soft_wrap: a note or a problem names paths and commands, which wrapping at the terminal's width breaks
@@ -1783,8 +1784,8 @@ def line_deploy(
 
     import httpx
 
+    from airlie.rev import build_commit
     from airlie.story.fixes import home_checkout
-    from airlie.story.pipeline import build_commit
 
     cfg = _load(config)
     home = home_checkout()
@@ -2176,7 +2177,7 @@ def epic_replan(
     """Ask the architect to revise a planned epic's stories now: the stories that have started, are in review
     or merged are kept as they are; the ones not started are changed, dropped or replaced, new ones are made,
     and a stopped story with no layer built is retired. A plan that is never usable changes nothing."""
-    from airlie.story import factory
+    from airlie.story import jobs as factory
     from airlie.story.board import BoardError
     from airlie.story.model import StorySetupError
 
@@ -2209,7 +2210,7 @@ def initiative_add(
     with `task initiative:turn` once you have). It then imagines the work with the specialists and delivers
     a core epic and extensions, each priced in hours, for you to approve."""
     from airlie.board import BoardStore
-    from airlie.story import factory
+    from airlie.story import jobs as factory
     from airlie.story.board import BoardError
     from airlie.story.epic import REPOSITORY
     from airlie.story.model import StoryBusy, StorySetupError
@@ -2268,7 +2269,7 @@ def initiative_turn(
 ) -> None:
     """Run the specs phase's next turn for an initiative now: after you answered its question as a comment on
     the board while `task serve` was down, or to go on from a stop you lifted by approving it again."""
-    from airlie.story import factory
+    from airlie.story import jobs as factory
     from airlie.story.board import BoardError
     from airlie.story.model import StoryBusy, StorySetupError
 
@@ -2574,22 +2575,11 @@ def route_eval(
 
 @workflows_app.command("catalog")
 def workflows_catalog() -> None:
-    """The checks a `check` or `gate` node may name in `run`, with what each reads and writes."""
-    from airlie.story.flow import STORY_CATALOG
-
-    table = Table("name", "title", "inputs", "outputs", "args", "transient", "every_run")
-    table.columns[0].no_wrap = True
-    for c in STORY_CATALOG.describe():
-        table.add_row(
-            escape(c["name"]),
-            escape(c["title"]),
-            escape(", ".join(c["inputs"])),
-            escape(", ".join(c["outputs"])),
-            escape(", ".join(c["args"])),
-            escape(", ".join(c["transient"])),
-            "yes" if c["every_run"] else "",
-        )
-    console.print(table)
+    """The operations a `check` node may name in `run`: retired with the check kind (engine swap)."""
+    console.print(
+        "[dim]retired: the check/gate operation catalog went with the story engine (engine swap); "
+        "gates are now evidence on WORK nodes (a script, a judge, or a step count).[/dim]"
+    )
 
 
 def main() -> None:

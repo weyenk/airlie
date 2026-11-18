@@ -6,7 +6,7 @@ import { ApiError } from "@/api";
 import { deleteDraft, EMPTY_CATALOG, getWorkflowDef, publishWorkflow, registryCatalog, saveDraft, usedBy, validateWorkflow } from "@/api/workflow_defs";
 import type { Catalog, WorkflowDetail } from "@/api/workflow_defs";
 import { addNode, bundleNames, emptyGraph, freeId, fromWorkflow, portsOf, renameOutput, withBundle } from "./graph";
-import type { GEdge, Graph, NodeSpec, NodeType, Ports } from "./graph";
+import type { GEdge, Graph, NodeSpec, NodeKind, Ports } from "./graph";
 import { autoLayout, COLUMN } from "./layout";
 import { problemsByEdge, problemsByNode } from "./problems";
 import { promptFieldsOf } from "./promptFile";
@@ -164,8 +164,8 @@ export function useBuilder(name: Ref<string>) {
   }
 
   /** A box of `type` (or a bundle box running `bundle`) at (x, y), selected; without a place, right of the rest. */
-  function place(item: { type: NodeType } | { bundle: string }, x?: number, y?: number) {
-    const type: NodeType = "type" in item ? item.type : "bundle";
+  function place(item: { type: NodeKind } | { bundle: string }, x?: number, y?: number) {
+    const type: NodeKind = "type" in item ? item.type : "bundle";
     const id = freeId(graph.value, type);
     const at = x !== undefined && y !== undefined ? { x, y } : { x: graph.value.nodes.length ? Math.max(...graph.value.nodes.map((n) => n.x)) + COLUMN : 0, y: 0 };
     // a meeting sits the protocol's roles and reads its inputs (the catalog's); a bundle box runs its bundle

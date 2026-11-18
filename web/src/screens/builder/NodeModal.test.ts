@@ -2,7 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { CATALOG } from "@/test-utils/catalog";
 import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
 import { fromWorkflow, withBundle } from "./graph";
-import type { Graph, NodeSpec, NodeType } from "./graph";
+import type { Graph, NodeSpec, NodeKind } from "./graph";
 import NodeModal from "./NodeModal.vue";
 import OutputsEditor from "./OutputsEditor.vue";
 import { parseWorkflow } from "./yaml";
@@ -12,18 +12,18 @@ const graph: Graph = fromWorkflow("t", {
   inputs: ["card", "repo"],
   outputs: [],
   nodes: {
-    survey: { type: "ask", role: "architect", prompt: "Survey {card}.", inputs: ["card"], outputs: { survey: "markdown" }, to: ["plan"] },
-    plan: { type: "ask", role: "architect", prompt: "prompt:plan-brief", inputs: ["survey"], outputs: { plan: { format: "json", fields: { verdict: "pass | fail", notes: "list of text?" } } } },
-    talk: { type: "conversation", role: "architect", prompt: "Talk.", turn: "Go on.", inputs: [], outputs: { chat: "session", layers: "list" }, to: ["more", "other"] },
-    other: { type: "conversation", role: "coder", prompt: "x", outputs: { coder_chat: "session" } },
-    more: { type: "conversation", role: "architect", prompt: "More.", inputs: ["chat"], outputs: {}, to: ["later"] },
-    later: { type: "conversation", role: "architect", prompt: "Later.", outputs: { later_chat: "session" } },
-    loner: { type: "conversation", role: "qa", prompt: "y", outputs: {} },
-    crew: { type: "team", role: { supervisor: "chief", worker: "coder" }, prompt: "Split it.", worker: "Do {assignment}.", inputs: ["plan"], outputs: {} },
-    amigos: { type: "meeting", role: ["product", "architect", "tester"], inputs: ["story", "layers"], outputs: { agreement: "json" } },
-    base: { type: "check", run: "", inputs: ["card"], outputs: {} },
-    each: { type: "bundle", workflow: "layer", inputs: ["layers", "card"], each: "layers", outputs: {} },
-  } as Record<string, NodeSpec & { type: NodeType }>,
+    survey: { kind: "WORK", role: "architect", prompt: "Survey {card}.", inputs: ["card"], outputs: { survey: "markdown" }, to: ["plan"] },
+    plan: { kind: "WORK", role: "architect", prompt: "prompt:plan-brief", inputs: ["survey"], outputs: { plan: { format: "json", fields: { verdict: "pass | fail", notes: "list of text?" } } } },
+    talk: { kind: "WORK", role: "architect", prompt: "Talk.", turn: "Go on.", inputs: [], outputs: { chat: "session", layers: "list" }, to: ["more", "other"] },
+    other: { kind: "WORK", role: "coder", prompt: "x", outputs: { coder_chat: "session" } },
+    more: { kind: "WORK", role: "architect", prompt: "More.", inputs: ["chat"], outputs: {}, to: ["later"] },
+    later: { kind: "WORK", role: "architect", prompt: "Later.", outputs: { later_chat: "session" } },
+    loner: { kind: "WORK", role: "qa", prompt: "y", outputs: {} },
+    crew: { kind: "SUPERVISOR_WORKERS", role: { supervisor: "chief", worker: "coder" }, prompt: "Split it.", worker: "Do {assignment}.", inputs: ["plan"], outputs: {} },
+    amigos: { kind: "ROUND_ROBIN", role: ["product", "architect", "tester"], inputs: ["story", "layers"], outputs: { agreement: "json" } },
+    base: { kind: "WORK", run: "", inputs: ["card"], outputs: {} },
+    each: { kind: "WORK", workflow: "layer", inputs: ["layers", "card"], each: "layers", outputs: {} },
+  } as Record<string, NodeSpec & { kind: NodeKind }>,
 });
 const prompts = { "plan-brief": "---\nkind: rule\nroles: [architect]\nfields: [survey]\nwhy: |\n  w\n---\nRead {survey}.\n" };
 

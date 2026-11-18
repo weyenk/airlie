@@ -1,87 +1,60 @@
-// A workflow as the builder draws it (schema v2): boxes, a node each, and lines, a `to` entry each. Pure: no Vue,
-// so the model tests fast. The YAML model is airlie.flow.spec (WorkflowSpec, NodeSpec, Line); a node is pure
-// configuration, and a line carries the artifacts its source writes to the node it names.
+// A workflow as the builder draws it (schema v2): boxes, a node each, and lines, an edge each. Pure: no Vue,
+// so the model tests fast. The YAML model is airlie.workflow.spec (WorkflowSpec, NodeSpec, WireSpec); a node is
+// pure configuration, and a line carries the artifacts its source writes to the node it names.
 //
-// A box's fields hold everything but its type and its lines: the lines are the graph's edges, written back as each
-// source's `to` list. What a line carries is never stored: it is the source's output names the target lists in
-// `inputs`, worked out again after every edit (`relabel`). The boxes' order is the file's order (a new box goes
-// last), not where they sit: a drag changes only the layout.
+// A box's fields hold everything but its kind and its lines: the lines are the graph's edges, written back as the
+// workflow's `edges` mapping. What a line carries is never stored: it is the source's output names the target
+// lists in `inputs`, worked out again after every edit (`relabel`). The boxes' order is the file's order (a new
+// box goes last), not where they sit: a drag changes only the layout.
 
-export const NODE_TYPES = ["model", "ask", "conversation", "write", "meeting", "team", "check", "gate", "bundle"] as const;
-export type NodeType = (typeof NODE_TYPES)[number];
-export const PROTOCOLS = ["ask", "conversation", "write", "meeting"] as const;
-export type Protocol = (typeof PROTOCOLS)[number];
-export const isNodeType = (t: unknown): t is NodeType => typeof t === "string" && (NODE_TYPES as readonly string[]).includes(t);
+export const NODE_KINDS = ["WORK", "ROUND_ROBIN", "SUPERVISOR_WORKERS", "K_INDEPENDENT_TEAMS"] as const;
+export type NodeKind = (typeof NODE_KINDS)[number];
+export const isNodeKind = (t: unknown): t is NodeKind => typeof t === "string" && (NODE_KINDS as readonly string[]).includes(t);
 
-const LEGACY_TO_PROTOCOL: Record<string, Protocol> = { ask: "ask", conversation: "conversation", write: "write", meeting: "meeting" };
-
-/** Effective protocol for a box on the canvas (`model` + `protocol`, or a legacy type). */
-export const protocolOf = (type: NodeType, spec: NodeSpec): Protocol | null => {
-  if (type === "model") {
-    const p = spec.protocol;
-    return typeof p === "string" && (PROTOCOLS as readonly string[]).includes(p) ? (p as Protocol) : null;
-  }
-  return LEGACY_TO_PROTOCOL[type] ?? null;
-};
-
-/** Rewrite legacy model node types to `model` + `protocol` before writing YAML. */
-export function normalizeTopologyTypes(spec: WorkflowSpec): WorkflowSpec {
-  const nodes: WorkflowSpec["nodes"] = {};
-  for (const [id, n] of Object.entries(spec.nodes)) {
-    const proto = LEGACY_TO_PROTOCOL[n.type];
-    if (proto) nodes[id] = { ...n, type: "model", protocol: proto };
-    else nodes[id] = n;
-  }
-  return { ...spec, nodes };
-}
-
-/** The output formats a node may declare (airlie.flow.spec `Format`). */
+/** The output formats a node may declare (airlie.workflow.spec `Format`). */
 export const FORMATS = ["json", "markdown", "text", "bool", "list", "ref:branch", "ref:worktree", "ref:pr", "file", "session"] as const;
 
-/** The kinds a structured output's field may name (airlie.flow.outputs: `text | number | bool | list of <kind> |
- * one of a | b`, a trailing `?` for optional). */
+/** The kinds a structured output's field may name. */
 export const KINDS = ["text", "number", "bool", "list of …", "one of …"] as const;
 
 /** An output's declaration: a format, and for a structured answer its fields; `transient` outputs are recomputed
  * every run, never saved. In the YAML a bare format string says the same as `{format}`. */
 export type OutputSpec = { format: string; fields?: Record<string, string>; transient?: boolean };
 
-/** A node's fields as the YAML has them, its `type` and `to` aside (the box and its lines carry those). */
+/** A node's fields as the YAML has them, its `kind` aside (the box carries that). */
 export type NodeSpec = Record<string, unknown>;
 export type Layout = Record<string, { x: number; y: number }>;
 
 /** A loop line's bound: a count or a config path, and the output handed back as `feedback.<target>`. */
 export type LoopBound = { max: number | string; carry?: string };
-/** A `to` entry as the YAML writes it: a bare node name, or the node with a condition and a loop bound. */
-export type Line = string | { node: string; when?: string; loop?: LoopBound };
+/** An edge entry as the YAML writes it: a bare node name, or the node with a condition and a loop bound. */
+export type Line = string | { target: string; when?: string; loop?: LoopBound };
 
 /** One workflow's mapping in the YAML, its layout aside. */
 export type WorkflowSpec = {
-  type?: string | null;
+  title?: string | null;
   inputs: string[];
   outputs: string[];
-  nodes: Record<string, NodeSpec & { type: NodeType }>;
+  nodes: Record<string, NodeSpec & { kind: NodeKind }>;
+  edges: Record<string, Line[]>;
 };
 
 /** A box: `placed` is false until a layout gives it a place (autoLayout places the rest). */
-export type GNode = { id: string; type: NodeType; spec: NodeSpec; x: number; y: number; placed?: boolean };
+export type GNode = { id: string; kind: NodeKind; spec: NodeSpec; x: number; y: number; placed?: boolean };
 /** A line: `artifacts` are what it carries (none: an ordering line), `when` its condition, `loop` its bound when
  * it is drawn back to an earlier node. */
 export type GEdge = { from: string; to: string; artifacts: string[]; when?: string; loop?: LoopBound };
-/** What a bundle box's workflow is handed and hands back: its declared inputs and outputs. */
+/** What a workflow hands back as its declared outputs. */
 export type Ports = { inputs: string[]; outputs: string[] };
 export type Graph = {
   name: string;
-  type: string | null;
-  /** What the caller supplies (card, repo; a bundle's inputs). */
+  title: string | null;
+  /** What the caller supplies (card, repo). */
   inputs: string[];
-  /** What a bundle hands back. */
+  /** What the workflow hands back. */
   outputs: string[];
   nodes: GNode[];
   edges: GEdge[];
-  /** The ports of the workflows the bundle boxes run, by name: fetched when the canvas loads and when a bundle box
-   * is placed or its workflow changes (useBuilder). Never written to the YAML: the bundle's own file holds them. */
-  bundles: Record<string, Ports>;
 };
 
 /** What a line drawn between two boxes may carry and say. */
@@ -91,7 +64,7 @@ export type LineOpts = { artifacts?: string[]; when?: string; loop?: LoopBound }
 export const NEW_INPUTS: readonly string[] = ["card", "repo"];
 
 export function emptyGraph(name: string): Graph {
-  return { name, type: null, inputs: [...NEW_INPUTS], outputs: [], nodes: [], edges: [], bundles: {} };
+  return { name, title: null, inputs: [...NEW_INPUTS], outputs: [], nodes: [], edges: [] };
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -105,11 +78,11 @@ export const outputsOf = (spec: NodeSpec): string[] => (isRecord(spec.outputs) ?
 /** The names a box's fields list in `inputs`. */
 export const inputsOf = (spec: NodeSpec): string[] => strings(spec.inputs);
 
-/** A `to` entry as a line (its artifacts worked out later), or null when it names no node. */
+/** An edge entry as a line (its artifacts worked out later), or null when it names no node. */
 export function lineOf(from: string, entry: unknown): GEdge | null {
   if (typeof entry === "string") return { from, to: entry, artifacts: [] };
-  if (!isRecord(entry) || typeof entry.node !== "string") return null;
-  const edge: GEdge = { from, to: entry.node, artifacts: [] };
+  if (!isRecord(entry) || typeof entry.target !== "string") return null;
+  const edge: GEdge = { from, to: entry.target, artifacts: [] };
   if (typeof entry.when === "string") edge.when = entry.when;
   // a loop without its max is no loop (parseWorkflow refuses one): an empty max is never drawn or written
   const max = isRecord(entry.loop) ? entry.loop.max : undefined;
@@ -128,7 +101,7 @@ export const hasMax = (max: unknown): max is number | string => typeof max === "
 function entryOf(edge: GEdge): Line {
   const loop = edge.loop && hasMax(edge.loop.max) ? edge.loop : undefined;
   if (edge.when === undefined && loop === undefined) return edge.to;
-  const entry: Exclude<Line, string> = { node: edge.to };
+  const entry: Exclude<Line, string> = { target: edge.to };
   if (edge.when !== undefined) entry.when = edge.when;
   if (loop !== undefined) entry.loop = loop.carry !== undefined ? { max: loop.max, carry: loop.carry } : { max: loop.max };
   return entry;
@@ -147,41 +120,59 @@ function relabel(graph: Graph): Graph {
   return { ...graph, edges: graph.edges.map((e) => ({ ...e, artifacts: carried(graph, byId.get(e.from), byId.get(e.to)) })) };
 }
 
-/** The boxes and lines of one workflow: a box per node in the file's order, a line per `to` entry. */
+/** The boxes and lines of one workflow: a box per node in the file's order, a line per edge entry. */
 export function fromWorkflow(name: string, spec: WorkflowSpec, layout: Layout = {}): Graph {
-  const edges: GEdge[] = [];
   const nodes: GNode[] = Object.entries(spec.nodes).map(([id, n]) => {
-    const { type, to, ...rest } = n;
-    for (const entry of Array.isArray(to) ? to : []) {
-      const edge = lineOf(id, entry);
+    const { kind, to, ...rest } = n as any;
+    const at = layout[id];
+    return { id, kind: (kind ?? (n as any).type ?? "WORK") as NodeKind, spec: rest, x: at?.x ?? 0, y: at?.y ?? 0, placed: at !== undefined };
+  });
+  const edges: GEdge[] = [];
+  // New schema: edges at workflow level
+  for (const [from, lines] of Object.entries(spec.edges)) {
+    for (const entry of lines) {
+      const edge = lineOf(from, entry);
       if (edge) edges.push(edge);
     }
-    const at = layout[id];
-    return { id, type, spec: rest, x: at?.x ?? 0, y: at?.y ?? 0, placed: at !== undefined };
-  });
+  }
+  // Old schema compat: `to` on each node (tests still use this)
+  for (const [id, n] of Object.entries(spec.nodes)) {
+    const to = (n as any).to;
+    if (Array.isArray(to)) {
+      for (const entry of to) {
+        // Old `to` entries use {node: ...} while new `edges` use {target: ...}
+        const normalized = typeof entry === "string" ? entry : { target: (entry as any).node ?? (entry as any).target, ...((entry as any).when !== undefined ? { when: (entry as any).when } : {}), ...((entry as any).loop !== undefined ? { loop: (entry as any).loop } : {}) };
+        const edge = lineOf(id, normalized);
+        if (edge) edges.push(edge);
+      }
+    }
+  }
   return relabel({
     name,
-    type: spec.type ?? null,
+    title: spec.title ?? null,
     inputs: [...(spec.inputs ?? [])],
     outputs: [...(spec.outputs ?? [])],
     nodes,
     edges,
-    bundles: {},
   });
 }
 
-/** The workflow a graph is, as the YAML would hold it: `type` (when it serves one), its inputs and outputs, the
- * nodes in the graph's order with their lines last, and where each box sits. */
+/** The workflow a graph is, as the YAML would hold it: `title`, its inputs and outputs, the nodes in the graph's
+ * order, the edges grouped by source, and where each box sits. */
 export function toWorkflow(graph: Graph): { spec: WorkflowSpec; layout: Layout } {
   const nodes: WorkflowSpec["nodes"] = {};
+  const edges: WorkflowSpec["edges"] = {};
   const layout: Layout = {};
   for (const n of graph.nodes) {
-    const to = graph.edges.filter((e) => e.from === n.id).map(entryOf);
-    nodes[n.id] = { type: n.type, ...n.spec, ...(to.length ? { to } : {}) };
+    nodes[n.id] = { kind: n.kind, ...n.spec };
     layout[n.id] = { x: n.x, y: n.y };
   }
+  for (const e of graph.edges) {
+    if (!edges[e.from]) edges[e.from] = [];
+    edges[e.from].push(entryOf(e));
+  }
   return {
-    spec: { ...(graph.type ? { type: graph.type } : {}), inputs: [...graph.inputs], outputs: [...graph.outputs], nodes },
+    spec: { ...(graph.title ? { title: graph.title } : {}), inputs: [...graph.inputs], outputs: [...graph.outputs], nodes, edges },
     layout,
   };
 }
@@ -206,41 +197,33 @@ function nodeOf(graph: Graph, id: string): GNode {
   return n;
 }
 
-/** The smallest free id `<type>-N`. */
-export function freeId(graph: Graph, type: string): string {
+/** The smallest free id `<kind>-N`. */
+export function freeId(graph: Graph, kind: string): string {
   const taken = new Set(graph.nodes.map((n) => n.id));
   let i = 1;
-  while (taken.has(`${type}-${i}`)) i += 1;
-  return `${type}-${i}`;
+  while (taken.has(`${kind}-${i}`)) i += 1;
+  return `${kind}-${i}`;
 }
 
-/** The fields a new box of each type starts with: the ones its type needs, blank, so validation names them. A
- * meeting's seats and inputs come from the catalog, which the caller hands in as `spec`. */
-function defaults(type: NodeType): NodeSpec {
-  switch (type) {
-    case "model":
-      return { protocol: "ask", role: "", prompt: "", inputs: [], outputs: {} };
-    case "ask":
-    case "conversation":
-    case "write":
-      return { role: "", prompt: "", inputs: [], outputs: {} };
-    case "meeting":
-      return { role: [], prompt: "", inputs: [], outputs: {} };
-    case "team":
-      return { role: { supervisor: "", worker: "" }, prompt: "", worker: "", inputs: [], outputs: {} };
-    case "check":
-    case "gate":
-      return { run: "", inputs: [], outputs: {} };
-    case "bundle":
-      return { workflow: "", inputs: [], outputs: {} };
+/** The fields a new box of each kind starts with, blank, so validation names them. */
+function defaults(kind: NodeKind): NodeSpec {
+  switch (kind) {
+    case "WORK":
+      return { prompt: "", inputs: [], outputs: {} };
+    case "ROUND_ROBIN":
+      return { roles: [], prompt: "", agreement_when: "", inputs: [], outputs: {} };
+    case "SUPERVISOR_WORKERS":
+      return { supervisor: "", worker: "", workers: 3, prompt: "", inputs: [], outputs: {} };
+    case "K_INDEPENDENT_TEAMS":
+      return { teams: 3, roles: [""], prompt: "", inputs: [], outputs: {}, aggregate: "llm" };
   }
 }
 
-/** The graph with a new box of `type` at (x, y), last in the file, with its type's blank fields and any `spec`
+/** The graph with a new box of `kind` at (x, y), last in the file, with its kind's blank fields and any `spec`
  * given. No line is drawn: a box with no line in starts once its inputs exist. */
-export function addNode(graph: Graph, type: NodeType, x: number, y: number, spec: NodeSpec = {}): Graph {
-  const id = freeId(graph, type);
-  const node: GNode = { id, type, spec: { ...defaults(type), ...clone(spec) }, x, y, placed: true };
+export function addNode(graph: Graph, kind: NodeKind, x: number, y: number, spec: NodeSpec = {}): Graph {
+  const id = freeId(graph, kind.toLowerCase());
+  const node: GNode = { id, kind, spec: { ...defaults(kind), ...clone(spec) }, x, y, placed: true };
   return relabel({ ...graph, nodes: [...graph.nodes, node] });
 }
 
@@ -253,8 +236,7 @@ export function moveNode(graph: Graph, id: string, x: number, y: number): Graph 
 export function updateNode(graph: Graph, id: string, spec: NodeSpec): Graph {
   nodeOf(graph, id);
   const rest = clone(spec);
-  delete rest.type; // the box's, not a field
-  delete rest.to; // the lines'
+  delete rest.kind; // the box's, not a field
   return relabel({ ...graph, nodes: graph.nodes.map((n) => (n.id === id ? { ...n, spec: rest } : n)) });
 }
 
@@ -284,27 +266,16 @@ export function renameNode(graph: Graph, id: string, to: string): Graph {
   });
 }
 
-/** The output names a box offers: its declared `outputs`, or, for a bundle box that declares none, the outputs of
- * the workflow it runs (a `name.{item}` output is `name`). The canvas's ports and `connect`'s check both read this. */
+/** The output names a box offers: its declared `outputs`. */
 export function outputsOfNode(graph: Graph, id: string): string[] {
   const spec = graph.nodes.find((n) => n.id === id)?.spec ?? {};
-  const named = outputsOf(spec);
-  if (named.length) return named;
-  const run = graph.bundles[typeof spec.workflow === "string" ? spec.workflow : ""];
-  return [...new Set((run?.outputs ?? []).map((o) => o.replace(/\.\{item\}$/, "")))];
+  return outputsOf(spec);
 }
 
-/** The names of the workflows the graph's bundle boxes run, each once. */
-export const bundleNames = (graph: Graph): string[] => [
-  ...new Set(graph.nodes.filter((n) => n.type === "bundle" && typeof n.spec.workflow === "string" && n.spec.workflow).map((n) => n.spec.workflow as string)),
-];
-/** A workflow's ports as a bundle box shows them: what it is handed and what it hands back. */
+/** The names of the workflows the graph's bundle boxes run, each once. (No bundles in the four-kind model.) */
+export const bundleNames = (graph: Graph): string[] => [];
+/** A workflow's ports: what it is handed and what it hands back. */
 export const portsOf = (spec: { inputs?: string[]; outputs?: string[] }): Ports => ({ inputs: [...(spec.inputs ?? [])], outputs: [...(spec.outputs ?? [])] });
-/** The graph knowing the ports of bundle `name`: a bundle box that runs it offers its outputs, and its lines carry
- * them. Only the canvas reads them; the YAML is unchanged. */
-export function withBundle(graph: Graph, name: string, ports: Ports): Graph {
-  return relabel({ ...graph, bundles: { ...graph.bundles, [name]: portsOf(ports) } });
-}
 
 /** The graph with a line `from` → `to`: each of `artifacts` (outputs of `from`) joins the target's inputs if it
  * is not there yet, and `when` and `loop` say when the line is taken and its bound. A line already between the
@@ -351,42 +322,36 @@ export function updateEdge(graph: Graph, from: string, to: string, patch: { arti
   const edge: GEdge = { from, to, artifacts: [] };
   if (patch.when) edge.when = patch.when;
   if (patch.loop) edge.loop = patch.loop.carry ? { max: patch.loop.max, carry: patch.loop.carry } : { max: patch.loop.max };
-  const edges = current.edges.map((e, i) => (i === at ? edge : e));
-  const elsewhere = new Set([...graph.inputs, ...edges.filter((e, i) => i !== at && e.to === to).flatMap((e) => e.artifacts)]);
-  const drop = old.artifacts.filter((a) => !patch.artifacts.includes(a) && !elsewhere.has(a));
+  const edges = graph.edges.map((e, i) => (i === at ? edge : e));
   const g = editing(graph, [to], (s) => {
     const have = inputsOf(s);
-    if (!Array.isArray(s.inputs) && !patch.artifacts.length) return;
-    s.inputs = [...have.filter((i) => !drop.includes(i)), ...patch.artifacts.filter((a) => !have.includes(a))];
+    const leaving = old.artifacts.filter((a) => !patch.artifacts.includes(a));
+    const adding = patch.artifacts.filter((a) => !have.includes(a));
+    if (leaving.length || adding.length) s.inputs = [...have.filter((i) => !leaving.includes(i)), ...adding];
   });
   return relabel({ ...g, edges });
 }
 
-/** Who else writes `name` for a box `to` that reads it: the boxes other than `from` and `to` that write it, then
- * "the workflow's inputs" when the caller hands it in. A line carries whatever its source writes that its target
- * reads, so an input is the target's, not one line's: the wire modal keeps such a name checked (graph-wide). */
+/** The boxes that write `name` (other than `from` and `to`), and `name`'s readers: what a line from `from` to
+ * `to` would lose by no longer carrying `name`. */
 export function producersOf(graph: Graph, name: string, from: string, to: string): string[] {
   const boxes = graph.nodes.filter((n) => n.id !== from && n.id !== to && outputsOfNode(graph, n.id).includes(name)).map((n) => n.id);
-  return graph.inputs.includes(name) ? [...boxes, "the workflow's inputs"] : boxes;
+  const readers = new Set<string>([to]);
+  if (boxes.length) for (const id of graph.nodes.filter((n) => inputsOf(n.spec).includes(name)).map((n) => n.id)) readers.add(id);
+  return [...readers];
 }
 
-const sameLine = (a: GEdge, b: GEdge) => a.from === b.from && a.to === b.to && a.when === b.when;
-
-/** The graph without the line `edge`, and without the target's inputs that line alone carried: an artifact
- * another line still brings in, or a workflow input, stays. */
+/** The graph without the line `edge`: a no longer carried name leaves the target's inputs unless another line or
+ * the workflow's inputs still bring it. */
 export function removeEdge(graph: Graph, edge: GEdge): Graph {
-  const current = relabel(graph);
-  let at = current.edges.findIndex((e) => sameLine(e, edge));
-  if (at < 0) at = current.edges.findIndex((e) => e.from === edge.from && e.to === edge.to);
-  if (at < 0) return graph;
-  const gone = current.edges[at];
-  const edges = current.edges.filter((_, i) => i !== at);
-  const still = new Set([...graph.inputs, ...edges.filter((e) => e.to === gone.to).flatMap((e) => e.artifacts)]);
-  const drop = new Set(gone.artifacts.filter((a) => !still.has(a)));
-  const g = editing({ ...current, edges }, [gone.to], (s) => {
-    if (drop.size && Array.isArray(s.inputs)) s.inputs = s.inputs.filter((i) => !(typeof i === "string" && drop.has(i)));
+  const edges = graph.edges.filter((e) => e !== edge);
+  const leaving = edge.artifacts;
+  const still = new Set(graph.inputs);
+  for (const e of edges) if (e.to === edge.to) for (const a of e.artifacts) still.add(a);
+  const g = editing(graph, [edge.to], (s) => {
+    if (Array.isArray(s.inputs)) s.inputs = s.inputs.filter((i) => leaving.includes(i) ? still.has(i) : true);
   });
-  return relabel(g);
+  return relabel({ ...g, edges });
 }
 
 const PROMPT_FILE = "prompt:";
@@ -398,9 +363,8 @@ function renamePlaceholders(text: string, old: string, to: string): string {
 
 const CONDITION_WORDS = new Set(["and", "or", "not", "exists"]);
 const CONDITION_TOKEN = /(==|!=|\(|\))|("[^"]*"|'[^']*')|([^\s()=!"']+)/g;
-/** A line's condition with every path headed by `old` (`old`, `old.field`) headed by `to` instead. The tokens are
- * airlie.flow.conditions's, so a keyword, a quoted string and the literal after `==` / `!=` stay as they are. */
-export function renameInCondition(when: string, old: string, to: string): string {
+/** A line's condition with every path headed by `old` (`old`, `old.field`) headed by `to` instead. */
+function renameInCondition(when: string, old: string, to: string): string {
   let out = "";
   let last = 0;
   let afterCompare = false;
@@ -414,16 +378,6 @@ export function renameInCondition(when: string, old: string, to: string): string
   }
   return out + when.slice(last);
 }
-
-/** The graph with box `id`'s output `old` called `to`, in place: the lines that carry it, every reader's inputs,
- * `session` and `each`, a reader's `args` values that name it, the `{old}` placeholders in a reader's own prompt
- * text, a loop's `carry` from `id`, the paths headed by `old` in the lines' conditions, and the workflow's declared
- * outputs follow. The conditions of every line follow when `id` is the only box that writes `old`; else those on
- * the lines out of `id` and out of its readers (another writer's `old` keeps its name). A reader is a box a line from `id` brings it to, or, when `id` is its only
- * writer, any box that reads it. A reader whose prompt (or a team's worker) is a prompt file that names it cannot
- * be rewritten here: the rename is refused with those readers. `promptFields` are the fields of the prompt files
- * the caller knows (id -> fields); a prompt file not in it is taken to name the output. Throws when `id` has no
- * output `old` or has one called `to` already. */
 export function renameOutput(graph: Graph, id: string, old: string, to: string, promptFields: Record<string, string[]> = {}): Graph | { refused: string[] } {
   const box = nodeOf(graph, id);
   const outputs = isRecord(box.spec.outputs) ? box.spec.outputs : {};
@@ -432,9 +386,7 @@ export function renameOutput(graph: Graph, id: string, old: string, to: string, 
   if (!to.trim()) throw new Error("an output needs a name");
   if (to in outputs) throw new Error(`${id} already has an output ${to}`);
 
-  // a box reads `old` by its inputs, or by the session it continues or the list a bundle runs over
-  const argsOf = (n: GNode) => (isRecord(n.spec.args) ? Object.values(n.spec.args) : []);
-  const reads = (n: GNode) => inputsOf(n.spec).includes(old) || n.spec.session === old || n.spec.each === old || argsOf(n).includes(old);
+  const reads = (n: GNode) => inputsOf(n.spec).includes(old);
   const lined = new Set(graph.edges.filter((e) => e.from === id).map((e) => e.to));
   const only = !graph.nodes.some((n) => n.id !== id && outputsOf(n.spec).includes(old));
   const readers = graph.nodes.filter((n) => n.id !== id && reads(n) && (lined.has(n.id) || only));
@@ -444,7 +396,7 @@ export function renameOutput(graph: Graph, id: string, old: string, to: string, 
     const fields = promptFields[text.slice(PROMPT_FILE.length)];
     return fields === undefined || fields.includes(old);
   };
-  const refused = readers.filter((n) => names(n.spec.prompt) || names(n.spec.worker)).map((n) => n.id);
+  const refused = readers.filter((n) => names(n.spec.prompt)).map((n) => n.id);
   if (refused.length) return { refused };
 
   let g = editing(graph, [id], (s) => {
@@ -452,9 +404,7 @@ export function renameOutput(graph: Graph, id: string, old: string, to: string, 
   });
   g = editing(g, readers.map((n) => n.id), (s) => {
     if (Array.isArray(s.inputs)) s.inputs = s.inputs.map((i) => (i === old ? to : i));
-    for (const key of ["session", "each"]) if (s[key] === old) s[key] = to;
-    if (isRecord(s.args)) s.args = Object.fromEntries(Object.entries(s.args).map(([k, v]) => [k, v === old ? to : v]));
-    for (const key of ["prompt", "turn", "worker"]) {
+    for (const key of ["prompt", "worker"]) {
       const text = s[key];
       if (typeof text === "string" && !text.startsWith(PROMPT_FILE)) s[key] = renamePlaceholders(text, old, to);
     }

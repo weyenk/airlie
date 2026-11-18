@@ -20,7 +20,7 @@ test("placing a bundle item adds a bundle node that runs it, with no each box", 
   await flushPromises();
   b.place({ bundle: "layer" });
   const [node] = b.graph.value.nodes;
-  expect(node.type).toBe("bundle");
+  expect(node.type).toBe("work");
   expect(node.spec).toMatchObject({ workflow: "layer" });
   expect(b.graph.value.nodes.map((n) => n.type)).toEqual(["bundle"]);
   expect(b.selected.value).toBe(node.id);
@@ -30,7 +30,7 @@ test("a meeting is placed with the protocol's roles and inputs from the catalog"
   api.registryCatalog.mockResolvedValueOnce(CATALOG);
   const b = useBuilder(ref("new"));
   await flushPromises();
-  b.place({ type: "meeting" });
+  b.place({ kind: "ROUND_ROBIN" });
   expect(b.graph.value.nodes[0].spec).toMatchObject({ role: ["product", "architect"], inputs: ["story", "layers"] });
 });
 
@@ -41,10 +41,10 @@ test("an output rename follows into its readers, or is refused through a draft p
     inputs: [],
     outputs: [],
     nodes: {
-      survey: { type: "ask", outputs: { survey: "markdown" }, to: ["plan"] },
-      plan: { type: "ask", prompt: "Read {survey}.", inputs: ["survey"] },
-      brief: { type: "ask", prompt: "prompt:brief", inputs: ["plan"] },
-      planner: { type: "ask", outputs: { plan: "text" }, to: ["brief"] },
+      survey: { kind: "WORK", outputs: { survey: "markdown" }, to: ["plan"] },
+      plan: { kind: "WORK", prompt: "Read {survey}.", inputs: ["survey"] },
+      brief: { kind: "WORK", prompt: "prompt:brief", inputs: ["plan"] },
+      planner: { kind: "WORK", outputs: { plan: "text" }, to: ["brief"] },
     },
   });
   expect(b.renameOutput("survey", "survey", "findings")).toBe(true);

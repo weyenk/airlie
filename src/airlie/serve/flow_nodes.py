@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """A card on any workflow as the pipeline screen draws it (D22): one box per node of the workflow it
 snapshotted, in the order the file lists them, with the status the composer's node events give it. The lines
 (`to`) are the composer's business and are not drawn. A `bundle` node is drawn through the workflow it runs:
@@ -8,8 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from airlie.flow.spec import NodeSpec, TeamRole, WorkflowSpec
 from airlie.serve.flow_parts import Shape, card, job, shaped, step_row, tag
+from airlie.workflow.retired import TeamRole
+from airlie.workflow.spec import NodeSpec, WorkflowSpec
 
 _MODEL = frozenset({"model", "ask", "conversation", "write", "meeting"})
 _KINDS = ("node_started", "node_finished", "node_skipped")

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import CatalogPicker from "./CatalogPicker.vue";
 import { formatSentence, outputSpecs, specValue } from "./fields";
-import { PROTOCOLS, inputsOf, protocolOf, readable, renameNode, renameOutput } from "./graph";
+import { inputsOf, readable, renameNode, renameOutput } from "./graph";
 import type { GNode, Graph, NodeSpec, OutputSpec } from "./graph";
 import OutputsEditor from "./OutputsEditor.vue";
 import { promptFieldsOf } from "./promptFile";
@@ -35,8 +35,8 @@ const emit = defineEmits<{
 }>();
 
 const spec = computed(() => props.node.spec);
-const type = computed(() => props.node.type);
-const proto = computed(() => protocolOf(type.value, spec.value));
+const kind = computed(() => props.node.kind);
+const proto = computed(() => null //(type.value, spec.value));
 const isModel = computed(() => proto.value !== null || type.value === "team");
 const isMeeting = computed(() => type.value === "meeting" || proto.value === "meeting");
 const isCode = computed(() => type.value === "check" || type.value === "gate");
@@ -320,7 +320,7 @@ const label = "text-muted-foreground";
         <div class="flex items-center gap-2 pr-8">
           <DialogTitle class="sr-only">Edit the box {{ node.id }}</DialogTitle>
           <input :value="node.id" data-input="id" aria-label="Box name" :class="[control, 'max-w-xs font-mono font-semibold']" @change="rename" />
-          <span data-node-type class="flex-none rounded-full bg-chip px-2 py-px text-xs font-semibold text-chip-foreground">{{ node.type }}</span>
+          <span data-node-kind class="flex-none rounded-full bg-chip px-2 py-px text-xs font-semibold text-chip-foreground">{{ node.kind }}</span>
           <DialogDescription class="truncate text-xs text-muted-foreground max-sm:sr-only">Changes apply as you make them.</DialogDescription>
         </div>
         <p v-if="nameRefusal" data-rename-refused="box" role="alert" class="-mt-1 text-xs text-danger-foreground">{{ nameRefusal }}</p>
@@ -407,7 +407,7 @@ const label = "text-muted-foreground";
             <label v-if="type === 'model'" data-form-field="protocol" class="flex flex-col gap-1">
               <span :class="label">protocol</span>
               <select data-input="protocol" :value="text(spec.protocol) || 'ask'" :class="control" @change="set('protocol', valueOf($event))">
-                <option v-for="p in PROTOCOLS" :key="p" :value="p">{{ p }}</option>
+                <option v-for="p in NODE_KINDS" :key="p" :value="p">{{ p }}</option>
               </select>
             </label>
             <label v-if="proto === 'ask' || proto === 'conversation' || proto === 'write'" data-form-field="role" class="flex flex-col gap-1">

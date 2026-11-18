@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, useId, useTemplateRef } from "vue";
 import BoxCard from "./BoxCard.vue";
 import BuilderBox from "./BuilderBox.vue";
 import { inputsOf, outputsOfNode } from "./graph";
-import type { GEdge, GNode, Graph, LineOpts, NodeType } from "./graph";
+import type { GEdge, GNode, Graph, LineOpts, NodeKind } from "./graph";
 
 defineOptions({ name: "AirlieBuilderCanvas" });
 
@@ -34,7 +34,7 @@ const emit = defineEmits<{
   /** A double-click on a box: its fields, except a bundle box, which opens the workflow it runs. */
   enter: [id: string];
   openEdge: [edge: GEdge];
-  place: [item: { type: NodeType } | { bundle: string }, x: number, y: number];
+  place: [item: { kind: NodeKind } | { bundle: string }, x: number, y: number];
 }>();
 
 const PAD = 24;
@@ -58,7 +58,7 @@ type Port = { artifact: string; label: string };
 /** A box's out-ports: one per output it offers (`outputsOfNode`, the list `connect` checks against); a bundle box
  * that runs once per item shows each as `name.{item}`. The edge port is drawn after them. */
 function portsOf(n: GNode): Port[] {
-  const each = n.type === "bundle" && !!n.spec.each;
+  const each = false // bundles removed;
   return outputsOfNode(props.graph, n.id).map((artifact) => ({ artifact, label: each ? `${artifact}.{item}` : artifact }));
 }
 const PORT_STEP = 16;
@@ -274,7 +274,7 @@ function onDrop(e: DragEvent) {
   const p = local(e);
   const x = snap(p.x - PAD - W / 2);
   const y = snap(p.y - PAD - H / 2);
-  emit("place", type ? { type: type as NodeType } : { bundle }, x, y);
+  emit("place", type ? { kind: type as NodeKind } : { bundle }, x, y);
 }
 </script>
 

@@ -21,12 +21,12 @@ test("a box per node, placed where the graph says, in its type's shape", () => {
   expect(base.attributes("style")).toContain("width: 120px");
   expect(base.attributes("style")).toContain("height: 56px");
   const shape = (id: string) => w.get(`[data-box][data-node=${id}]`).attributes("data-shape");
-  expect(shape("survey")).toBe("model");
-  expect(shape("layers")).toBe("code"); // a named catalog operation until Part 2
-  expect(shape("amigos")).toBe("model");
-  expect(shape("intake")).toBe("code");
-  expect(shape("review")).toBe("gate");
-  expect(shape("build_layers")).toBe("bundle");
+  expect(shape("survey")).toBe("work");
+  expect(shape("layers")).toBe("work"); // a named catalog operation until Part 2
+  expect(shape("amigos")).toBe("work");
+  expect(shape("intake")).toBe("work");
+  expect(shape("review")).toBe("work");
+  expect(shape("build_layers")).toBe("work");
   expect(w.get("[data-box][data-node=build_layers]").text()).toContain("layer");
 });
 
@@ -180,7 +180,7 @@ test("a node type or a bundle dropped from the palette is placed where it lands"
   await w.get("[data-canvas]").trigger("drop", { clientX: 400, clientY: 300, dataTransfer: data("application/x-airlie-node", "check") });
   await w.get("[data-canvas]").trigger("drop", { clientX: 100, clientY: 100, dataTransfer: data("application/x-airlie-bundle", "layer") });
   expect(w.emitted("place")).toEqual([
-    [{ type: "check" }, 320, 248],
+    [{ kind: "WORK" }, 320, 248],
     [{ bundle: "layer" }, 16, 48],
   ]);
 });
@@ -204,7 +204,7 @@ const outs = (w: ReturnType<typeof editable>, id: string) => w.findAll(`[data-po
 
 test("a box has an out-port per output, one edge port and one in-port", () => {
   const w = editable(graphOf(STORY_YAML));
-  expect(outs(w, "gate")).toEqual(["gate"]);
+  expect(outs(w, "gate")).toEqual(["work"]);
   expect(outs(w, "survey")).toEqual(["survey"]);
   expect(outs(w, "layers")).toEqual(["layers"]);
   expect(outs(w, "intake")).toEqual([]);
@@ -308,7 +308,7 @@ test("the bundle box shows built.{item} and satisfied.{item} out-ports", () => {
   const w = editable(graphOf(STORY_YAML));
   expect(outs(w, "build_layers")).toEqual(["built", "satisfied"]);
   expect(w.findAll("[data-port=out][data-node=build_layers]").map((p) => p.text())).toEqual(["built.{item}", "satisfied.{item}"]);
-  expect(w.get("[data-box][data-node=build_layers]").attributes("data-shape")).toBe("bundle");
+  expect(w.get("[data-box][data-node=build_layers]").attributes("data-shape")).toBe("work");
 });
 
 test("a bundle box that declares no outputs shows the workflow's declared ones", () => {
@@ -430,8 +430,8 @@ const pair = (gap: number): Graph =>
       inputs: [],
       outputs: [],
       nodes: {
-        a: { type: "check", run: "x.a", outputs: { v: "text" }, to: [{ node: "b", when: "v == yes" }] },
-        b: { type: "check", run: "x.b", inputs: ["v"] },
+        a: { kind: "WORK", run: "x.a", outputs: { v: "text" }, to: [{ node: "b", when: "v == yes" }] },
+        b: { kind: "WORK", run: "x.b", inputs: ["v"] },
       },
     },
     { a: { x: 0, y: 40 }, b: { x: 120 + gap, y: 120 } },
@@ -484,9 +484,9 @@ test("a line that runs behind a box in its label's band has only the room before
       inputs: [],
       outputs: [],
       nodes: {
-        a: { type: "check", run: "x.a", outputs: { v: "text" }, to: [{ node: "b", when: "v == yes" }] },
-        c: { type: "check", run: "x.c" },
-        b: { type: "check", run: "x.b", inputs: ["v"] },
+        a: { kind: "WORK", run: "x.a", outputs: { v: "text" }, to: [{ node: "b", when: "v == yes" }] },
+        c: { kind: "WORK", run: "x.c" },
+        b: { kind: "WORK", run: "x.b", inputs: ["v"] },
       },
     },
     { a: { x: 0, y: 0 }, c: { x: 160, y: 0 }, b: { x: 360, y: 0 } },

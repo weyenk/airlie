@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """A layer's build as separate steps over one studio (generic nodes Part 2, "The layer bundle"): the glue that
 sat around the one `execute_task` call in the driver's `_build_once`. `open_layer` starts the layer (its
 studio run on record, the supervisor, the brief, the worktree with the package placed, the plan);

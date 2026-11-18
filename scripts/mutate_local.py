@@ -34,8 +34,8 @@ from types import FrameType
 from typing import Any, NamedTuple
 
 from airlie.config import load_config
-from airlie.story.factory import stories_dir
 from airlie.story.fixes import home_checkout, line_event
+from airlie.story.jobs import stories_dir
 from airlie.story.state import Lane, lock_held
 
 ROOT = Path(__file__).resolve().parents[1]

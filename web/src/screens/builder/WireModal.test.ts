@@ -1,7 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
 import { fromWorkflow } from "./graph";
-import type { Graph, NodeSpec, NodeType } from "./graph";
+import type { Graph, NodeSpec, NodeKind } from "./graph";
 import WireModal from "./WireModal.vue";
 import { parseWorkflow } from "./yaml";
 
@@ -10,10 +10,10 @@ const graph: Graph = fromWorkflow("t", {
   inputs: ["card"],
   outputs: [],
   nodes: {
-    a: { type: "check", run: "x.a", inputs: ["card"], outputs: { verdict: "text", notes: "markdown" }, to: [{ node: "b", when: "verdict == pass" }] },
-    b: { type: "ask", role: "coder", prompt: "Fix {notes}.", inputs: ["notes"], outputs: { fixed: "text" }, to: [{ node: "a", loop: { max: 2, carry: "fixed" } }] },
-    c: { type: "check", run: "x.c" },
-  } as Record<string, NodeSpec & { type: NodeType }>,
+    a: { kind: "WORK", run: "x.a", inputs: ["card"], outputs: { verdict: "text", notes: "markdown" }, to: [{ node: "b", when: "verdict == pass" }] },
+    b: { kind: "WORK", role: "coder", prompt: "Fix {notes}.", inputs: ["notes"], outputs: { fixed: "text" }, to: [{ node: "a", loop: { max: 2, carry: "fixed" } }] },
+    c: { kind: "WORK", run: "x.c" },
+  } as Record<string, NodeSpec & { kind: NodeKind }>,
 });
 const node = (id: string) => graph.nodes.find((n) => n.id === id)!;
 const line = (from: string, to: string) => graph.edges.find((e) => e.from === from && e.to === to) ?? null;
@@ -133,11 +133,11 @@ const shared: Graph = fromWorkflow("s", {
   inputs: ["card"],
   outputs: [],
   nodes: {
-    a: { type: "check", run: "x.a", outputs: { verdict: "text", notes: "markdown" }, to: ["b", "e"] },
-    d: { type: "check", run: "x.d", outputs: { notes: "markdown" }, to: ["b"] },
-    b: { type: "ask", role: "coder", prompt: "Fix {notes} per {verdict.why}.", inputs: ["notes", "verdict"] },
-    e: { type: "ask", role: "coder", prompt: "Go.", inputs: ["verdict"] },
-  } as Record<string, NodeSpec & { type: NodeType }>,
+    a: { kind: "WORK", run: "x.a", outputs: { verdict: "text", notes: "markdown" }, to: ["b", "e"] },
+    d: { kind: "WORK", run: "x.d", outputs: { notes: "markdown" }, to: ["b"] },
+    b: { kind: "WORK", role: "coder", prompt: "Fix {notes} per {verdict.why}.", inputs: ["notes", "verdict"] },
+    e: { kind: "WORK", role: "coder", prompt: "Go.", inputs: ["verdict"] },
+  } as Record<string, NodeSpec & { kind: NodeKind }>,
 });
 const mountShared = (from: string, to: string) =>
   mount(WireModal, {

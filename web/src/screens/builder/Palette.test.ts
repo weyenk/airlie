@@ -6,9 +6,9 @@ test("the node types in their shapes, then the bundles by name", () => {
   const types = w.findAll("[data-palette-type]");
   // schema v2: no parallel or each box; a bundle box comes from the bundles below
   expect(types.map((t) => t.attributes("data-palette-type"))).toEqual(["model", "team", "check", "gate"]);
-  expect(w.get("[data-palette-type=check]").attributes("data-shape")).toBe("code");
-  expect(w.get("[data-palette-type=gate]").attributes("data-shape")).toBe("gate");
-  expect(w.get("[data-palette-type=model]").attributes("data-shape")).toBe("model");
+  expect(w.get("[data-palette-type=check]").attributes("data-shape")).toBe("work");
+  expect(w.get("[data-palette-type=gate]").attributes("data-shape")).toBe("work");
+  expect(w.get("[data-palette-type=model]").attributes("data-shape")).toBe("work");
   expect(w.findAll("[data-bundle]").map((b) => b.text())).toEqual(["layer", "fix"]);
 });
 
@@ -33,7 +33,7 @@ test("a click (or a tap, where nothing drags) adds one too", async () => {
   const w = mount(Palette, { props: { bundles: ["layer"] } });
   await w.get("[data-palette-type=gate]").trigger("click");
   await w.get("[data-bundle]").trigger("click");
-  expect(w.emitted("add")).toEqual([[{ type: "gate" }], [{ bundle: "layer" }]]);
+  expect(w.emitted("add")).toEqual([[{ kind: "WORK" }], [{ bundle: "layer" }]]);
 });
 
 test("read-only, nothing drags or adds", async () => {

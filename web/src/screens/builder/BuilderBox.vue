@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { GNode } from "./graph";
-import { protocolOf } from "./graph";
+
 import { SHAPE_CLASS, shapeOf } from "./shapes";
 
 /** One node on the canvas, in its type's shape; the canvas sets where it sits. A box validation found wrong is
@@ -9,21 +9,20 @@ import { SHAPE_CLASS, shapeOf } from "./shapes";
 const props = defineProps<{ node: GNode; selected?: boolean; problems?: string[] }>();
 const emit = defineEmits<{ pick: [id: string]; open: [id: string] }>();
 
-const shape = computed(() => shapeOf(props.node.type));
+const shape = computed(() => shapeOf(props.node.kind));
 const text = (v: unknown): string => (Array.isArray(v) ? v.join(", ") : typeof v === "string" || typeof v === "number" ? String(v) : "");
 /** The second line: a model step's type and role, a check's callable, a bundle's list. */
 const sub = computed(() => {
   const s = props.node.spec;
   if (shape.value === "model") {
-    const proto = protocolOf(props.node.type, s);
-    const kind = proto && (props.node.type === "model" || proto !== props.node.type) ? `${props.node.type} (${proto})` : props.node.type;
+    const kind = props.node.kind;
     return [kind, text(s.role)].filter(Boolean).join(" · ");
   }
   if (shape.value === "code" || shape.value === "gate") return text(s.run);
   return s.each ? `for each ${text(s.each)}` : "";
 });
 const bad = computed(() => (props.problems?.length ?? 0) > 0);
-const title = computed(() => [`${props.node.id} (${props.node.type})`, ...(props.problems ?? [])].join("\n"));
+const title = computed(() => [`${props.node.id} (${props.node.kind})`, ...(props.problems ?? [])].join("\n"));
 </script>
 
 <template>
@@ -32,7 +31,7 @@ const title = computed(() => [`${props.node.id} (${props.node.type})`, ...(props
     data-box
     :data-node="node.id"
     :data-shape="shape"
-    :data-type="node.type"
+    :data-kind="node.kind"
     :data-problem="bad ? 'true' : undefined"
     :aria-pressed="selected ? 'true' : 'false'"
     :title="title"
