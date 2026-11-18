@@ -7,7 +7,7 @@ Gates are evidence on WORK nodes, not their own kind."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -49,7 +49,7 @@ class StepCount(Strict):
     steps: int
 
 
-GateEvidence = Union[ScriptEvidence, PromptJudgment, StepCount]
+GateEvidence = ScriptEvidence | PromptJudgment | StepCount
 
 
 class LoopBound(Strict):
@@ -72,6 +72,7 @@ class WorkNode(Strict):
     """One agent task, or one shell command."""
 
     kind: Literal["WORK"]
+    role: str | None = None  # the seat a prompt/prompt_id WORK node calls; a run node ignores it
     prompt: str | None = None
     prompt_id: str | None = None
     run: str | None = None
@@ -83,7 +84,7 @@ class WorkNode(Strict):
     events: dict[str, str] = {}
 
     @model_validator(mode="after")
-    def _check_sources(self) -> "WorkNode":
+    def _check_sources(self) -> WorkNode:
         n = sum(bool(v) for v in (self.prompt, self.prompt_id, self.run))
         if n != 1:
             raise ValueError("WORK node needs exactly one of prompt/prompt_id/run")
@@ -104,7 +105,7 @@ class RoundRobinNode(Strict):
     events: dict[str, str] = {}
 
     @model_validator(mode="after")
-    def _check_roles(self) -> "RoundRobinNode":
+    def _check_roles(self) -> RoundRobinNode:
         if len(self.roles) < 2:
             raise ValueError("ROUND_ROBIN needs >=2 roles")
         return self
@@ -125,7 +126,7 @@ class SupervisorWorkersNode(Strict):
     events: dict[str, str] = {}
 
     @model_validator(mode="after")
-    def _check_workers(self) -> "SupervisorWorkersNode":
+    def _check_workers(self) -> SupervisorWorkersNode:
         if self.workers < 1:
             raise ValueError("SUPERVISOR_WORKERS needs workers >= 1")
         return self
@@ -147,14 +148,14 @@ class KIndependentTeamsNode(Strict):
     events: dict[str, str] = {}
 
     @model_validator(mode="after")
-    def _check_teams(self) -> "KIndependentTeamsNode":
+    def _check_teams(self) -> KIndependentTeamsNode:
         if self.teams < 1:
             raise ValueError("K_INDEPENDENT_TEAMS needs teams >= 1")
         return self
 
 
 NodeSpec = Annotated[
-    Union[WorkNode, RoundRobinNode, SupervisorWorkersNode, KIndependentTeamsNode],
+    WorkNode | RoundRobinNode | SupervisorWorkersNode | KIndependentTeamsNode,
     Field(discriminator="kind"),
 ]
 
@@ -194,6 +195,7 @@ def _unreachable_nodes(spec: WorkflowSpec) -> set[str]:
     unreachable = set(spec.nodes) - reached
     # If graph is cyclic and starts[0] can reach itself, all may be reached.
     return unreachable if unreachable else set()
+
 
 def validate_workflow(raw: dict[str, Any]) -> list[str]:
     if not raw.get("nodes"):
