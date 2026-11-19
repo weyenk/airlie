@@ -41,16 +41,17 @@ test("a loop line is dashed and runs below the boxes; a line's condition shows o
   expect(loop.attributes("stroke-dasharray")).toBeTruthy();
   const ys = (loop.attributes("d") ?? "").match(/V (\d+)/)?.[1];
   expect(Number(ys)).toBeGreaterThan(24 + 56);
-  const text = "workflows:\n  w:\n    nodes:\n      a: {title: check, run: x.a, to: [{node: b, when: v == yes}]}\n      b: {title: check, run: x.b}\n";
+  const text =
+    "workflows:\n  w:\n    nodes:\n      a: {kind: WORK, run: x.a}\n      b: {kind: WORK, run: x.b}\n    edges:\n      a: [{target: b, when: v == yes}]\n";
   expect(mountCanvas(graphOf(text)).get("[data-edge-label]").text()).toBe("if v == yes · order");
 });
 
 test("a click on a box selects it; the selected box shows pressed", async () => {
   const w = mountCanvas(graphOf(STORY_YAML), "base");
   expect(w.get("[data-node=base]").attributes("aria-pressed")).toBe("true");
-  expect(w.get("[data-node=gate]").attributes("aria-pressed")).toBe("false");
-  await w.get("[data-node=gate]").trigger("click");
-  expect(w.emitted("select")).toEqual([["gate"]]);
+  expect(w.get("[data-node=layers]").attributes("aria-pressed")).toBe("false");
+  await w.get("[data-node=layers]").trigger("click");
+  expect(w.emitted("select")).toEqual([["layers"]]);
 });
 
 test("an empty graph says how to start", () => {
@@ -170,7 +171,7 @@ test("a box with problems is outlined and says them on hover", () => {
   const base = w.get("[data-box][data-node=base]");
   expect(base.attributes("data-problem")).toBe("true");
   expect(base.attributes("title")).toContain("check needs run");
-  expect(w.get("[data-box][data-node=gate]").attributes("data-problem")).toBeUndefined();
+  expect(w.get("[data-box][data-node=layers]").attributes("data-problem")).toBeUndefined();
 });
 
 test("a node type or a bundle dropped from the palette is placed where it lands", async () => {
@@ -203,16 +204,16 @@ const outs = (w: ReturnType<typeof editable>, id: string) => w.findAll(`[data-po
 
 test("a box has an out-port per output, one edge port and one in-port", () => {
   const w = editable(graphOf(STORY_YAML));
-  expect(outs(w, "gate")).toEqual(["work"]);
+  expect(outs(w, "layers")).toEqual(["work"]);
   expect(outs(w, "survey")).toEqual(["survey"]);
   expect(outs(w, "layers")).toEqual(["layers"]);
   expect(outs(w, "intake")).toEqual([]);
-  expect(w.findAll("[data-port=edge][data-node=gate]")).toHaveLength(1);
-  expect(w.findAll("[data-port=in][data-node=gate]")).toHaveLength(1);
+  expect(w.findAll("[data-port=edge][data-node=layers]")).toHaveLength(1);
+  expect(w.findAll("[data-port=in][data-node=layers]")).toHaveLength(1);
 });
 
 test("a box with several outputs stacks one port each down its right edge, inside the box", () => {
-  const text = "workflows:\n  w:\n    nodes:\n      a: {title: check, run: x.a, outputs: {one: text, two: text, three: text}}\n      b: {title: check, run: x.b}\n";
+  const text = "workflows:\n  w:\n    nodes:\n      a: {kind: WORK, run: x.a, outputs: {one: text, two: text, three: text}}\n      b: {kind: WORK, run: x.b}\n";
   const w = editable(graphOf(text));
   expect(outs(w, "a")).toEqual(["one", "two", "three"]);
   const ports = w.findAll("[data-node=a]").filter((p) => ["out", "edge"].includes(p.attributes("data-port") ?? ""));
@@ -264,7 +265,7 @@ test("every line is labelled with what it carries, or order", () => {
   expect(labels).toHaveLength(graph.edges.length);
   expect(labels.some((t) => t.includes("survey") && !t.startsWith("if"))).toBe(true);
   expect(labels).toContain("order");
-  const order = editable(graphOf("workflows:\n  w:\n    nodes:\n      a: {title: check, run: x.a}\n      b: {title: check, run: x.b}\n      a2: {title: check, run: x.c}\n"));
+  const order = editable(graphOf("workflows:\n  w:\n    nodes:\n      a: {kind: WORK, run: x.a}\n      b: {kind: WORK, run: x.b}\n      a2: {title: check, run: x.c}\n"));
   expect(order.findAll("[data-edge-label]")).toHaveLength(0);
 });
 
@@ -306,26 +307,26 @@ test("line geometry and labels stay inside the canvas", () => {
 test("the bundle box shows built.{item} and satisfied.{item} out-ports", () => {
   const w = editable(graphOf(STORY_YAML));
   expect(outs(w, "build_layers")).toEqual(["built", "satisfied"]);
-  expect(w.findAll("[data-port=out][data-node=build_layers]").map((p) => p.text())).toEqual(["built.{item}", "satisfied.{item}"]);
-  expect(w.get("[data-box][data-node=build_layers]").attributes("data-shape")).toBe("work");
+  expect(w.findAll("[data-port=out][data-node=layers]").map((p) => p.text())).toEqual(["built.{item}", "satisfied.{item}"]);
+  expect(w.get("[data-box][data-node=layers]").attributes("data-shape")).toBe("work");
 });
 
 test("a bundle box that declares no outputs shows the workflow's declared ones", () => {
-  const graph = graphOf("workflows:\n  w:\n    nodes:\n      b: {title: bundle, workflow: layer, each: layers}\n");
+  const graph = graphOf("workflows:\n  w:\n    nodes:\n      b: {kind: BUNDLE}\n");
   const layer = graphOf(LAYER_YAML);
   const w = editable({ ...graph, bundles: { layer } });
   expect(w.findAll("[data-port=out][data-node=b]").map((p) => p.text())).toEqual(["drafted.{item}", "built.{item}", "satisfied.{item}"]);
 });
 
 test("the selected box shows its card; Edit and a double-click open the box", async () => {
-  const w = editable(graphOf(STORY_YAML), { selected: "gate" });
+  const w = editable(graphOf(STORY_YAML), { selected: "layers" });
   const card = w.get("[data-box-card]");
-  expect(card.text()).toContain("gate");
+  expect(card.text()).toContain("layers");
   expect(card.text()).toContain("check");
   await w.get("[data-box-edit]").trigger("click");
-  expect(w.emitted("open")).toEqual([["gate"]]);
+  expect(w.emitted("open")).toEqual([["layers"]]);
   await w.get("[data-box][data-node=base]").trigger("dblclick");
-  expect(w.emitted("open")).toEqual([["gate"]]);
+  expect(w.emitted("open")).toEqual([["layers"]]);
   expect(w.emitted("enter")).toEqual([["base"]]); // a double-click enters: a bundle box opens its workflow, any other box its fields
   await w.setProps({ selected: null });
   expect(w.find("[data-box-card]").exists()).toBe(false);
@@ -344,13 +345,13 @@ test("a drag from the layer bundle's built port to a downstream box connects wit
   const graph = graphOf(STORY_YAML);
   const w = editable(graph);
   const to = pos(graph, "story_card");
-  await press(w.get("[data-port=out][data-node=build_layers][data-artifact=built]"), 0, 0);
+  await press(w.get("[data-port=out][data-node=layers][data-artifact=built]"), 0, 0);
   pointer("pointerup", to.x + 60, to.y + 20);
-  expect(w.emitted("connect")).toEqual([["build_layers", "story_card", { artifacts: ["built"] }]]);
+  expect(w.emitted("connect")).toEqual([["layers", "agree_plain", { artifacts: ["built"] }]]);
 });
 
 test("a bundle box that declares no outputs offers the workflow's, and a drag from one connects", async () => {
-  const graph = graphOf("workflows:\n  w:\n    nodes:\n      b: {title: bundle, workflow: layer, each: layers}\n      c: {title: check, run: x.c}\n");
+  const graph = graphOf("workflows:\n  w:\n    nodes:\n      b: {kind: BUNDLE}\n      c: {kind: WORK, run: x.c}\n");
   const layer = graphOf(LAYER_YAML);
   const w = editable({ ...graph, bundles: { layer } });
   const to = pos(graph, "c");
@@ -360,7 +361,7 @@ test("a bundle box that declares no outputs offers the workflow's, and a drag fr
 });
 
 test("read-only, a click shows no box card", async () => {
-  const w = mountCanvas(graphOf(STORY_YAML), "gate");
+  const w = mountCanvas(graphOf(STORY_YAML), "layers");
   expect(w.find("[data-box-card]").exists()).toBe(false);
 });
 
@@ -386,7 +387,7 @@ test("a line whose first artifact is not one of the source's ports leaves from t
 });
 
 test("the ports of a box do not overlap", () => {
-  const text = "workflows:\n  w:\n    nodes:\n      a: {title: check, run: x.a, outputs: {one: text, two: text, three: text}}\n";
+  const text = "workflows:\n  w:\n    nodes:\n      a: {kind: WORK, run: x.a, outputs: {one: text, two: text, three: text}}\n";
   const w = editable(graphOf(text));
   const tops = w
     .findAll("[data-node=a]")
@@ -399,7 +400,7 @@ test("labels read exactly: the artifact, the condition and order, the loop", () 
   const w = editable(graphOf(STORY_YAML));
   const label = (from: string, to: string) => w.get(`[data-edge=line][data-from=${from}][data-to=${to}]`).element.parentElement!.querySelector("[data-edge-label]")!.textContent;
   expect(label("survey", "survey_note")).toBe("survey");
-  expect(label("gate", "request")).toBe("if config.story.survey · order");
+  expect(label("layers", "request")).toBe("if config.story.survey · order");
   expect(label("intake", "base")).toBe("order");
   const layer = editable(graphOf(LAYER_YAML));
   const loop = layer.get("[data-edge=loop]");
