@@ -15,8 +15,8 @@ test("parseWorkflow reads one workflow's file: its name, title, inputs, nodes an
   expect(spec.inputs).toEqual(["card", "repo"]);
   expect(spec.nodes.intake).toMatchObject({ kind: "WORK", run: "story intake" });
   expect(spec.nodes.base).toMatchObject({ kind: "WORK", outputs: { base: "json" } });
-  expect((spec.edges.base[0] as Record<string, unknown>).target).toBe("to_build");
-  expect((spec.edges.layers[1] as Record<string, unknown>).when).toBe("config.story.amigos.enabled");
+  expect((spec.edges?.base[0] as Record<string, unknown>).target).toBe("to_build");
+  expect((spec.edges?.layers[1] as Record<string, unknown>).when).toBe("config.story.amigos.enabled");
   expect(layout).toEqual({});
 });
 
@@ -74,9 +74,9 @@ test("parseWorkflow keeps what it does not model: node fields and edge line keys
 });
 
 /** A line with nothing but a target is the same wire however it is spelled. */
-const normEdges = (edges: Record<string, unknown[]>): Record<string, unknown[]> =>
+const normEdges = (edges: Record<string, unknown[]> | undefined): Record<string, unknown[]> =>
   Object.fromEntries(
-    Object.entries(edges).map(([from, lines]) => [
+    Object.entries(edges ?? {}).map(([from, lines]) => [
       from,
       (lines as Record<string, unknown>[]).map((line) =>
         typeof line === "object" && line !== null && Object.keys(line).length === 1

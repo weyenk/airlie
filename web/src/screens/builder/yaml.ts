@@ -46,7 +46,7 @@ export function parseWorkflow(text: string): { name: string; spec: WorkflowSpec;
         if (typeof line === "string") { parsed.push(line); continue; }
         if (!isRecord(line) || typeof line.target !== "string") throw new Error(`${w}: edge from ${from} needs a target`);
         if (line.loop !== undefined && !(isRecord(line.loop) && hasMax(line.loop.max))) throw new Error(`${w}: edge from ${from}: loop needs max`);
-        parsed.push(line as any);
+        parsed.push(line as unknown as Line);
       }
       edges[from] = parsed;
     }

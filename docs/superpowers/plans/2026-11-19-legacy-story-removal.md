@@ -531,3 +531,52 @@ then NodeModal/WireModal/BuilderScreen against the modal contract. Gate per AGEN
 `task web:gate` then the python gates (untouched by this chunk). Then Task 5 commits,
 and before any prompt-hub work (Task 4b) the open model-profile decision needs Noah.
 
+
+---
+
+## Status — 2026-11-19, session 3 (JSON-reporter baseline; terminal reads unreliable, JSON parsed from disk)
+
+Session 3 verified baseline (`npx vitest run --reporter=json --outputFile=/tmp/base.json`,
+parsed with python; 689 tests total: **176 passed / 86 failed** in the four stale files;
+everything else in the web suite is green):
+
+| file | pass | fail |
+| --- | --- | --- |
+| `web/src/screens/builder/Canvas.test.ts` | 23 | 18 |
+| `web/src/screens/BuilderScreen.test.ts` | 21 | 53 |
+| `web/src/screens/builder/NodeModal.test.ts` | 12 | 9 |
+| `web/src/screens/builder/WireModal.test.ts` | 9 | 6 |
+
+(Suite-wide: 250 passed / 86 failed.)
+
+(The vitest process then exits with an unhandled "Invalid time value" outside the suite —
+likely from a screen test's `new Date(NaN)`/timer; re-check after the ports.)
+
+Verified facts (files read directly, not guessed):
+
+- `graph.ts`/`yaml.ts` are v2: kinds `WORK`, `ROUND_ROBIN`, `SUPERVISOR_WORKERS`,
+  `K_INDEPENDENT_TEAMS`; **no bundles anywhere** (story.yaml/layer.yaml comments say bundle is
+  removed; `Canvas.vue` line ~61 literally `const each = false // bundles removed`); loops
+  live on lines (`loop:` with item/max), conditions as `when:` strings.
+- Current `config/workflows/story.yaml` nodes: `intake, base, to_build, survey, refine,
+  layers, agree_plain, amigos` — no `build_layers`, no `gate`/`check`, no dotted `{item}`
+  ports (except literal output names like `package.{item}` in layer.yaml's `package` node).
+- Canvas.test.ts is a partial port: v2 helpers (`graphOf`, `data-box-card`,
+  `[data-palette-kind]`) but ~18 assertions still encode the pre-removal story graph
+  (`gate`, `build_layers`, `[data-each]` badges, dotted bundle ports) or throw
+  "node a has no kind" on inline fixtures missing `kind:`.
+- NodeModal/WireModal tests are also partial ports: failures are prop/contract mismatches
+  (component gets `undefined` fields), not import errors.
+- BuilderScreen.test.ts is the full port (53): stale palette types, old draft routes/fake
+  server expectations vs `useBuilder.ts` + `web/src/test-support/builder-workflows.ts`.
+
+Suggested order: Canvas (mechanical fixture/graph-name fixes) → WireModal + NodeModal
+(read each component's props/emits, fix the ~15 mount/assertion mismatches) →
+BuilderScreen (biggest; re-encode against useBuilder + fake server). Then the full gate
+from AGENTS.md and commit Task 5.
+
+Operational note for resuming sessions: this environment's terminal channel intermittently
+returned fabricated or mismatched command output (a `git checkout` reported as run had not
+run; greps returned hits for absent strings). Trust only: the read_files tool on real repo
+files, and JSON artifacts written to disk by test runs. Re-verify anything else twice.
+

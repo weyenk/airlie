@@ -3,13 +3,10 @@
 import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
 import {
   addNode,
-  withBundle,
-  bundleNames,
   connect,
   emptyGraph,
   fromWorkflow,
   moveNode,
-  portsOf,
   producersOf,
   readable,
   removeEdge,
@@ -54,7 +51,7 @@ test("connect draws the line and adds each artifact it carries to the target's i
   const g = connect(small(), "a", "c", { artifacts: ["verdict"] });
   expect(lineOf(g, "a", "c")).toEqual([{ from: "a", to: "c", artifacts: ["verdict"] }]);
   expect(specOf(g, "c").inputs).toEqual(["verdict"]);
-  expect(toWorkflow(g).spec.edges.a).toEqual(["b", "c"]);
+  expect(toWorkflow(g).spec.edges?.a).toEqual(["b", "c"]);
 });
 
 test("connect adds an input once: a second line between the same nodes is merged into the first", () => {
@@ -75,7 +72,7 @@ test("connect with no artifacts draws an ordering line; a loop line keeps its bo
   expect(specOf(g, "d")).not.toHaveProperty("inputs");
   g = connect(g, "b", "a", { loop: { max: 3, carry: "notes" } });
   expect(lineOf(g, "b", "a")).toEqual([{ from: "b", to: "a", artifacts: [], loop: { max: 3, carry: "notes" } }]);
-  expect(toWorkflow(g).spec.edges.b).toEqual([{ target: "a", loop: { max: 3, carry: "notes" } }]);
+  expect(toWorkflow(g).spec.edges?.b).toEqual([{ target: "a", loop: { max: 3, carry: "notes" } }]);
 });
 
 test("connect refuses an artifact its source does not write, a loop without its max, a box that is not there", () => {
@@ -122,7 +119,7 @@ test("renameOutput refuses when a reader's prompt file names it, listing the rea
   expect(renameOutput(g, "a", "notes", "remarks")).toEqual({ refused: ["b"] });
   // a prompt file known not to name it is no reason to refuse
   const ok = renameOutput(g, "a", "notes", "remarks", { "fix-brief": ["card"] });
-  expect("refused" in ok).toBe(false);
+  expect("refused" in (ok ?? {})).toBe(false);
   expect(renameOutput(g, "a", "notes", "remarks", { "fix-brief": ["notes"] })).toEqual({ refused: ["b"] });
 });
 
@@ -155,7 +152,7 @@ test("renameOutput follows the output into a condition, not just into lines", ()
   const g = renameOutput(graphOf(STORY_YAML), "to_build", "to_build", "ready_to_build");
   if ("refused" in g) throw new Error("refused");
   const spec = toWorkflow(g).spec;
-  expect(spec.edges.to_build).toEqual([
+  expect(spec.edges?.to_build).toEqual([
     { target: "refine", when: "ready_to_build" },
     { target: "survey", when: "ready_to_build" },
   ]);
@@ -252,7 +249,7 @@ test("toWorkflow: the inputs, outputs and nodes in the graph's order; a line is 
   expect(Object.keys(spec.nodes)).toEqual(["a", "b", "c", "d"]);
   expect(spec.nodes.a).toMatchObject({ kind: "WORK", run: "x.a" });
   expect(spec.nodes.a).not.toHaveProperty("to");
-  expect(spec.edges.a).toEqual(["b", { target: "c", when: "verdict == yes" }]);
+  expect(spec.edges?.a).toEqual(["b", { target: "c", when: "verdict == yes" }]);
   expect(layout.a).toEqual({ x: 480, y: 0 });
   expect(toWorkflow(emptyGraph("new")).spec).toEqual({ inputs: ["card", "repo"], outputs: [], nodes: {}, edges: {} });
 });
@@ -282,7 +279,7 @@ test("updateEdge replaces what a line carries, and sets or clears its when and l
   // absent when and loop clear them: the YAML entry goes back to a bare name
   g = updateEdge(g, "a", "c", { artifacts: ["notes"] });
   expect(lineOf(g, "a", "c")).toEqual([{ from: "a", to: "c", artifacts: ["notes"] }]);
-  expect(toWorkflow(g).spec.edges.a).toEqual(["b", "c"]);
+  expect(toWorkflow(g).spec.edges?.a).toEqual(["b", "c"]);
 });
 
 test("updateEdge with no artifacts is an ordering line; an input another line brings stays", () => {

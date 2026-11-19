@@ -125,9 +125,12 @@ function relabel(graph: Graph): Graph {
 /** The boxes and lines of one workflow: a box per node in the file's order, a line per edge entry. */
 export function fromWorkflow(name: string, spec: WorkflowSpec, layout: Layout = {}): Graph {
   const nodes: GNode[] = Object.entries(spec.nodes).map(([id, n]) => {
-    const { kind, to, ...rest } = n as any;
+    const node = n as Record<string, unknown>;
+    const rest = { ...node };
+    delete rest.kind;
+    delete rest.to;
     const at = layout[id];
-    return { id, kind: (kind ?? (n as any).type ?? "WORK") as NodeKind, spec: rest, x: at?.x ?? 0, y: at?.y ?? 0, placed: at !== undefined };
+    return { id, kind: String(node.kind ?? node.type ?? "WORK") as NodeKind, spec: rest, x: at?.x ?? 0, y: at?.y ?? 0, placed: at !== undefined };
   });
   const edges: GEdge[] = [];
   // New schema: edges at workflow level
@@ -139,11 +142,11 @@ export function fromWorkflow(name: string, spec: WorkflowSpec, layout: Layout = 
   }
   // Old schema compat: `to` on each node (tests still use this)
   for (const [id, n] of Object.entries(spec.nodes)) {
-    const to = (n as any).to;
+    const to = (n as Record<string, unknown>).to;
     if (Array.isArray(to)) {
       for (const entry of to) {
         // Old `to` entries use {node: ...} while new `edges` use {target: ...}
-        const normalized = typeof entry === "string" ? entry : { target: (entry as any).node ?? (entry as any).target, ...((entry as any).when !== undefined ? { when: (entry as any).when } : {}), ...((entry as any).loop !== undefined ? { loop: (entry as any).loop } : {}) };
+        const normalized = typeof entry === "string" ? entry : { target: (entry as Record<string, unknown>).node ?? (entry as Record<string, unknown>).target, ...((entry as Record<string, unknown>).when !== undefined ? { when: (entry as Record<string, unknown>).when } : {}), ...((entry as Record<string, unknown>).loop !== undefined ? { loop: (entry as Record<string, unknown>).loop } : {}) };
         const edge = lineOf(id, normalized);
         if (edge) edges.push(edge);
       }
@@ -281,7 +284,10 @@ export function withBundle(graph: Graph, name: string, ports: Ports): Graph {
 }
 
 /** The names of the workflows the graph's bundle boxes run, each once. */
-export const bundleNames = (_graph: Graph): string[] => [];
+export const bundleNames = (_graph: Graph): string[] => {
+  void _graph;
+  return [];
+};
 /** A workflow's ports: what it is handed and what it hands back. */
 export const portsOf = (spec: { inputs?: string[]; outputs?: string[] }): Ports => ({ inputs: [...(spec.inputs ?? [])], outputs: [...(spec.outputs ?? [])] });
 

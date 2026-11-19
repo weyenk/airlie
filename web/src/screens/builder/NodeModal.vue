@@ -39,7 +39,6 @@ const kind = computed(() => props.node.kind);
 const isCode = computed(() => kind.value === "WORK");
 const isModel = computed(() => kind.value === "WORK");
 const isMeeting = computed(() => kind.value === "ROUND_ROBIN");
-const proto = computed(() => null as string | null);
 const type = kind;
 const text = (v: unknown): string => (typeof v === "string" ? v : typeof v === "number" ? String(v) : "");
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
