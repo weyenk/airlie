@@ -25,9 +25,8 @@ test("a box per node, placed where the graph says, in its type's shape", () => {
   expect(shape("layers")).toBe("work"); // a named catalog operation until Part 2
   expect(shape("amigos")).toBe("work");
   expect(shape("intake")).toBe("work");
-  expect(shape("review")).toBe("work");
-  expect(shape("build_layers")).toBe("work");
-  expect(w.get("[data-box][data-node=build_layers]").text()).toContain("layer");
+  expect(shape("agree_plain")).toBe("work");
+  expect(w.get("[data-box][data-node=layers]").text()).toContain("plan_layers");
 });
 
 test("a wire per line", () => {
