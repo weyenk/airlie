@@ -354,8 +354,8 @@ const label = "text-muted-foreground";
                   <Button type="button" size="xs" variant="ghost" data-prompt-use-file @click="fileMode = true">Use a prompt file…</Button>
                 </template>
               </PromptText>
-              <PromptText v-if="proto === "WORK" || isMeeting" field="turn" :label="isMeeting ? 'turn (optional)' : 'turn'" :value="text(spec.turn)" :names="inputs" @commit="(t) => setTextValue('turn', t)" />
-              <PromptText v-if="type === "SUPERVISOR_WORKERS"" field="worker" label="worker (each worker's brief)" :value="text(spec.worker)" :names="[...inputs, 'assignment']" @commit="(t) => setTextValue('worker', t)" />
+              <PromptText v-if="isMeeting" field="turn" :label="isMeeting ? 'turn (optional)' : 'turn'" :value="text(spec.turn)" :names="inputs" @commit="(t) => setTextValue('turn', t)" />
+              <PromptText v-if="type === 'SUPERVISOR_WORKERS' || type === 'K_INDEPENDENT_TEAMS'" field="worker" label="worker (each worker's brief)" :value="text(spec.worker)" :names="[...inputs, 'assignment']" @commit="(t) => setTextValue('worker', t)" />
             </template>
 
             <template v-else-if="isCode">
@@ -405,20 +405,20 @@ const label = "text-muted-foreground";
 
           <!-- the side column: everything else the type reads -->
           <section class="flex min-h-0 flex-col gap-3 sm:overflow-y-auto sm:pr-1">
-            <label v-if="type === 'WORK'" data-form-field="protocol" class="flex flex-col gap-1">
+            <label v-if="false" data-form-field="protocol" class="flex flex-col gap-1">
               <span :class="label">protocol</span>
               <select data-input="protocol" :value="text(spec.protocol) || 'WORK'" :class="control" @change="set('protocol', valueOf($event))">
                 <option v-for="p in NODE_KINDS" :key="p" :value="p">{{ p }}</option>
               </select>
             </label>
-            <label v-if="proto === "WORK" || proto === "WORK" || proto === "WORK"" data-form-field="role" class="flex flex-col gap-1">
+            <label v-if="type === 'WORK' || type === 'SUPERVISOR_WORKERS' || type === 'K_INDEPENDENT_TEAMS'" data-form-field="role" class="flex flex-col gap-1">
               <span :class="label">role</span>
               <select data-input="role" :value="role" :class="control" @change="set('role', valueOf($event))">
                 <option value="">pick a role</option>
                 <option v-for="r in options(catalog.roles, role)" :key="r" :value="r">{{ r }}</option>
               </select>
             </label>
-            <div v-if="type === "SUPERVISOR_WORKERS"" data-form-field="role" class="grid grid-cols-2 gap-2">
+            <div v-if="type === 'SUPERVISOR_WORKERS'" data-form-field="role" class="grid grid-cols-2 gap-2">
               <label v-for="s in ['supervisor', 'worker'] as const" :key="s" class="flex flex-col gap-1">
                 <span :class="label">{{ s }} role</span>
                 <select :data-input="`role.${s}`" :value="text(teamRole[s])" :class="control" @change="setTeamRole(s, valueOf($event))">
@@ -446,7 +446,7 @@ const label = "text-muted-foreground";
               <Button v-if="unseated.length" type="button" size="xs" variant="outline" data-meeting-seat class="self-start" @click="seat">Add the protocol's {{ unseated.join(", ") }}</Button>
             </fieldset>
 
-            <label v-if="proto === "WORK" || proto === "WORK"" data-form-field="session" class="flex flex-col gap-1">
+            <label v-if="isMeeting" data-form-field="session" class="flex flex-col gap-1">
               <span :class="label">session (continue a conversation)</span>
               <select data-input="session" :value="text(spec.session)" :disabled="!sessionChoices.length && !text(spec.session)" :class="control" @change="set('session', valueOf($event) || undefined)">
                 <option value="">a new one</option>
@@ -454,7 +454,7 @@ const label = "text-muted-foreground";
               </select>
               <span v-if="sessionReason" data-session-reason class="text-xs text-muted-foreground">{{ sessionReason }}</span>
             </label>
-            <label v-if="proto === "WORK"" data-form-field="advisor" class="flex flex-col gap-1">
+            <label v-if="isMeeting" data-form-field="advisor" class="flex flex-col gap-1">
               <span :class="label">advisor</span>
               <input data-input="advisor" :value="text(spec.advisor)" :class="[control, 'font-mono']" @change="setText('advisor', $event)" />
             </label>
@@ -507,18 +507,18 @@ const label = "text-muted-foreground";
               <span :class="label">tools (comma separated)</span>
               <input data-input="tools" :value="(Array.isArray(spec.tools) ? spec.tools : []).join(', ')" :class="[control, 'font-mono']" @change="setTools" />
             </label>
-            <label v-if="type === "SUPERVISOR_WORKERS"" data-form-field="workers" class="flex flex-col gap-1">
+            <label v-if="type === 'SUPERVISOR_WORKERS'" data-form-field="workers" class="flex flex-col gap-1">
               <span :class="label">workers (at most this many at once)</span>
               <input data-input="workers" type="number" min="1" :value="text(spec.workers)" :class="control" @change="setWorkers" />
             </label>
-            <label v-if="type !== "WORK"" data-form-field="on_fail" class="flex flex-col gap-1">
+            <label v-if="type !== 'WORK'" data-form-field="on_fail" class="flex flex-col gap-1">
               <span :class="label">on_fail</span>
               <select data-input="on_fail" :value="text(spec.on_fail) || 'block'" :class="control" @change="set('on_fail', valueOf($event) === 'block' ? undefined : valueOf($event))">
                 <option value="block">block (the card stops)</option>
                 <option value="continue">continue</option>
               </select>
             </label>
-            <fieldset v-if="type !== "WORK"" data-form-field="events" class="grid grid-cols-2 gap-2">
+            <fieldset v-if="type !== 'WORK'" data-form-field="events" class="grid grid-cols-2 gap-2">
               <legend :class="[label, 'mb-1']">events (the kinds its outcomes emit)</legend>
               <label v-for="o in ['done', 'failed'] as const" :key="o" class="flex flex-col gap-0.5">
                 <span class="text-xs">{{ o }}</span>

@@ -20,9 +20,9 @@ test("placing a bundle item adds a bundle node that runs it, with no each box", 
   await flushPromises();
   b.place({ bundle: "layer" });
   const [node] = b.graph.value.nodes;
-  expect(node.kind).toBe("work");
+  expect(node.kind).toBe("WORK");
   expect(node.spec).toMatchObject({ workflow: "layer" });
-  expect(b.graph.value.nodes.map((n) => n.kind)).toEqual(["bundle"]);
+  expect(b.graph.value.nodes.map((n) => n.kind)).toEqual(["WORK"]);
   expect(b.selected.value).toBe(node.id);
 });
 
@@ -98,43 +98,39 @@ const shippedDetail = (name: string) => ({
   pr: null,
 });
 
-test("loading the shipped story reads the ports of the bundle its build_layers box runs; the YAML is unchanged", async () => {
+test("loading the shipped story reads no other workflow: every box is self-contained, and the YAML is unchanged", async () => {
   api.getWorkflowDef.mockReset().mockImplementation(async (name: string) => shippedDetail(name));
   const b = useBuilder(ref("story"));
   await b.load("story");
   await flushPromises();
-  expect(api.getWorkflowDef).toHaveBeenCalledWith("layer");
-  expect((b.graph.value?.bundles ?? {}).layer).toEqual({ inputs: ["card", "repo", "story", "layers", "base", "gate", "agreement"], outputs: ["drafted", "built.{item}", "satisfied.{item}"] });
+  expect(api.getWorkflowDef).toHaveBeenCalledWith("story"); // only the open workflow: a box names its member, it is not opened here
+  expect((b.graph.value?.bundles ?? {}).layer).toBeUndefined(); // nothing is read in, so nothing fills the bundle list
   expect(b.dirty.value).toBe(false);
-  expect(b.yamlText.value).not.toContain("bundles");
+  expect(b.yamlText.value.startsWith("workflows:")).toBe(true); // comments are not kept, structure is
+  expect(b.yamlText.value).toContain("story:");
 });
 
-test("a bundle box placed from the palette gets its bundle's ports: it offers the bundle's outputs", async () => {
+test("a placed box's ports are its own: nothing is fetched for the workflow it names", async () => {
   api.getWorkflowDef.mockReset().mockImplementation(async (name: string) => shippedDetail(name));
   const b = useBuilder(ref("new"));
   await flushPromises();
   b.place({ bundle: "layer" });
   const id = b.graph.value.nodes[0].id;
-  expect(outputsOfNode(b.graph.value, id)).toEqual([]); // not read yet
+  expect(outputsOfNode(b.graph.value, id)).toEqual([]); // ports follow what the box declares
   await flushPromises();
-  expect(api.getWorkflowDef).toHaveBeenCalledWith("layer");
-  expect(outputsOfNode(b.graph.value, id)).toEqual(["drafted", "built", "satisfied"]);
-  // a box whose workflow changes to one not read yet asks for it
-  b.edit((g) => updateNode(g, id, { ...g.nodes[0].spec, workflow: "story" }));
-  await flushPromises();
-  expect(api.getWorkflowDef).toHaveBeenCalledWith("story");
-  expect((b.graph.value?.bundles ?? {}).story).toEqual({ inputs: ["card", "repo"], outputs: [] });
+  expect(api.getWorkflowDef).not.toHaveBeenCalledWith("layer"); // naming a workflow opens nothing
+  b.edit((g) => updateNode(g, id, { ...g.nodes[0].spec, outputs: { built: { format: "markdown" } } }));
+  expect(outputsOfNode(b.graph.value, id)).toEqual(["built"]); // the box's own outputs are its ports
 });
 
-test("a bundle that cannot be read leaves its box without ports, and is not asked for again until the next load", async () => {
+test("placing workflow boxes reads no other definitions and reports no error", async () => {
   api.getWorkflowDef.mockReset().mockRejectedValue(new Error("gone"));
   const b = useBuilder(ref("new"));
   await flushPromises();
   b.place({ bundle: "layer" });
+  b.place({ bundle: "story" });
   await flushPromises();
-  b.place({ bundle: "layer" });
-  await flushPromises();
-  expect(api.getWorkflowDef).toHaveBeenCalledTimes(1);
+  expect(api.getWorkflowDef).not.toHaveBeenCalled(); // nothing is opened, so nothing can fail
   expect(b.graph.value?.bundles ?? {}).toEqual({});
   expect(b.error.value).toBeNull();
 });

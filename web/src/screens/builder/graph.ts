@@ -331,9 +331,13 @@ export function updateEdge(graph: Graph, from: string, to: string, patch: { arti
   if (patch.when) edge.when = patch.when;
   if (patch.loop) edge.loop = patch.loop.carry ? { max: patch.loop.max, carry: patch.loop.carry } : { max: patch.loop.max };
   const edges = graph.edges.map((e, i) => (i === at ? edge : e));
+  const carried = new Set<string>(graph.inputs);
+  graph.edges.forEach((e, i) => {
+    if (i !== at && e.to === to) for (const a of e.artifacts) carried.add(a);
+  });
   const g = editing(graph, [to], (s) => {
     const have = inputsOf(s);
-    const leaving = old.artifacts.filter((a) => !patch.artifacts.includes(a));
+    const leaving = old.artifacts.filter((a) => !patch.artifacts.includes(a) && !carried.has(a));
     const adding = patch.artifacts.filter((a) => !have.includes(a));
     if (leaving.length || adding.length) s.inputs = [...have.filter((i) => !leaving.includes(i)), ...adding];
   });

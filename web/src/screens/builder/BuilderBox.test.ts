@@ -12,9 +12,9 @@ test("a click picks the box and a double-click opens it", async () => {
   expect(w.emitted("open")).toEqual([["gate"]]);
 });
 
-test("a bundle box names the workflow it runs and what it runs for", () => {
-  const w = mount(BuilderBox, { props: { node: node({ id: "build", kind: "WORK", spec: { workflow: "layer", each: "layers" } }) } });
-  expect(w.attributes("data-shape")).toBe("work");
-  expect(w.get("[data-bundle-name]").text()).toBe("layer");
-  expect(w.text()).toContain("for each layers");
+test("a conversation box says what it agrees on or how many it runs", () => {
+  const rr = mount(BuilderBox, { props: { node: node({ id: "agree", kind: "ROUND_ROBIN", spec: { agreement_when: "all approved" } }) } });
+  expect(rr.text()).toContain("all approved");
+  const sw = mount(BuilderBox, { props: { node: node({ id: "panel", kind: "SUPERVISOR_WORKERS", spec: { workers: 3 } }) } });
+  expect(sw.text()).toContain("3 workers");
 });

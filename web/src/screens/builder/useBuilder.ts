@@ -166,7 +166,7 @@ export function useBuilder(name: Ref<string>) {
   /** A box of `type` (or a bundle box running `bundle`) at (x, y), selected; without a place, right of the rest. */
   function place(item: { kind: NodeKind } | { bundle: string }, x?: number, y?: number) {
     const type: NodeKind = "kind" in item ? item.kind : "WORK";
-    const id = freeId(graph.value, type);
+    const id = freeId(graph.value, type.toLowerCase());
     const at = x !== undefined && y !== undefined ? { x, y } : { x: graph.value.nodes.length ? Math.max(...graph.value.nodes.map((n) => n.x)) + COLUMN : 0, y: 0 };
     // a meeting sits the protocol's roles and reads its inputs (the catalog's); a bundle box runs its bundle
     const meeting = catalog.value.meetings[0];
