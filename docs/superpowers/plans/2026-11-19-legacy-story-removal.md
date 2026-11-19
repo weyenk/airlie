@@ -580,3 +580,36 @@ returned fabricated or mismatched command output (a `git checkout` reported as r
 run; greps returned hits for absent strings). Trust only: the read_files tool on real repo
 files, and JSON artifacts written to disk by test runs. Re-verify anything else twice.
 
+## Status — session 4 final (verified: hash checks + JSON reports)
+
+Baseline (all cross-checked): only uncommitted change is `web/src/screens/builder/Canvas.test.ts`
+(+24/−23), the completed v1→v2 port, **41/41 green**. `BuilderScreen.test.ts`, `NodeModal.test.ts`,
+`WireModal.test.ts` on disk are byte-identical to HEAD — earlier "edits applied" reports for them
+were transport fabrications. Counts (JSON reporter, two independent runs): BuilderScreen
+**21✓/53✕**, NodeModal **12✓/9✕**, WireModal **9✓/6✕**.
+
+Root causes (each verified against component sources and assertion diffs):
+1. **Test-isolation bug in BuilderScreen.test.ts**: assertions see stale DOM from earlier tests
+   (`[data-name] found more than one element`, `expected "draft" got "survey"`). Fix the
+   afterEach unmount / router-singleton reset FIRST — it likely clears a third of the 53 before
+   any fixture work.
+2. Every YAML-parsing BuilderScreen test embeds v1 fixtures (`type:`/`edges:`/
+   `take_card_as_story`, catalog with `checks:`/`meetings:`, the review-approval flow, 22-node
+   shipped-story assertions): rewrite fixtures to v2 (`kind: WORK`…, `to:` lines, catalog
+   `operations`). Mechanical, ~35 tests; the Canvas.test.ts port (+24/−23) is the template.
+3. **NodeModal.vue / WireModal.vue are half-ported** (leftover Task-4 work): v2 kind selects and
+   bundle sections are in, but NodeModal hardcodes the old checks (acceptance criteria / note
+   polish / build plan; run ids like `build_notes`) instead of taking them from the catalog
+   `operations` prop, and still renders meeting/steps/tools fields. Most of NodeModal's 9 test
+   failures wait on this component-side fix, not on test edits.
+
+Decision (delete-and-rewrite vs port): **port with trimming.** Deleting the 68 failures would
+destroy the isolation-bug discovery, ~30 still-valid behaviors (the 21 passing tests prove the
+harness: routes, saves, drafts, publish), and the only executable spec for NodeModal/WireModal's
+unfinished port. Order: (a) isolation fix + re-measure with `--reporter=json`;
+(b) fixture-port BuilderScreen region by region, JSON run between regions; (c) delete dead
+concepts when their fixture appears (check/gate nodes, review approval, upgraded-draft banner);
+(d) finish NodeModal/WireModal components against their tests; (e) re-validate, then amend or
+extend commit 95c1374.
+
+
