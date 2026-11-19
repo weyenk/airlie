@@ -10,10 +10,14 @@ const graph: Graph = fromWorkflow("t", {
   inputs: ["card"],
   outputs: [],
   nodes: {
-    a: { kind: "WORK", run: "x.a", inputs: ["card"], outputs: { verdict: "text", notes: "markdown" }, to: [{ node: "b", when: "verdict == pass" }] },
-    b: { kind: "WORK", role: "coder", prompt: "Fix {notes}.", inputs: ["notes"], outputs: { fixed: "text" }, to: [{ node: "a", loop: { max: 2, carry: "fixed" } }] },
+    a: { kind: "WORK", run: "x.a", inputs: ["card"], outputs: { verdict: "text", notes: "markdown" } },
+    b: { kind: "WORK", role: "coder", prompt: "Fix {notes}.", inputs: ["notes"], outputs: { fixed: "text" } },
     c: { kind: "WORK", run: "x.c" },
   } as Record<string, NodeSpec & { kind: NodeKind }>,
+  edges: {
+    a: [{ target: "b", when: "verdict == pass" }],
+    b: [{ target: "a", loop: { max: 2, carry: "fixed" } }],
+  },
 });
 const node = (id: string) => graph.nodes.find((n) => n.id === id)!;
 const line = (from: string, to: string) => graph.edges.find((e) => e.from === from && e.to === to) ?? null;

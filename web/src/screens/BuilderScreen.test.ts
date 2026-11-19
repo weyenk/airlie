@@ -48,6 +48,10 @@ const type = (el: Element | null, v: string) => {
   el!.dispatchEvent(new Event("input"));
 };
 
+/** Every screen mounted this test: `open` attaches to document.body, so each must be unmounted or the next test
+ *  queries a previous screen's still-live DOM (the teleported modals mount into body too). */
+const mounted: { unmount: () => void }[] = [];
+
 async function open(url = "/workflows/build/story") {
   const router = createRouter({
     history: createMemoryHistory(),
@@ -60,6 +64,7 @@ async function open(url = "/workflows/build/story") {
   await router.push(url);
   // through a RouterView, as the app shows it: the screen's leave guard needs its route
   const w = mount({ render: () => h(RouterView) }, { global: { plugins: [router] }, attachTo: document.body });
+  mounted.push(w);
   await flushPromises();
   return { w, router };
 }
@@ -77,7 +82,10 @@ beforeEach(() => {
   api.deleteDraft.mockReset().mockResolvedValue(undefined);
   sessionStorage.clear();
 });
-afterEach(() => {
+afterEach(async () => {
+  // Unmount before wiping the DOM: the modals teleport into body, and a screen left mounted keeps running its
+  // watchers and its router guards into the next test.
+  while (mounted.length) await mounted.pop()!.unmount();
   document.body.innerHTML = "";
 });
 
