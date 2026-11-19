@@ -562,8 +562,8 @@ Verified facts (files read directly, not guessed):
   layers, agree_plain, amigos` — no `build_layers`, no `gate`/`check`, no dotted `{item}`
   ports (except literal output names like `package.{item}` in layer.yaml's `package` node).
 - Canvas.test.ts is a partial port: v2 helpers (`graphOf`, `data-box-card`,
-  `[data-palette-kind]`) but ~18 assertions still encode the pre-removal story graph
-  (`gate`, `build_layers`, `[data-each]` badges, dotted bundle ports) or throw
+  `[data-palette-kind]`) but ~14 assertions still encode the pre-removal story graph
+  (`gate`, `[data-each]` badges, dotted bundle ports) or throw
   "node a has no kind" on inline fixtures missing `kind:`.
 - NodeModal/WireModal tests are also partial ports: failures are prop/contract mismatches
   (component gets `undefined` fields), not import errors.
