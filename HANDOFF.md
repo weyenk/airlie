@@ -131,3 +131,31 @@ Therefore the component work (plan Task 4b remainder), in dependency order:
 - **Commit after every green step.** Do not leave a verified component change uncommitted.
 
    `task web:gate` — commit incrementally so no session's work is lost.
+
+## Session 6 (third pass) — state re-verified from a clean tree
+
+`git status` is **clean at HEAD**: the session-5 NodeModal.vue port (which had measured 9 failures -> 3)
+was lost again with the environment reset. Nothing in this pass is half-applied; the tree is exactly HEAD.
+
+Fresh measurement of the two modal files, one vitest run, JSON reporter:
+
+- `NodeModal.test.ts` + `WireModal.test.ts`: **21 passed / 15 failed**.
+
+New, load-bearing detail (changes where the work lives):
+
+- `NodeModal.vue` at HEAD still contains the dead UI (`isMeeting` x7, `fixedInput`,
+  `data-form-field="args"`), while `NodeModal.test.ts` contains **zero** references to
+  `isMeeting`/`roleField`/`isRoundRobin`. So the *tests* are already retired to v2 and the
+  **component is what lags** — the failing assertions are for fields v2 has (`role.supervisor`,
+  `role.worker`, the round-robin role list) that the template never grew.
+- `WireModal.test.ts` (294 lines, 15 tests) is likewise already v2-shaped (`kind`, workflow-level
+  `edges`, no stored carries); its 6 failures are component-side: the modal still emits v1
+  `artifacts`, and a few fixtures need a second producer node so the "also from <node>" wording
+  can be satisfied.
+- `BuilderScreen.test.ts` defines 71 top-level tests, so the earlier 21/53 split is approximate
+  (nested `describe` blocks); re-measure before sizing the fixture port.
+
+Restating the plan in one line: this is now **component work, not test porting** — grow
+NodeModal.vue/WireModal.vue to the v2 field set and delete their dead UI (per the user's call to
+"finish the removal"), then retire Canvas/BuilderScreen bundle assertions. Test files may need a
+few fixture additions but are largely correct already.
