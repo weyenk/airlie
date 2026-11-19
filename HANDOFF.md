@@ -73,4 +73,61 @@ EOF
 5. Finish NodeModal.vue/WireModal.vue so the remaining failures pass (these tests are correct).
 6. Full gate from repo root, in order: `uv sync --frozen`, `uv run ruff check .`,
    `uv run ruff format --check .`, `uv run mypy`, `uv run pytest -q -n auto --maxprocesses 8`,
+
+## Session 5 (2026-11-19, second pass) — what is now verified
+
+Python side of the gate is fully green and needs no work: `ruff check`, `ruff format --check`,
+`mypy` (263 files) and `pytest -q -n auto --maxprocesses 8` (**3861 passed, 1 skipped, 1 xfailed**).
+The remaining work is only the four builder test files (**70 pass / 81 fail**, unchanged).
+
+Committed this session (`ca94e0d8`): BuilderScreen's `afterEach` now unmounts + clears
+`document.body`, and the WireModal fixture's main graph tracks v2 (`edges`, `inputs` instead of
+`to`/`artifacts`). Neither moved the counts on its own; the isolation fix is kept because it stops
+assertions from reading a previous screen's DOM.
+
+Engine facts re-read from source this session (these decide what the components must do):
+
+- `config/schema.py` validates every upload through `airlie.workflow.spec.WorkflowSpec`, and every
+  node model is `model_config = ConfigDict(extra="forbid")` — a stray key (e.g. `tools`, `turn`) is
+  a rejected upload, so the modals cannot keep writing v1 fields.
+- `airlie/workflow/spec.py` has exactly four node kinds: `WORK`, `ROUND_ROBIN`,
+  `SUPERVISOR_WORKERS`, `K_INDEPENDENT_TEAMS`. A work node carries `role` (str), exactly one of
+  `prompt` / `prompt_id` / `run`, plus `inputs`, `outputs`, `steps`, `on_fail`, `events`. There is
+  no `check` kind, no bundle, no `tools`, no `turn`, no `protocol`, no `criteria`.
+- The check **catalog still exists server-side**: `serve/workflows_api.py` (~line 214) serves
+  `STORY_CATALOG.describe()` with 49 `story.*` operations, and `workflow/retired.py` now supplies
+  `MEETINGS = ()`. So: `checks` remain a picker for a work box's `run` (the failing test
+  "the check kind is gone: run takes a catalog op; the base and command are plain text, not
+  catalog rows" states exactly this), while meeting/bundle UI is genuinely dead.
+
+Therefore the component work (plan Task 4b remainder), in dependency order:
+
+1. `NodeModal.vue`: delete the dead UI — `tools`, conversation `turn`/`session`, the
+   `protocol`/meeting seat machinery, `criteria`, and the bundle (`workflow`/`each`) fields; make
+   `run` a free-text field that a catalog op may fill by name only (no auto-filled args/inputs);
+   keep `role` as a name the composer resolves. Then delete the tests that assert removed concepts
+   (conversation turn, check-as-kind catalog rows ×3, bundle) and port the survivors: team box →
+   `role.supervisor` / `role.worker` (test already rewritten to that shape at HEAD), round-robin →
+   the kind's own role list.
+2. `WireModal.vue`: it emits `artifacts` + `loop.carry/max`; the v2 line model derives carries from
+   the target's inputs, so 6 tests disagree. Port the modal to emit what v2 stores
+   (`when`, `loop: {each, max}`) and adjust the two "reading X from the graph / also from Y" tests
+   to the derived-carries wording.
+3. `Canvas.test.ts` (13): asserts bundle boxes and dotted ports; `Canvas.vue` still contains the
+   leftover `const each = false // bundles removed` line. Retire the bundle/composer assertions and
+   re-target the status checks on v2 fixtures.
+4. `BuilderScreen.test.ts` (53): the big one — its YAML fixtures and assertions still speak v1
+   (`to:`, `checks`, bundle children, status strings). Needs a fixture port to v2 plus the
+   assertion updates; the isolation fix is already in.
+
+## Environment warnings that cost this session hours
+
+- The terminal/output channel truncates and occasionally **fabricates** output: an edit reported as
+  applied had not landed, a whole-file read returned unrelated content, and one full NodeModal.vue
+  port (9 failures → 3, verified) was wiped by an environment reset because it was uncommitted.
+  Mitigations that worked: `sed -n 'A,Bp' file | cat -n` and `/tmp/ln.py <abs path> A B` for exact
+  line reads; write a script file rather than long inline `python3 -c` (quoting gets mangled);
+  trust only vitest JSON artifacts and `git status` / `git diff --stat`.
+- **Commit after every green step.** Do not leave a verified component change uncommitted.
+
    `task web:gate` — commit incrementally so no session's work is lost.
