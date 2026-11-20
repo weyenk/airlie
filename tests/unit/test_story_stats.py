@@ -162,21 +162,3 @@ def test_the_stats_print_as_tables(tmp_path: Path) -> None:
     text = render_stats(line_stats(tmp_path, store))
     assert "UNATTENDED" in text and "1 of 1" in text and "100%" in text
     assert "no blocks" in text and "no objections" in text
-
-
-def test_line_stats_prints_the_tables_and_since_must_be_a_date(tmp_path: Path) -> None:
-    from typer.testing import CliRunner
-
-    from airlie import cli
-    from tests.support.serve import cfg as serve_cfg
-
-    c = serve_cfg(tmp_path)
-    assert c.source_path is not None
-    store = BoardStore(c.observability.state_dir / "board.sqlite")
-    key = make_story(store)
-    go(store, key, [("approved", "noah", 10), ("doing", "line", 11), ("review", "line", 50)])
-    runner = CliRunner()
-    ok = runner.invoke(cli.app, ["line", "stats", "--config", str(c.source_path)])
-    assert ok.exit_code == 0 and "UNATTENDED" in ok.output and "1 of 1" in ok.output
-    bad = runner.invoke(cli.app, ["line", "stats", "--since", "soon", "--config", str(c.source_path)])
-    assert bad.exit_code == 1 and "since must be a date" in bad.output

@@ -43,7 +43,7 @@ from airlie.topology.studio import StudioOrchestrator, SubtaskRun, WrongTest
 from airlie.topology.studio_plan import Plan
 
 if TYPE_CHECKING:
-    from airlie.story.pipeline import StoryPipeline
+    from airlie.story.retired import StoryPipeline
 
 
 class LayerDied(RuntimeError):
