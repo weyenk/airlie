@@ -291,13 +291,7 @@ async def layer_outcome(
     and recorded (`squash_layer`) when `squash` says so (the layer bundle's own `squash` node does it
     otherwise), and the answer is None.
     LayerDied when the build never reached its final gate."""
-    from airlie.story.pipeline import (  # the pipeline imports this module
-        _cut_off,
-        _ending,
-        _gate_detail,
-        _kept,
-        _redact_urls,
-    )
+    from airlie.story.retired import _cut_off, _ending, _gate_detail, _kept, _redact_urls
 
     if ls.run is None or ls.final is None:
         missing = "coder turn" if ls.run is None else "final gate"
@@ -361,7 +355,7 @@ async def squash_layer(
 ) -> None:
     """A built layer squashed to one commit on its branch (with its provenance trailers), its worktree
     removed, and its record in `st.built`; `layer_built` and the note on the issue."""
-    from airlie.story.pipeline import _rows  # the pipeline imports this module
+    from airlie.story.retired import _rows
 
     orch, nn, layer = ls.orch, ls.nn, layers[ls.i]
     total = f"{len(layers):02d}"

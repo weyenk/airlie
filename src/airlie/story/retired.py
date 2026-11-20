@@ -5,7 +5,7 @@ not built yet."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NoReturn
 
 from airlie.story.model import StoryError
 
@@ -31,3 +31,28 @@ class EpicPipeline:
 class InitiativePipeline:
     def __init__(self, *a: Any, **k: Any) -> None:
         _retired()
+
+
+# layer_build still names these helpers from the deleted pipeline; they raise if a legacy path runs.
+def _cut_off(*_a: Any, **_k: Any) -> NoReturn:
+    raise StoryError("the story run system is retired (engine swap pending its rebuild)")
+
+
+def _ending(*_a: Any, **_k: Any) -> NoReturn:
+    raise StoryError("the story run system is retired (engine swap pending its rebuild)")
+
+
+def _gate_detail(*_a: Any, **_k: Any) -> NoReturn:
+    raise StoryError("the story run system is retired (engine swap pending its rebuild)")
+
+
+def _kept(*_a: Any, **_k: Any) -> NoReturn:
+    raise StoryError("the story run system is retired (engine swap pending its rebuild)")
+
+
+def _redact_urls(*_a: Any, **_k: Any) -> NoReturn:
+    raise StoryError("the story run system is retired (engine swap pending its rebuild)")
+
+
+def _rows(*_a: Any, **_k: Any) -> NoReturn:
+    raise StoryError("the story run system is retired (engine swap pending its rebuild)")

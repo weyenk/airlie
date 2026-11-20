@@ -427,19 +427,19 @@ git commit -m "feat: delete airlie.flow engine; fix all remaining imports"
 - Consumes: Task 3's `start_workflow`.
 - Produces: Taskfile has `task run`, `task serve` which use `airlie run`; no `task story*`/`task line:*`; CLI has no `airlie story`/`airlie line` commands.
 
-- [ ] **Step 1: Delete all story pipeline modules** — remove `pipeline.py`, `flow.py`, `factory.py`, `epic_pipeline.py`, `initiative_pipeline.py`, `workflow_publish.py`.
+- [x] **Step 1: Delete all story pipeline modules** — remove `pipeline.py`, `flow.py`, `factory.py`, `epic_pipeline.py`, `initiative_pipeline.py`, `workflow_publish.py`.
 
-- [ ] **Step 2: Remove `airlie story` and `airlie line` commands from `cli.py`** — delete handlers and typer apps.
+- [x] **Step 2: Remove `airlie story` and `airlie line` commands from `cli.py`** — delete handlers and typer apps.
 
-- [ ] **Step 3: Replace `airlie run` and `airlie studio` with single `airlie run`** — `async start_workflow(workflow=<first_arg>, ...)`. Same default if no arg.
+- [x] **Step 3: Replace `airlie run` and `airlie studio` with single `airlie run`** — `async start_workflow(workflow=<first_arg>, ...)`. Same default if no arg.
 
-- [ ] **Step 4: Remove container/VM from Taskfile** — delete `test:*` targets that use container engine and `searxng:*` targets.
+- [x] **Step 4: Remove container/VM from Taskfile** — removed `searxng:*` and `line:launchd:*`; left `test:image:run` / `test:e2e` (CI still uses Docker; dev gate is host `pytest`).
 
-- [ ] **Step 5: Remove dead test/support files** — anything in `tests/support` or `tests/unit` referencing deleted modules.
+- [x] **Step 5: Remove dead test/support files** — anything in `tests/support` or `tests/unit` referencing deleted modules.
 
-- [ ] **Step 6: Run full gate** — Expected: all pass.
+- [x] **Step 6: Run full gate** — Expected: all pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/airlie/story/ src/airlie/cli.py Taskfile.yml
@@ -453,17 +453,17 @@ git add src/airlie/story/ src/airlie/cli.py Taskfile.yml
 **Files:**
 - Modify: Any remaining file that imported from deleted modules.
 
-- [ ] **Step 1: Verify no remaining imports**
+- [x] **Step 1: Verify no remaining imports**
 
 Run: `grep -rn 'from airlie.story.pipeline\|from airlie.story.flow\|from airlie.story.factory' src/ tests/ --include='*.py' | grep -v __pycache__`
 Expected: empty.
 
-- [ ] **Step 2: Verify the test suite passes**
+- [x] **Step 2: Verify the test suite passes**
 
 Run: `uv run pytest -q -n auto --maxprocesses 8`
 Expected: all pass.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add -A
@@ -494,8 +494,8 @@ Measured surface:
 - **Task 4a:** Rewrite `config/workflows/{story,layer}.yaml` to the four kinds.
 - **Task 4b:** Switch `config.schema` to `airlie.workflow.spec`; rewrite `serve/flow_nodes.py` + `serve/workflows_api.py` + the React builder for four kinds. *The big one.*
 - **Task 5:** Delete `src/airlie/flow/` + its tests; fix the surviving importers.
-- **Task 6:** Delete the 6 story pipeline modules; rewire the CLI (`story`/`line`/`run`/`studio` → one `airlie run` → `start_workflow`) + Taskfile.
-- **Task 7:** Final cleanup + full gate (`ruff`/`mypy`/`pytest`/`task web:gate`).
+- **Task 6:** DONE, `25fc1092`. Removed `airlie story`/`airlie line`/`airlie studio`; `airlie run` → `start_workflow` (default `story`); Taskfile `task run` only; serve ticker calls retired `jobs.tick`; deleted `test_story_launchd.py`; removed `searxng:*` and `line:launchd:*` (not `test:image:run`).
+- **Task 7:** DONE (commit after handoff). `layer_build`/`retired.py` stubs; README task table; import grep clean; gate green.
 
 ### Open design question (the spec is silent — needs a call before 4b)
 
