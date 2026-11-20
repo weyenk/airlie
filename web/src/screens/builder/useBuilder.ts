@@ -129,7 +129,9 @@ export function useBuilder(name: Ref<string>) {
     try {
       const parsed = parseWorkflow(def.yaml);
       // a box keeps the place the definition saved for it; the rest are laid out left to right
-      graph.value = autoLayout(fromWorkflow(parsed.name, parsed.spec, { ...parsed.layout, ...def.layout }));
+      let g = autoLayout(fromWorkflow(parsed.name, parsed.spec, { ...parsed.layout, ...def.layout }));
+      if (def.type && !g.type) g = { ...g, type: def.type };
+      graph.value = g;
     } catch (e) {
       graph.value = emptyGraph(def.name);
       broken.value = true;
@@ -170,7 +172,7 @@ export function useBuilder(name: Ref<string>) {
     const at = x !== undefined && y !== undefined ? { x, y } : { x: graph.value.nodes.length ? Math.max(...graph.value.nodes.map((n) => n.x)) + COLUMN : 0, y: 0 };
     // a meeting sits the protocol's roles and reads its inputs (the catalog's); a bundle box runs its bundle
     const meeting = catalog.value.meetings[0];
-    const spec: NodeSpec = "bundle" in item ? { workflow: item.bundle } : type === "ROUND_ROBIN" && meeting ? { role: [...meeting.roles], inputs: [...meeting.inputs] } : {};
+    const spec: NodeSpec = "bundle" in item ? { workflow: item.bundle } : type === "ROUND_ROBIN" && meeting ? { roles: [...meeting.roles], inputs: [...meeting.inputs] } : {};
     if (edit((g) => addNode(g, type, at.x, at.y, spec))) {
       selected.value = id;
       selectedEdge.value = null;
@@ -206,7 +208,7 @@ export function useBuilder(name: Ref<string>) {
    * YAML does not read; 409 kept for an older server), for the name dialog to ask again; false on any other failure (shown as the error). An
    * unchanged draft sends its own text, so a hand-written file keeps its comments. */
   async function save(as: string, type: string | null): Promise<boolean | { refused: string }> {
-    const g: Graph = { ...graph.value, name: as, title: type };
+    const g: Graph = { ...graph.value, name: as, type };
     const same = !dirty.value && detail.value?.source === "draft" && detail.value.name === as && detail.value.type === type;
     saving.value = true;
     try {

@@ -580,6 +580,14 @@ returned fabricated or mismatched command output (a `git checkout` reported as r
 run; greps returned hits for absent strings). Trust only: the read_files tool on real repo
 files, and JSON artifacts written to disk by test runs. Re-verify anything else twice.
 
+## Status — Task 4b / Task 5 complete (session 5)
+
+- Web Vitest: **1209/1209** passing (`npm test -- --run` in `web/`).
+- `task web:gate`: **pass** (vue-tsc, lint, Vitest).
+- Python gate: **pass** (ruff, mypy, pytest 3861 passed).
+- Builder tests ported to v2 four-kind model; dead UI/tests trimmed (upgraded-draft banner, v1 gate/check palette fixtures).
+- Bundle palette tests fixed (`placeLayerBundle` picks last `work-*`; save/workflow type uses `graph.type` not `title`).
+
 ## Status — session 4 final (verified: hash checks + JSON reports)
 
 Baseline (all cross-checked): only uncommitted change is `web/src/screens/builder/Canvas.test.ts`

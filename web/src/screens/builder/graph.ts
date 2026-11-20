@@ -50,6 +50,7 @@ export type Ports = { inputs: string[]; outputs: string[] };
 export type Graph = {
   name: string;
   title: string | null;
+  type?: string | null;
   bundles?: Record<string, Ports>;
   /** What the caller supplies (card, repo). */
   inputs: string[];
@@ -155,6 +156,7 @@ export function fromWorkflow(name: string, spec: WorkflowSpec, layout: Layout = 
   return relabel({
     name,
     title: spec.title ?? null,
+    type: spec.type ?? null,
     inputs: [...(spec.inputs ?? [])],
     outputs: [...(spec.outputs ?? [])],
     nodes,
@@ -177,7 +179,14 @@ export function toWorkflow(graph: Graph): { spec: WorkflowSpec; layout: Layout }
     edges[e.from].push(entryOf(e));
   }
   return {
-    spec: { ...(graph.title ? { title: graph.title } : {}), inputs: [...graph.inputs], outputs: [...graph.outputs], nodes, edges },
+    spec: {
+      ...(graph.title ? { title: graph.title } : {}),
+      ...(graph.type ? { type: graph.type } : {}),
+      inputs: [...graph.inputs],
+      outputs: [...graph.outputs],
+      nodes,
+      edges,
+    },
     layout,
   };
 }
@@ -284,10 +293,13 @@ export function withBundle(graph: Graph, name: string, ports: Ports): Graph {
 }
 
 /** The names of the workflows the graph's bundle boxes run, each once. */
-export const bundleNames = (_graph: Graph): string[] => {
-  void _graph;
-  return [];
-};
+export const bundleNames = (graph: Graph): string[] => [
+  ...new Set(
+    graph.nodes
+      .map((n) => (typeof n.spec.workflow === "string" && n.spec.workflow ? n.spec.workflow : null))
+      .filter((w): w is string => w !== null),
+  ),
+];
 /** A workflow's ports: what it is handed and what it hands back. */
 export const portsOf = (spec: { inputs?: string[]; outputs?: string[] }): Ports => ({ inputs: [...(spec.inputs ?? [])], outputs: [...(spec.outputs ?? [])] });
 
@@ -352,8 +364,13 @@ export function updateEdge(graph: Graph, from: string, to: string, patch: { arti
 
 /** The boxes that write `name` (other than `from` and `to`), and `name`'s readers: what a line from `from` to
  * `to` would lose by no longer carrying `name`. */
+/** Other boxes that write `name` (not `from` or `to`). */
+export function otherProducersOf(graph: Graph, name: string, from: string, to: string): string[] {
+  return graph.nodes.filter((n) => n.id !== from && n.id !== to && outputsOfNode(graph, n.id).includes(name)).map((n) => n.id);
+}
+
 export function producersOf(graph: Graph, name: string, from: string, to: string): string[] {
-  const boxes = graph.nodes.filter((n) => n.id !== from && n.id !== to && outputsOfNode(graph, n.id).includes(name)).map((n) => n.id);
+  const boxes = otherProducersOf(graph, name, from, to);
   const readers = new Set<string>([to]);
   if (boxes.length) for (const id of graph.nodes.filter((n) => inputsOf(n.spec).includes(name)).map((n) => n.id)) readers.add(id);
   return [...readers];

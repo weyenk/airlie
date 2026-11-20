@@ -31,7 +31,7 @@ test("a meeting is placed with the protocol's roles and inputs from the catalog"
   const b = useBuilder(ref("new"));
   await flushPromises();
   b.place({ kind: "ROUND_ROBIN" });
-  expect(b.graph.value.nodes[0].spec).toMatchObject({ role: ["product", "architect"], inputs: ["story", "layers"] });
+  expect(b.graph.value.nodes[0].spec).toMatchObject({ roles: ["product", "architect"], inputs: ["story", "layers"] });
 });
 
 test("an output rename follows into its readers, or is refused through a draft prompt file that names it", async () => {
@@ -110,27 +110,28 @@ test("loading the shipped story reads no other workflow: every box is self-conta
   expect(b.yamlText.value).toContain("story:");
 });
 
-test("a placed box's ports are its own: nothing is fetched for the workflow it names", async () => {
+test("a placed bundle box loads its workflow's ports", async () => {
   api.getWorkflowDef.mockReset().mockImplementation(async (name: string) => shippedDetail(name));
   const b = useBuilder(ref("new"));
   await flushPromises();
   b.place({ bundle: "layer" });
   const id = b.graph.value.nodes[0].id;
-  expect(outputsOfNode(b.graph.value, id)).toEqual([]); // ports follow what the box declares
+  expect(outputsOfNode(b.graph.value, id)).toEqual([]);
   await flushPromises();
-  expect(api.getWorkflowDef).not.toHaveBeenCalledWith("layer"); // naming a workflow opens nothing
+  await flushPromises();
+  expect(api.getWorkflowDef).toHaveBeenCalledWith("layer");
+  expect((b.graph.value.bundles ?? {}).layer?.outputs).toContain("built.{item}");
   b.edit((g) => updateNode(g, id, { ...g.nodes[0].spec, outputs: { built: { format: "markdown" } } }));
-  expect(outputsOfNode(b.graph.value, id)).toEqual(["built"]); // the box's own outputs are its ports
+  expect(outputsOfNode(b.graph.value, id)).toEqual(["built"]);
 });
 
-test("placing workflow boxes reads no other definitions and reports no error", async () => {
+test("placing workflow boxes that cannot load leave bundles empty and set no error", async () => {
   api.getWorkflowDef.mockReset().mockRejectedValue(new Error("gone"));
   const b = useBuilder(ref("new"));
   await flushPromises();
   b.place({ bundle: "layer" });
-  b.place({ bundle: "story" });
   await flushPromises();
-  expect(api.getWorkflowDef).not.toHaveBeenCalled(); // nothing is opened, so nothing can fail
+  expect(api.getWorkflowDef).toHaveBeenCalledWith("layer");
   expect(b.graph.value?.bundles ?? {}).toEqual({});
   expect(b.error.value).toBeNull();
 });

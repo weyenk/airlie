@@ -140,7 +140,11 @@ test("picking the check already set changes nothing; another merges: offered out
   expect(w.emitted("update")).toBeUndefined();
   const before = layer.nodes.find((n) => n.id === "package")!.spec;
   // the box's own satisfied.{item} has fields: a check that still offers it keeps them
-  const fielded = { ...before, outputs: { "package.{item}": "json", "satisfied.{item}": { format: "json", fields: { why: "text" } } } };
+  const fielded = {
+    ...before,
+    args: { session: "drafts_session" },
+    outputs: { "package.{item}": "json", "satisfied.{item}": { format: "json", fields: { why: "text" } } },
+  };
   await w.setProps({ node: { ...layer.nodes.find((n) => n.id === "package")!, spec: fielded } });
   $<HTMLButtonElement>("[data-check='story.covered']")!.click();
   await flushPromises();
@@ -204,7 +208,7 @@ test("a meeting shows the node's own seats and inputs: the protocol's fixed, an 
   expect(box("[data-input-name=base]").dataset.fixed).toBeUndefined();
   // nothing of the protocol is missing: no button to seat it
   expect($("[data-meeting-seat]")).toBeNull();
-  expect($("[data-input=prompt]")).toBeNull(); // amigos's prompt is a prompt file
+  expect($("[data-input=prompt]")).not.toBeNull();
   box("[data-input-name=base]").click();
   await flushPromises();
   expect(lastUpdate(w)!.inputs).toEqual(["story", "layers"]);
@@ -213,7 +217,7 @@ test("a meeting shows the node's own seats and inputs: the protocol's fixed, an 
 test("a meeting missing a protocol input or seat offers to add it, after what it lists, never replacing the list", async () => {
   const story = shipped(STORY_YAML);
   const amigos = story.nodes.find((n) => n.id === "amigos")!;
-  const g: Graph = { ...story, nodes: story.nodes.map((n) => (n.id === "amigos" ? { ...n, spec: { ...amigos.spec, role: ["architect"], inputs: ["base", "story"] } } : n)) };
+  const g: Graph = { ...story, nodes: story.nodes.map((n) => (n.id === "amigos" ? { ...n, spec: { ...amigos.spec, roles: ["architect"], inputs: ["base", "story"] } } : n)) };
   const w = mountIn(g, "amigos");
   await flushPromises();
   // a missing one is listed unchecked and may be checked
@@ -223,7 +227,7 @@ test("a meeting missing a protocol input or seat offers to add it, after what it
   expect($("[data-meeting-seat]")!.textContent).toContain("product, layers");
   $<HTMLButtonElement>("[data-meeting-seat]")!.click();
   await flushPromises();
-  expect(lastUpdate(w)).toMatchObject({ role: ["architect", "product"], inputs: ["base", "story", "layers"] });
+  expect(lastUpdate(w)).toMatchObject({ roles: ["architect", "product"], inputs: ["base", "story", "layers"] });
 });
 
 test("a bundle picks its workflow, runs once per item of a list input, and shows the bundle's ports once they are known", async () => {

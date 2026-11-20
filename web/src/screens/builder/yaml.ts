@@ -7,7 +7,7 @@ import type { Graph, Layout, Line, WorkflowSpec } from "./graph";
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-const WORKFLOW_FIELDS = new Set(["title", "inputs", "outputs", "nodes", "edges", "layout"]);
+const WORKFLOW_FIELDS = new Set(["title", "type", "inputs", "outputs", "nodes", "edges", "layout"]);
 
 const names = (v: unknown, what: string): string[] => {
   if (v === undefined || v === null) return [];
@@ -56,7 +56,15 @@ export function parseWorkflow(text: string): { name: string; spec: WorkflowSpec;
     if (isRecord(at) && typeof at.x === "number" && typeof at.y === "number") layout[id] = { x: at.x, y: at.y };
   }
   const title = typeof raw.title === "string" ? raw.title : null;
-  const spec: WorkflowSpec = { ...(title ? { title } : {}), inputs: names(raw.inputs, `${w}: inputs`), outputs: names(raw.outputs, `${w}: outputs`), nodes, edges };
+  const type = typeof raw.type === "string" ? raw.type : null;
+  const spec: WorkflowSpec = {
+    ...(title ? { title } : {}),
+    ...(type ? { type } : {}),
+    inputs: names(raw.inputs, `${w}: inputs`),
+    outputs: names(raw.outputs, `${w}: outputs`),
+    nodes,
+    edges,
+  };
   return { name, spec, layout };
 }
 
@@ -70,6 +78,7 @@ export function toYaml(graph: Graph): string {
   const { spec, layout } = toWorkflow(graph);
   const wf: Record<string, unknown> = {
     ...(spec.title ? { title: spec.title } : {}),
+    ...(spec.type ? { type: spec.type } : {}),
     ...(spec.inputs.length ? { inputs: spec.inputs } : {}),
     ...(spec.outputs.length ? { outputs: spec.outputs } : {}),
     nodes: spec.nodes,
