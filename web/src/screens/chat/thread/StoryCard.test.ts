@@ -40,6 +40,15 @@ test("the reply is an editable story request with a repository and Start story",
   expect(w.text()).toContain("story request");
 });
 
+test("the workflow slot is blank until workflows can be chosen", async () => {
+  const { w } = await open();
+  const select = w.get<HTMLSelectElement>("[data-workflow-select]");
+  expect(select.element.disabled).toBe(true);
+  expect(select.findAll("option")).toHaveLength(1);
+  expect(select.find("option").text()).toBe("No workflow selected");
+  expect((select.element as HTMLSelectElement).value).toBe("");
+});
+
 test("a repository chat's repository is the default", async () => {
   localStorage.setItem("airlie.repo", "weyenk/other");
   const { w } = await open();

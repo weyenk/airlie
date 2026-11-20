@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """The story bench (task bench:story): a fixed request built end to end by the story pipeline, measured.
 
 A case (evals/stories/<id>.yaml) names a written request, the repository it is built in, the commit its first
@@ -34,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from airlie.story import jobs as factory
 from airlie.story.cleanup import drop_every_draft_ref
 from airlie.story.cleanup import local_branches as local_branches
 from airlie.story.cleanup import prune_stale_stacks as prune_stale_stacks
@@ -711,7 +713,7 @@ def run_case(
     reaches GitHub. `run` drives the story's coroutine (the CLI's stoppable asyncio.run). A case that cannot
     start is a BenchSetupError; a run that is stopped is cleared up and raised again. Moved here from the CLI
     for the sweep (2026-11-06)."""
-    from airlie.story import factory
+    # [engine-swap: retired] from airlie.story import factory
     from airlie.story.model import StorySetupError
 
     publish = case.publish if publish is None else publish

@@ -20,17 +20,16 @@ from typing import Any
 
 from airlie.config import AirlieConfig, ConfigError
 from airlie.serve.jobs import Jobs
-from airlie.story import factory
-from airlie.story.board import Board
+from airlie.story import jobs as factory
 from airlie.story.fixes import line_event
-from airlie.story.line import Job, Line, Spawn
+from airlie.story.model import StoryError
 from airlie.story.phase import paused
 from airlie.story.state import lock_held
 
 log = logging.getLogger(__name__)
 
-LineFor = Callable[[Spawn], Awaitable[str]]
-"""One beat, given the function that starts a lane's job (a test passes its own)."""
+LineFor = Callable[..., Awaitable[str]]
+"""One beat hook for tests (replaces the retired hand-written line)."""
 
 
 class LineTicker:
@@ -53,56 +52,19 @@ class LineTicker:
         self.last_tick: float | None = None
         self.last_line: str | None = None
         self._task: asyncio.Task[None] | None = None
-        self._board: Board | None = None
-        self._board_for = ""  # the config the board was made from (_board_key)
-
-    def _board_of(self, scfg: AirlieConfig) -> Board:
-        """The board every beat uses: made once, and again only when the board's config changes (the old one
-        closed; a job still holding it reopens its store on its next read). A board per beat was a SQLite
-        connection per beat that nothing closed (a beat's job can outlive the beat, so the beat cannot close
-        it), and an idle serve rarely runs the cycle collector that would: over the night of 2026-11-04 serve
-        reached launchd's 256 open files and every /health and tick failed with EMFILE."""
-        key = _board_key(scfg)
-        if self._board is None or key != self._board_for:
-            if self._board is not None:
-                close = getattr(self._board, "close", None)
-                if close is not None:
-                    close()
-            self._board, self._board_for = factory.make_board(scfg), key
-        return self._board
-
-    # ---- the beat ----
-
-    def _spawn(self, run: Callable[[Job], Awaitable[str]]) -> Spawn:
-        """Starts a lane's job in this process's `Jobs` (kind `line`, id `line-<lane>-<key>`), `run` being how
-        it is run (the line's `run_job`, which logs it and says what happened)."""
-
-        def spawn(job: Job) -> None:
-            async def work() -> dict[str, Any]:
-                return {"line": await run(job)}
-
-            try:
-                self.jobs.start("line", job.id, job.events, work())
-            except (
-                ValueError
-            ) as e:  # the same job is still running here: its lane holds the lock, so none starts
-                log.warning("line: %s", e)
-
-        return spawn
 
     async def beat(self) -> str:
-        """One beat on this process's loop, jobs registered. The line it logs; a beat that fails is that
-        line, never an exception (the ticker goes on)."""
+        """One beat on this process's loop. The hand-written line is retired; tests may inject `_beat`."""
         try:
-            if self._beat is not None:  # a test's beat: its jobs run their own work
-                return await self._beat(self._spawn(lambda job: job.work()))
+            if self._beat is not None:
+                return await self._beat()
             scfg = factory.story_config(self.cfg)
             problems = factory.story_problems(scfg)
             if problems:
                 return "not ticking: " + "; ".join(problems)
-            state_dir = self.cfg.observability.state_dir.expanduser()
-            line = Line(scfg, board=self._board_of(scfg), state_dir=state_dir, serve_commit=self.commit)
-            return await line.beat(self._spawn(line.run_job))
+            return await factory.tick(scfg)
+        except StoryError as e:
+            return str(e)
         except asyncio.CancelledError:
             raise
         except ConfigError as e:
@@ -163,15 +125,3 @@ class LineTicker:
             "paused": paused(self.cfg.observability.state_dir.expanduser()),
             "lanes": self.lanes(),
         }
-
-
-def _board_key(scfg: AirlieConfig) -> str:
-    """What `factory.make_board` reads from the config: a change to any of it is a different board."""
-    return "|".join(
-        (
-            scfg.story.model_dump_json(),
-            scfg.board.model_dump_json(),
-            str(scfg.observability.state_dir.expanduser()),
-            ",".join(sorted(scfg.roles)),
-        )
-    )

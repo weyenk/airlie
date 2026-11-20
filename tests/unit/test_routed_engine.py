@@ -70,7 +70,7 @@ async def test_each_role_goes_to_the_engine_that_serves_its_model(tmp_path: Path
     assert isinstance(eng, RoutedEngine)
     await eng.start()
     await eng.generate(plain_request("reviewer"))
-    await eng.generate(plain_request("coder"))
+    await eng.generate(plain_request("architect"))
     assert [(u, b["model"]) for u, b in seen] == [
         ("http://127.0.0.1:8082/v1/chat/completions", "/models/reviewer"),
         ("http://127.0.0.1:8080/v1/chat/completions", "/models/architect"),

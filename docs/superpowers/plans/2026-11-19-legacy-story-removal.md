@@ -1,25 +1,623 @@
-I will edit the file `docs/superpowers/specs/2026-11-19-legacy-story-removal-design.md` to replace the content from `### Task 1.2` through `### Task 4.1` and the subsequent "Out of scope" section with the provided `SUGGESTED EDIT`.
+# Legacy Story Removal — Implementation Plan
 
-Note that the input starts with `ORIGINAL CODE:` and ends with the end of `Task 4.1`. The `SUGGESTED EDIT` block contains replacements for Parts 1 (partially), 2, 3, and 4.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-Since the input provided contains the *entire* plan (Tasks 1.1 to 4.1), and the `SUGGESTED EDIT` starts mid-Task 1.2, I will apply the edits to Task 1.2, then replace Task 2.1, Task 3.1, Task 4.1 and the "Out of scope" section entirely with the new text from the `SUGGESTED EDIT`.
+**Goal:** Delete the hand-written story pipeline and its engine (`airlie.flow` and everything wired to it); replace with config-driven generic nodes covering every multi-agent orchestration pattern.
 
-Wait, looking closely at the `SUGGESTED EDIT` block, it seems to provide replacements for sections that correspond to Tasks 1.2, 2.1, 3.1, and 4.1.
+**Architecture:** A new `src/airlie/workflow/` package replaces `src/airlie/flow/` and `src/airlie/story/`'s pipeline modules. **Four node kinds**, each with distinct configuration because the runtime differs:
+- `WORK` — single model call (`prompt`/`prompt_id`) OR a shell command (`run`); gate evidence (`gate`) lives on this node.
+- `ROUND_ROBIN` — agents take turns in sequence (three-amigos, AutoGen teams).
+- `SUPERVISOR_WORKERS` — supervisor splits task into N chunks; workers each run one in parallel; supervisor assembles.
+- `K_INDEPENDENT_TEAMS` — K independent teams run the same task; `aggregate` picks winner.
 
-The `ORIGINAL CODE` starts at `# Remove the Legacy Story Pipeline...`.
-The `SUGGESTED EDIT` starts at `### Task 1.2...`.
+**Out of scope (kept in the design, to be defined in later plans):** Coordinator, Review/Critique, Iterative Refinement, Hierarchical Task Decomposition, Swarm, ReAct — each folds into one of the four by editing the prompt.
 
-This implies that the header, global constraints, review focus, and Task 1.1 remain unchanged, and the edit replaces everything from Task 1.2 onwards.
+**Tech Stack:** Python 3.12, Pydantic (validation), typer (CLI), uv, Taskfile.
 
-However, there is a small inconsistency: Task 2.1 in Original Code is "No VMs in engines or tools". In Suggested Edit, Task 2.1 is "Finish removing engine + chat paths to VMs". Task 3.1 and 4.1 also shift/modify slightly in title/content in the suggested edit?
-Actually, looking at the Original Code, Task 2.1 is `Task 2.1: No VMs in engines or tools`.
-In Suggested Edit, it is `### Task 2.1: Finish removing engine + chat paths to VMs`.
-Task 3.1 Original: `Task 3.1: One run path...`
-Suggested: `### Task 3.1: Chat / card / hub → same start_workflow`
-Task 4.1 Original: `Task 4.1: Rewrite guides...`
-Suggested: `### Task 4.1: Rewrite guides...`
+**Spec:** `docs/superpowers/specs/2026-11-19-legacy-story-removal-design.md`
 
-The Suggested Edit seems to be a complete replacement of the section starting from `### Task 1.2`.
+## Global Constraints
 
-I will output the file from the start until `### Task 1.2`, and then substitute the rest with the `SUGGESTED EDIT`.
+- Four node kinds; if an edge case seems to need a fifth kind, fold it into one of the four by editing the prompt.
+- Gates are evidence (`gate:` on `WORK`), not a node kind.
+- Conditions and loops live on wires (edges); any node may loop back to any earlier node.
+- An unmet condition must declare where the second path goes; no silent dead ends.
+- Lines only route: carry a condition and the artifacts their source produces.
+- No VM or container engine; repositories are built in git worktrees under the run directory.
+- Costs and checks face outward: reporting, not workflow steps.
+- One trigger kind — chat "Start story", serve beat, launchd every 15 min, `task story:tick`, and any workflow a card names all call the same `start_workflow`.
+- `src/airlie/teams/` and `src/airlie/topology/` are used *by* the runner code as helpers, not deleted.
+- `src/airlie/story/` modules that are data or runtime helpers stay until the rebuild lands.
+
+## Review Focus
+
+1. **K_INDEPENDENT with `teams: 1`** — validate as one-team execution, don't error.
+2. **ROUND_ROBIN with only one role** — must error at load; can't have single-agent round-robin.
+3. **`when` conditions that all resolve false** — must stall, not silently skip.
+4. **`gate: {type: script, cmd: "..."}` that returns non-zero** — the work is not done; don't advance.
+5. **Two triggers racing to run same workflow+card** — the second refuses on worktree lock.
+
+---
+
+## Task 1: Define the four-node-kind model and wire-edge types
+
+**Files:**
+- Create: `src/airlie/workflow/__init__.py`
+- Create: `src/airlie/workflow/spec.py`
+- Test: `tests/unit/test_workflow_spec.py`
+
+**Interfaces:**
+- Consumes: nothing from earlier tasks.
+- Produces:
+  - `NodeKind = Literal["WORK", "ROUND_ROBIN", "SUPERVISOR_WORKERS", "K_INDEPENDENT_TEAMS"]`
+  - `GateEvidence = ScriptEvidence | PromptJudgment | StepCount` (union — `type: "script"`/`"prompt"`/`"steps"`; lives on `NodeSpec`, not its own kind)
+  - `NodeSpec` (union: `WorkNode`, `RoundRobinNode`, `SupervisorWorkersNode`, `KIndependentTeamsNode`, all discriminated by `kind`)
+  - `WireSpec` (`target: str`, `when: str | None = None`, `loop: LoopBound | None = None`, `carries: list[str]`)
+  - `WorkflowSpec` (`title: str`, `inputs: list[str]`, `nodes: dict[str, NodeSpec]`, `edges: dict[str, list[WireSpec]]`)
+  - `validate_workflow(raw: dict) -> list[str]` — returns strings describing problems; empty if valid.
+  - `load_workflow(path: Path) -> WorkflowSpec` — parse YAML, validate against `WorkflowSpec`.
+
+**Node semantics:**
+- `WORK` — either `prompt: str` / `prompt_id: str` (single model call) or `run: str` (shell command to execute in the run directory). Has `inputs`, `outputs`, `steps`, optional `gate: GateEvidence`.
+- `ROUND_ROBIN` — `roles: list[str]` (≥ 2 role names), `prompt: str`, `outputs`, `steps`, `agreement_when: str`. Runs one conversation among those roles until `agreement_when` is satisfied.
+- `SUPERVISOR_WORKERS` — `supervisor: str`, `worker: str`, `workers: int`, `prompt: str`, `outputs`, `steps`. Supervisor splits into N chunks; workers each run one; supervisor assembles.
+- `K_INDEPENDENT_TEAMS` — `teams: int`, `roles: list[str]`, `prompt: str`, `outputs`, `aggregate: "test-score" | "llm"`, `test_cmd: str | None`. K teams run same task in parallel; aggregate picks winner. `teams == 1` must fall through to single-team execution.
+
+- [ ] **Step 1: Write the failing test — `tests/unit/test_workflow_spec.py`**
+
+```python
+from airlie.workflow.spec import validate_workflow
+
+
+def test_rejects_unknown_node_kind():
+    raw = {"title": "t", "inputs": [],
+           "nodes": {"a": {"kind": "gate", "prompt": "x"}},
+           "edges": {"a": []}}
+    assert any("kind" in e.lower() for e in validate_workflow(raw))
+
+
+def test_allows_edge_loop_to_earlier_node():
+    raw = {
+        "title": "loop", "inputs": [],
+        "nodes": {"a": {"kind": "WORK", "prompt": "do"},
+                  "b": {"kind": "WORK", "prompt": "check", "inputs": ["x"]}},
+        "edges": {"a": [{"target": "b"}],
+                  "b": [{"target": "a", "when": "not done", "loop": {"max": 3}}]},
+    }
+    assert validate_workflow(raw) == []
+
+
+def test_work_runs_shell_command():
+    raw = {"title": "t", "inputs": [],
+           "nodes": {"a": {"kind": "WORK", "run": "uv run pytest -q", "outputs": {"out": {"format": "text"}}}},
+           "edges": {"a": []}}
+    assert validate_workflow(raw) == []
+
+
+def test_round_robin_three_amigos():
+    raw = {"title": "amigos", "inputs": ["story", "layers"],
+           "nodes": {"agree": {"kind": "ROUND_ROBIN",
+                               "roles": ["product", "architect", "tester"],
+                               "prompt": "agree on {story}",
+                               "agreement_when": "agreement exists",
+                               "outputs": {"agreement": {"format": "json"}},
+                               "steps": 12}},
+           "edges": {"agree": []}}
+    assert validate_workflow(raw) == []
+
+
+def test_round_robin_needs_two_roles():
+    raw = {"title": "t", "inputs": [],
+           "nodes": {"a": {"kind": "ROUND_ROBIN", "roles": ["solo"], "prompt": "hi",
+                            "agreement_when": "done", "outputs": {}}},
+           "edges": {"a": []}}
+    assert validate_workflow(raw), "one-role round_robin must error"
+
+
+def test_supervisor_workers_configures_correctly():
+    raw = {"title": "t", "inputs": [],
+           "nodes": {"a": {"kind": "SUPERVISOR_WORKERS", "supervisor": "arch", "worker": "code",
+                            "workers": 5, "prompt": "do", "inputs": ["x"],
+                            "outputs": {"built": {"format": "json"}}}},
+           "edges": {"a": []}}
+    assert validate_workflow(raw) == []
+
+
+def test_supervisor_workers_with_zero_workers_invalid():
+    raw = {"title": "t", "inputs": [],
+           "nodes": {"a": {"kind": "SUPERVISOR_WORKERS", "supervisor": "arch", "worker": "code",
+                            "workers": 0, "prompt": "do", "outputs": {}}},
+           "edges": {"a": []}}
+    assert validate_workflow(raw)
+
+
+def test_k_independent_teams_validates():
+    raw = {"title": "kin", "inputs": [],
+           "nodes": {"try": {"kind": "K_INDEPENDENT_TEAMS", "teams": 3, "roles": ["architect"],
+                              "prompt": "solve", "outputs": {"winner": {"format": "json"}},
+                              "aggregate": "test-score", "test_cmd": "uv run pytest"}},
+           "edges": {"try": []}}
+    assert validate_workflow(raw) == []
+
+
+def test_k_independent_with_one_team_falls_through():
+    raw = {"title": "kin", "inputs": [],
+           "nodes": {"try": {"kind": "K_INDEPENDENT_TEAMS", "teams": 1, "roles": ["architect"],
+                              "prompt": "solve", "outputs": {"winner": {"format": "json"}},
+                              "aggregate": "test-score", "test_cmd": "uv run pytest"}},
+           "edges": {"try": []}}
+    assert validate_workflow(raw) == []  # single team is fine, not error
+
+
+def test_dead_end_condition_must_declare_alternative():
+    raw = {"title": "t", "inputs": [],
+           "nodes": {"a": {"kind": "WORK", "prompt": "x", "inputs": [], "outputs": {"r": {"format": "bool"}}},
+                     "b": {"kind": "WORK", "prompt": "y", "inputs": ["r"]}},
+           "edges": {"a": [{"target": "b", "when": "false"}]}}  # no else-edge
+    assert validate_workflow(raw), "unmet condition needs another path"
+
+
+def test_edge_to_undeclared_node_invalid():
+    raw = {"title": "t", "inputs": [],
+           "nodes": {"a": {"kind": "WORK", "prompt": "x"}},
+           "edges": {"a": [{"target": "ghost"}]}}
+    assert validate_workflow(raw)
+
+
+def test_graph_must_reach_every_node():
+    raw = {"title": "t", "inputs": [],
+           "nodes": {"a": {"kind": "WORK", "prompt": "do"}, "orphan": {"kind": "WORK", "prompt": "x"}},
+           "edges": {"a": []}}
+    assert validate_workflow(raw), "unreachable node must be rejected"
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/unit/test_workflow_spec.py -v`
+Expected: FAIL — module `airlie.workflow` does not exist.
+
+- [ ] **Step 3: Implement `src/airlie/workflow/__init__.py` and `src/airlie/workflow/spec.py`**
+
+`spec.py` defines: `NodeKind` (`Literal["WORK", "ROUND_ROBIN", "SUPERVISOR_WORKERS", "K_INDEPENDENT_TEAMS"]`), the four Pydantic node models (`WorkNode`, `RoundRobinNode`, `SupervisorWorkersNode`, `KIndependentTeamsNode`), `NodeSpec` as their `Annotated[Union[...], Field(discriminator="kind")]`, `WireSpec`, `LoopBound`, `WorkflowSpec`, and `validate_workflow`.
+
+Validation must reject: unknown `kind`; `WORK` nodes without `prompt`/`prompt_id`/`run`; `ROUND_ROBIN` with <2 roles; `SUPERVISOR_WORKERS` with 0 workers; `K_INDEPENDENT_TEAMS` with <2 teams; edges to undeclared nodes; graphs where a node is unreachable; wires whose `when` has no `else` alternative.
+
+`K_INDEPENDENT_TEAMS` with `teams == 1` validates as a single-team execution (works like `WORK`, not error).
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `uv run pytest tests/unit/test_workflow_spec.py -v`
+Expected: All 12 tests PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/airlie/workflow/__init__.py src/airlie/workflow/spec.py tests/unit/test_workflow_spec.py
+git commit -m "feat(workflow): four-node-kind model"
+```
+
+---
+
+## Task 2: Build the generic runner for all four kinds
+
+**Files:**
+- Create: `src/airlie/workflow/runner.py`
+- Test: `tests/unit/test_workflow_runner.py`
+
+**Interfaces:**
+- Consumes: `NodeSpec`, `WireSpec`, `WorkflowSpec` from Task 1's `spec.py`; `TeamOrchestrator`, `NativeTeam`, `AutoGenTeam`, `TeamContext`, `TeamResult`, `StepObserver`, `TestScoreAggregator`, `LLMAggregator` from `airlie.teams.*`; `AirlieConfig` from `airlie.config`; `Engine` from `airlie.engine.protocol`.
+- Produces:
+  - `RunContext` (dataclass: `cfg: AirlieConfig`, `engine: Engine`, `workdir: Path`, `inputs: dict[str, Any]`, `node: str`, `item: str | None`, `sessions: dict[str, Session]`, `held: SessionStack`)
+  - `WorkflowResult` (dataclass: `outputs: dict[str, Any]`, `events: list[dict[str, Any]]`)
+  - `async run_workflow(spec: WorkflowSpec, ctx: RunContext) -> WorkflowResult`
+
+**Runner design note:** `run_workflow` walks the node graph via edges: find ready nodes, run WORK nodes (single engine call or shell), run `ROUND_ROBIN` via `NativeTeam`/`AutoGenTeam` until `agreement_when`, run `SUPERVISOR_WORKERS` by implementing supervisor-assigns/N-workers-parallel/supervisor-assembles, run `K_INDEPENDENT_TEAMS` by running K teams in parallel and aggregating.
+
+**Constraint:** NOTHING in the runner may import from `airlie.flow.*`. Reuse `airlie.teams/*` and `airlie.topology/*`; reimplement the `team_runner` logic inline.
+
+- [ ] **Step 1: Write the failing test — `tests/unit/test_workflow_runner.py`**
+
+```python
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from airlie.workflow.spec import WorkflowSpec, NodeSpec, WireSpec, FormatSpec, LoopBound
+from airlie.workflow.runner import RunContext, WorkflowResult, run_workflow
+
+
+def _make_spec():
+    """A two-node WORK workflow: 'do' → 'check'."""
+    return WorkflowSpec(
+        title="simple",
+        inputs=["card"],
+        nodes={
+            "do": NodeSpec(kind="WORK", prompt="do {card}", outputs={"result": FormatSpec(format="text")}),
+            "check": NodeSpec(kind="WORK", prompt="check {result}", inputs=["result"],
+                             outputs={"verified": FormatSpec(format="bool")}),
+        },
+        edges={
+            "do": [WireSpec(target="check", carries=["result"])],
+            "check": [],
+        },
+    )
+
+
+def test_run_workflow_work_node_produces_output():
+    spec = _make_spec()
+    engine = MagicMock()
+    engine.generate = AsyncMock(return_value="done")
+    ctx = RunContext(cfg=MagicMock(), engine=engine, workdir=MagicMock(),
+                     inputs={"card": "do stuff"}, node="", item=None, sessions={}, held=MagicMock())
+    result = asyncio.run(run_workflow(spec, ctx))
+    assert "result" in result.outputs
+
+
+def test_run_workflow_loop_retries_then_stops():
+    """A wire with loop.max=2 back to an earlier node runs at most 3 tries."""
+    ...
+
+
+def test_run_workflow_dead_end_raises():
+    """An edge with when=False whose alternative is absent raises Stalled."""
+    ...
+
+
+def test_supervisor_workers_with_single_worker():
+    """ONE supervisor works through tasks."""
+    ...
+
+
+def test_k_independent_teams_picks_winner():
+    """K independent teams run same task; aggregate picks winner."""
+    ...
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `uv run pytest tests/unit/test_workflow_runner.py -v`
+Expected: FAIL — `runner.py` does not exist.
+
+- [ ] **Step 3: Implement `src/airlie/workflow/runner.py`**
+
+`async run_workflow` must:
+1. Find start nodes (no inbound edges), and iteratively run ready nodes.
+2. WORK nodes: if `prompt`/`prompt_id` → call engine; if `run` → `asyncio.create_subprocess_shell`.
+3. ROUND_ROBIN nodes: use `NativeTeam`/`AutoGenTeam` with a `TeamContext`.
+4. SUPERVISOR_WORKERS nodes: implement supervisor→workers→synthesis inline (migrate from `airlie/flow/team.py:team_runner`).
+5. K_INDEPENDENT_TEAMS nodes: build K `TeamContext`s, run in parallel via `asyncio.gather`, then aggregate (`TestScoreAggregator`/`LLMAggregator`) to pick winner.
+6. Handle `loop` wires (`loop.max` counting), `Stalled` when nothing can start.
+
+`RunContext`, `WorkflowResult` per Interfaces.
+
+- [ ] **Step 4: Run to verify tests pass**
+
+Run: `uv run pytest tests/unit/test_workflow_runner.py -v`
+Expected: All tests PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/airlie/workflow/runner.py tests/unit/test_workflow_runner.py
+git commit -m "feat(workflow): generic runner; all four node kinds implemented"
+```
+
+---
+
+## Task 3: One trigger seam — `start_workflow`
+
+**Files:**
+- Create: `src/airlie/workflow/trigger.py`
+- Create: `src/airlie/workflow/worktree.py`
+- Modify: `src/airlie/workflow/__init__.py` (re-export `start_workflow`)
+- Test: `tests/unit/test_workflow_trigger.py`
+
+**Interfaces:**
+- Consumes: `run_workflow` from Task 2, `WorkflowSpec` from Task 1.
+- Produces:
+  ```python
+  async def start_workflow(
+      workflow_name: str, *, card: dict, config: AirlieConfig, engine: Engine, workdir: Path
+  ) -> WorkflowResult: ...
+  ```
+  Single entry point called by chat slash-command, card button, and hub job bus.
+
+- [ ] **Step 1: Write the failing test — `tests/unit/test_workflow_trigger.py`**
+
+```python
+def test_start_workflow_locks_workdir():
+    """Two concurrent starts for same workflow+card: second refuses."""
+    ...
+
+def test_start_workflow_rejects_unknown_workflow_name():
+    """If the YAML doesn't exist, raises KeyError."""
+    ...
+
+def test_all_three_triggers_call_same_function():
+    """Chat slash-command, card, and hub use the same seam."""
+    ...
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/unit/test_workflow_trigger.py -v`
+Expected: FAIL — module does not exist.
+
+- [ ] **Step 3: Implement `src/airlie/workflow/trigger.py` and `src/airlie/workflow/worktree.py`**
+
+`async start_workflow` loads the workflow from `config/workflows/<name>.yaml`, validates it, creates/locks a git worktree under the run directory, builds `RunContext`, calls `run_workflow`. If locked, return `WorkflowResult(events=[{"kind": "already_running"}])`. If YAML not found, raise `KeyError`.
+
+`worktree.py` uses existing `airlie.teams.worktree` helpers — `add_worktree`/`remove_worktree`/`rev_parse`/`commit_wip`.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `uv run pytest tests/unit/test_workflow_trigger.py -v`
+Expected: All PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/airlie/workflow/trigger.py src/airlie/workflow/worktree.py src/airlie/workflow/__init__.py tests/unit/test_workflow_trigger.py
+git commit -m "feat(workflow): single start_workflow trigger for chat/card/hub"
+```
+
+---
+
+## Task 4: Rebuild workflow configs using only the four kinds
+
+**Files:**
+- Delete: `config/workflows/story.yaml` (old)
+- Delete: `config/workflows/layer.yaml` (old)
+- Create: `config/workflows/story.yaml` (new, WORK + ROUND_ROBIN + SUPERVISOR_WORKERS)
+- Create: `config/workflows/layer.yaml` (new, only WORK)
+
+**Interfaces:**
+- Consumes: Tasks 1-3.
+- Produces: Configs that load and validate against the new `WorkflowSpec`. Both `story` and `layer` use only the four kinds with `when`/`loop` on wires.
+
+- [ ] **Step 1: Rewrite `config/workflows/story.yaml`** — replace every `type: check` with `kind: WORK` and `run:`; replace `type: model` with `kind: WORK` and `prompt:`; replace `type: meeting` with `kind: ROUND_ROBIN` and roles `[product, architect, tester]`; replace `type: bundle` (running `layer` per item) — say whether the story now ends when `layer` builds all pieces from chat; either keep a `kind: WORK` that runs `airlie run --workflow layer` per item, or delete layer entirely.
+
+- [ ] **Step 2: Rewrite `config/workflows/layer.yaml`** — all nodes were `type: check`; change to `kind: WORK` with `run:` commands.
+
+- [ ] **Step 3: Validate both files** — run `uv run python -c "from airlie.workflow.spec import load_workflow, validate_workflow; from pathlib import Path; assert validate_workflow(load_workflow(Path('config/workflows/story.yaml'))), 'FAIL'"` and same for `layer.yaml`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add config/workflows/
+git commit -m "feat(workflow): rebuild configs on four kinds"
+```
+
+---
+
+## Task 5: Delete old engine; fix remaining imports
+
+**Files:**
+- Delete: `src/airlie/flow/` (all files)
+- Modify: `src/airlie/config/schema.py` — change import from `airlie.flow.spec` to `airlie.workflow.spec`; replace `check_workflows` with `validate_workflow`.
+- Modify: `src/airlie/serve/flow_nodes.py`, `src/airlie/serve/workflows_api.py`, `src/airlie/serve/run_flow.py`, `src/airlie/serve/flow.py` — fix imports to `airlie.workflow`.
+- Modify: Any remaining `src/` or `tests/` file that imports `airlie.flow.*` — fix or delete.
+
+**Interfaces:**
+- Consumes: Task 4.
+- Produces: Zero files in `src/` or `tests/` import `airlie.flow.*`.
+
+- [ ] **Step 1: Grep for remaining broken imports** — `grep -rn 'from airlie\.flow\|import airlie\.flow' src/ tests/ --include='*.py' | grep -v __pycache__` — Expected: empty.
+
+- [ ] **Step 2: Run tests and fix until green** — `uv run pytest tests/ -q --ignore=tests/unit/quarantine --maxfail=3` — Expected: all remaining tests pass.
+
+- [ ] **Step 3: Verify the gate** — `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy`, `uv run pytest -q -n auto --maxprocesses 8`, `task web:gate`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add -A
+git commit -m "feat: delete airlie.flow engine; fix all remaining imports"
+```
+
+---
+
+## Task 6: Delete story pipeline plumbing; unify Taskfile and CLI
+
+**Files:**
+- Delete: `src/airlie/story/pipeline.py`, `src/airlie/story/flow.py`, `src/airlie/story/factory.py`, `src/airlie/story/epic_pipeline.py`, `src/airlie/story/initiative_pipeline.py`, `src/airlie/story/workflow_publish.py`
+- Modify: `src/airlie/cli.py` — delete `story_run`, `line_tick`, `story_tick`, `story_restack`, `story_restart`, `story_adopt_workflow`, `story_pr_body`, `story_describe`; delete `run` (topology) and `studio`; add `run` calling `start_workflow`; delete `story_app`, `line_app`; delete Taskfile targets `story`, `story:tick`, `story:restack`, `story:restart`, `story:describe`, `story:steps`, `story:check`, `line:tick`, `line:stats`, `line:pause`, `line:resume`, `line:why`, `line:deploy`; add `run` → `airlie run -- "..."`.
+- Modify: `Taskfile.yml` — same deletion of `story:*` and `line:*` targets; add `run`.
+
+**Interfaces:**
+- Consumes: Task 3's `start_workflow`.
+- Produces: Taskfile has `task run`, `task serve` which use `airlie run`; no `task story*`/`task line:*`; CLI has no `airlie story`/`airlie line` commands.
+
+- [x] **Step 1: Delete all story pipeline modules** — remove `pipeline.py`, `flow.py`, `factory.py`, `epic_pipeline.py`, `initiative_pipeline.py`, `workflow_publish.py`.
+
+- [x] **Step 2: Remove `airlie story` and `airlie line` commands from `cli.py`** — delete handlers and typer apps.
+
+- [x] **Step 3: Replace `airlie run` and `airlie studio` with single `airlie run`** — `async start_workflow(workflow=<first_arg>, ...)`. Same default if no arg.
+
+- [x] **Step 4: Remove container/VM from Taskfile** — removed `searxng:*` and `line:launchd:*`; left `test:image:run` / `test:e2e` (CI still uses Docker; dev gate is host `pytest`).
+
+- [x] **Step 5: Remove dead test/support files** — anything in `tests/support` or `tests/unit` referencing deleted modules.
+
+- [x] **Step 6: Run full gate** — Expected: all pass.
+
+- [x] **Step 7: Commit**
+
+```bash
+git add src/airlie/story/ src/airlie/cli.py Taskfile.yml
+ git commit -m "feat: delete story pipeline; unify Taskfile and CLI on run"
+```
+
+---
+
+## Task 7: Final cleanup of remaining files and tests
+
+**Files:**
+- Modify: Any remaining file that imported from deleted modules.
+
+- [x] **Step 1: Verify no remaining imports**
+
+Run: `grep -rn 'from airlie.story.pipeline\|from airlie.story.flow\|from airlie.story.factory' src/ tests/ --include='*.py' | grep -v __pycache__`
+Expected: empty.
+
+- [x] **Step 2: Verify the test suite passes**
+
+Run: `uv run pytest -q -n auto --maxprocesses 8`
+Expected: all pass.
+
+- [x] **Step 3: Commit**
+
+```bash
+git add -A
+git commit -m "chore: remove last references to deleted modules"
+```
+
+---
+
+## Status (built 2026-11-19, branch `feature/legacy-story-removal`)
+
+The new engine is built, tested, and running independently of the old `airlie.flow`. Full gate green (5102 passed, ruff clean).
+
+- **Task 1** (spec) — DONE, `4eadae22`. `airlie.workflow.spec`: four kinds + `WireSpec`/`LoopBound`/`GateEvidence`/`WorkflowSpec` + `validate_workflow`/`load_workflow`; `conditions.py` copied. 12 tests.
+- **Task 2** (runner) — DONE, `f1dfb840`. `airlie.workflow.runner`: `RunState`, the `_Run` dataflow scheduler, one runner per kind, `Stalled`/`StoryBlocked`, `run_workflow`. 10 tests: forward fire/die + downstream die, retry-loop to bound, failed+block, stall on unproducible input, all four kinds.
+- **Task 3** (trigger) — DONE, `3f3e1e92`. `airlie.workflow.trigger.start_workflow` + `airlie.workflow.worktree` lock. 3 tests: runs + releases lock, refuses when locked (already_running), KeyError on unknown name.
+
+## Re-plan of Tasks 4-7 (measured blast radius)
+
+The deletion pass is one coupled **frontend + backend** change, not "fix imports." Switching `config.schema` (which types `config.workflows` as `airlie.flow.spec.WorkflowSpec`) to the new spec **forces** three things at once: (a) rewrite `config/workflows/{story,layer}.yaml`, (b) rewrite the **serve web-builder**, (c) delete `airlie.flow`. They land together.
+
+Measured surface:
+- `airlie.flow` engine importers (7 src): `config/schema.py`, `serve/flow_nodes.py`, `serve/workflows_api.py`, `story/{workflow_publish,flow,pipeline,workflows}.py`; plus ~22 old-engine test files (most deleted).
+- Web-builder: `serve/flow_nodes.py` (186 lines), `serve/workflows_api.py` (imports `DEPRECATED_NODE_TYPES`, `MEETINGS`, `Format`, `NodeType`, `old_schema_problems`, `upgrade_v1`, `STORY_CATALOG`), and the React `web/src` (references `"model"/"check"/"gate"/"bundle"/"meeting"` across many `.vue`/`.ts`).
+- `airlie.story` (126 importers): only the 6 pipeline modules are deleted; the rest of the package stays.
+
+### Revised order (each step ends gate-green)
+
+- **Task 4a:** Rewrite `config/workflows/{story,layer}.yaml` to the four kinds.
+- **Task 4b:** Switch `config.schema` to `airlie.workflow.spec`; rewrite `serve/flow_nodes.py` + `serve/workflows_api.py` + the React builder for four kinds. *The big one.*
+- **Task 5:** Delete `src/airlie/flow/` + its tests; fix the surviving importers.
+- **Task 6:** DONE, `25fc1092`. Removed `airlie story`/`airlie line`/`airlie studio`; `airlie run` → `start_workflow` (default `story`); Taskfile `task run` only; serve ticker calls retired `jobs.tick`; deleted `test_story_launchd.py`; removed `searxng:*` and `line:launchd:*` (not `test:image:run`).
+- **Task 7:** DONE (commit after handoff). `layer_build`/`retired.py` stubs; README task table; import grep clean; gate green.
+
+### Open design question (the spec is silent — needs a call before 4b)
+
+The spec says "nothing on a screen changes; this retires plumbing, not visuals," but the node kinds go nine → four. How should the web builder's node palette and shape rendering map to the four kinds? Rebuild the palette to four, or keep the nine as prompt-level variations that fold in? That answer determines the size of Task 4b.
+
+---
+
+## Session status — 2026-11-19 (recovered after a corrupted agent session)
+
+This plan file was restored from cline checkpoint `3453840b`; the previous agent had
+clobbered it with scratch text mid-edit and died debugging a web test. Recovered state,
+verified against the working tree (not from the corrupted session's claims):
+
+- Task 5 is **in flight**: `web/src/screens/builder/` was rebuilt (WIP commit
+  `9b21d67 fix(web): BuilderScreen.test.ts asserts on the current tree` — do not
+  re-do) plus ~10 uncommitted files (builder tests rewritten green:
+  `graph.test.ts`, `yaml.test.ts`, `graph.edit.test.ts`, `BuilderBox.test.ts`,
+  `Palette.test.ts`, plus `NodeModal.vue`/`graph.ts`/`useBuilder.ts` tweaks).
+- **web tests are red at HEAD *and* with the WIP — same 87 failures.** The
+  remaining red is four test files still asserting the pre-modal-rewrite contract:
+  `builder/Canvas.test.ts` (19), `screens/builder/NodeModal.test.ts` (19),
+  `builder/WireModal.test.ts` (~6, run-to-run flaky), `BuilderScreen.test.ts` (53+).
+  Verified cause on Canvas: fixtures make nodes without `kind`, which now 400s
+  ("workflow w: node a has no kind") so no boxes render. These are stale tests
+  against a deliberate redesign, not regressions — update them to the current
+  contract (lowercase ids everywhere, modal-based editing) file by file.
+- Debug litter from the dead session was removed (`web/dbg.py`; a `SHOWME` probe
+  in BuilderScreen.test.ts:643 — the restore also restored the assertion it had
+  clobbered; re-verify that test when porting BuilderScreen.test.ts).
+
+Next step, in order: port `Canvas.test.ts` fixtures to give every node a kind;
+then NodeModal/WireModal/BuilderScreen against the modal contract. Gate per AGENTS.md:
+`task web:gate` then the python gates (untouched by this chunk). Then Task 5 commits,
+and before any prompt-hub work (Task 4b) the open model-profile decision needs Noah.
+
+
+---
+
+## Status — 2026-11-19, session 3 (JSON-reporter baseline; terminal reads unreliable, JSON parsed from disk)
+
+Session 3 verified baseline (`npx vitest run --reporter=json --outputFile=/tmp/base.json`,
+parsed with python; 689 tests total: **176 passed / 86 failed** in the four stale files;
+everything else in the web suite is green):
+
+| file | pass | fail |
+| --- | --- | --- |
+| `web/src/screens/builder/Canvas.test.ts` | 23 | 18 |
+| `web/src/screens/BuilderScreen.test.ts` | 21 | 53 |
+| `web/src/screens/builder/NodeModal.test.ts` | 12 | 9 |
+| `web/src/screens/builder/WireModal.test.ts` | 9 | 6 |
+
+(Suite-wide: 250 passed / 86 failed.)
+
+(The vitest process then exits with an unhandled "Invalid time value" outside the suite —
+likely from a screen test's `new Date(NaN)`/timer; re-check after the ports.)
+
+Verified facts (files read directly, not guessed):
+
+- `graph.ts`/`yaml.ts` are v2: kinds `WORK`, `ROUND_ROBIN`, `SUPERVISOR_WORKERS`,
+  `K_INDEPENDENT_TEAMS`; **no bundles anywhere** (story.yaml/layer.yaml comments say bundle is
+  removed; `Canvas.vue` line ~61 literally `const each = false // bundles removed`); loops
+  live on lines (`loop:` with item/max), conditions as `when:` strings.
+- Current `config/workflows/story.yaml` nodes: `intake, base, to_build, survey, refine,
+  layers, agree_plain, amigos` — no `build_layers`, no `gate`/`check`, no dotted `{item}`
+  ports (except literal output names like `package.{item}` in layer.yaml's `package` node).
+- Canvas.test.ts is a partial port: v2 helpers (`graphOf`, `data-box-card`,
+  `[data-palette-kind]`) but ~14 assertions still encode the pre-removal story graph
+  (`gate`, `[data-each]` badges, dotted bundle ports) or throw
+  "node a has no kind" on inline fixtures missing `kind:`.
+- NodeModal/WireModal tests are also partial ports: failures are prop/contract mismatches
+  (component gets `undefined` fields), not import errors.
+- BuilderScreen.test.ts is the full port (53): stale palette types, old draft routes/fake
+  server expectations vs `useBuilder.ts` + `web/src/test-support/builder-workflows.ts`.
+
+Suggested order: Canvas (mechanical fixture/graph-name fixes) → WireModal + NodeModal
+(read each component's props/emits, fix the ~15 mount/assertion mismatches) →
+BuilderScreen (biggest; re-encode against useBuilder + fake server). Then the full gate
+from AGENTS.md and commit Task 5.
+
+Operational note for resuming sessions: this environment's terminal channel intermittently
+returned fabricated or mismatched command output (a `git checkout` reported as run had not
+run; greps returned hits for absent strings). Trust only: the read_files tool on real repo
+files, and JSON artifacts written to disk by test runs. Re-verify anything else twice.
+
+## Status — Task 4b / Task 5 complete (session 5)
+
+- Web Vitest: **1209/1209** passing (`npm test -- --run` in `web/`).
+- `task web:gate`: **pass** (vue-tsc, lint, Vitest).
+- Python gate: **pass** (ruff, mypy, pytest 3861 passed).
+- Builder tests ported to v2 four-kind model; dead UI/tests trimmed (upgraded-draft banner, v1 gate/check palette fixtures).
+- Bundle palette tests fixed (`placeLayerBundle` picks last `work-*`; save/workflow type uses `graph.type` not `title`).
+
+## Status — session 4 final (verified: hash checks + JSON reports)
+
+Baseline (all cross-checked): only uncommitted change is `web/src/screens/builder/Canvas.test.ts`
+(+24/−23), the completed v1→v2 port, **41/41 green**. `BuilderScreen.test.ts`, `NodeModal.test.ts`,
+`WireModal.test.ts` on disk are byte-identical to HEAD — earlier "edits applied" reports for them
+were transport fabrications. Counts (JSON reporter, two independent runs): BuilderScreen
+**21✓/53✕**, NodeModal **12✓/9✕**, WireModal **9✓/6✕**.
+
+Root causes (each verified against component sources and assertion diffs):
+1. **Test-isolation bug in BuilderScreen.test.ts**: assertions see stale DOM from earlier tests
+   (`[data-name] found more than one element`, `expected "draft" got "survey"`). Fix the
+   afterEach unmount / router-singleton reset FIRST — it likely clears a third of the 53 before
+   any fixture work.
+2. Every YAML-parsing BuilderScreen test embeds v1 fixtures (`type:`/`edges:`/
+   `take_card_as_story`, catalog with `checks:`/`meetings:`, the review-approval flow, 22-node
+   shipped-story assertions): rewrite fixtures to v2 (`kind: WORK`…, `to:` lines, catalog
+   `operations`). Mechanical, ~35 tests; the Canvas.test.ts port (+24/−23) is the template.
+3. **NodeModal.vue / WireModal.vue are half-ported** (leftover Task-4 work): v2 kind selects and
+   bundle sections are in, but NodeModal hardcodes the old checks (acceptance criteria / note
+   polish / build plan; run ids like `build_notes`) instead of taking them from the catalog
+   `operations` prop, and still renders meeting/steps/tools fields. Most of NodeModal's 9 test
+   failures wait on this component-side fix, not on test edits.
+
+Decision (delete-and-rewrite vs port): **port with trimming.** Deleting the 68 failures would
+destroy the isolation-bug discovery, ~30 still-valid behaviors (the 21 passing tests prove the
+harness: routes, saves, drafts, publish), and the only executable spec for NodeModal/WireModal's
+unfinished port. Order: (a) isolation fix + re-measure with `--reporter=json`;
+(b) fixture-port BuilderScreen region by region, JSON run between regions; (c) delete dead
+concepts when their fixture appears (check/gate nodes, review approval, upgraded-draft banner);
+(d) finish NodeModal/WireModal components against their tests; (e) re-validate, then amend or
+extend commit 95c1374.
+
 

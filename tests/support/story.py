@@ -22,8 +22,8 @@ from airlie.story.board import Board, BoardError, Card, Column, NullBoard, text_
 from airlie.story.epic_plan import PlannedStory, ScopedPath, render_story_card
 from airlie.story.github_app import GitHubApp
 from airlie.story.model import Criterion, EpicHeader, Layer, Story
-from airlie.story.pipeline import StoryPipeline
 from airlie.story.publish import Publisher, PublishError, run_cmd
+from airlie.story.retired import StoryPipeline
 from airlie.topology.studio import StudioOrchestrator
 from tests.support.git import git, repo_with_marker_tests
 from tests.support.studio import APPROVE, DONE, ROLES, RUN, WRITE_PASS, cfg_for

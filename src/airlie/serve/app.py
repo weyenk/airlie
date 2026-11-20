@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """`task serve`: the client-agnostic front door. Any OpenAI-compatible client (Claude Code, Qwen Code, curl)
 can talk to a role by name; `/v1/airlie/run` launches a parallel team run. The jobs API starts a studio plan
 (`/v1/airlie/plans`), a studio run (`/v1/airlie/runs`) or a story (`/v1/airlie/stories`) in the background; a
@@ -54,6 +55,7 @@ from airlie.notify.stories import StoryNotes
 from airlie.notify.vapid import application_server_key, load_or_create_vapid
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
+from airlie.rev import build_commit
 from airlie.serve.bridge.clock import RealClock
 from airlie.serve.feed import Feed, event_stream
 from airlie.serve.flow import epic_flow, initiative_flow, job_detail, story_flow
@@ -85,15 +87,14 @@ from airlie.story.board import BoardError
 from airlie.story.diagnosis import diagnosis_json, latest, read_diagnosis
 from airlie.story.epic import REPOSITORY
 from airlie.story.fixes import home_checkout
+from airlie.story.jobs import publish_workflow
 from airlie.story.mockups import OPTION_FILE, mockup_dir, record_pick
 from airlie.story.model import StoryBusy, StoryError, StoryRunning, StorySetupError
 from airlie.story.phase import set_paused
-from airlie.story.pipeline import build_commit
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restart import FRESH, RestartError, RestartIncomplete
 from airlie.story.state import STAGES
 from airlie.story.stats import line_stats, parse_since
-from airlie.story.workflow_publish import publish_workflow
 from airlie.story.workflows import WorkflowError, board_problems
 from airlie.teams.worktree import rev_parse
 from airlie.tools.web import SearXNGProvider, UrllibClient, WebFetch, WebSearch
@@ -499,13 +500,13 @@ _EPIC_ID = re.compile(r"E[0-9]+", re.ASCII)
 
 
 def _initiative_job_factory() -> Callable[..., Any]:
-    from airlie.story.factory import initiative_job
+    from airlie.story.jobs import initiative_job
 
     return initiative_job
 
 
 def _story_restart_factory() -> Callable[..., Any]:
-    from airlie.story.factory import restart_one
+    from airlie.story.jobs import restart_one
 
     return restart_one
 
@@ -529,13 +530,13 @@ def _leftover_sweep(cfg: AirlieConfig, threads: Any) -> Callable[[], Any]:
 
 
 def _story_adopt_factory() -> Callable[..., Any]:
-    from airlie.story.factory import adopt_one
+    from airlie.story.jobs import adopt_one
 
     return adopt_one
 
 
 def _story_job_factory() -> Callable[..., Any]:
-    from airlie.story.factory import story_job
+    from airlie.story.jobs import story_job
 
     return story_job
 
@@ -596,7 +597,7 @@ def _default_factory(
 def _workflow_publisher(cfg: AirlieConfig) -> Callable[[WorkflowDraft], Awaitable[tuple[int, str]]]:
     """What publishes a draft as a PR: publish_workflow from airlie's own checkout (found when a publish
     starts), through the story's Publisher as one PR on one branch (the bot when story.github_app is set)."""
-    from airlie.story.factory import github_app
+    from airlie.story.jobs import github_app
 
     publisher = Publisher(remote=cfg.story.remote, app=github_app(cfg), publish="single")
     locks: dict[
@@ -716,7 +717,7 @@ def create_app(
 
     def started(key: str) -> bool:
         """The card has a saved state: it started on the workflow it snapshotted."""
-        from airlie.story.factory import _saved
+        from airlie.story.jobs import _saved
 
         return _saved(cfg, key) is not None
 

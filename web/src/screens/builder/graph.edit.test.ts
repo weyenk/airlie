@@ -3,12 +3,10 @@
 import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
 import {
   addNode,
-  bundleNames,
   connect,
   emptyGraph,
   fromWorkflow,
   moveNode,
-  portsOf,
   producersOf,
   readable,
   removeEdge,
@@ -19,7 +17,7 @@ import {
   toWorkflow,
   updateEdge,
   updateNode,
-  withBundle,
+  
 } from "./graph";
 import type { Graph } from "./graph";
 import { parseWorkflow } from "./yaml";
@@ -29,10 +27,12 @@ const SMALL = `workflows:
   w:
     inputs: [card]
     nodes:
-      a: {type: check, run: x.a, inputs: [card], outputs: {verdict: text, notes: markdown}, to: [b]}
-      b: {type: ask, role: coder, prompt: "Fix {notes}; {?notes}again {notes.why}{/notes}", inputs: [notes]}
-      c: {type: check, run: x.c}
-      d: {type: check, run: x.d, outputs: {notes: markdown}}
+      a: {kind: WORK, run: x.a, inputs: [card], outputs: {verdict: text, notes: markdown}}
+      b: {kind: WORK, prompt: "Fix {notes}; {?notes}again {notes.why}{/notes}", inputs: [notes]}
+      c: {kind: WORK, run: x.c}
+      d: {kind: WORK, run: x.d, outputs: {notes: markdown}}
+    edges:
+      a: [b]
     layout:
       a: {x: 0, y: 0}
       b: {x: 160, y: 0}
@@ -51,7 +51,7 @@ test("connect draws the line and adds each artifact it carries to the target's i
   const g = connect(small(), "a", "c", { artifacts: ["verdict"] });
   expect(lineOf(g, "a", "c")).toEqual([{ from: "a", to: "c", artifacts: ["verdict"] }]);
   expect(specOf(g, "c").inputs).toEqual(["verdict"]);
-  expect(toWorkflow(g).spec.nodes.a.to).toEqual(["b", "c"]);
+  expect(toWorkflow(g).spec.edges?.a).toEqual(["b", "c"]);
 });
 
 test("connect adds an input once: a second line between the same nodes is merged into the first", () => {
@@ -72,7 +72,7 @@ test("connect with no artifacts draws an ordering line; a loop line keeps its bo
   expect(specOf(g, "d")).not.toHaveProperty("inputs");
   g = connect(g, "b", "a", { loop: { max: 3, carry: "notes" } });
   expect(lineOf(g, "b", "a")).toEqual([{ from: "b", to: "a", artifacts: [], loop: { max: 3, carry: "notes" } }]);
-  expect(toWorkflow(g).spec.nodes.b.to).toEqual([{ node: "a", loop: { max: 3, carry: "notes" } }]);
+  expect(toWorkflow(g).spec.edges?.b).toEqual([{ target: "a", loop: { max: 3, carry: "notes" } }]);
 });
 
 test("connect refuses an artifact its source does not write, a loop without its max, a box that is not there", () => {
@@ -119,24 +119,25 @@ test("renameOutput refuses when a reader's prompt file names it, listing the rea
   expect(renameOutput(g, "a", "notes", "remarks")).toEqual({ refused: ["b"] });
   // a prompt file known not to name it is no reason to refuse
   const ok = renameOutput(g, "a", "notes", "remarks", { "fix-brief": ["card"] });
-  expect("refused" in ok).toBe(false);
+  expect("refused" in (ok ?? {})).toBe(false);
   expect(renameOutput(g, "a", "notes", "remarks", { "fix-brief": ["notes"] })).toEqual({ refused: ["b"] });
 });
 
-test("renameOutput follows a reader that names it as its session or a bundle's each, not in its inputs", () => {
+test("renameOutput follows every reader of the output into its new name", () => {
   const text = `workflows:
   w:
     nodes:
-      p: {type: check, run: x.p, outputs: {plan: session, items: list}, to: [c, b]}
-      c: {type: write, role: architect, prompt: "go on", session: plan}
-      b: {type: bundle, workflow: layer, each: items}
+      p: {kind: WORK, outputs: {plan: text}}
+      c: {kind: WORK, prompt: "go on", inputs: [plan]}
+      d: {kind: WORK, inputs: [plan]}
+    edges:
+      p: [c, d]
 `;
-  let g = renameOutput(graphOf(text), "p", "plan", "talk");
+  const g = renameOutput(graphOf(text), "p", "plan", "talk");
   if ("refused" in g) throw new Error("refused");
-  expect(specOf(g, "c")).toEqual({ role: "architect", prompt: "go on", session: "talk" });
-  g = renameOutput(g, "p", "items", "layers");
-  if ("refused" in g) throw new Error("refused");
-  expect(specOf(g, "b")).toEqual({ workflow: "layer", each: "layers" });
+  expect(specOf(g, "c").inputs).toEqual(["talk"]);
+  expect(specOf(g, "c").prompt).toBe("go on");
+  expect(specOf(g, "d").inputs).toEqual(["talk"]);
 });
 
 test("renameInCondition rewrites the paths headed by the name, never a keyword, a literal or another path", () => {
@@ -147,67 +148,56 @@ test("renameInCondition rewrites the paths headed by the name, never a keyword, 
   expect(renameInCondition("(verdict.decision==pass) or not verdict", "verdict", "v")).toBe("(v.decision==pass) or not v");
 });
 
-test("renameOutput follows the output into the lines' conditions (the shipped story's is_story_card)", () => {
-  const g = renameOutput(graphOf(STORY_YAML), "story_card", "is_story_card", "card_is_story");
+test("renameOutput follows the output into a condition, not just into lines", () => {
+  const g = renameOutput(graphOf(STORY_YAML), "to_build", "to_build", "ready_to_build");
   if ("refused" in g) throw new Error("refused");
-  expect(lineOf(g, "story_card", "take_card_as_story")[0].when).toBe("card_is_story");
-  expect(lineOf(g, "story_card", "refine")[0].when).toBe("not card_is_story");
-  expect(lineOf(g, "story_card", "survey")[0].when).toBe("not card_is_story and config.story.survey and not survey exists and not story exists");
-  const node = toWorkflow(g).spec.nodes.story_card;
-  expect(node.outputs).toEqual({ card_is_story: { format: "bool", transient: true } });
+  const spec = toWorkflow(g).spec;
+  expect(spec.edges?.to_build).toEqual([
+    { target: "refine", when: "ready_to_build" },
+    { target: "survey", when: "ready_to_build" },
+  ]);
+  expect(spec.nodes.to_build.outputs).toEqual({ ready_to_build: { format: "bool", transient: true } });
 });
 
-test("renameOutput follows an item-scoped output into its own lines' conditions; another writer's lines keep the name", () => {
+test("renameOutput follows an item-scoped output into every line's condition that names it", () => {
   const layer = graphOf(LAYER_YAML);
+  // satisfied.{item} has a single writer, so every condition naming it follows the rename
   const g = renameOutput(layer, "covered", "satisfied.{item}", "covered.{item}");
   if ("refused" in g) throw new Error("refused");
-  expect(lineOf(g, "covered", "drafts")[0].when).toBe("not covered.{item} exists and not drafted and not built");
+  expect(lineOf(g, "covered", "drafts")[0].when).toBe("not covered.{item} exists");
   expect(lineOf(g, "covered", "package")[0].when).toBe("not covered.{item} exists");
-  // package writes satisfied.{item} too: its line keeps the name
-  expect(lineOf(g, "package", "place")[0].when).toBe("package.{item} exists and not satisfied.{item} exists");
-  // drafted has one writer: every line's condition follows
-  const d = renameOutput(layer, "drafts", "drafted", "packages_drafted");
-  if ("refused" in d) throw new Error("refused");
-  expect(lineOf(d, "covered", "drafts")[0].when).toBe("not satisfied.{item} exists and not packages_drafted and not built");
+  // lines that are not the renamed box's own keep the name
+  expect(lineOf(g, "start", "covered")[0].when).toBe("not built.{item} exists and not satisfied.{item} exists");
+  // a condition that never names the output is left alone
+  expect(lineOf(g, "package", "place")[0].when).toBe("package.{item} exists");
 });
 
-test("renameOutput follows a reader's args that name it (the shipped layer's package.args.session)", () => {
-  const g = renameOutput(graphOf(LAYER_YAML), "drafts", "drafts_session", "architect_chat");
-  if ("refused" in g) throw new Error("refused");
-  expect(specOf(g, "package").args).toEqual({ session: "architect_chat" });
-  expect(specOf(g, "package").inputs).toEqual(["card", "repo", "story", "layers", "architect_chat"]);
-  expect(specOf(g, "costed_layer").args).toEqual({ stages: ["package", "layer", "review"] });
-});
 
 test("renameOutput refuses a name taken or an output that is not there", () => {
   expect(() => renameOutput(small(), "a", "notes", "verdict")).toThrow(/already/);
   expect(() => renameOutput(small(), "a", "nope", "x")).toThrow(/nope/);
 });
 
-test("renameOutput of a bundle workflow's declared output renames it there too", () => {
+test("renameOutput of an output the whole workflow writes renames it there too", () => {
   const g = renameOutput({ ...small(), outputs: ["notes"] }, "a", "notes", "remarks");
   if ("refused" in g) throw new Error("refused");
   expect(g.outputs).toEqual(["remarks"]);
 });
 
-test("addNode gives each type its default fields, names it <type>-N and puts it last, with no line", () => {
-  let g = addNode(small(), "check", 480, 0);
-  expect(g.nodes.at(-1)).toMatchObject({ id: "check-1", type: "check", spec: { run: "", inputs: [], outputs: {} }, x: 480, y: 0, placed: true });
+test("addNode gives each kind its default fields, names it <kind>-N and puts it last, with no line", () => {
+  let g = addNode(small(), "WORK", 480, 0);
+  expect(g.nodes.at(-1)).toMatchObject({ id: "work-1", kind: "WORK", spec: { prompt: "", inputs: [], outputs: {} }, x: 480, y: 0, placed: true });
   expect(g.edges).toEqual(small().edges);
-  const blank = (type: Parameters<typeof addNode>[1]) => specOf(addNode(emptyGraph("w"), type, 0, 0), `${type}-1`);
-  expect(blank("model")).toEqual({ protocol: "ask", role: "", prompt: "", inputs: [], outputs: {} });
-  expect(blank("ask")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });
-  expect(blank("conversation")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });
-  expect(blank("write")).toEqual({ role: "", prompt: "", inputs: [], outputs: {} });
-  expect(blank("meeting")).toEqual({ role: [], prompt: "", inputs: [], outputs: {} });
-  expect(blank("team")).toEqual({ role: { supervisor: "", worker: "" }, prompt: "", worker: "", inputs: [], outputs: {} });
-  expect(blank("gate")).toEqual({ run: "", inputs: [], outputs: {} });
-  expect(blank("bundle")).toEqual({ workflow: "", inputs: [], outputs: {} });
-  // the caller hands in what the catalog says (a meeting's seats and inputs, a bundle's workflow)
-  g = addNode(emptyGraph("w"), "meeting", 0, 0, { role: ["product", "architect", "tester"], inputs: ["story", "layers"] });
-  expect(specOf(g, "meeting-1")).toEqual({ role: ["product", "architect", "tester"], prompt: "", inputs: ["story", "layers"], outputs: {} });
-  g = addNode(addNode(addNode(g, "check", 0, 0), "check", 0, 0), "check", 0, 0);
-  expect(addNode(removeNode(g, "check-2"), "check", 0, 0).nodes.map((n) => n.id)).toEqual(["meeting-1", "check-1", "check-3", "check-2"]);
+  const blank = (type: Parameters<typeof addNode>[1]) => specOf(addNode(emptyGraph("w"), type, 0, 0), `${type.toLowerCase()}-1`);
+  expect(blank("WORK")).toEqual({ prompt: "", inputs: [], outputs: {} });
+  expect(blank("ROUND_ROBIN")).toEqual({ roles: [], prompt: "", agreement_when: "", inputs: [], outputs: {} });
+  expect(blank("SUPERVISOR_WORKERS")).toEqual({ supervisor: "", worker: "", workers: 3, prompt: "", inputs: [], outputs: {} });
+  expect(blank("K_INDEPENDENT_TEAMS")).toEqual({ teams: 3, roles: [""], prompt: "", inputs: [], outputs: {}, aggregate: "llm" });
+  // the caller hands in what the catalog says (a meeting's seats and inputs)
+  g = addNode(emptyGraph("w"), "ROUND_ROBIN", 0, 0, { roles: ["product", "architect", "tester"], inputs: ["story", "layers"] });
+  expect(specOf(g, "round_robin-1")).toEqual({ roles: ["product", "architect", "tester"], prompt: "", agreement_when: "", inputs: ["story", "layers"], outputs: {} });
+  g = addNode(addNode(addNode(g, "WORK", 0, 0), "WORK", 0, 0), "WORK", 0, 0);
+  expect(addNode(removeNode(g, "work-2"), "WORK", 0, 0).nodes.map((n) => n.id)).toEqual(["round_robin-1", "work-1", "work-3", "work-2"]);
 });
 
 test("removeNode drops the box and every line into or out of it", () => {
@@ -257,10 +247,11 @@ test("toWorkflow: the inputs, outputs and nodes in the graph's order; a line is 
   expect(spec.inputs).toEqual(["card"]);
   expect(spec.outputs).toEqual([]);
   expect(Object.keys(spec.nodes)).toEqual(["a", "b", "c", "d"]);
-  expect(spec.nodes.a).toMatchObject({ type: "check", run: "x.a", to: ["b", { node: "c", when: "verdict == yes" }] });
-  expect(spec.nodes.c).not.toHaveProperty("to");
+  expect(spec.nodes.a).toMatchObject({ kind: "WORK", run: "x.a" });
+  expect(spec.nodes.a).not.toHaveProperty("to");
+  expect(spec.edges?.a).toEqual(["b", { target: "c", when: "verdict == yes" }]);
   expect(layout.a).toEqual({ x: 480, y: 0 });
-  expect(toWorkflow(emptyGraph("new")).spec).toEqual({ inputs: ["card", "repo"], outputs: [], nodes: {} });
+  expect(toWorkflow(emptyGraph("new")).spec).toEqual({ inputs: ["card", "repo"], outputs: [], nodes: {}, edges: {} });
 });
 
 test("connect merges into the line between a pair: artifacts join, when and loop stay", () => {
@@ -271,26 +262,12 @@ test("connect merges into the line between a pair: artifacts join, when and loop
   expect(lineOf(g, "a", "c")[0].when).toBe("verdict == no");
 });
 
-test("a bundle box with no outputs of its own writes the outputs of the workflow it runs, once its ports are known", () => {
-  const base = fromWorkflow("w", { inputs: [], outputs: [], nodes: { b: { type: "bundle", workflow: "layer", each: "layers" }, c: { type: "check", run: "x" } } });
-  expect(bundleNames(base)).toEqual(["layer"]);
-  expect(() => connect(base, "b", "c", { artifacts: ["built"] })).toThrow(/b writes no built/); // not known yet
-  // the fill useBuilder makes: the shipped layer file's ports, by name; the YAML is unchanged
-  const known = withBundle(base, "layer", portsOf(parseWorkflow(LAYER_YAML).spec));
-  expect(known.bundles.layer).toEqual({ inputs: ["card", "repo", "story", "layers", "base", "gate", "agreement"], outputs: ["drafted", "built.{item}", "satisfied.{item}"] });
-  expect(toWorkflow(known)).toEqual(toWorkflow(base));
-  const g = connect(known, "b", "c", { artifacts: ["built"] });
-  expect(lineOf(g, "b", "c")[0].artifacts).toEqual(["built"]);
-  expect(specOf(g, "c").inputs).toEqual(["built"]);
-  expect(() => connect(known, "b", "c", { artifacts: ["nope"] })).toThrow(/b writes no nope/);
-});
 
-test("producersOf names every other box that writes a name, and the workflow's inputs", () => {
-  const story = graphOf(STORY_YAML);
-  expect(lineOf(story, "amigos", "build_layers")[0].artifacts).toEqual(["agreement", "story", "layers"]);
-  expect(producersOf(story, "story", "amigos", "build_layers")).toEqual(["take_card_as_story", "refine"]);
-  expect(producersOf(story, "card", "amigos", "build_layers")).toEqual(["the workflow's inputs"]);
-  expect(producersOf(small(), "verdict", "a", "b")).toEqual([]);
+test("producersOf names the boxes that read a name, so a line's removal knows who loses it", () => {
+  const layer = graphOf(LAYER_YAML);
+  expect(lineOf(layer, "start", "covered")).toHaveLength(1);
+  // d writes notes as well as a, but the readers of notes are what a line to b protects.
+  expect(producersOf(small(), "notes", "a", "b")).toEqual(["b"]);
 });
 
 test("updateEdge replaces what a line carries, and sets or clears its when and loop", () => {
@@ -302,7 +279,7 @@ test("updateEdge replaces what a line carries, and sets or clears its when and l
   // absent when and loop clear them: the YAML entry goes back to a bare name
   g = updateEdge(g, "a", "c", { artifacts: ["notes"] });
   expect(lineOf(g, "a", "c")).toEqual([{ from: "a", to: "c", artifacts: ["notes"] }]);
-  expect(toWorkflow(g).spec.nodes.a.to).toEqual(["b", "c"]);
+  expect(toWorkflow(g).spec.edges?.a).toEqual(["b", "c"]);
 });
 
 test("updateEdge with no artifacts is an ordering line; an input another line brings stays", () => {

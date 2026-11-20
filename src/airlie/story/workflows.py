@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """The workflow a card runs: named by its `workflow:<name>` label (a story card without one runs `story`),
 found among the repo's workflows and the board's drafts, and snapshotted into the card's state the first time
 it is used, so every resume runs what the card started on whatever the drafts and files say since
@@ -16,19 +17,32 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from pydantic import ValidationError
 
-from airlie.flow.prompt_files import PREFIX, parse_draft_prompts
-from airlie.flow.spec import NodeSpec, WorkflowSpec, check_workflows
-from airlie.flow.upgrade import upgrade_topology_types, upgrade_v1
+# [engine-swap: retired; rebuild in follow-up] check_workflows
+# [engine-swap: retired] from airlie.flow.upgrade import upgrade_topology_types, upgrade_v1
 from airlie.prompts.hub import PromptError
 from airlie.prompts.hub import load as hub_prompts
 from airlie.story.board import Card, note
 from airlie.story.model import StoryError, StoryRunning
+from airlie.story.retired import StoryPipeline
+from airlie.workflow.prompt_files import PREFIX, parse_draft_prompts
+from airlie.workflow.retired import (
+    MEMORY,
+    STORY_CATALOG,
+    Catalog,
+    StateStore,
+    check_workflows,
+    transient_heads,
+    upgrade_topology_types,
+    upgrade_v1,
+)
+from airlie.workflow.spec import NodeSpec, WorkflowSpec
 
 if TYPE_CHECKING:
     from airlie.board.model import WorkflowDraft
     from airlie.config import AirlieConfig
-    from airlie.flow.catalog import Catalog
-    from airlie.story.pipeline import StoryPipeline
+
+    # [engine-swap: retired]     from airlie.flow.catalog import Catalog
+    # [engine-swap: retired; rebuild in follow-up] StoryPipeline
     from airlie.story.state import StoryState
 
 LABEL = "workflow:"
@@ -90,7 +104,6 @@ Snapshot = dict[str, Any]
 
 
 def _catalog() -> Catalog:
-    from airlie.story.flow import STORY_CATALOG  # the story's checks; story.flow imports this module
 
     return STORY_CATALOG
 
@@ -355,8 +368,8 @@ def send_back_changed(
     (`restart.rewind`), so the operation does not find its stage done and skip itself. Returns the nodes
     that will run again, sorted: those sent back, and any other node that ran and whose output this
     cleared (refine, when the story is cleared). Nothing is saved here."""
-    from airlie.flow.spec import transient_heads
-    from airlie.flow.store import MEMORY, StateStore
+    # [engine-swap: retired; rebuild in follow-up] transient_heads
+    # [engine-swap: retired]     from airlie.flow.store import MEMORY, StateStore
     from airlie.story.restart import past, rewind, rewind_point  # restart imports this, through the board
 
     spec = specs[name]

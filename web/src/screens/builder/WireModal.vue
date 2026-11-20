@@ -2,7 +2,7 @@
 import { computed, ref, useId, watch } from "vue";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import { hasMax, inputsOf, outputsOfNode, producersOf } from "./graph";
+import { hasMax, inputsOf, otherProducersOf, outputsOfNode } from "./graph";
 import type { GEdge, GNode, Graph, LoopBound } from "./graph";
 
 defineOptions({ name: "AirlieBuilderWireModal" });
@@ -79,7 +79,7 @@ const changed = computed(() => !same(normal(change.value), normal({ artifacts: p
  * checkbox is shown checked and cannot be unchecked; the names say why. */
 const sharedFrom = (name: string): string | null => {
   if (!inputsOf(props.to.spec).includes(name)) return null;
-  const others = producersOf(props.graph, name, props.from.id, props.to.id);
+  const others = otherProducersOf(props.graph, name, props.from.id, props.to.id);
   return others.length ? others.join(", ") : null;
 };
 /** Whether the target's own text or fields read `name`: `{name}`, `{name.field}`, `{?name}`, `{/name}`, or its `each` / `session`. */
@@ -87,7 +87,7 @@ const readByPrompt = (name: string): boolean => {
   const spec = props.to.spec;
   if (spec.each === name || spec.session === name) return true;
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`\\{[?/]?${escaped}(?=[}.])`);
+  const re = new RegExp(`\\{[?/]?${escaped}(?:\\.[^{}]+)?(?=[}/])`);
   return ["prompt", "turn", "worker"].some((k) => typeof spec[k] === "string" && re.test(spec[k] as string));
 };
 function toggle(name: string, on: boolean, box?: HTMLInputElement) {
