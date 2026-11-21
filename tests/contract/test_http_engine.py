@@ -45,7 +45,7 @@ def engine(routes: dict[str, bytes | tuple[int, bytes]]) -> tuple[HTTPEngine, Re
     rec = Recorder(routes)
     eng = HTTPEngine(
         base_url="http://engine.test/v1",
-        served_name_for_role=lambda role: "small",
+        passthru_name_for_role=lambda role: "small",
         role_spec_for=lambda role: role_spec(),
         transport=httpx.MockTransport(rec),
     )
@@ -174,7 +174,7 @@ def test_body_carries_repetition_penalty_when_set() -> None:
     from airlie.engine.types import GenRequest, Message
 
     role = RoleSpec(prompt=Path(__file__), model="base", thinking=False, max_tokens=64)
-    eng = HTTPEngine("http://x/v1", served_name_for_role=lambda r: "base", role_spec_for=lambda r: role)
+    eng = HTTPEngine("http://x/v1", passthru_name_for_role=lambda r: "base", role_spec_for=lambda r: role)
     req = GenRequest(
         role="architect", messages=[Message(role="user", content="hi")], sampling=Sampling(), max_tokens=10
     )

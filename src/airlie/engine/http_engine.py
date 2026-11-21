@@ -44,7 +44,7 @@ class HTTPEngine:
     def __init__(
         self,
         base_url: str,
-        served_name_for_role: Callable[[str], str],
+        passthru_name_for_role: Callable[[str], str],
         role_spec_for: Callable[[str], RoleSpec],
         *,
         api_key: str | None = None,
@@ -61,7 +61,7 @@ class HTTPEngine:
         )
         self.base_url = base_url.rstrip("/")
         self._root = self.base_url.removesuffix("/v1")
-        self._served = served_name_for_role
+        self._passthru = passthru_name_for_role
         self._role = role_spec_for
         self._model = model_spec_for
         self._dialect: Dialect = dialect
@@ -120,7 +120,7 @@ class HTTPEngine:
         if self._dialect == "mlx_vlm":
             wire_messages = normalize_mlx_vlm_messages(wire_messages)
         body: dict[str, Any] = {
-            "model": self._served(req.role),
+            "model": self._passthru(req.role),
             "messages": wire_messages,
             "stream": stream,
             "max_tokens": req.max_tokens,
@@ -272,7 +272,7 @@ class HTTPEngine:
     async def yes_no(self, role: str, messages: list[Message]) -> tuple[float, float]:
         msgs = [Message(role="system", content=YES_NO_SYSTEM), *[m for m in messages if m.role != "system"]]
         body = {
-            "model": self._served(role),
+            "model": self._passthru(role),
             "messages": [_wire_message(m) for m in msgs],
             "stream": False,
             "max_tokens": 3,

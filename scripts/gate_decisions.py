@@ -53,7 +53,7 @@ def ask(
 ) -> None:
     cfg = load_config(ROOT / "airlie.yaml")
     e = cfg.engines[engine]
-    base, model, key = e.base_url or "", e.served_name(e.models[0]), e.api_key
+    base, model, key = e.base_url or "", e.passthru_name(e.models[0]), e.api_key
     endpoint = "/decisions"
     criteria = routable_roles(cfg, exclude={cfg.studio.chief_role, cfg.studio.review.role})
     cases = pick(n)

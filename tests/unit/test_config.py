@@ -197,7 +197,7 @@ def test_main_engine_serves_architect() -> None:
     assert cfg.engines["main"].max_kv_size == 131072
     assert (
         cfg.engines["main"]
-        .served_name("architect")
+        .passthru_name("architect")
         .endswith(
             "models--sh0wie--Qwen3.8-Flash-Next-REAP-288-MLX-4bit/snapshots/"
             f"{cfg.models['architect'].revision}"
@@ -457,7 +457,7 @@ def test_committed_config_declares_four_autostart_engines_and_the_bench_engines(
     )
     assert (
         cfg.engines["main"]
-        .served_name("architect")
+        .passthru_name("architect")
         .endswith(
             f"models--sh0wie--Qwen3.8-Flash-Next-REAP-288-MLX-4bit/snapshots/"
             f"{cfg.models['architect'].revision}"
@@ -1566,23 +1566,23 @@ def test_an_mlx_vlm_engine_is_addressed_by_its_exact_model_path(tmp_path: Path) 
             "other": {"kind": "mlx_vlm", "port": 8083, "model": "base", "autostart": False},
         },
     )
-    assert cfg.engines["main"].served_name("team") == "/models/team"  # models.team.path
-    assert cfg.engines["other"].served_name("base").endswith("/models--org--base/snapshots/r1")  # HF cache
+    assert cfg.engines["main"].passthru_name("team") == "/models/team"  # models.team.path
+    assert cfg.engines["other"].passthru_name("base").endswith("/models--org--base/snapshots/r1")  # HF cache
 
 
-def test_served_name_falls_back_to_the_model_key_itself() -> None:
+def test_passthru_name_falls_back_to_the_model_key_itself() -> None:
     e = EngineSpec(
-        kind="openai_http", base_url="http://h/v1", port=8080, models=["team"], served_names={"team": "alias"}
+        kind="http", base_url="http://h/v1", models=["team"], passthru={"team": "alias"}
     )
-    assert e.served_name("team") == "alias"
-    assert e.served_name("other") == "other"
+    assert e.passthru_name("team") == "alias"
+    assert e.passthru_name("other") == "other"
 
 
-def test_an_mlx_vlm_engine_takes_no_served_alias(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="served_names"):
+def test_an_mlx_vlm_engine_takes_no_passthru_alias(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="passthru"):
         mlx(
             tmp_path,
-            {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", "served_names": {"team": "t"}}},
+            {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", "passthru": {"team": "t"}}},
         )
 
 
