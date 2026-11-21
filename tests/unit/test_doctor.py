@@ -220,6 +220,25 @@ def test_an_unreachable_engine_url_is_a_problem_string_naming_engine_and_url(
     assert "http://workflow.invalid/v1/models" in seen
 
 
+def test_an_unreachable_non_workflow_engine_names_its_yaml_base_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    from airlie.doctor import RealProbe
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("refused")))
+    cfg = make_cfg(
+        tmp_path,
+        {"alt": {"kind": "http", "base_url": "http://alt.invalid/v1", "models": ["team"]}},
+        {"team": "org/model"},
+    )
+    row = by_name(run_checks(cfg, RealProbe()))["engine:alt"]
+    assert row.status == "fail"
+    assert "engines.alt.base_url" in row.detail
+    assert "AIRLIE_WORKFLOW_BASE_URL" not in row.detail
+
+
 def test_a_reachable_engine_is_ok_and_an_auth_refusal_still_counts_as_reachable(tmp_path: Path) -> None:
     class Answers(FakeProbe):
         def __init__(self, status: int | None) -> None:

@@ -456,7 +456,7 @@ tasks:
       - '{{.RUN}} python scripts/searxng_vm.py destroy'
 
   web:e2e:
-    desc: "Ask every web-enabled role (research, ux, design, chief, reviewer) about something after its training data and check it searched and cited what it found (task web:e2e -- --roles chief,ux); needs `task up` and `task searxng:up`"
+    desc: "Ask every web-enabled role (research, ux, design, chief, reviewer) about something after its training data and check it searched and cited what it found (task web:e2e -- --roles chief,ux); needs a reachable workflow engine and `task searxng:up`"
     cmds:
       - '{{.RUN}} python scripts/web_e2e.py {{.CLI_ARGS}}'
 

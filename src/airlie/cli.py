@@ -1882,7 +1882,8 @@ def prompts_audit(
             health = await engine.health()
             if not health.ok:
                 err.print(
-                    f"[red]the engine is unreachable: {escape(health.detail)}; start it with task up[/red]",
+                    f"[red]the engine is unreachable: {escape(health.detail)}; "
+                    "check AIRLIE_WORKFLOW_BASE_URL and `task doctor`[/red]",
                     emoji=False,
                 )
                 return None

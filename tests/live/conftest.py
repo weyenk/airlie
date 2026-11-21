@@ -33,7 +33,9 @@ def engine(cfg):
     headers = {"Authorization": f"Bearer {e.api_key}"} if e.api_key else {}
     try:
         if httpx.get(health, headers=headers, timeout=3).status_code != 200:
-            pytest.skip(f"engine {name} not healthy; run `task up`")
+            hint = "AIRLIE_WORKFLOW_BASE_URL" if name == "workflow" else f"engines.{name}.base_url"
+            pytest.skip(f"engine {name} not healthy; set {hint} and run `task doctor`")
     except httpx.HTTPError:
-        pytest.skip(f"engine {name} not running; run `task up`")
+        hint = "AIRLIE_WORKFLOW_BASE_URL" if name == "workflow" else f"engines.{name}.base_url"
+        pytest.skip(f"engine {name} not reachable; set {hint} and run `task doctor`")
     return airlie.cli._http_engine(cfg, name)

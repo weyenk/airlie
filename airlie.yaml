@@ -176,7 +176,7 @@ observability:
 # repository its repo:<owner>/<name> label names (its clone under story.repos_root, default ~/git), gated by that
 # repository's AGENTS.md "## Test gate". Personal settings go in airlie.local.yaml.
 story:
-  topology: studio                 # the profile story runs load (start the engines with `task restart`)
+  topology: studio                 # the profile story runs load
   build_role: architect
   trunk: main                      # the stack's base branch
   publish: single                  # one draft PR on the top layer's branch; stack = one per layer, the schema default

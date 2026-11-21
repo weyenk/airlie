@@ -197,6 +197,12 @@ def node_check(version: str | None, pin: str) -> CheckResult:
     )
 
 
+def _engine_base_hint(name: str) -> str:
+    if name == "workflow":
+        return "check AIRLIE_WORKFLOW_BASE_URL (or engines.workflow.base_url in airlie.local.yaml)"
+    return f"check engines.{name}.base_url in airlie.local.yaml"
+
+
 def engine_check(name: str, spec: EngineSpec, probe: SystemProbe) -> CheckResult:
     """An engine is a remote HTTP endpoint airlie never starts: it must answer `GET <base_url>/models`.
     Any answer below 500 counts (a 401 means the server is there and the key is the question)."""
@@ -215,8 +221,7 @@ def engine_check(name: str, spec: EngineSpec, probe: SystemProbe) -> CheckResult
             row,
             "fail",
             f"engine {name!r} not reachable at {spec.base_url} (GET {url} got no answer); "
-            "check AIRLIE_WORKFLOW_BASE_URL (or engines.%s.base_url in airlie.local.yaml) and that "
-            "the server is up" % name,
+            f"{_engine_base_hint(name)} and that the server is up",
         )
     if status >= 500:
         return CheckResult(

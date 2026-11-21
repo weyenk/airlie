@@ -24,7 +24,7 @@ box opens its workflow in place on a double-click, with a breadcrumb back that r
 edits. Save draft writes a draft the board can choose; a draft in the old schema is read upgraded and says so
 until saved. A story's screen and card offer "Use the current workflow" to adopt the published one.
 
-Engines carry a `lifecycle`: `pinned` (`task up` starts it) or `on_demand` (`task serve`'s manager starts it on first use and stops it after `idle_unload_s`; `reviewer` and `small` are on_demand). Role calls hold their engine: in serve directly, elsewhere by lease from serve, else by starting it locally.
+The `workflow` engine is remote HTTP (`AIRLIE_WORKFLOW_BASE_URL`, optional `AIRLIE_WORKFLOW_API_KEY`); airlie never starts it—`task doctor` probes `GET <base_url>/models`. `task serve`'s manager still owns on-demand resources it registers (repository-chat VMs under `boxes`: `lifecycle` `on_demand`, stopped after `idle_stop_s` when idle). SearXNG for `web_search` is outside the manager (`task searxng:up`).
 
 Chat config lives in the root's `chat:` block: `chat.kinds.<plain|repository>.tools` / `ask_first` (validated against the chat tool names; a plain chat cannot hold repository tools), `chat.superpowers.enabled` / `path` (default `vendor/superpowers`) and `chat.max_steps`. `vendor/superpowers/` is a pinned, unedited copy of upstream (`PIN.md`, `MANIFEST.sha256`; `task superpowers:verify` checks it): never edit it, update it by re-copying a release.
 
