@@ -30,7 +30,7 @@ from autogen_core.models import ModelInfo, UserMessage
 from autogen_core.tools import BaseTool
 from pydantic import BaseModel, create_model
 
-from airlie.config import ModelSpec, RoleSpec
+from airlie.config import RoleSpec
 from airlie.config.schema import MUTATING_TOOLS
 from airlie.engine.dialect import Dialect, thinking_fields
 from airlie.engine.types import ToolCall
@@ -134,7 +134,6 @@ def build_model_client(
     api_key: str | None,
     scheduler: SlotScheduler | None = None,
     team_id: str = "",
-    model: ModelSpec | None = None,
     dialect: Dialect = "openai",
 ) -> RepairingOpenAIClient:
     info: ModelInfo = {
@@ -157,7 +156,6 @@ def build_model_client(
             thinking=bool(role.thinking),
             budget=role.thinking_budget,
             chat_template_kwargs=role.chat_template_kwargs,
-            tool_parser=model.tool_call_parser if model is not None else None,
             tools=True,
         )
     )

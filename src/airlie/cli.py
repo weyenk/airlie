@@ -380,7 +380,6 @@ def _http_engine(
             lambda role: cfg.roles[role],
             api_key=e.api_key,
             **given,
-            model_spec_for=lambda role: cfg.models[model_override or cfg.roles[role].model],
             dialect=dialect_for(e.format),
         )
         if e.kind != "mlx_vlm" or (transport is not None and manager is None):

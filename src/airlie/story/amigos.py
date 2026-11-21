@@ -1232,7 +1232,6 @@ def http_clients(cfg: AirlieConfig) -> ClientFactory:
             engine.passthru_name(spec.model),
             spec,
             engine.api_key,
-            model=cfg.models.get(spec.model),
             dialect=dialect_for(engine.format),
         )
 

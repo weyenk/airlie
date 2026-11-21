@@ -1,6 +1,8 @@
-"""HTTPEngine: the Engine seam over the mlx-vlm server (or any OpenAI-compatible one).
+"""HTTPEngine: the Engine seam over an HTTP inference server.
 
-Written against the recorded mlx-vlm 0.7.12 responses in tests/fixtures/mlx_vlm."""
+The engine's dialect picks the wire: ``openai`` posts Chat Completions to ``{base_url}/chat/completions``;
+``anthropic`` posts Messages to ``{root}/v1/messages`` (``airlie.engine.anthropic`` translates the request and
+the reply, stream included). Everything above the wire is the same."""
 
 from __future__ import annotations
 
@@ -11,8 +13,17 @@ from typing import Any
 
 import httpx
 
-from airlie.config import ModelSpec, RoleSpec
-from airlie.engine.dialect import LATE_KEYS, Dialect, thinking_fields
+from airlie.config import RoleSpec
+from airlie.engine.anthropic import (
+    anthropic_headers,
+    from_anthropic_message_response,
+    messages_url,
+    models_url,
+    openai_sse_from_anthropic,
+    to_anthropic_messages_body,
+    tune_anthropic_request,
+)
+from airlie.engine.dialect import Dialect, thinking_fields
 from airlie.engine.protocol import OnToken
 from airlie.engine.sse import iter_sse
 from airlie.engine.types import (
@@ -50,7 +61,6 @@ class HTTPEngine:
         api_key: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_s: float = 600.0,
-        model_spec_for: Callable[[str], ModelSpec] | None = None,
         dialect: Dialect = "openai",
     ) -> None:
         self.capabilities = EngineCapabilities(
@@ -63,9 +73,11 @@ class HTTPEngine:
         self._root = self.base_url.removesuffix("/v1")
         self._passthru = passthru_name_for_role
         self._role = role_spec_for
-        self._model = model_spec_for
         self._dialect: Dialect = dialect
-        self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        if dialect == "anthropic":
+            self._headers = anthropic_headers(api_key)
+        else:
+            self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._transport = transport
         self._timeout = timeout_s
         self._client: httpx.AsyncClient | None = None
@@ -92,6 +104,8 @@ class HTTPEngine:
             self._client = None
 
     async def health(self) -> EngineHealth:
+        if self._dialect == "anthropic":
+            return await self._anthropic_health()
         try:
             h = await self._c().get(f"{self._root}/health")
             m = await self._c().get(f"{self.base_url}/models")
@@ -100,17 +114,32 @@ class HTTPEngine:
         ok = h.status_code == 200 and m.status_code == 200
         models: dict[str, ModelState] = {}
         if m.status_code == 200:
-            for x in m.json().get("data", []):
-                # mlx-vlm lists every model in the HF cache and flags the resident one
-                models[str(x.get("id"))] = "ready" if x.get("loaded", True) else "lazy"
+            models = _models_of(m)
         detail = ""  # pragma: no mutate  (None is just as falsy for the fallback below)
-        if h.status_code == 200:
-            hj = h.json()
+        hj = _json_object(h) if h.status_code == 200 else None
+        if hj is not None:  # a server that reports more than a bare 200 gets its status and engine named
             engine = hj.get("engine_type") or (
                 f"loaded_model={hj['loaded_model']}" if hj.get("loaded_model") else "?"
             )
             detail = f"{hj.get('status', '?')} engine={engine}"
         return EngineHealth(ok=ok, models=models, detail=detail or f"health {h.status_code}")
+
+    async def _anthropic_health(self) -> EngineHealth:
+        """Anthropic has no /health: the server is up when its key may list models."""
+        try:
+            m = await self._c().get(models_url(self.base_url))
+        except httpx.HTTPError as e:
+            return EngineHealth(ok=False, models={}, detail=f"{type(e).__name__}: {e}")
+        if m.status_code != 200:
+            return EngineHealth(
+                ok=False, models={}, detail=f"models {m.status_code}: {_error_text(m.content)}"
+            )
+        return EngineHealth(ok=True, models=_models_of(m), detail="models 200")
+
+    def _url(self) -> str:
+        if self._dialect == "anthropic":
+            return messages_url(self.base_url)
+        return f"{self.base_url}/chat/completions"
 
     # ---- generation ----
     def _body(self, req: GenRequest, *, stream: bool) -> dict[str, Any]:
@@ -133,10 +162,9 @@ class HTTPEngine:
             thinking=bool(thinking),
             budget=spec.thinking_budget,
             chat_template_kwargs=spec.chat_template_kwargs,
-            tool_parser=(self._model(req.role).tool_call_parser if self._model is not None else None),
             tools=bool(req.tools),
         )
-        body.update({k: v for k, v in fields.items() if k not in LATE_KEYS})
+        body.update(fields)
         if req.sampling.repetition_penalty != 1.0:
             body["repetition_penalty"] = req.sampling.repetition_penalty
         if stream:
@@ -152,7 +180,10 @@ class HTTPEngine:
                 for t in req.tools
             ]
             body["tool_choice"] = "auto"
-        body.update({k: v for k, v in fields.items() if k in LATE_KEYS})
+        if self._dialect == "anthropic":
+            return tune_anthropic_request(
+                to_anthropic_messages_body(body), thinking=bool(thinking), budget=spec.thinking_budget
+            )
         return body
 
     async def generate(self, req: GenRequest, on_token: OnToken | None = None) -> GenResult:
@@ -172,13 +203,14 @@ class HTTPEngine:
         t_first: float | None = None  # pragma: no mutate  ("" is just as falsy)
         t_last = t0
         try:
-            async with self._c().stream(
-                HTTP_POST, f"{self.base_url}/chat/completions", json=self._body(req, stream=True)
-            ) as r:
+            async with self._c().stream(HTTP_POST, self._url(), json=self._body(req, stream=True)) as r:
                 self._live[req.request_id] = r
                 if r.status_code != 200:
                     raise EngineError(f"engine returned {r.status_code}: {_error_text(await r.aread())}")
-                async for frame in iter_sse(r.aiter_bytes()):
+                wire = r.aiter_bytes()
+                if self._dialect == "anthropic":
+                    wire = openai_sse_from_anthropic(wire)
+                async for frame in iter_sse(wire):
                     if req.request_id in self._cancelled:
                         finish = "cancelled"
                         break
@@ -282,12 +314,21 @@ class HTTPEngine:
                 chat_template_kwargs={},
             ),
         }
+        if self._dialect == "anthropic":
+            body = to_anthropic_messages_body(body)
         self._stats.requests += 1
-        r = await self._c().post(f"{self.base_url}/chat/completions", json=body)
+        try:
+            r = await self._c().post(self._url(), json=body)
+        except httpx.HTTPError as e:
+            self._stats.errors += 1
+            raise EngineError(f"{type(e).__name__}: {e}") from e
         if r.status_code != 200:
             self._stats.errors += 1
             raise EngineError(f"engine returned {r.status_code}: {_error_text(r.content)}")
-        content = str(r.json()["choices"][0]["message"].get("content") or "")
+        reply = r.json()
+        if self._dialect == "anthropic":
+            reply = from_anthropic_message_response(reply)
+        content = str(reply["choices"][0]["message"].get("content") or "")
         word = content.strip().upper().lstrip("*\"'").split()
         if word and word[0].startswith("YES"):
             return 1.0, 0.0
@@ -297,6 +338,23 @@ class HTTPEngine:
 
     def stats(self) -> EngineStats:
         return self._stats
+
+
+def _json_object(r: httpx.Response) -> dict[str, Any] | None:
+    """The reply's JSON object; None for an empty or non-JSON body (a bare ``200 OK`` health)."""
+    try:
+        obj = r.json()
+    except ValueError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _models_of(r: httpx.Response) -> dict[str, ModelState]:
+    models: dict[str, ModelState] = {}
+    for x in (_json_object(r) or {}).get("data") or []:
+        # a server may list models it has not loaded and flag the resident one
+        models[str(x.get("id"))] = "ready" if x.get("loaded", True) else "lazy"
+    return models
 
 
 def _finish(raw: str) -> FinishReason:

@@ -9,9 +9,6 @@ from typing import Any, Literal, cast
 
 Dialect = Literal["openai", "anthropic"]
 
-LATE_KEYS = ("thinking_budget", "tool_parser")
-"""Fields HTTPEngine._body sets after the tools."""
-
 
 def dialect_for(format: str) -> Dialect:  # noqa: A002  (the engine field's own name)
     """The dialect an engine's ``format`` names; anything else is an error."""

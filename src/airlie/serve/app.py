@@ -38,6 +38,15 @@ from airlie.chat.sources_api import sources_router
 from airlie.chat.superpowers import SuperpowersLibrary, check_library
 from airlie.chat.threads import ThreadStore
 from airlie.config import AirlieConfig
+from airlie.engine.anthropic import (
+    anthropic_headers,
+    from_anthropic_message_response,
+    messages_url,
+    openai_sse_from_anthropic,
+    to_anthropic_messages_body,
+    tune_anthropic_request,
+)
+from airlie.engine.dialect import Dialect, dialect_for, thinking_fields
 from airlie.engine.types import EngineError
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
@@ -846,7 +855,10 @@ def create_app(
             known = ", ".join([*cfg.roles, *cfg.models])
             raise HTTPException(404, f"unknown model '{name}'; roles and catalog models: {known}")
         e = cfg.engines[cfg.engine_for_model(model)]
-        headers = {"Authorization": f"Bearer {e.api_key}"} if e.api_key else {}
+        if e.format == "anthropic":
+            headers = anthropic_headers(e.api_key)
+        else:
+            headers = {"Authorization": f"Bearer {e.api_key}"} if e.api_key else {}
         return (e.base_url or "").rstrip("/"), e.passthru_name(model), headers, prompt
 
     next_root = (next_dir or NEXT_DIR).resolve()
@@ -1114,10 +1126,24 @@ def create_app(
             else:
                 msgs = [{"role": "system", "content": prompt}, *msgs]
         out = {**body, "model": served, "messages": msgs}
+        proxy_model = cfg.roles[name].model if name in cfg.roles else name
+        dialect = dialect_for(cfg.engines[cfg.engine_for_model(proxy_model)].format)
+        thinking = False
         if name in cfg.roles:
             spec = cfg.roles[name]
             out.setdefault("max_tokens", spec.max_tokens)
-        proxy_model = cfg.roles[name].model if name in cfg.roles else name
+            thinking = bool(spec.thinking)
+            sent = out.get("chat_template_kwargs")
+            if isinstance(sent, dict) and "enable_thinking" in sent:
+                thinking = bool(sent["enable_thinking"])  # what the client sent wins over the role's default
+            if dialect == "openai":  # the role's thinking default, under what the client sent
+                fields = thinking_fields(
+                    dialect=dialect,
+                    thinking=bool(spec.thinking),
+                    budget=spec.thinking_budget,
+                    chat_template_kwargs=spec.chat_template_kwargs,
+                )
+                out["chat_template_kwargs"] = {**fields["chat_template_kwargs"], **(sent or {})}
         tool_role = CHAT_SKILL_TOOL_ROLES.get(str(skill)) if skill is not None and name == "chat" else None
         if tool_role is not None:
             if out.get("stream"):
@@ -1164,8 +1190,20 @@ def create_app(
         try:
             if engine_name in managed:
                 await holding.enter_async_context(manager.hold(engine_name, holder))
+            if dialect == "anthropic":
+                budget = cfg.roles[name].thinking_budget if name in cfg.roles else None
+                out = tune_anthropic_request(
+                    to_anthropic_messages_body(out), thinking=thinking, budget=budget
+                )
             reply = await upstream_chat(
-                out, base, headers, holding, engine=engine_name, proxy_model=proxy_model, holder=holder
+                out,
+                base,
+                headers,
+                holding,
+                engine=engine_name,
+                proxy_model=proxy_model,
+                holder=holder,
+                dialect=dialect,
             )
             return reply
         except EngineError as e:
@@ -1183,11 +1221,13 @@ def create_app(
         engine: str = "",
         proxy_model: str = "",
         holder: str = "",
+        dialect: Dialect = "openai",
     ) -> Any:
+        url = messages_url(base) if dialect == "anthropic" else f"{base}/chat/completions"
         if out.get("stream"):
             req = client.build_request(
                 "POST",
-                f"{base}/chat/completions",
+                url,
                 json=out,
                 headers=headers,
                 timeout=httpx.Timeout(600.0, connect=10.0, read=CHAT_COMPLETIONS_READ_TIMEOUT_S),
@@ -1195,11 +1235,15 @@ def create_app(
             resp = await client.send(req, stream=True)
             stream_end = ChatStreamEnd(engine=engine, model=proxy_model, holder=holder)
 
+            wire = resp.aiter_bytes()
+            if dialect == "anthropic" and resp.status_code == 200:
+                wire = openai_sse_from_anthropic(wire)  # the client keeps reading Chat Completions
+
             async def gen() -> AsyncIterator[bytes]:
                 repair = ToolCallStreamRepair()
                 buf = b""
                 try:
-                    async for chunk in resp.aiter_bytes():
+                    async for chunk in wire:
                         buf += chunk
                         while b"\n\n" in buf:
                             frame, buf = buf.split(b"\n\n", 1)
@@ -1232,14 +1276,17 @@ def create_app(
                 media_type="text/event-stream",
             )
         r = await client.post(
-            f"{base}/chat/completions",
+            url,
             json=out,
             headers=headers,
             timeout=httpx.Timeout(600.0, connect=10.0, read=CHAT_COMPLETIONS_READ_TIMEOUT_S),
         )
         if r.status_code != 200:
             raise HTTPException(r.status_code, r.text[:500])
-        return _no_call_stops(r.json())
+        reply = r.json()
+        if dialect == "anthropic":
+            reply = from_anthropic_message_response(reply)
+        return _no_call_stops(reply)
 
     @app.post("/v1/airlie/run")
     async def run(req: RunRequest) -> dict[str, Any]:

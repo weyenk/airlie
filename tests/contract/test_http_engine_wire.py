@@ -154,7 +154,7 @@ def test_body_has_every_sampling_field_and_the_passthru_name() -> None:
         "top_k": 5,
         "min_p": 0.1,
         "presence_penalty": 0.2,
-        "enable_thinking": False,
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     streamed = e._body(r, stream=True)
     assert streamed["stream"] is True and streamed["stream_options"] == {"include_usage": True}
@@ -183,37 +183,26 @@ def test_body_optional_fields_appear_only_when_set() -> None:
     assert e._body(req(sampling=Sampling(repetition_penalty=1.1)), stream=False)["repetition_penalty"] == 1.1
 
 
-def test_thinking_comes_from_the_request_over_the_role_and_gates_the_thinking_budget() -> None:
-    on = role_spec(thinking=True, thinking_budget=100)
-    e, _ = make(spec=on)
+def test_thinking_comes_from_the_request_over_the_role_in_the_template_kwargs() -> None:
+    e, _ = make(spec=role_spec(thinking=True, thinking_budget=100))
     body = e._body(req(), stream=False)
-    assert body["enable_thinking"] is True and "chat_template_kwargs" not in body
-    assert body["thinking_budget"] == 100
-    assert [k for k in body if "budget" in k] == ["thinking_budget"]  # under no other name
+    assert body["chat_template_kwargs"] == {"enable_thinking": True}
+    assert not {"enable_thinking", "thinking_budget", "thinking"} & set(body)  # an openai server reads none
     off = e._body(req(thinking=False), stream=False)
-    assert off["enable_thinking"] is False and "thinking_budget" not in off
+    assert off["chat_template_kwargs"] == {"enable_thinking": False}
     e2, _ = make(spec=role_spec(thinking=False, thinking_budget=100))
-    forced = e2._body(req(thinking=True), stream=False)
-    assert forced["enable_thinking"] is True
-    assert forced["thinking_budget"] == 100
-    assert "thinking_budget" not in e2._body(req(), stream=False)
-    e3, _ = make(spec=role_spec(thinking=True, thinking_budget=None))
-    assert "thinking_budget" not in e3._body(req(), stream=False)
+    assert e2._body(req(thinking=True), stream=False)["chat_template_kwargs"] == {"enable_thinking": True}
+    assert e2._body(req(), stream=False)["chat_template_kwargs"] == {"enable_thinking": False}
 
 
-def test_the_reasoning_strength_is_sent_as_reasoning_effort_and_the_tool_parser_with_tools() -> None:
-    from airlie.config import ModelSpec
-
+def test_the_roles_template_kwargs_ride_along_and_the_tool_list_stays_openai() -> None:
     spec = role_spec(chat_template_kwargs={"reasoning_strength": "low"})
-    e, _ = make(
-        spec=spec, model_spec_for=lambda r: ModelSpec(repo="o/m", revision="r", tool_call_parser="atem")
-    )
+    e, _ = make(spec=spec)
     tool = ToolSchema("f", "d", {"type": "object"})
     body = e._body(req(tools=[tool]), stream=False)
-    assert body["reasoning_effort"] == "low" and body["tool_parser"] == "atem"
-    assert list(body)[-1] == "tool_parser" and "chat_template_kwargs" not in body  # set after the tools
-    plain = e._body(req(), stream=False)
-    assert plain["reasoning_effort"] == "low" and "tool_parser" not in plain
+    assert body["chat_template_kwargs"] == {"enable_thinking": False, "reasoning_strength": "low"}
+    assert "reasoning_effort" not in body and "tool_parser" not in body
+    assert body["tools"][0]["function"]["name"] == "f"
 
 
 # ---- generation ----
@@ -562,20 +551,13 @@ async def test_yes_no_sends_the_constrained_request() -> None:
         "stream": False,
         "max_tokens": 3,
         "temperature": 0.0,
-        "enable_thinking": False,
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     assert e.stats().requests == 1 and e.stats().errors == 0
 
 
 async def test_yes_no_turns_thinking_off_explicitly() -> None:
     e, seen = make({CHAT: verdict("NO")})
-    await e.yes_no("judge", [Message("user", "Is it?")])
-    body = json.loads(seen[0].content)
-    assert body["enable_thinking"] is False and "chat_template_kwargs" not in body
-
-
-async def test_yes_no_uses_the_engines_dialect() -> None:
-    e, seen = make({CHAT: verdict("NO")}, dialect="openai")
     await e.yes_no("judge", [Message("user", "Is it?")])
     body = json.loads(seen[0].content)
     assert body["chat_template_kwargs"] == {"enable_thinking": False} and "enable_thinking" not in body
@@ -680,8 +662,8 @@ def test_the_role_spec_is_looked_up_for_the_requests_own_role() -> None:
     specs = {"deep": role_spec(thinking=True), "quick": role_spec(thinking=False)}
     seen, transport = stub({})
     e = HTTPEngine("http://h/v1", lambda r: r, lambda r: specs[r], transport=transport)
-    assert e._body(req(role="deep"), stream=False)["enable_thinking"] is True
-    assert e._body(req(role="quick"), stream=False)["enable_thinking"] is False
+    assert e._body(req(role="deep"), stream=False)["chat_template_kwargs"]["enable_thinking"] is True
+    assert e._body(req(role="quick"), stream=False)["chat_template_kwargs"]["enable_thinking"] is False
 
 
 async def test_a_tool_call_without_index_is_call_zero_and_a_nameless_call_has_an_empty_name() -> None:
@@ -776,17 +758,3 @@ def test_finish_passes_known_values_through_unchanged() -> None:
         "cancelled",
         "stop",
     ]
-
-
-def test_an_openai_dialect_body_carries_only_chat_template_kwargs() -> None:
-    from airlie.config import ModelSpec
-
-    spec = role_spec(thinking=True, thinking_budget=100, chat_template_kwargs={"reasoning_strength": "low"})
-    e, _ = make(
-        spec=spec,
-        dialect="openai",
-        model_spec_for=lambda r: ModelSpec(repo="o/m", revision="r", tool_call_parser="atem"),
-    )
-    body = e._body(req(tools=[ToolSchema("f", "d", {"type": "object"})]), stream=False)
-    assert body["chat_template_kwargs"] == {"enable_thinking": True, "reasoning_strength": "low"}
-    assert not {"enable_thinking", "thinking_budget", "tool_parser", "reasoning_effort"} & set(body)
