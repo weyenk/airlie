@@ -13,7 +13,6 @@ from typing import Any
 
 from autogen_core import CancellationToken, FunctionCall
 from autogen_core.models import (
-    AssistantMessage,
     CreateResult,
     FunctionExecutionResultMessage,
     LLMMessage,
@@ -22,7 +21,7 @@ from autogen_core.models import (
 from autogen_core.tools import Tool, ToolSchema
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
-from airlie.engine.dialect import MLX_VLM_TOOL_TURN_USER, Dialect
+from airlie.engine.dialect import Dialect
 from airlie.prompts import entry
 from airlie.scheduler import SlotScheduler
 from airlie.tools.jsonargs import repair_json_args
@@ -52,8 +51,7 @@ class RepairingOpenAIClient(OpenAIChatCompletionClient):
     slot_scheduler: SlotScheduler | None = None
     team_id: str = ""
     dialect: Dialect = "openai"
-    """The engine dialect this client talks to; ``build_model_client`` sets it. On mlx-vlm a tool turn
-    ending the history leaves no user turn for Qwen3's chat template, so the list is normalized first."""
+    """The engine dialect this client talks to; ``build_model_client`` sets it."""
     last_finish_reason: str = ""
     """How the latest reply ended; "length" means max_tokens cut it off."""
     reflection_note: str = ""
@@ -64,21 +62,6 @@ class RepairingOpenAIClient(OpenAIChatCompletionClient):
         if self.slot_scheduler is None:
             return nullcontext()
         return self.slot_scheduler.generation(self.team_id)
-
-    def _normalize(self, messages: Sequence[LLMMessage]) -> Sequence[LLMMessage]:
-        """Append ``Continue.`` when the history would leave mlx-vlm without a user turn: either it
-        ends on a tool turn (function result, or an assistant reply with tool calls) or no real user
-        turn survives. AutoGen hands us ``LLMMessage`` items, so this mirrors
-        ``normalize_mlx_vlm_messages`` over the AutoGen types rather than the wire dicts."""
-        if self.dialect != "mlx_vlm" or not messages:
-            return messages
-        last = messages[-1]
-        ends_on_tool_turn = isinstance(last, FunctionExecutionResultMessage) or (
-            isinstance(last, AssistantMessage) and not isinstance(last.content, str)
-        )
-        if ends_on_tool_turn:
-            return [*messages, UserMessage(content=MLX_VLM_TOOL_TURN_USER, source="airlie")]
-        return messages
 
     async def create(
         self,
@@ -110,7 +93,7 @@ class RepairingOpenAIClient(OpenAIChatCompletionClient):
                 UserMessage(content=f"{note}\n\n{self.reflection_note}".strip(), source="airlie"),
             ]
         else:
-            history = self._normalize(messages)
+            history = messages
         res = await ask(history)
         self.last_finish_reason = res.finish_reason
         return repair_create_result(res)
@@ -129,7 +112,7 @@ class RepairingOpenAIClient(OpenAIChatCompletionClient):
     ) -> AsyncGenerator[str | CreateResult, None]:
         async with self._slot():
             async for item in super().create_stream(
-                self._normalize(messages),
+                messages,
                 tools=tools,
                 tool_choice=tool_choice,
                 json_output=json_output,

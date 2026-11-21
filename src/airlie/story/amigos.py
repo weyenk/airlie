@@ -1233,7 +1233,7 @@ def http_clients(cfg: AirlieConfig) -> ClientFactory:
             spec,
             engine.api_key,
             model=cfg.models.get(spec.model),
-            dialect=dialect_for(engine.kind),
+            dialect=dialect_for(engine.format),
         )
 
     return make

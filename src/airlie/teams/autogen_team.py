@@ -135,7 +135,7 @@ def build_model_client(
     scheduler: SlotScheduler | None = None,
     team_id: str = "",
     model: ModelSpec | None = None,
-    dialect: Dialect = "mlx_vlm",
+    dialect: Dialect = "openai",
 ) -> RepairingOpenAIClient:
     info: ModelInfo = {
         "vision": False,
@@ -220,7 +220,7 @@ async def load_agent_state(agent: AssistantAgent, state: dict[str, Any]) -> None
 
 class AutoGenTeam:
     def __init__(
-        self, base_url: str, served_model: str, api_key: str | None = None, *, dialect: Dialect = "mlx_vlm"
+        self, base_url: str, served_model: str, api_key: str | None = None, *, dialect: Dialect = "openai"
     ) -> None:
         self.base_url = base_url
         self.dialect = dialect

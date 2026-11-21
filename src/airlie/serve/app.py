@@ -38,12 +38,6 @@ from airlie.chat.sources_api import sources_router
 from airlie.chat.superpowers import SuperpowersLibrary, check_library
 from airlie.chat.threads import ThreadStore
 from airlie.config import AirlieConfig
-from airlie.engine.dialect import (
-    dialect_for,
-    normalize_mlx_vlm_messages,
-    remap_mlx_vlm_reasoning_effort,
-    thinking_fields,
-)
 from airlie.engine.types import EngineError
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
@@ -1123,34 +1117,7 @@ def create_app(
         if name in cfg.roles:
             spec = cfg.roles[name]
             out.setdefault("max_tokens", spec.max_tokens)
-            if dialect_for(cfg.engines[cfg.engine_for_model(spec.model)].kind) == "mlx_vlm":
-                # mlx-vlm's names. A client may speak the old ones, thinking_token_budget
-                # and chat_template_kwargs (the Press Box bridge does): translate those first, so what it sent
-                # wins over the role's defaults
-                if "thinking_token_budget" in out:
-                    out.setdefault("thinking_budget", out.pop("thinking_token_budget"))
-                kwargs = out.get("chat_template_kwargs")
-                if isinstance(kwargs, dict):
-                    kwargs = dict(kwargs)
-                    if "enable_thinking" in kwargs:
-                        out.setdefault("enable_thinking", kwargs.pop("enable_thinking"))
-                    if kwargs:
-                        out["chat_template_kwargs"] = kwargs
-                    else:
-                        del out["chat_template_kwargs"]
-                for k, v in thinking_fields(
-                    dialect="mlx_vlm",
-                    thinking=bool(spec.thinking),
-                    budget=spec.thinking_budget,
-                    chat_template_kwargs=spec.chat_template_kwargs,
-                    tool_parser=cfg.models[spec.model].tool_call_parser,
-                    tools=bool(out.get("tools")),
-                ).items():
-                    out.setdefault(k, v)
         proxy_model = cfg.roles[name].model if name in cfg.roles else name
-        if dialect_for(cfg.engines[cfg.engine_for_model(proxy_model)].kind) == "mlx_vlm":
-            remap_mlx_vlm_reasoning_effort(out)
-            out["messages"] = normalize_mlx_vlm_messages(list(out.get("messages") or []))
         tool_role = CHAT_SKILL_TOOL_ROLES.get(str(skill)) if skill is not None and name == "chat" else None
         if tool_role is not None:
             if out.get("stream"):

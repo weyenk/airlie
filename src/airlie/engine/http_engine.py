@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 
 from airlie.config import ModelSpec, RoleSpec
-from airlie.engine.dialect import LATE_KEYS, Dialect, normalize_mlx_vlm_messages, thinking_fields
+from airlie.engine.dialect import LATE_KEYS, Dialect, thinking_fields
 from airlie.engine.protocol import OnToken
 from airlie.engine.sse import iter_sse
 from airlie.engine.types import (
@@ -51,7 +51,7 @@ class HTTPEngine:
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_s: float = 600.0,
         model_spec_for: Callable[[str], ModelSpec] | None = None,
-        dialect: Dialect = "mlx_vlm",
+        dialect: Dialect = "openai",
     ) -> None:
         self.capabilities = EngineCapabilities(
             batching=True,
@@ -117,8 +117,6 @@ class HTTPEngine:
         spec = self._role(req.role)
         thinking = spec.thinking if req.thinking is None else req.thinking
         wire_messages = [_wire_message(m) for m in req.messages]
-        if self._dialect == "mlx_vlm":
-            wire_messages = normalize_mlx_vlm_messages(wire_messages)
         body: dict[str, Any] = {
             "model": self._passthru(req.role),
             "messages": wire_messages,

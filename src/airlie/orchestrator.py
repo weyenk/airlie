@@ -181,7 +181,7 @@ class ParallelAgentTeamOrchestrator:
             role = self.cfg.roles[self.cfg.teams.role]
             e = self.cfg.engines[self.cfg.engine_for_model(role.model)]
             return AutoGenTeam(
-                e.base_url or "", e.passthru_name(role.model), e.api_key, dialect=dialect_for(e.kind)
+                e.base_url or "", e.passthru_name(role.model), e.api_key, dialect=dialect_for(e.format)
             )
         return NativeTeam(self.engine)
 
