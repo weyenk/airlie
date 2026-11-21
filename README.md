@@ -66,7 +66,7 @@ the tree against `MANIFEST.sha256`; to update, re-copy a newer release, edit `PI
 
 ### Board
 
-The local board (initiative → epic → story → subtask) with columns from To do through Done. Create a card when you want something on the line; open one for its acceptance criteria, the layer that ran, and the comments the agents leave.
+The local board (initiative → epic → story → subtask) with columns from To do through Done. Create a card when you want something on the line; open one for its acceptance criteria, the layer that ran, and the comments the agents leave. Move a card to **Approved** with a `workflow:<name>` label and `task serve` starts that workflow in **Doing** (Review on success, Blocked on failure or when the label is missing). At most `runs.max_concurrent` board runs go at once; extra Approved cards wait in order. Chat turns can take a run slot ahead of queued board work.
 
 <p align="center">
   <img src="docs/readme/board.png" alt="Board: Kanban of stories across To do, Approved, Doing, Review, Blocked, Done" width="720" />
