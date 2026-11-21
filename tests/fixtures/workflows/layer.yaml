@@ -1,0 +1,90 @@
+# Test fixture only (production ships no workflows). Runnable WORK nodes use `true` — there is no
+# `story` CLI. Costs stay out of band (no costed_layer node). Conditioned edges declare a second path.
+workflows:
+  layer:
+    title: layer
+    inputs: [card, repo, story, layers, base, gate, agreement]
+    outputs: [drafted, "built.{item}", "satisfied.{item}"]
+    nodes:
+      start:
+        kind: WORK
+        run: "true"
+      covered:
+        kind: WORK
+        run: "true"
+        inputs: [card, repo, story, layers]
+        outputs: {"satisfied.{item}": json}
+      drafts:
+        kind: WORK
+        run: "true"
+        inputs: [repo, base, story, layers, agreement]
+        outputs: {drafted: bool}
+      package:
+        kind: WORK
+        run: "true"
+        inputs: [card, repo, story, layers]
+        outputs: {"package.{item}": json, "satisfied.{item}": json}
+      place:
+        kind: WORK
+        run: "true"
+        inputs: [card, repo, story, layers, "package.{item}"]
+      build:
+        kind: WORK
+        run: "true"
+        outputs: {"build.coder.{item}": {format: json, transient: true}}
+      done_check:
+        kind: WORK
+        run: "true"
+        outputs: {"build.done_check.{item}": {format: json, transient: true}}
+      review:
+        kind: WORK
+        run: "true"
+        outputs: {"build.review.{item}": {format: json, transient: true}}
+      fix:
+        kind: WORK
+        run: "true"
+        inputs: ["build.review.{item}"]
+        outputs: {"build.fix.{item}": {format: json, transient: true}}
+      final_gate:
+        kind: WORK
+        run: "true"
+        outputs: {"build.gate.{item}": {format: json, transient: true}}
+      outcome:
+        kind: WORK
+        run: "true"
+        outputs: {"build.outcome.{item}": {format: json, transient: true}}
+      squash:
+        kind: WORK
+        run: "true"
+        inputs: ["build.outcome.{item}"]
+        outputs: {"built.{item}": json}
+      already_done:
+        kind: WORK
+        run: "true"
+        outputs: {"built.{item}": json}
+    edges:
+      start:
+        - {target: covered, when: "not built.{item} exists and not satisfied.{item} exists"}
+        - {target: already_done, when: "built.{item} exists or satisfied.{item} exists"}
+      covered:
+        - {target: drafts, when: "not satisfied.{item} exists"}
+        - {target: already_done, when: "satisfied.{item} exists"}
+      drafts: [{target: package}]
+      package:
+        - {target: place, when: "package.{item} exists"}
+        - {target: already_done, when: "not package.{item} exists"}
+      place: [{target: build}]
+      build: [{target: done_check}]
+      done_check: [{target: review}]
+      review:
+        - {target: fix, when: "build.review.{item}.fix"}
+        - {target: final_gate, when: "not build.review.{item}.fix"}
+      fix:
+        - {target: review, when: "build.fix.{item} exists", loop: {max: 8}}
+        - {target: final_gate}
+      final_gate:
+        - {target: outcome, when: "build.gate.{item}.follow_up"}
+        - {target: outcome, when: "not build.gate.{item}.follow_up"}
+      outcome:
+        - {target: package, loop: {max: 3, carry: feedback}}
+        - {target: squash}

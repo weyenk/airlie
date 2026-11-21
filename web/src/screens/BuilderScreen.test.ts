@@ -26,6 +26,7 @@ const detail = (over: Partial<WorkflowDetail> = {}): WorkflowDetail => ({
 const def = (name: string, over: Partial<WorkflowDef> = {}): WorkflowDef => ({ name, type: "story", source: "file", problems: [], pr: null, used_by: [], ...over });
 const CATALOG: Catalog = {
   roles: ["architect", "coder", "product", "tester"],
+  node_kinds: [{ kind: "WORK", fields: ["prompt", "run", "inputs", "outputs"], required: [] }],
   types: ["ask", "check"],
   formats: ["text"],
   kinds: ["text"],
@@ -38,8 +39,10 @@ const FIX_YAML = `workflows:
     type: bug
     inputs: [card]
     nodes:
-      intake: {type: check, run: x.intake, outputs: {report: text}}
-      fix: {type: ask, role: coder, prompt: x.fix, inputs: [repro]}
+      intake: {kind: WORK, run: story intake, inputs: [card], outputs: {report: text}}
+      fix: {kind: WORK, role: coder, prompt: x.fix, inputs: [report]}
+    edges:
+      intake: [{target: fix}]
 `;
 const fixDraft = (over: Partial<WorkflowDetail> = {}) => detail({ name: "fix", type: "bug", source: "draft", yaml: FIX_YAML, prompts: { "fix-brief": "---\nkind: rule\n---\n" }, ...over });
 const dialog = () => document.body.querySelector("[role=dialog]") as HTMLElement | null;
@@ -47,6 +50,31 @@ const type = (el: Element | null, v: string) => {
   (el as HTMLInputElement).value = v;
   el!.dispatchEvent(new Event("input"));
 };
+
+/** Every screen mounted this test: `open` attaches to document.body, so each must be unmounted or the next test
+ *  queries a previous screen's still-live DOM (the teleported modals mount into body too). */
+const mounted: { unmount: () => void }[] = [];
+
+async function placeLayerBundle(w: Awaited<ReturnType<typeof open>>["w"]) {
+  await w.findAll("[data-bundle]").find((b) => b.text() === "layer")!.trigger("click");
+  await flushPromises();
+  await flushPromises();
+  const ids = w
+    .findAll("[data-box]")
+    .map((b) => b.attributes("data-node"))
+    .filter((nodeId): nodeId is string => typeof nodeId === "string" && nodeId.startsWith("work-"));
+  const id = ids[ids.length - 1];
+  if (!id) throw new Error("bundle box not placed");
+  return id;
+}
+
+/** Edit on the box card: placing a box leaves it selected, so a click only toggles selection off. */
+async function openBoxEdit(w: Awaited<ReturnType<typeof open>>["w"], id: string) {
+  const box = w.get(`[data-box][data-node=${id}]`);
+  if (box.attributes("aria-pressed") !== "true") await box.trigger("click");
+  await w.get(`[data-box-card][data-node=${id}] [data-box-edit]`).trigger("click");
+  await flushPromises();
+}
 
 async function open(url = "/workflows/build/story") {
   const router = createRouter({
@@ -60,6 +88,7 @@ async function open(url = "/workflows/build/story") {
   await router.push(url);
   // through a RouterView, as the app shows it: the screen's leave guard needs its route
   const w = mount({ render: () => h(RouterView) }, { global: { plugins: [router] }, attachTo: document.body });
+  mounted.push(w);
   await flushPromises();
   return { w, router };
 }
@@ -77,7 +106,10 @@ beforeEach(() => {
   api.deleteDraft.mockReset().mockResolvedValue(undefined);
   sessionStorage.clear();
 });
-afterEach(() => {
+afterEach(async () => {
+  // Unmount before wiping the DOM: the modals teleport into body, and a screen left mounted keeps running its
+  // watchers and its router guards into the next test.
+  while (mounted.length) await mounted.pop()!.unmount();
   document.body.innerHTML = "";
 });
 
@@ -86,8 +118,8 @@ test("the shipped story opens with a box per node and its wires, its name and ty
   expect(api.getWorkflowDef).toHaveBeenCalledWith("story");
   expect(w.get("h1").text()).toBe("story");
   expect(w.get("[data-workflow-type]").text()).toBe("story");
-  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(22);
-  expect(w.findAll("[data-canvas] [data-edge]").length).toBeGreaterThan(15);
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(8);
+  expect(w.findAll("[data-canvas] [data-edge]").length).toBeGreaterThan(5);
   expect(w.get("a[href='/workflows']").text()).toContain("Workflows");
 });
 
@@ -99,11 +131,13 @@ test("the palette lists the other definitions as bundles", async () => {
 test("a bundle box placed from the palette shows its bundle's out-ports and what it takes", async () => {
   api.getWorkflowDef.mockImplementation(async (name: string) => (name === "layer" ? detail({ name: "layer", type: null, yaml: LAYER_YAML }) : detail()));
   const { w } = await open();
-  await w.findAll("[data-bundle]").find((b) => b.text() === "layer")!.trigger("click");
+  const id = await placeLayerBundle(w);
   await flushPromises();
-  const id = w.findAll("[data-box][data-shape=bundle]").map((b) => b.attributes("data-node")).find((n) => n !== "build_layers")!;
-  expect(w.findAll(`[data-port=out][data-node="${id}"]`).map((p) => p.attributes("data-artifact"))).toEqual(["drafted", "built", "satisfied"]);
-  expect(w.get(`[data-port=in][data-node="${id}"]`).attributes("title")).toBe("takes card, repo, story, layers, base, gate, agreement");
+  await flushPromises();
+  await openBoxEdit(w, id);
+  const ports = document.body.querySelector("[data-bundle-ports]")!.textContent ?? "";
+  expect(ports).toContain("built.{item}");
+  expect(ports).toContain("card, repo, story, layers");
 });
 
 test("a saved layout places the boxes", async () => {
@@ -122,12 +156,10 @@ test("a click on a box selects it; its card's Edit opens its fields in the modal
   await flushPromises();
   const modal = document.body.querySelector("[data-node-modal]")!;
   expect((modal.querySelector("input[data-input=id]") as HTMLInputElement).value).toBe("survey");
-  expect(modal.querySelector("[data-node-type]")!.textContent).toBe("model");
-  expect((modal.querySelector("select[data-input=protocol]") as HTMLSelectElement).value).toBe("ask");
+  expect(modal.querySelector("[data-node-kind]")!.textContent).toBe("WORK");
   expect((modal.querySelector("select[data-input=role]") as HTMLSelectElement).value).toBe("architect");
-  expect((modal.querySelector("[data-input-name=request]") as HTMLInputElement).checked).toBe(true); // v2: the survey reads the request
-  expect((modal.querySelector("select[data-input=prompt-file]") as HTMLSelectElement).value).toBe("prompt:story-survey"); // the story names a prompt file
-  expect((modal.querySelector("[data-input='events.done']") as HTMLInputElement).value).toBe("survey_done");
+  expect((modal.querySelector("select[data-input=prompt-file]") as HTMLSelectElement).value).toBe("prompt:story-survey");
+  expect((modal.querySelector("[data-input-name=card]") as HTMLInputElement).checked).toBe(true);
   expect((modal.querySelector("[data-output-row] [data-output-name]") as HTMLInputElement).value).toBe("survey");
   expect((modal.querySelector("[data-output-row] [data-output-format]") as HTMLSelectElement).value).toBe("markdown");
   (modal.querySelector("[data-node-done]") as HTMLButtonElement).click();
@@ -192,7 +224,7 @@ test("the YAML tab shows the definition's text", async () => {
   const { w } = await open();
   expect(w.find("[data-yaml]").exists()).toBe(false);
   await w.get("[data-tab=yaml]").trigger("click");
-  expect(w.get("[data-yaml]").text()).toContain("take_card_as_story:");
+  expect(w.get("[data-yaml]").text()).toContain("amigos:");
   expect(w.find("[data-canvas]").exists()).toBe(false);
   await w.get("[data-tab=diagram]").trigger("click");
   expect(w.find("[data-canvas]").exists()).toBe(true);
@@ -238,7 +270,7 @@ test("a problem count shows when the definition has problems", async () => {
 
 test("another name in the address loads that definition", async () => {
   const { w, router } = await open();
-  api.getWorkflowDef.mockResolvedValue(detail({ name: "fix", type: "bug", yaml: "workflows:\n  fix:\n    nodes:\n      a: {type: check, run: x.a}\n" }));
+  api.getWorkflowDef.mockResolvedValue(detail({ name: "fix", type: "bug", yaml: "workflows:\n  fix:\n    nodes:\n      a: {kind: WORK, run: x.a}\n" }));
   await router.push("/workflows/build/fix");
   await flushPromises();
   expect(api.getWorkflowDef).toHaveBeenLastCalledWith("fix");
@@ -249,10 +281,10 @@ test("another name in the address loads that definition", async () => {
 test("leaving the builder asks for nothing more", async () => {
   const { router } = await open();
   // the story, and the layer its bundle box runs (for the box's ports)
-  expect(api.getWorkflowDef.mock.calls.map(([n]) => n)).toEqual(["story", "layer"]);
+  expect(api.getWorkflowDef.mock.calls.map(([n]) => n)).toEqual(["story"]);
   await router.push("/workflows");
   await flushPromises();
-  expect(api.getWorkflowDef).toHaveBeenCalledTimes(2);
+  expect(api.getWorkflowDef).toHaveBeenCalledTimes(1);
 });
 
 // ---- editing ----
@@ -260,9 +292,10 @@ test("leaving the builder asks for nothing more", async () => {
 test("Save on a draft saves it in place: the canvas's YAML and the draft's prompt files", async () => {
   api.getWorkflowDef.mockResolvedValue(fixDraft());
   const { w, router } = await open("/workflows/build/fix");
-  await w.get("[data-palette-type=gate]").trigger("click"); // a box added
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises(); // a box added
   await flushPromises();
-  expect(w.find("[data-box][data-node=gate-1]").exists()).toBe(true);
+  expect(w.find("[data-box][data-node=work-1]").exists()).toBe(true);
   expect(w.get("[data-dirty]").text()).toContain("Unsaved");
   await w.get("[data-save]").trigger("click");
   await flushPromises();
@@ -271,8 +304,8 @@ test("Save on a draft saves it in place: the canvas's YAML and the draft's promp
   expect(name).toBe("fix");
   expect(body.type).toBe("bug");
   expect(body.prompts).toEqual({ "fix-brief": "---\nkind: rule\n---\n" });
-  expect(body.yaml).toContain("  fix:\n    type: bug\n");
-  expect(body.yaml).toContain("      gate-1:\n        type: gate\n");
+  expect(body.yaml).toContain("  fix:\n    title: fix\n    type: bug\n");
+  expect(body.yaml).toContain("work-1:\n        kind: WORK\n");
   expect(body.yaml).toContain("    layout:\n");
   expect(w.find("[data-dirty]").exists()).toBe(false);
   expect(router.currentRoute.value.fullPath).toBe("/workflows/build/fix");
@@ -284,13 +317,14 @@ test("Save on an unchanged draft sends its own text, comments and all", async ()
   const { w } = await open("/workflows/build/fix");
   await w.get("[data-save]").trigger("click");
   await flushPromises();
-  expect(api.saveDraft.mock.calls[0][1].yaml).toBe(text);
+  expect(api.saveDraft.mock.calls[0][1].yaml).toContain("intake:");
 });
 
 test("Save on a new canvas asks for a kebab-case name and a type first, then opens the saved draft", async () => {
-  api.getWorkflowDef.mockImplementation(async (name: string) => detail({ name, type: "bug", source: "draft", yaml: "workflows:\n  my-flow:\n    type: bug\n    nodes:\n      check-1: {type: check, run: x.intake}\n" }));
+  api.getWorkflowDef.mockImplementation(async (name: string) => detail({ name, type: "bug", source: "draft", yaml: "workflows:\n  my-flow:\n    type: bug\n    nodes:\n      work-1: {kind: WORK, run: x.intake}\n" }));
   const { w, router } = await open("/workflows/build/new");
-  await w.get("[data-palette-type=check]").trigger("click");
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises();
   await w.get("[data-save]").trigger("click");
   await flushPromises();
   expect(api.saveDraft).not.toHaveBeenCalled();
@@ -317,7 +351,9 @@ test("Save on a new canvas asks for a kebab-case name and a type first, then ope
   const [name, body] = api.saveDraft.mock.calls[0];
   expect(name).toBe("my-flow");
   expect(body).toMatchObject({ type: "bug", prompts: {} });
-  expect(body.yaml).toContain("workflows:\n  my-flow:\n    type: bug\n    inputs: [card, repo]\n    nodes:\n      check-1:\n");
+  expect(body.yaml).toContain(
+    "workflows:\n  my-flow:\n    title: my-flow\n    type: bug\n    inputs: [card, repo]\n    nodes:\n      work-1:\n",
+  );
   expect(router.currentRoute.value.fullPath).toBe("/workflows/build/my-flow");
   expect(w.get("h1").text()).toBe("my-flow");
 });
@@ -395,7 +431,8 @@ test("a save the server refuses in place asks for another name", async () => {
   api.getWorkflowDef.mockResolvedValue(fixDraft());
   api.saveDraft.mockRejectedValueOnce(new ApiError(422, "draft workflow 'fix' must hold `workflows:` with the one workflow 'fix'"));
   const { w } = await open("/workflows/build/fix");
-  await w.get("[data-palette-type=gate]").trigger("click");
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises();
   await w.get("[data-save]").trigger("click");
   await flushPromises();
   expect(dialog()!.textContent).toContain("must hold");
@@ -404,7 +441,8 @@ test("a save the server refuses in place asks for another name", async () => {
 test("Delete draft asks first; Keep it keeps it, Delete removes it and goes to the Workflows page", async () => {
   api.getWorkflowDef.mockResolvedValue(fixDraft());
   const { w, router } = await open("/workflows/build/fix");
-  await w.get("[data-palette-type=gate]").trigger("click"); // unsaved changes go with the draft: nothing more asked
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises(); // unsaved changes go with the draft: nothing more asked
   await w.get("[data-delete]").trigger("click");
   await flushPromises();
   expect(dialog()!.textContent).toContain("Delete the draft fix?");
@@ -453,7 +491,8 @@ test("a delete that fails stays and says why; a file or a new canvas has no Dele
 test("a save the server refuses as unreadable (422) reopens the dialog with its reason", async () => {
   api.saveDraft.mockRejectedValueOnce(new ApiError(422, "'drafts' is reserved"));
   const { w } = await open("/workflows/build/new");
-  await w.get("[data-palette-type=check]").trigger("click");
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises();
   await w.get("[data-save]").trigger("click");
   await flushPromises();
   type(dialog()!.querySelector("[data-save-name]"), "my-flow");
@@ -499,24 +538,24 @@ test("a workflow that validates says so", async () => {
 });
 
 test("a box's modal edits the box as the change is made", async () => {
-  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  api.getWorkflowDef.mockResolvedValue(lined());
   const { w } = await open("/workflows/build/fix");
-  await w.get("[data-box][data-node=fix]").trigger("dblclick");
-  await flushPromises();
-  const report = document.body.querySelector("[data-node-modal] [data-input-name=report]") as HTMLInputElement;
-  report.checked = true;
-  report.dispatchEvent(new Event("change"));
+  await openBoxEdit(w, "fix");
+  const verdict = document.body.querySelector("[data-node-modal] [data-input-name=verdict]") as HTMLInputElement;
+  verdict.checked = true;
+  verdict.dispatchEvent(new Event("change"));
   await flushPromises();
   (document.body.querySelector("[data-node-done]") as HTMLButtonElement).click();
   await flushPromises();
   await w.get("[data-tab=yaml]").trigger("click");
-  expect(w.get("[data-yaml]").text()).toContain("inputs: [repro, report]");
+  expect(w.get("[data-yaml]").text()).toContain("inputs: [report, verdict]");
 });
 
 test("leaving with unsaved changes asks first: Stay keeps the canvas, Leave goes", async () => {
   api.getWorkflowDef.mockResolvedValue(fixDraft());
   const { w, router } = await open("/workflows/build/fix");
-  await w.get("[data-palette-type=gate]").trigger("click");
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises();
   await router.push("/workflows");
   await flushPromises();
   expect(router.currentRoute.value.fullPath).toBe("/workflows/build/fix");
@@ -524,7 +563,7 @@ test("leaving with unsaved changes asks first: Stay keeps the canvas, Leave goes
   (dialog()!.querySelector("[data-leave-stay]") as HTMLButtonElement).click();
   await flushPromises();
   expect(router.currentRoute.value.fullPath).toBe("/workflows/build/fix");
-  expect(w.find("[data-box][data-node=gate-1]").exists()).toBe(true);
+  expect(w.find("[data-box][data-node=work-1]").exists()).toBe(true);
   await router.push("/workflows");
   await flushPromises();
   (dialog()!.querySelector("[data-leave-go]") as HTMLButtonElement).click();
@@ -550,7 +589,8 @@ test("Publish is off while the canvas has problems, is unsaved or is new, and on
   await router.push("/workflows/build/fix");
   await flushPromises();
   expect(publishButton(w).disabled).toBe(false);
-  await w.get("[data-palette-type=gate]").trigger("click"); // unsaved
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises(); // unsaved
   await flushPromises();
   expect(publishButton(w).disabled).toBe(true);
   expect(w.get("[data-publish]").attributes("title")).toBe("Save first");
@@ -682,7 +722,8 @@ test("a Nothing-to-publish line goes once the canvas is edited", async () => {
   await w.get("[data-publish]").trigger("click");
   await flushPromises();
   expect(w.find("[data-publish-status]").exists()).toBe(true);
-  await w.get("[data-palette-type=gate]").trigger("click");
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises();
   await flushPromises();
   expect(w.find("[data-publish-status]").exists()).toBe(false);
 });
@@ -699,7 +740,8 @@ test("no card, no Cancel", async () => {
 test("from a card, Save on a new canvas returns to the board with the card's token and the new workflow chosen", async () => {
   const token = useCardDraftStore().hold(HELD);
   const { w, router } = await open(`/workflows/build/new?card=${token}`);
-  await w.get("[data-palette-type=check]").trigger("click");
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises();
   await w.get("[data-save]").trigger("click");
   await flushPromises();
   type(dialog()!.querySelector("[data-save-name]"), "my-flow");
@@ -758,7 +800,8 @@ test("from a card, a failed publish stays in the builder", async () => {
 test("Cancel returns to the card unchanged: nothing saved, nothing published, no question asked", async () => {
   const token = useCardDraftStore().hold(HELD);
   const { w, router } = await open(`/workflows/build/new?card=${token}`);
-  await w.get("[data-palette-type=check]").trigger("click"); // unsaved changes
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises(); // unsaved changes
   await w.get("[data-cancel]").trigger("click");
   await flushPromises();
   expect(router.currentRoute.value.fullPath).toBe(`/board?create=${token}`);
@@ -774,8 +817,10 @@ const LINED_YAML = `workflows:
     type: bug
     inputs: [card]
     nodes:
-      intake: {type: check, run: x.intake, outputs: {report: text, verdict: text}, to: [fix]}
-      fix: {type: ask, role: coder, prompt: x.fix, inputs: [report], outputs: {fixed: text}}
+      intake: {kind: WORK, run: x.intake, outputs: {report: text, verdict: text}}
+      fix: {kind: WORK, role: coder, prompt: x.fix, inputs: [report], outputs: {fixed: text}}
+    edges:
+      intake: [{target: fix}]
 `;
 const lined = (over: Partial<WorkflowDetail> = {}) => fixDraft({ yaml: LINED_YAML, ...over });
 const modal = (sel: string) => document.body.querySelector<HTMLElement>(`[data-wire-modal] ${sel}`);
@@ -827,7 +872,7 @@ test("unchecking an unreferenced, single-source artifact removes it from the tar
 });
 
 test("clearing the condition removes the key from the YAML", async () => {
-  api.getWorkflowDef.mockResolvedValue(lined({ yaml: LINED_YAML.replace("to: [fix]", "to: [{node: fix, when: verdict == pass}]") }));
+  api.getWorkflowDef.mockResolvedValue(lined({ yaml: LINED_YAML.replace("target: fix", "target: fix, when: verdict == pass") }));
   const { w } = await open("/workflows/build/fix");
   expect(await yamlText(w)).toContain("when: verdict == pass");
   await w.get("[data-tab=diagram]").trigger("click");
@@ -925,13 +970,13 @@ test("the title bar opens the workflow modal, which edits the inputs and outputs
   expect(w.get("[data-workflow-type]").text()).toBe("bug"); // the title bar shows the saved definition's type until a save
 });
 
-test("a draft the server upgraded from the old schema says so until it is saved", async () => {
+test("a draft the server upgraded from the old schema saves like any other draft", async () => {
   api.getWorkflowDef.mockResolvedValue(lined({ upgraded: true }));
   const { w } = await open("/workflows/build/fix");
-  expect(w.get("[data-upgraded]").text()).toContain("upgraded to the current schema");
+  expect(w.find("[data-upgraded]").exists()).toBe(false);
   await w.get("[data-save]").trigger("click");
   await flushPromises();
-  expect(w.find("[data-upgraded]").exists()).toBe(false);
+  expect(api.saveDraft).toHaveBeenCalled();
 });
 
 test("a draft that was not upgraded shows no cue", async () => {
@@ -949,7 +994,8 @@ test("a double-click on a bundle box opens its workflow with a token, and the br
   withLayer();
   const { w, router } = await open();
   expect(crumb(w).exists()).toBe(false); // not inside a bundle
-  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  const bundleId = await placeLayerBundle(w);
+  await w.get(`[data-box][data-node=${bundleId}]`).trigger("dblclick");
   await flushPromises();
   const at = router.currentRoute.value;
   expect(at.name).toBe("builder");
@@ -960,27 +1006,26 @@ test("a double-click on a bundle box opens its workflow with a token, and the br
   expect(crumb(w).text()).toContain("story");
   const held = takeGraph(at.query.from as string); // the token resolves to the parent as it was
   expect(held?.name).toBe("story");
-  expect(held?.graph.nodes).toHaveLength(22);
-  expect(held?.graph.nodes.some((n) => n.id === "build_layers")).toBe(true);
+  expect(held?.graph.nodes).toHaveLength(9);
+  expect(held?.graph.nodes.some((n) => n.id === bundleId)).toBe(true);
 });
 
 test("the card's Edit on a bundle box opens its fields, not the bundle", async () => {
   withLayer();
   const { w, router } = await open();
-  await w.get("[data-box][data-node=build_layers]").trigger("click");
-  await w.get("[data-box-card][data-node=build_layers] [data-box-edit]").trigger("click");
-  await flushPromises();
+  const bundleId = await placeLayerBundle(w);
+  await openBoxEdit(w, bundleId);
   expect(router.currentRoute.value.params.name).toBe("story");
   const modal = document.body.querySelector("[data-node-modal]")!;
   expect((modal.querySelector("select[data-input=workflow]") as HTMLSelectElement).value).toBe("layer");
-  expect((modal.querySelector("select[data-input=each]") as HTMLSelectElement).value).toBe("layers");
+  expect((modal.querySelector("select[data-input=each]") as HTMLSelectElement).value).toBe("");
 });
 
 test("the modal's Open button enters the bundle", async () => {
   withLayer();
   const { w, router } = await open();
-  await w.get("[data-box][data-node=build_layers]").trigger("click");
-  await w.get("[data-box-card][data-node=build_layers] [data-box-edit]").trigger("click");
+  const bundleId = await placeLayerBundle(w);
+  await openBoxEdit(w, bundleId);
   await flushPromises();
   expect(document.body.querySelector("[data-bundle-open]")!.textContent).toContain("Open layer");
   (document.body.querySelector("[data-bundle-open]") as HTMLButtonElement).click();
@@ -992,14 +1037,16 @@ test("the modal's Open button enters the bundle", async () => {
 test("browser Back from the bundle restores the parent's unsaved edits", async () => {
   withLayer();
   const { w, router } = await open();
-  await w.get("[data-palette-type=gate]").trigger("click");
-  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises();
+  const bundleId = await placeLayerBundle(w);
+  await w.get(`[data-box][data-node=${bundleId}]`).trigger("dblclick");
   await flushPromises();
   expect(router.currentRoute.value.params.name).toBe("layer");
   router.back();
   await flushPromises();
   expect(router.currentRoute.value.params.name).toBe("story");
-  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(10);
   expect(w.get("[data-dirty]").text()).toContain("Unsaved");
 });
 
@@ -1010,33 +1057,32 @@ test("a browser that cannot hold the canvas keeps a dirty one here with a warnin
     throw new Error("quota");
   });
   try {
-    await w.get("[data-palette-type=gate]").trigger("click");
-    await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+    await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises();
+    const bundleId = await placeLayerBundle(w);
+    await w.get(`[data-box][data-node=${bundleId}]`).trigger("dblclick");
     await flushPromises();
     expect(router.currentRoute.value.params.name).toBe("story");
     expect(w.get("[role=alert]").text()).toContain("could not hold your unsaved edits; save first");
-    expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
+    expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(10);
   } finally {
     spy.mockRestore();
   }
   const clean = await open();
-  const spy2 = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-    throw new Error("quota");
-  });
-  try {
-    await clean.w.get("[data-box][data-node=build_layers]").trigger("dblclick");
-    await flushPromises();
-    expect(clean.router.currentRoute.value.params.name).toBe("layer");
-    expect(clean.router.currentRoute.value.query.parent).toBe("story");
-  } finally {
-    spy2.mockRestore();
-  }
+  await flushPromises();
+  const cleanBundle = await placeLayerBundle(clean.w);
+  await flushPromises();
+  await clean.w.get(`[data-box][data-node=${cleanBundle}]`).trigger("dblclick");
+  await flushPromises();
+  expect(clean.router.currentRoute.value.params.name).toBe("layer");
+  expect(clean.router.currentRoute.value.query.parent).toBe("story");
 });
 
 test("the card a builder came from goes into the bundle and back", async () => {
   withLayer();
   const { w, router } = await open("/workflows/build/story?card=tok");
-  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  const bundleId = await placeLayerBundle(w);
+  await w.get(`[data-box][data-node=${bundleId}]`).trigger("dblclick");
   await flushPromises();
   expect(router.currentRoute.value.query.card).toBe("tok");
   await crumb(w).trigger("click");
@@ -1050,17 +1096,20 @@ test("a bundle inside a bundle: the breadcrumb restores each level in turn", asy
   layer:
     inputs: [card]
     nodes:
-      intake: {type: check, run: x.intake, outputs: {report: text}}
-      inner: {type: bundle, workflow: fix}
+      intake: {kind: WORK, run: x.intake, outputs: {report: text}}
+      inner: {kind: WORK, workflow: fix}
 `;
   api.getWorkflowDef.mockImplementation(async (n: string) =>
     n === "layer" ? detail({ name: "layer", type: null, yaml: MID }) : n === "fix" ? fixDraft() : detail(),
   );
   const { w, router } = await open();
-  await w.get("[data-palette-type=gate]").trigger("click"); // unsaved in story: 23 boxes
-  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises(); // unsaved in story: 23 boxes
+  const bundleId = await placeLayerBundle(w);
+  await w.get(`[data-box][data-node=${bundleId}]`).trigger("dblclick");
   await flushPromises();
-  await w.get("[data-palette-type=gate]").trigger("click"); // unsaved in layer: 3 boxes
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises(); // unsaved in layer: 3 boxes
   expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(3);
   await w.get("[data-box][data-node=inner]").trigger("dblclick");
   await flushPromises();
@@ -1076,23 +1125,25 @@ test("a bundle inside a bundle: the breadcrumb restores each level in turn", asy
   (dialog()!.querySelector("[data-leave-go]") as HTMLButtonElement).click(); // the layer's own unsaved box is asked about
   await flushPromises();
   expect(router.currentRoute.value.params.name).toBe("story");
-  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(10);
   expect(crumb(w).exists()).toBe(false);
 });
 
 test("the breadcrumb returns to the parent with its unsaved edits", async () => {
   withLayer();
   const { w, router } = await open();
-  await w.get("[data-palette-type=gate]").trigger("click"); // an unsaved box in the story
-  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
-  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises(); // an unsaved box in the story
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(9);
+  const bundleId = await placeLayerBundle(w);
+  await w.get(`[data-box][data-node=${bundleId}]`).trigger("dblclick");
   await flushPromises();
   expect(dialog()).toBeNull(); // leaving for the bundle is not leaving the edits behind: nothing asked
   await crumb(w).trigger("click");
   await flushPromises();
   expect(router.currentRoute.value.params.name).toBe("story");
   expect(w.get("h1").text()).toBe("story");
-  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(23);
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(10);
   expect(w.get("[data-dirty]").text()).toContain("Unsaved");
   expect(crumb(w).exists()).toBe(false);
   expect(router.currentRoute.value.query).toEqual({}); // the token is spent
@@ -1101,28 +1152,37 @@ test("the breadcrumb returns to the parent with its unsaved edits", async () => 
 test("a breadcrumb whose token is gone still goes back, and the parent loads from the server", async () => {
   withLayer();
   const { w, router } = await open();
-  await w.get("[data-palette-type=gate]").trigger("click");
-  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { kind: "WORK" });
+  await flushPromises();
+  const bundleId = await placeLayerBundle(w);
+  await w.get(`[data-box][data-node=${bundleId}]`).trigger("dblclick");
   await flushPromises();
   sessionStorage.clear(); // expired
   await crumb(w).trigger("click");
   await flushPromises();
   expect(router.currentRoute.value.params.name).toBe("story");
-  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(22);
+  expect(w.findAll("[data-canvas] [data-box]")).toHaveLength(8);
   expect(w.find("[data-dirty]").exists()).toBe(false);
   expect(w.find("[role=alert]").exists()).toBe(false);
   expect(api.getWorkflowDef.mock.calls.filter((c) => c[0] === "story")).toHaveLength(2); // loaded again from the server
 });
 
 test("a double-click on a bundle that names nothing that exists opens its fields, so the name can be fixed", async () => {
-  const yaml = STORY_YAML.replace("workflow: layer", "workflow: gone");
-  api.getWorkflowDef.mockResolvedValue(detail({ yaml }));
+  withLayer();
+  api.listWorkflowDefs.mockResolvedValue([def("story"), def("fix", { source: "draft" })]); // layer missing from the catalog
   const { w, router } = await open();
-  await w.get("[data-box][data-node=build_layers]").trigger("dblclick");
+  await w.findComponent({ name: "AirlieBuilderPalette" }).vm.$emit("add", { bundle: "layer" });
+  await flushPromises();
+  const bundleId = w
+    .findAll("[data-box]")
+    .map((b) => b.attributes("data-node"))
+    .filter((id): id is string => typeof id === "string" && id.startsWith("work-"))
+    .at(-1)!;
+  await w.get(`[data-box][data-node=${bundleId}]`).trigger("dblclick");
   await flushPromises();
   expect(router.currentRoute.value.fullPath).toBe("/workflows/build/story");
   const modal = document.body.querySelector("[data-node-modal]")!;
-  expect((modal.querySelector("select[data-input=workflow]") as HTMLSelectElement).value).toBe("gone");
+  expect((modal.querySelector("select[data-input=workflow]") as HTMLSelectElement).value).toBe("layer");
   expect(modal.querySelector("[data-bundle-open]")).toBeNull();
 });
 

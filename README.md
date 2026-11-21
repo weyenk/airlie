@@ -3,9 +3,18 @@
   <img src="docs/readme/wordart.png" alt="airlie" width="420" />
 </p>
 
-airlie is an agentic workflow platform. Today it runs development workflows end to end — from a board card
-through planning, build, review to PR — with specialist agents that share what they learn on one
-Apple Silicon Mac. Dynamic workflows are next: the same line, for work that isn't only software.
+airlie is an agentic workflow platform: board, chat, roles, topologies and the Job Bus around work you want
+done. Today it runs development workflows end to end — from a card through planning, build and review to PR.
+Dynamic workflows are next: the same line, for work that isn't only software.
+
+Airlie does not host models. You point it at an OpenAI- or Anthropic-compatible HTTP endpoint (omlx, llama.cpp,
+a cloud API, …). Airlie is the agent and workflow layer; inference is yours.
+
+| Airlie provides | You bring |
+| --- | --- |
+| Studio (`task serve`): chat, board, workflows, metrics, admin | Inference: any remote HTTP engine (`AIRLIE_WORKFLOW_BASE_URL`, see *Engines*) |
+| Roles, prompts, tools, topologies, workflow engine, test gate | Optional SearXNG for `web_search` (`task searxng:up`) |
+| Job Bus `hub/` + Mac bridge so other products enqueue work | Secrets and real endpoints in env / `airlie.local.yaml` (never committed) |
 
 `task serve` hosts the web app. The tabs:
 
@@ -45,7 +54,9 @@ device reads the same conversation.
 Only the `plain` kind exists (`repository` answers 400 until plan 4). A plain chat has no repository: its tools are
 `web_search` and `web_fetch` (when the web tools are configured), `skill` and `todo`; there is no file or shell
 tool. `chat.kinds.<kind>.tools` names them (`ask_first` marks tools to confirm), and `chat.max_steps` caps the
-tool rounds in a turn.
+tool rounds in a turn. The composer's model and persona dropdowns come from `GET /v1/airlie/chat/options`: every
+model an engine serves, and `chat` plus the roles in `chat.personas`; a turn's `model_key` and `persona` pick them
+for that turn (a persona swaps the system prompt for that role's).
 
 The session prompt carries the [superpowers](https://github.com/obra/superpowers) bootstrap, and `skill` loads any
 of its skills (`brainstorming`, `writing-plans`, …) on demand. They are vendored at 7.0.0 in `vendor/superpowers/`
@@ -55,7 +66,7 @@ the tree against `MANIFEST.sha256`; to update, re-copy a newer release, edit `PI
 
 ### Board
 
-The local board (initiative → epic → story → subtask) with columns from To do through Done. Create a card when you want something on the line; open one for its acceptance criteria, the layer that ran, and the comments the agents leave.
+The local board (initiative → epic → story → subtask) with columns from To do through Done. Create a card when you want something on the line; open one for its acceptance criteria, the layer that ran, and the comments the agents leave. Move a card to **Approved** with a `workflow:<name>` label and `task serve` starts that workflow in **Doing** (Review on success, Blocked on failure or when the label is missing). At most `runs.max_concurrent` board runs go at once; extra Approved cards wait in order. Chat turns can take a run slot ahead of queued board work.
 
 <p align="center">
   <img src="docs/readme/board.png" alt="Board: Kanban of stories across To do, Approved, Doing, Review, Blocked, Done" width="720" />
@@ -168,21 +179,10 @@ Run `task` to list them. The ones that exist today:
 | `task web:e2e [-- --roles chief,ux]` | asks every web-enabled role (chief, research, ux, design, reviewer) about something after its training data and checks it searched and cited what it found |
 | `task models:list` | show the model catalog and the engine serving each model (airlie starts no inference server: the engines are remote HTTP endpoints, see *Engines*) |
 | `task gpu:limit` | set `iogpu.wired_limit_mb` to `memory.wired_limit_mb` now and at every boot (a LaunchDaemon; asks for your password) |
-| `task run -- "goal" --repo PATH [--topology fork] [--k 3] [--test-cmd "pytest -q"]` | run a topology on a goal (default `topology.kind: single`; `single` / `teams` / `fork` are experimental — use `task studio` or `--topology studio` for the supported path); every team/branch works in its own git worktree under the run directory and the report lists each one's outcome, branch and trace |
+| `task run [-- WORKFLOW] --repo PATH` | run a workflow from `config/workflows/` via the generic engine (default workflow name: `story`); one run at a time per repo (`airlie.workflow.start_workflow`) |
 | `task eval -- lang_detect [--topology fork] [--k 1]` | materialize a graded task from `evals/tasks/`, run it, grade every worktree with the hidden tests (same topology note as `task run`) |
 | `task serve [-- --port 8090]` | OpenAI-compatible endpoint: roles are models (`/v1/models`, `/v1/chat/completions` with the role prompt prepended), plus `POST /v1/airlie/run {goal, repo, k}`; jobs: `POST /v1/airlie/plans`, `/runs` or `/stories`, then `GET /v1/airlie/jobs/{id}?since=&wait=` (long poll), `DELETE` to cancel |
 | `task web:install` / `web:check` / `web:build` / `web:gate` / `web:dev` | the Vue app in `web/` (node 26, pinned in `web/package.json`): `npm ci` / typecheck + lint + tests / build into `src/airlie/serve/web_next` (`task serve` and `task setup` run it) / check then build, skipped while nothing under `web/` changed since it last passed / Vite dev server with `/v1` proxied to `task serve` |
-| `task studio -- "goal" --repo PATH [--image shot.png] [--test-cmd "pytest -q"]` | the studio topology: the chief plans in JSON, the decision model routes each subtask to a specialist role (and a skill), specialists run on one worktree, a cross-family reviewer gets one fix round, the chief synthesises; `report.md` and `routing.jsonl` land in the run directory |
-| `task story -- ISSUE [--repo PATH] [--test-cmd CMD]` / `task story -- --text "request" …` | a board item (a key like `AIR-7`; a Jira issue or its link with `story.board: jira`) or a written request → product's story → architect's layers → the story meeting (product, the architect and the tester agree the requirements, the changes and the proof) → each layer built from the architect's package (its tests as code, placed and checked before the coder builds) by the studio on its own branch → draft PRs (`story.publish`: `single` in the committed `airlie.yaml` is one PR on the top layer; `stack` is one draft PR per layer via gh-stack) → the issue in *In Review*; only a human merges; a stopped story resumes from its last finished stage; an issue is built in the repository its `repo:<owner>/<name>` label names (its clone in `~/git`, `story.repos_root`), and every layer must pass the `## Test gate` of that repository's `AGENTS.md`; Jira comes from the `ATLASSIAN_*` variables in `~/.config/airlie/.env` (or a `.env` beside `airlie.yaml`), which airlie reads itself and never exports; with `story.github_app.app_id` set, a GitHub App's bot pushes, opens the PRs and authors the layer commits with a token scoped to the story's one repository, never your gh login or SSH key; the committed `airlie.yaml` publishes as this repository owner's app, so in a clone set `story.github_app.app_id: null` in `airlie.local.yaml` to publish with your own gh login, or set your own app's id there (`docs/integrations/story.md`) |
-| `task line:tick` / `task story:check [-- ISSUE]` | one beat of the line (what serve runs every minute and the launchd agent every 15): the gates, the bookkeeping, then a job in the planning lane and one in the build lane / check roles, gh + gh-stack, which board is in use (with Jira: its credentials, project and statuses), and an issue's label, checkout, trunk and test gate |
-| `task line:pause` / `task line:resume` | hold the line (the gates and the bookkeeping still run, no job starts, a running one finishes) / let it go; a card moved to blocked or todo holds everything under it (`docs/integrations/story.md`, *The line*) |
-| `task line:stats [-- --since DATE]` | the numbers that judge whether stories go through unattended: the unattended rate, blocks by class with the fix cards, hours against estimates, the amigos' objections, the budgets' overruns |
-| `task story:restack -- ISSUE` | move a stopped story onto the trunk as it is now: its built layers replayed and gated there, its stopped layer's attempt removed, the next run builds on today's trunk |
-| `task story:restart -- ISSUE [--from STEP]` | start a story over from a step (`refine`, from scratch, by default; `layers`, `amigos`, `packages` or `layer-NN`) on the trunk as it is now: its PRs closed, the branches of what goes deleted, its run archived, the layers it keeps replayed and gated on the trunk, the card back in approved; refused, with nothing changed, while it runs, once a PR is merged, or when a kept layer does not replay. The workflow screen's *Restart from here* on each step does the same |
-| `task line:why -- KEY [--n N] [--paths]` / `task line:deploy` | why a story blocked (its class by rules, Muse's reading, what happens next, the evidence) / pull the home checkout's trunk after a fix card merged and say whether to restart serve (`docs/integrations/story.md`, *Why a story stopped*) |
-| `task story:pr-body -- ISSUE NN` | print the pull request body a built layer would get now (chain, package, contract, checks, cost, stack); no network, nothing published |
-| `task story:describe -- ISSUE` | rebuild the title and body of every PR a story published and edit them on GitHub (`gh pr edit`); only when you run it, never from the tick |
-| `task story:steps -- ISSUE…` | steps each story role spent before its first write: reads, pages, repeats, brief-file re-reads |
 | `task supervisor:log` / `task supervisor:stats` / `task supervisor:verdict -- ID right\|wrong [NOTE]` | read the supervisor's ledger (Muse's advice at a story's trouble points, advisory only): the newest interventions / how often they helped, by trigger and category / your verdict on one (`docs/integrations/story.md`, *The supervisor (trial)*) |
 | `task supervisor:try -- --worktree PATH --base SHA [--run RUN_ID]` | Muse's triage of a worktree as a story's first pre-code retry would ask for it, with no ledger row (`docs/integrations/story.md`) |
 | `task prompts:audit [-- --role NAME]...` | advisory: Muse reads each role's full instructions (its role prompt, then every rule and steering text that reaches it, in `src/airlie/prompts/`) and lists the ones that contradict, steering against rules included; writes `prompts-audit-<UTC time>.md` under the state directory's `runs/` and prints its path and each role's first line. Needs the engine, is not deterministic and fails nothing; the gate's check is `tests/unit/test_prompt_contradictions.py` |
@@ -192,7 +192,6 @@ Run `task` to list them. The ones that exist today:
 | `task initiative:turn -- AIR-40` | run the specs phase's next turn now, after you answered its question on the board while `task serve` was down |
 | `task epic:add -- --file spec.md --repo owner/name` | make an epic card on the local board from a Markdown spec (its `## Acceptance criteria` bullets become the epic's criteria); approve it and the tick plans it into prioritized stories (`docs/integrations/story.md`, *Epics*) |
 | `task epic:replan -- AIR-3 [--reason TEXT]` | ask the architect to revise a planned epic's stories now: started, in-review and merged stories are kept, unstarted ones changed or dropped, new ones made, a stopped story with no layer built retired (the tick does this by itself when a story stops again after its one resume) (`docs/integrations/story.md`, *Epics*) |
-| `task line:launchd:install` / `task line:launchd:uninstall` | load / remove the launchd agent that runs a beat of the line (`airlie line tick`) every 15 minutes, the belt beside serve's own |
 | `task serve:launchd:install` / `task serve:launchd:uninstall` | KeepAlive launchd agent for `task serve` (log `~/.local/state/airlie/serve.log`); stop any terminal `task serve` first |
 | `task auth:admin` / `auth:invite` / `auth:users` / `auth:revoke` | first admin invite link / invite a person (passkey) / list people / revoke; Admin in the web app; `docs/integrations/sign-in.md` |
 | `task tunnel` | Cloudflare quick tunnel for `task serve` on 8090 (Cursor and other cloud clients); run serve with `--api-key` first |
@@ -274,9 +273,8 @@ own hint, or a catalog model) assigns each subtask a specialist role from the ro
 the guideline to inject; specialists are prompts over the catalog (generalist for most seats, Gemma for
 the `reviewer`) and run as single agents on one worktree, writers one at a time, readers in parallel; after a
 code subtask the reviewer (Gemma, a different lab than the coder's Qwen, on purpose: judges favour their own family's text) returns
-a JSON verdict and blocking findings give the coder one fix round; the chief synthesises. Run it with
-`task studio -- "goal" --repo . [--image shot.png]` (the committed `workflow` engine serves every model the studio's roles name, see *Engines*). Every routing
-decision is logged (`runs/<id>/routing.jsonl`).
+a JSON verdict and blocking findings give the coder one fix round; the chief synthesises. Run experimental studio topology jobs through serve (`POST /v1/airlie/runs`); the committed `workflow` engine serves every model the studio's roles name (see *Engines*). Every routing decision is logged
+(`runs/<id>/routing.jsonl`) and scorable with `task route:eval`.
 
 Every topology injects a deterministic repository map (tree, sizes, Python signatures; `repo_map.*`, cached under
 `<state_dir>/repo_maps/`) before the goal, so no branch re-discovers the layout.
@@ -285,7 +283,7 @@ Every topology injects a deterministic repository map (tree, sizes, Python signa
 
 `single`, `teams` and `fork` remain for research and benches (`task run`, `task eval`, `task bench:topology`).
 They are not what the line builds with. The committed `airlie.yaml` still defaults `topology.kind` to `single`
-for those tasks; pass `--topology studio` (or use `task studio`) for the supported path. Design notes:
+for those tasks; pass `--topology studio` on `task eval` or use serve's run route for studio jobs. Design notes:
 `docs/superpowers/specs/2026-10-13-fork-when-stuck-design.md`,
 `docs/bench/2026-10-13-topology-bench.md`.
 
@@ -312,7 +310,7 @@ per-request draft length, so the budgets are computed and logged but not applied
 
 **Profiles.** `topology.profiles.<kind>` is a partial config deep-merged over `airlie.yaml` when that kind is
 selected (`extends: <profile>` chains), so each topology declares its own team count, memory settings, contexts
-and models. `--topology` on `task run`/`task eval`/`task studio` and `topology` in `POST /v1/airlie/run` select
+and models. `--topology` on `task eval` and `topology` in `POST /v1/airlie/run` select
 the profile for one run; a profile name that is not a kind (a named variant, or a parent other profiles
 `extends`) can be selected the same way and takes its kind from its own `topology.kind` or the file's.
 `--k N` with `N > 1` under the `single` kind selects the `teams` profile. `task doctor` projects memory per
@@ -420,9 +418,9 @@ trains the spec 03 §2 model (frozen Qwen3-0.6B embedder, three projection layer
 
 ## Choosing the team model
 
-The default team / chief model is `generalist` (Qwen3.8-27B, hybrid attention). Swap with one line:
-`roles.coder.model` (and `roles.aggregator.model`) at another catalog entry; numbers in
-[`docs/bench/`](docs/bench/).
+Roles pick catalog names (`smart`, `fast`, `small`, …) served by the `workflow` engine. Swap with one line on
+`roles.<role>.model`; the engine is derived from the catalog, so changing endpoints never touches the roles.
+Numbers in [`docs/bench/`](docs/bench/).
 
 ## Configuration
 
@@ -444,14 +442,11 @@ guidelines with `summary:` frontmatter, routed by the decision model), `knowledg
 indexes with BM25), `vision` (receives the run's images) and `max_steps`. Unknown keys are errors, and every
 error names the key path.
 
-A workflow is nodes and lines: a node's `to` names the nodes its outputs feed, a model node's `prompt` is text or
-`prompt:<id>`, and a `check`/`gate` node's `run` comes from the catalog that `airlie workflows catalog` prints.
+A workflow has four node kinds (`WORK`, `ROUND_ROBIN`, `SUPERVISOR_WORKERS`, `K_INDEPENDENT_TEAMS`) wired by
+`edges` (`when` / `loop` on the wire). A `WORK` node has exactly one of `prompt`, `prompt_id`, or `run`.
 
-The web app's workflow builder (Workflows, then a name or New) draws that file: a box per node, a port per output,
-a line per `to` entry with its condition or loop on it. A click selects a box and shows a small card; a double-click
-opens the box's fields (a check or gate picks its `run` from the catalog by title). A bundle box opens its own
-workflow in place with a breadcrumb back. Validate runs the composer's checks; Save draft stores the workflow
-as a draft a card can choose, and the story screen can adopt the current workflow with one confirm.
+The web app's workflow builder (Workflows, then a name or New) draws that file: a box per node, ports for outputs,
+lines for edges. Double-click a box for its fields; Save draft stores a draft a card can choose.
 
 A role that thinks (`thinking: true` with a `thinking_budget`) needs `max_tokens` larger than the budget: `max_tokens`
 caps the thinking and the answer together, so the config is refused otherwise, naming the role and both numbers.

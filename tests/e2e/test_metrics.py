@@ -32,7 +32,7 @@ def _step(
         "kind": "step",
         "role": role,
         "run_id": "metrics-now",
-        "team_id": "tests" if role == "architect" else "build",
+        "team_id": "tests" if role == "coder" else "build",
         "prompt_tokens": 1000,
         "completion_tokens": 100,
         "prefill_ms": prefill_ms,
@@ -56,17 +56,17 @@ def _seed_metrics(state: Path) -> None:
     rows = [
         _step(
             now - 3 * DAY,
-            role="architect",
+            role="coder",
             model="base",
             gen_ms=2000,
             prefill_ms=500,
             story="AIR-9",
             layer="01",
         ),
-        _step(now - 3 * DAY, role="architect", model="other", gen_ms=4000, prefill_ms=1000, story="AIR-9"),
+        _step(now - 3 * DAY, role="tester", model="other", gen_ms=4000, prefill_ms=1000, story="AIR-9"),
         _step(
             now - 2 * HOUR,
-            role="architect",
+            role="coder",
             model=None,
             gen_ms=2000,
             prefill_ms=500,
@@ -74,7 +74,7 @@ def _seed_metrics(state: Path) -> None:
             layer="02",
         ),
         {"ts": now - 3 * DAY, "kind": "fix_round", "story": "AIR-9", "layer": "01"},
-        _step(now - 9 * DAY, role="architect", model="base", gen_ms=2500, prefill_ms=1000),
+        _step(now - 9 * DAY, role="coder", model="base", gen_ms=2500, prefill_ms=1000),
     ]
     run = state / "runs" / "metrics-now"
     run.mkdir(parents=True)
@@ -135,8 +135,8 @@ def test_the_chart_draws_a_line_per_role_and_a_bucket_opens_the_stories_active_t
     _seed_metrics(own_server.state)
     app_page.goto(own_server.url + "/metrics")
     legend = app_page.locator("[data-legend]")
-    evidence.expect(legend, "the legend names the roles").to_contain_text("architect")
-    evidence.expect(legend, "both of them").to_contain_text("architect")
+    evidence.expect(legend, "the legend names the roles").to_contain_text("coder")
+    evidence.expect(legend, "both of them").to_contain_text("tester")
     evidence.expect(app_page.locator("[data-line]"), "one line each").to_have_count(2)
     evidence.expect(app_page.locator("[data-line=coder]"), "in the first series colour").to_have_attribute(
         "stroke", "#34d399"
@@ -188,7 +188,7 @@ def test_every_slice_on_offer_draws_without_an_error(
     options = app_page.locator("[data-slice] option").evaluate_all("els => els.map(e => e.value)")
     assert options == ["role", "model", "topology", "task", "agent"]
     expected = {
-        "role": "architect",
+        "role": "coder",
         "model": "base",
         "topology": "unknown",
         "task": "metrics-now",

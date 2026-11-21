@@ -5,6 +5,7 @@ import { startStoryCard } from "@/api/sessions";
 import Typeahead from "@/components/Typeahead.vue";
 import { useRepoNames } from "@/composables/useRepoNames";
 import { cleanRepo, isRepo, REPO_RULE } from "@/screens/board/repo";
+import WorkflowPicker from "@/screens/board/WorkflowPicker.vue";
 import { useTurns } from "@/stores/turns";
 
 /**
@@ -33,6 +34,8 @@ const text = ref(props.text);
 // a repository chat's story is for its repository; a plain chat's for the one last used here
 const first = turns.rowOf(props.sessionId)?.repo ?? remembered();
 const repo = ref(first);
+/** The workflow chosen here, "" for none: Start story sends it (the card gets its `workflow:` label), or leaves it out. */
+const workflow = ref("");
 const error = ref("");
 const busy = ref(false);
 
@@ -55,7 +58,7 @@ async function start(): Promise<void> {
   }
   busy.value = true;
   try {
-    const part = await startStoryCard(props.sessionId, props.storyId, { text: body, repo: chosen });
+    const part = await startStoryCard(props.sessionId, props.storyId, { text: body, repo: chosen, ...(workflow.value ? { workflow: workflow.value } : {}) });
     if (chosen !== first) {
       try {
         localStorage.setItem(REPO, chosen); // remembered only when the person chose it
@@ -85,6 +88,13 @@ async function start(): Promise<void> {
         aria-label="Story request"
         class="w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 leading-normal outline-none focus:border-ring"
       />
+      <section class="flex flex-col gap-2" aria-label="Workflow">
+        <span class="text-xs font-semibold text-muted-foreground">Workflow</span>
+        <WorkflowPicker
+          v-model="workflow"
+          select-class="h-9 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-sm outline-none focus:border-ring"
+        />
+      </section>
       <div class="flex items-center gap-2 max-[640px]:flex-wrap">
         <span class="text-xs text-muted-foreground">in</span>
         <div class="min-w-[180px] flex-1">

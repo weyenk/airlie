@@ -22,8 +22,8 @@ from airlie.story.board import Board, BoardError, Card, Column, NullBoard, text_
 from airlie.story.epic_plan import PlannedStory, ScopedPath, render_story_card
 from airlie.story.github_app import GitHubApp
 from airlie.story.model import Criterion, EpicHeader, Layer, Story
-from airlie.story.pipeline import StoryPipeline
 from airlie.story.publish import Publisher, PublishError, run_cmd
+from airlie.story.retired import StoryPipeline
 from airlie.topology.studio import StudioOrchestrator
 from tests.support.git import git, repo_with_marker_tests
 from tests.support.studio import APPROVE, DONE, ROLES, RUN, WRITE_PASS, cfg_for
@@ -31,7 +31,8 @@ from tests.support.studio import APPROVE, DONE, ROLES, RUN, WRITE_PASS, cfg_for
 # Re-exported for test modules that imported these from test_story_pipeline before the move.
 __all__ = ["repo_with_marker_tests", "text_card"]
 
-WORKFLOWS = Path(__file__).resolve().parents[2] / "config" / "workflows"
+# the shipped story/layer workflows as test fixtures: production ships none, so tests carry their own copies
+WORKFLOWS = Path(__file__).resolve().parents[1] / "fixtures" / "workflows"
 
 STORY_ROLES = {
     **ROLES,
@@ -191,7 +192,7 @@ def pipeline(
     }
     # the done-check is off unless a test asks for it: it costs the coder one scripted reply per layer
     extra: dict[str, object] = {"story": settings}
-    if composer:  # the shipped story and layer workflows, as airlie.yaml includes them
+    if composer:  # story/layer fixtures under tests/fixtures/workflows (production ships none)
         extra["workflows"] = {
             name: spec
             for part in ("story", "layer")

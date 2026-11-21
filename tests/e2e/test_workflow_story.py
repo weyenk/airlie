@@ -186,7 +186,7 @@ def test_the_now_bar_says_stopped_for_a_story_nobody_works_on(
     ).to_have_attribute("data-status", "stopped")
 
 
-def test_hovering_the_build_box_opens_its_card_with_architect_reviewer_and_gate(
+def test_hovering_the_build_box_opens_its_card_with_coder_reviewer_and_gate(
     app_page: Page, server: Server, evidence: Evidence
 ) -> None:
     open_story(app_page, server)
@@ -198,7 +198,7 @@ def test_hovering_the_build_box_opens_its_card_with_architect_reviewer_and_gate(
     card = app_page.locator("[data-card]")
     evidence.expect(card, "the card opens").to_be_visible()
     evidence.expect(card, "it is the Build's").to_contain_text("Build")
-    for step in ("architect", "reviewer", "gate"):
+    for step in ("coder", "reviewer", "gate"):
         evidence.expect(card, f"it lists the {step}").to_contain_text(step)
     app_page.mouse.move(5, 5)
     evidence.expect(card, "moving away closes it").to_have_count(0)

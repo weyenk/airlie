@@ -57,6 +57,9 @@ class TurnContext:
     prompt_error: str | None = None  # why session_start could not build the system prompt
     attachments: int = 0
     skill: str | None = None
+    persona: str | None = (
+        None  # a role (chat.personas) whose prompt answers this turn instead of the chat role's
+    )
 
 
 @dataclass(frozen=True)
@@ -158,10 +161,13 @@ def build_system_prompt(
     *,
     subagent: bool = False,
     skill: str | None = None,
+    persona: str | None = None,
 ) -> str:
-    """The chat role's prompt, the superpowers bootstrap and skills listing, the slash commands, and the
-    slash skill being run. Rebuilt every turn and never stored; the same inputs give the same bytes."""
-    parts = [prompt_text(cfg.roles["chat"].prompt).rstrip()]
+    """The chat role's prompt (or the `persona` role's, one of `chat.personas`), the superpowers bootstrap and
+    skills listing, the slash commands, and the slash skill being run. Rebuilt every turn and never stored;
+    the same inputs give the same bytes."""
+    chosen = persona if persona in cfg.chat.personas else "chat"
+    parts = [prompt_text(cfg.roles[chosen].prompt).rstrip()]
     if library is not None and cfg.chat.superpowers.enabled and not subagent:
         parts.append(library.bootstrap().rstrip())
         parts.append(f"## Skills\n\n{library.listing()}")
@@ -186,7 +192,9 @@ def default_hooks(
 
     async def session_start(ctx: TurnContext) -> None:
         try:
-            ctx.system_prompt = build_system_prompt(cfg, ctx.kind, library, chat_skills, skill=ctx.skill)
+            ctx.system_prompt = build_system_prompt(
+                cfg, ctx.kind, library, chat_skills, skill=ctx.skill, persona=ctx.persona
+            )
         except Exception as e:
             ctx.prompt_error = f"{type(e).__name__}: {e}"
             raise  # the hook runner logs it; the route refuses a turn that has no prompt

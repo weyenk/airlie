@@ -2,6 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { createMemoryHistory, createRouter } from "vue-router";
 import type { Item } from "@/api/board";
+import type { WorkflowDef } from "@/api/workflow_defs";
 import type { Flow } from "@/api/workflows";
 import { useBoardStore } from "@/stores/board";
 import { useSessionStore } from "@/stores/session";
@@ -21,16 +22,8 @@ const api = vi.hoisted(() => ({
 vi.mock("@/api/board", () => api);
 const wf = vi.hoisted(() => ({ storyFlow: vi.fn(), repoNames: vi.fn() }));
 vi.mock("@/api/workflows", () => wf);
-const defs = vi.hoisted(() => ({ listWorkflowDefs: vi.fn(), adoptWorkflow: vi.fn() }));
-vi.mock("@/api/workflow_defs", () => defs);
-const PR_URL = "https://example.test/weyenk/airlie/pull/42";
-const DEFS = [
-  { name: "story", type: "story", source: "file", problems: [], pr: null },
-  { name: "bug-fix", type: "bug", source: "file", problems: [], pr: null },
-  { name: "my-draft", type: "story", source: "draft", problems: [], pr: null },
-  { name: "in-review", type: "story", source: "draft", problems: [], pr: { number: 42, url: PR_URL } },
-];
-
+const defsApi = vi.hoisted(() => ({ listWorkflowDefs: vi.fn() }));
+vi.mock("@/api/workflow_defs", () => defsApi);
 const STORY = item("AIR-4", {
   title: "Board: panel width",
   status: "approved",
@@ -63,11 +56,15 @@ const FLOW: Flow = {
   ],
 };
 
+const def = (name: string, extra: Partial<WorkflowDef> = {}): WorkflowDef => ({ name, type: "story", source: "file", problems: [], pr: null, used_by: [], ...extra });
+const DEFS: WorkflowDef[] = [def("story"), def("bug-fix", { type: "bug" }), def("my-draft", { source: "draft" })];
+
 async function open(key = "AIR-4") {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
       { path: "/board/:key?", name: "board", component: { template: "<i/>" } },
+      { path: "/workflows/build/:name", name: "builder", component: { template: "<i/>" } },
       { path: "/workflows/:key/:node?/:job?", name: "story", component: { template: "<i/>" } },
     ],
   });
@@ -89,9 +86,8 @@ beforeEach(() => {
   api.addComment.mockReset().mockResolvedValue({ ...STORY, updated_at: 3000 });
   api.editComment.mockReset().mockResolvedValue({ ...STORY, updated_at: 3000 });
   wf.storyFlow.mockReset().mockResolvedValue(structuredClone(FLOW));
+  defsApi.listWorkflowDefs.mockReset().mockResolvedValue(structuredClone(DEFS));
   wf.repoNames.mockReset().mockResolvedValue(["weyenk/airlie", "weyenk/openhand"]);
-  defs.adoptWorkflow.mockReset();
-  defs.listWorkflowDefs.mockReset().mockResolvedValue(structuredClone(DEFS));
 });
 afterEach(() => {
   document.body.innerHTML = "";
@@ -347,132 +343,79 @@ test("a card that was on the board and is gone says it was deleted", async () =>
   expect(q("[data-title]")).toBeNull();
 });
 
-const workflowSelect = () => q<HTMLSelectElement>("[data-workflow-field] select")!;
-const choose = async (name: string) => {
-  const select = workflowSelect();
-  select.value = name;
-  select.dispatchEvent(new Event("change", { bubbles: true }));
+/** The workflow select by its role and name (a combobox called Workflow). */
+const picker = () => q<HTMLSelectElement>("select[aria-label=Workflow]")!;
+const optionNames = () => [...picker().options].map((o) => o.textContent?.trim());
+const buttonNamed = (name: string) => [...body().querySelectorAll<HTMLElement>("button, a")].find((b) => b.textContent?.trim() === name);
+async function choose(value: string) {
+  picker().value = value;
+  picker().dispatchEvent(new Event("change", { bubbles: true }));
   await flushPromises();
-};
+}
 
-test("the Workflow row shows story for a card with no label, and offers the workflows but not Build new", async () => {
+test("a story card's Workflow select offers the registry's workflows and None", async () => {
   await open();
-  expect(workflowSelect().value).toBe("story");
-  expect(workflowSelect().required).toBe(true);
-  const values = [...workflowSelect().options].map((o) => o.value);
-  expect(values).toEqual(["story", "bug-fix", "my-draft", "in-review"]);
-  expect(values).not.toContain("__new__");
-  expect(q("[data-workflow-draft]")).toBeNull();
+  expect(picker().disabled).toBe(false);
+  expect(optionNames()).toEqual(["No workflow selected", "story", "bug-fix", "my-draft (draft)"]);
+  expect(picker().value).toBe("");
 });
 
-test("choosing a workflow saves it as the card's workflow: label and keeps the others", async () => {
+test("a card that names a workflow shows it chosen", async () => {
+  const labelled = item("AIR-4", { labels: ["repo:weyenk/airlie", "workflow:bug-fix"], updated_at: 2000 });
+  api.getItem.mockResolvedValue(labelled);
+  api.listItems.mockResolvedValue([labelled]);
+  await open();
+  expect(picker().value).toBe("bug-fix");
+});
+
+test("choosing a workflow sets its workflow: label and keeps the others", async () => {
   await open();
   await choose("bug-fix");
   expect(api.patchItem).toHaveBeenCalledWith("AIR-4", { labels: ["repo:weyenk/airlie", "web", "workflow:bug-fix"] });
-  expect(workflowSelect().value).toBe("bug-fix");
+  expect(picker().value).toBe("bug-fix");
 });
 
-test("a draft workflow says draft, and one with a PR links it", async () => {
-  api.getItem.mockResolvedValue({ ...structuredClone(STORY), labels: ["workflow:my-draft"], updated_at: 9000 });
-  api.patchItem.mockImplementation(async (k: string, b: Partial<Item>) => ({ ...structuredClone(STORY), key: k, ...b, updated_at: 9500 }));
+test("choosing No workflow selected clears the workflow: label", async () => {
+  const labelled = item("AIR-4", { labels: ["repo:weyenk/airlie", "workflow:story", "web"], updated_at: 2000 });
+  api.getItem.mockResolvedValue(labelled);
+  api.listItems.mockResolvedValue([labelled]);
   await open();
-  expect(workflowSelect().value).toBe("my-draft");
-  expect(q("[data-workflow-draft]")!.textContent).toBe("draft");
-  await choose("in-review");
-  const link = q<HTMLAnchorElement>("[data-workflow-pr]")!;
-  expect(link.textContent).toBe("PR #42");
-  expect(link.href).toBe(PR_URL);
+  await choose("");
+  expect(api.patchItem).toHaveBeenCalledWith("AIR-4", { labels: ["repo:weyenk/airlie", "web"] });
 });
 
-test("a list of workflows that answers after the card still shows the card's own", async () => {
-  let answer!: (defs: unknown) => void;
-  defs.listWorkflowDefs.mockReturnValue(new Promise((resolve) => (answer = resolve)));
-  api.getItem.mockResolvedValue({ ...structuredClone(STORY), labels: ["workflow:bug-fix"], updated_at: 9000 });
+test("a failed label write says so and leaves the choice as it was", async () => {
   await open();
-  expect(workflowSelect().value).toBe("bug-fix");
-  answer(structuredClone(DEFS));
+  api.patchItem.mockRejectedValueOnce(new Error("boom"));
+  await choose("bug-fix");
+  expect(q("[role=dialog]")!.textContent).toContain("Can't set the workflow of AIR-4: boom");
+  expect(picker().value).toBe("");
+});
+
+test("Open builder goes to the builder with the chosen workflow, or a new one when none is", async () => {
+  const { router } = await open();
+  buttonNamed("Open builder")!.click();
   await flushPromises();
-  expect([...workflowSelect().options].map((o) => o.value)).toEqual(["story", "bug-fix", "my-draft", "in-review"]);
-  expect(workflowSelect().value).toBe("bug-fix");
+  expect(router.currentRoute.value.fullPath).toBe("/workflows/build/new");
+  await router.push("/board/AIR-4");
+  await choose("bug-fix");
+  buttonNamed("Open builder")!.click();
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe("/workflows/build/bug-fix");
+});
+
+test("when the workflows do not load the select says so and Retry asks again", async () => {
+  defsApi.listWorkflowDefs.mockRejectedValueOnce(new Error("down"));
+  await open();
+  expect(q("[role=dialog]")!.textContent).toContain("Workflows did not load");
+  buttonNamed("Retry")!.click();
+  await flushPromises();
+  expect(q("[role=dialog]")!.textContent).not.toContain("Workflows did not load");
+  expect(optionNames()).toContain("bug-fix");
 });
 
 test("only a story card has a Workflow row", async () => {
   await open("AIR-2"); // the epic
   expect(q("[data-title]")).not.toBeNull();
   expect(q("[data-workflow-field]")).toBeNull();
-});
-
-test("a failed list says so and keeps the select disabled until Retry loads it", async () => {
-  defs.listWorkflowDefs.mockRejectedValueOnce(new Error("down"));
-  await open();
-  expect(q("[data-workflow-field] [role=status]")!.textContent).toContain("Workflows did not load");
-  expect(workflowSelect().disabled).toBe(true);
-  (q("[data-workflow-retry]") as HTMLElement).click();
-  await flushPromises();
-  expect(q("[data-workflow-field] [role=status]")).toBeNull();
-  expect(workflowSelect().disabled).toBe(false);
-  await choose("bug-fix");
-  expect(api.patchItem).toHaveBeenCalledWith("AIR-4", { labels: ["repo:weyenk/airlie", "web", "workflow:bug-fix"] });
-});
-
-test("a workflow the server refuses shows its words and the card keeps its workflow", async () => {
-  api.patchItem.mockRejectedValue(Object.assign(new Error("workflow bug-fix: no start node"), { status: 422 }));
-  await open();
-  await choose("bug-fix");
-  expect(q("[data-workflow-field] [role=alert]")!.textContent).toContain("no start node");
-  expect(workflowSelect().value).toBe("story");
-});
-
-const STARTED_HELP = "the workflow of a started card cannot be changed; make a new card for the other workflow";
-
-test("a started card's workflow cannot be changed: the select is off and says why", async () => {
-  api.getItem.mockResolvedValue({ ...structuredClone(STORY), started: true, updated_at: 9000 });
-  await open();
-  expect(workflowSelect().disabled).toBe(true);
-  expect(q("[data-workflow-started]")!.textContent).toContain(STARTED_HELP);
-});
-
-test("without the server's word, a card past approved counts as started", async () => {
-  api.getItem.mockResolvedValue({ ...structuredClone(STORY), status: "doing", updated_at: 9000 });
-  await open();
-  expect(workflowSelect().disabled).toBe(true);
-  expect(q("[data-workflow-started]")).not.toBeNull();
-});
-
-test("a card the server says has not started keeps its select, whatever its column", async () => {
-  api.getItem.mockResolvedValue({ ...structuredClone(STORY), status: "blocked", started: false, updated_at: 9000 });
-  await open();
-  expect(workflowSelect().disabled).toBe(false);
-  expect(q("[data-workflow-started]")).toBeNull();
-});
-
-test("a draft that edits a file is not offered: the file runs", async () => {
-  const edit = { name: "story", type: "story", source: "draft", problems: [], pr: null, superseded: true };
-  defs.listWorkflowDefs.mockResolvedValue([...structuredClone(DEFS), edit]);
-  await open();
-  expect([...workflowSelect().options].map((o) => o.value)).toEqual(["story", "bug-fix", "my-draft", "in-review"]);
-});
-
-test("only a started card offers to use the current workflow", async () => {
-  await open();
-  expect(q("[data-adopt-link]")).toBeNull();
-  document.body.innerHTML = "";
-  api.getItem.mockResolvedValue({ ...structuredClone(STORY), started: true, updated_at: 9000 });
-  await open();
-  expect(q("[data-adopt-link]")!.textContent).toBe("use the current workflow");
-});
-
-test("the card's link opens the dialog; adopting refetches the card", async () => {
-  defs.adoptWorkflow.mockResolvedValue({ key: "AIR-4", name: "bug-fix", from: "story", to: "bug-fix" });
-  api.getItem.mockResolvedValue({ ...structuredClone(STORY), started: true, updated_at: 9000 });
-  await open();
-  q("[data-adopt-link]")!.click();
-  await flushPromises();
-  expect(q("[data-adopt-dialog]")!.textContent).toContain("Use the current workflow?");
-  const before = api.getItem.mock.calls.length;
-  q("[data-adopt-ok]")!.click();
-  await flushPromises();
-  expect(defs.adoptWorkflow).toHaveBeenCalledWith("AIR-4");
-  expect(api.getItem.mock.calls.length).toBeGreaterThan(before);
-  expect(q("[data-adopted]")!.textContent).toBe("now on bug-fix (story → bug-fix)");
 });

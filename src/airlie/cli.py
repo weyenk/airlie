@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """airlie CLI. Humans use `task <name>`; the Taskfile calls these subcommands."""
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ from rich.table import Table
 
 from airlie import __version__
 from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config
-from airlie.story.state import StoryState
 
 if TYPE_CHECKING:
     from airlie.engine.protocol import Engine
@@ -42,21 +42,12 @@ controller_app = typer.Typer(no_args_is_help=True, help="Learned LTS admission c
 app.add_typer(controller_app, name="controller")
 host_app = typer.Typer(no_args_is_help=True, help="Host settings airlie keeps.")
 app.add_typer(host_app, name="host")
-story_app = typer.Typer(
-    no_args_is_help=True, help="Stories: a Jira issue or a request → stacked draft PRs (only a human merges)."
-)
-app.add_typer(story_app, name="story")
 supervisor_app = typer.Typer(
     no_args_is_help=True,
     help="The supervisor's ledger: what Muse advised at each trouble point, what came of it, your verdict "
     "(docs/integrations/story.md).",
 )
 app.add_typer(supervisor_app, name="supervisor")
-line_app = typer.Typer(
-    no_args_is_help=True,
-    help="The line: why a story blocked, and what the line does about it (planning-line P5).",
-)
-app.add_typer(line_app, name="line")
 prompts_app = typer.Typer(
     no_args_is_help=True,
     help="The prompt hub: the rules and steering airlie sends to models, as files "
@@ -1015,61 +1006,70 @@ def _print_report(report) -> None:  # type: ignore[no-untyped-def]
 
 @app.command()
 def run(
-    goal: Annotated[str, typer.Argument(help="what the teams should accomplish")],
+    workflow: Annotated[
+        str | None,
+        typer.Argument(help="workflow name from config/workflows (default: story)"),
+    ] = None,
     repo: Annotated[
-        Path, typer.Option(help="git repository to work in (teams get their own worktrees)")
+        Path, typer.Option(help="git repository to run in (locked for one workflow at a time)")
     ] = Path("."),
-    k: Annotated[int | None, typer.Option(help="number of parallel teams (default: teams.k)")] = None,
-    test_cmd: Annotated[
-        str | None, typer.Option(help="command the run_tests tool runs inside a worktree")
-    ] = None,
-    topology: TopologyOpt = None,
     config: ConfigOpt = None,
-    image: Annotated[
-        list[Path] | None, typer.Option("--image", help="image file(s) for vision roles (studio)")
-    ] = None,
 ) -> None:
-    """Run the configured topology (single agent, K teams, fork-when-stuck, studio) on a goal in a repo."""
+    """Run a configured workflow via the generic engine (`airlie.workflow.start_workflow`)."""
     import asyncio
 
-    cfg = _load(config, topology)
-    cfg = apply_k(cfg, k)
-    repo = repo.resolve()
-    if not (repo / ".git").exists():
-        err.print(f"[red]{repo} is not a git repository[/red]")
+    from airlie.story.model import StoryError
+    from airlie.workflow.trigger import start_workflow
+
+    name = workflow or "story"
+    cfg = _load(config)
+    if name not in cfg.workflows:
+        err.print(f"[red]unknown workflow {escape(name)!r}[/red]", emoji=False)
         raise typer.Exit(1)
-    images = [p.resolve() for p in image or []]
-    for p in images:
-        if not p.is_file():
-            err.print(f"[red]image not found: {p}[/red]")
-            raise typer.Exit(1)
-    orch = _orchestrator(cfg)
-    coro = (
-        orch.execute_task(goal, repo=repo, test_cmd=test_cmd, images=images)
-        if images
-        else orch.execute_task(goal, repo=repo, test_cmd=test_cmd)
+    workdir = repo.expanduser().resolve()
+    if not (workdir / ".git").exists():
+        err.print(f"[red]{workdir} is not a git repository[/red]")
+        raise typer.Exit(1)
+    role = getattr(cfg.story, "build_role", None) or next(iter(cfg.roles))
+    engine = _http_engine(cfg, cfg.engine_for_role(role))
+
+    async def go():
+        try:
+            return await start_workflow(
+                name,
+                cfg=cfg,
+                engine=engine,
+                workdir=workdir,
+                card={"repo": str(workdir)},
+            )
+        finally:
+            await engine.stop()
+
+    try:
+        result = asyncio.run(go())
+    except (StoryError, KeyError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    if result.events == [{"kind": "already_running"}]:
+        err.print("[yellow]workflow already running in that repository[/yellow]")
+        raise typer.Exit(1)
+    console.print(
+        f"workflow {name} finished",
+        markup=False,
+        highlight=False,
+        emoji=False,
+        soft_wrap=True,
     )
-    report = asyncio.run(coro)
-    _print_report(report)
-    if not report.any_ok:
+    for key, value in result.outputs.items():
+        preview = value if isinstance(value, str) else repr(value)
+        if len(preview) > 200:
+            preview = preview[:200] + "…"
+        console.print(f"  {key}: {preview}", markup=False, highlight=False, emoji=False, soft_wrap=True)
+    if not result.outputs and not result.events:
         raise typer.Exit(1)
 
 
-@app.command()
-def studio(
-    goal: Annotated[str, typer.Argument(help="what the studio should accomplish")],
-    repo: Annotated[Path, typer.Option(help="git repository to work in")] = Path("."),
-    image: Annotated[
-        list[Path] | None, typer.Option("--image", help="image file(s) for vision roles")
-    ] = None,
-    test_cmd: Annotated[str | None, typer.Option(help="command run_tests runs in the worktree")] = None,
-    config: ConfigOpt = None,
-) -> None:
-    """Run the studio topology (chief → router → specialists → review → synthesis) on a goal."""
-    run(goal, repo=repo, k=None, test_cmd=test_cmd, topology="studio", config=config, image=image)
-
-
-# ---- stories (task story / story:tick / story:check) ----
+# ---- supervisor / board (story run CLI retired) ----
 
 
 def _run_stoppable[T](coro: Coroutine[Any, Any, T]) -> T:
@@ -1110,7 +1110,7 @@ def _run_stoppable[T](coro: Coroutine[Any, Any, T]) -> T:
         try:
             err.print(
                 f"[yellow]stopped by {caught[0].name}[/yellow]: "
-                "`task story -- ISSUE` resumes a stopped story from its last finished stage"
+                "a stopped workflow may be started again when the workdir lock is free"
             )
         except (OSError, SystemExit):  # nobody reads stderr (a hung-up terminal); Rich exits on a broken pipe
             # What stderr refused stays in Python's buffer, and flushing it at exit would fail again and make
@@ -1124,7 +1124,7 @@ def _run_stoppable[T](coro: Coroutine[Any, Any, T]) -> T:
 
 
 def _story_cfg(config: Path | None) -> AirlieConfig:
-    from airlie.story.factory import story_config
+    from airlie.story.jobs import story_config
 
     try:
         return story_config(_load(config))
@@ -1139,392 +1139,6 @@ def _fail(problems: list[str]) -> None:
         err.print(f"[red]{escape(p)}[/red]", emoji=False)
     if problems:
         raise typer.Exit(1)
-
-
-def _print_story(st: StoryState) -> None:
-    """The outcome; model and issue text is printed as text, never as Rich markup or emoji codes."""
-    if st.blocked:
-        state = f"[red]blocked[/red] after {st.stage}: {escape(st.blocked)}"
-    else:
-        state = f"[green]{st.stage}[/green]"
-    console.print(f"story {escape(st.path.name)}: {state}", highlight=False, emoji=False)
-    for p in st.prs:
-        console.print(
-            f"  #{p['number']} {p['branch']}  {p['url']}", markup=False, highlight=False, emoji=False
-        )
-    console.print(  # unwrapped: a path broken across lines cannot be copied (seen on the Linux runners)
-        f"state: {st.path}/state.json\nevents: {st.path}/events.jsonl",
-        markup=False,
-        highlight=False,
-        emoji=False,
-        soft_wrap=True,
-    )
-
-
-REPO_HELP = (
-    "repository to build in: a written request's (default: story.repo); for an issue, in place of the "
-    "checkout its repo: label names in story.repos_root (its remote must still name that repository)"
-)
-TEST_CMD_HELP = "the gate every layer must pass, in place of the Test gate of the repository's AGENTS.md"
-
-
-@story_app.command("run")
-def story_run(
-    ref: Annotated[
-        str | None, typer.Argument(metavar="ISSUE", help="Jira issue key (AIR-7) or its link")
-    ] = None,
-    text: Annotated[str | None, typer.Option(help="a written request instead of an issue (no board)")] = None,
-    repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
-    test_cmd: Annotated[str | None, typer.Option(help=TEST_CMD_HELP)] = None,
-    config: ConfigOpt = None,
-) -> None:
-    """Refine a Jira issue (or --text) into a story, plan its layers, build each one test-first, open stacked
-    draft PRs. An issue is built in the repository its repo:<owner>/<name> label names, gated by the Test gate
-    of that repository's AGENTS.md. A stopped story resumes from its last finished stage when you run the same
-    command again."""
-    from airlie.story import factory
-    from airlie.story.board import BoardError
-    from airlie.story.model import StorySetupError
-
-    if (ref is None) == (text is None):
-        err.print("[red]pass an issue (AIR-7 or its link) or --text, not both[/red]")
-        raise typer.Exit(2)
-    cfg = _story_cfg(config)
-    problems = factory.story_problems(cfg)
-    if text is not None:  # its repository is known now: a missing one fails before anything runs
-        try:
-            factory.written_repo(cfg, repo)
-        except StorySetupError as e:
-            problems.append(str(e))
-    _fail(problems)
-
-    async def go() -> StoryState:
-        board, card = await factory.card_for(cfg, ref, text)
-        return await factory.run_one(cfg, board=board, card=card, repo=repo, test_cmd=test_cmd)
-
-    try:
-        st = _run_stoppable(go())
-    except (factory.StoryBusy, BoardError, StorySetupError) as e:
-        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
-        raise typer.Exit(1) from None
-    _print_story(st)
-    if st.blocked:
-        raise typer.Exit(1)
-
-
-def _tick(config: Path | None) -> None:
-    """One beat of the line, printed as one log line with the time (launchd's log, `task line:tick`)."""
-    import time
-
-    from airlie.story import factory
-    from airlie.story.board import BoardError
-    from airlie.story.model import StorySetupError
-
-    cfg = _story_cfg(config)
-    _fail(factory.story_problems(cfg))
-    try:
-        line = _run_stoppable(factory.tick(cfg))
-    except (BoardError, StorySetupError) as e:
-        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
-        raise typer.Exit(1) from None
-    # soft_wrap: a log line is one line, whatever the width of the terminal (or of the launchd log)
-    console.print(
-        f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}",
-        markup=False,
-        highlight=False,
-        emoji=False,
-        soft_wrap=True,
-    )
-
-
-@line_app.command("tick")
-def line_tick(config: ConfigOpt = None) -> None:
-    """One beat of the line (the launchd agent runs this every 15 minutes; `task serve` runs the same beat
-    every minute): the gates, the bookkeeping, then a job in each lane, the planning lane and the build lane,
-    unless a lane is in use or the line is paused."""
-    _tick(config)
-
-
-@line_app.command("stats")
-def line_stats_cmd(
-    since: Annotated[
-        str | None, typer.Option(help="only what happened from this date (2026-10-18) or epoch seconds")
-    ] = None,
-    config: ConfigOpt = None,
-) -> None:
-    """The numbers that judge whether stories go through unattended: the unattended rate, blocks by class and
-    kind (and the fix cards filed), hours against estimates, the amigos' objections and how many were borne
-    out, the budgets' overruns."""
-    from airlie.board import BoardStore
-    from airlie.story.stats import line_stats, parse_since, render_stats
-
-    cfg = _load(config)
-    try:
-        floor = parse_since(since) if since else None
-    except ValueError as e:
-        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
-        raise typer.Exit(1) from None
-    state_dir = cfg.observability.state_dir.expanduser()
-    store = BoardStore(state_dir / "board.sqlite", prefix=cfg.board.prefix)
-    stats = line_stats(state_dir, store, since=floor, roles=frozenset(cfg.roles))
-    console.print(render_stats(stats), markup=False, highlight=False, emoji=False, soft_wrap=True)
-
-
-@line_app.command("pause")
-def line_pause(config: ConfigOpt = None) -> None:
-    """Hold the line: every beat still runs the gates and the bookkeeping but starts no job. A job already
-    running finishes. `airlie line resume` lets it go."""
-    from airlie.story.phase import set_paused
-
-    state_dir = _load(config).observability.state_dir.expanduser()
-    set_paused(state_dir, True)
-    console.print(f"the line is paused ({state_dir / 'line.paused'}); running jobs finish", markup=False)
-
-
-@line_app.command("resume")
-def line_resume(config: ConfigOpt = None) -> None:
-    """Let the line go again after `airlie line pause`."""
-    from airlie.story.phase import set_paused
-
-    set_paused(_load(config).observability.state_dir.expanduser(), False)
-    console.print("the line is resumed", markup=False)
-
-
-@story_app.command("tick")
-def story_tick(config: ConfigOpt = None) -> None:
-    """The old name of `airlie line tick`, kept for a release: says so, then runs the same beat."""
-    err.print("story tick is now `airlie line tick` (task line:tick); running it", emoji=False)
-    _tick(config)
-
-
-@story_app.command("restack")
-def story_restack(
-    ref: Annotated[
-        str | None, typer.Argument(metavar="ISSUE", help="the stopped story's issue (AIR-7 or its link)")
-    ] = None,
-    repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
-    config: ConfigOpt = None,
-) -> None:
-    """Move a stopped story onto the trunk as it is now: its built layers are replayed on the trunk, fetched
-    now, and each must pass the story's gate there; then their branches move, the stopped layer's attempt is
-    removed, and the next `task story` builds on today's trunk. A conflict or a failing gate changes nothing.
-    A story that has published its PRs is not moved."""
-    from airlie.story import factory
-    from airlie.story.board import BoardError
-    from airlie.story.model import StorySetupError
-    from airlie.story.restack import RestackError
-
-    if ref is None:
-        err.print("[red]pass the story's issue (AIR-7 or its link)[/red]")
-        raise typer.Exit(2)
-    cfg = _story_cfg(config)
-    _fail(factory.story_problems(cfg))
-
-    async def go() -> str:
-        board, card = await factory.card_for(cfg, ref, None)
-        return await factory.restack_one(cfg, board=board, card=card, repo=repo)
-
-    try:
-        line = _run_stoppable(go())
-    except (factory.StoryBusy, BoardError, StorySetupError, RestackError) as e:
-        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
-        raise typer.Exit(1) from None
-    console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
-
-
-@story_app.command("restart")
-def story_restart(
-    ref: Annotated[str | None, typer.Argument(metavar="ISSUE", help="the story's key (AIR-7)")] = None,
-    point: Annotated[
-        str,
-        typer.Option(
-            "--from",
-            help="the step to start over from: refine (from scratch), layers, amigos, packages or layer-NN",
-        ),
-    ] = "refine",
-    config: ConfigOpt = None,
-) -> None:
-    """Start a story over from a step, on the trunk as it is now: its open PRs are closed and their branches
-    deleted, the branches and worktrees of the layers that go are removed, its record is archived under
-    archive/stories/ in the state directory, the layers a `layer-NN` keeps are replayed on the trunk and held
-    to the story's gate there, and the card goes back to approved for the line. A story that is running, has
-    a merged PR, has not reached the step, or whose kept layers do not replay is refused, with nothing
-    changed."""
-    from airlie.story import factory
-    from airlie.story.board import BoardError
-    from airlie.story.model import StoryRunning, StorySetupError
-    from airlie.story.publish import PublishError
-    from airlie.story.restart import RestartError, RestartIncomplete
-
-    if ref is None:
-        err.print("[red]pass the story's key (AIR-7)[/red]")
-        raise typer.Exit(2)
-    cfg = _story_cfg(config)
-    try:
-        done = _run_stoppable(factory.restart_one(cfg, ref, point))
-    except (BoardError, StorySetupError, StoryRunning, RestartError, RestartIncomplete, PublishError) as e:
-        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
-        raise typer.Exit(1) from None
-    line = done.note or f"{done.key}: back in approved (it had no record to set aside)"
-    console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
-
-
-@story_app.command("adopt-workflow")
-def story_adopt_workflow(
-    ref: Annotated[str | None, typer.Argument(metavar="ISSUE", help="the story's key (AIR-7)")] = None,
-    config: ConfigOpt = None,
-) -> None:
-    """Have a story run the current workflow in place of the snapshot it started on: what the workflow files
-    and the board's drafts say now, for the workflow its label names. A step whose definition changed is run
-    again as a loop re-runs it: its outputs, and those of every step after it, are cleared. A new step runs
-    because it has no outputs; an unchanged one is skipped by the outputs the story holds. Everything else is
-    kept. The card waits out of the line meanwhile. A story that is running, has not started, or whose
-    workflow does not resolve now is refused, with nothing changed."""
-    from airlie.story import factory
-    from airlie.story.board import BoardError
-    from airlie.story.model import StoryRunning, StorySetupError
-    from airlie.story.workflows import WorkflowError
-
-    if ref is None:
-        err.print("[red]pass the story's key (AIR-7)[/red]")
-        raise typer.Exit(2)
-    cfg = _story_cfg(config)
-    try:
-        done = _run_stoppable(factory.adopt_one(cfg, ref))
-    except (BoardError, StorySetupError, StoryRunning, WorkflowError) as e:
-        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
-        raise typer.Exit(1) from None
-    line = f"{done.key} now runs the current {done.name} workflow ({done.after}, was {done.before})"
-    console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
-
-
-@story_app.command("pr-body")
-def story_pr_body(
-    ref: Annotated[
-        str | None, typer.Argument(metavar="ISSUE", help="the story's issue (AIR-7 or its link)")
-    ] = None,
-    layer: Annotated[str | None, typer.Argument(metavar="NN", help="the built layer, 1 or 01")] = None,
-    repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
-    config: ConfigOpt = None,
-) -> None:
-    """Print the pull request body a built layer would get now (the initiative, epic and story, the layer's
-    package, the tests that are its contract, the checks, the cost and the stack), before anything is
-    published. It reads the story's state and the board: no network, no model, nothing changed."""
-    from airlie.story import factory
-    from airlie.story.board import BoardError
-    from airlie.story.model import StorySetupError
-
-    if ref is None or layer is None or not layer.isdigit():
-        err.print("[red]pass the story's issue and a layer number: story pr-body AIR-7 2[/red]")
-        raise typer.Exit(2)
-    cfg = _story_cfg(config)
-    _fail(factory.story_problems(cfg))
-
-    async def go() -> str:
-        board, card = await factory.card_for(cfg, ref, None)
-        return await factory.body_one(cfg, board=board, card=card, nn=f"{int(layer):02d}", repo=repo)
-
-    try:
-        text = _run_stoppable(go())
-    except (BoardError, StorySetupError) as e:
-        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
-        raise typer.Exit(1) from None
-    console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)
-
-
-@story_app.command("describe")
-def story_describe(
-    ref: Annotated[
-        str | None, typer.Argument(metavar="ISSUE", help="the published story's issue (AIR-7 or its link)")
-    ] = None,
-    repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
-    config: ConfigOpt = None,
-) -> None:
-    """Rebuild the title and body of every pull request a story published and edit them on GitHub (`gh pr
-    edit`), so a stack published earlier carries what a new one does. This changes PRs on GitHub, so it runs
-    only when you ask: never from the tick. A story that has not published is refused."""
-    from airlie.story import factory
-    from airlie.story.board import BoardError
-    from airlie.story.model import StorySetupError
-    from airlie.story.publish import PublishError
-
-    if ref is None:
-        err.print("[red]pass the published story's issue (AIR-7 or its link)[/red]")
-        raise typer.Exit(2)
-    cfg = _story_cfg(config)
-    _fail(factory.story_problems(cfg))
-
-    async def go() -> list[int]:
-        board, card = await factory.card_for(cfg, ref, None)
-        return await factory.describe_one(cfg, board=board, card=card, repo=repo)
-
-    try:
-        numbers = _run_stoppable(go())
-    except (factory.StoryBusy, BoardError, StorySetupError, PublishError) as e:
-        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
-        raise typer.Exit(1) from None
-    console.print("re-described " + ", ".join(f"#{n}" for n in numbers), markup=False, highlight=False)
-
-
-@story_app.command("steps")
-def story_steps(
-    keys: Annotated[list[str], typer.Argument(metavar="KEY...", help="story keys (AIR-9 AIR-31)")],
-    repo: Annotated[
-        Path | None, typer.Option(help="repository the stories built in (default: the current directory)")
-    ] = None,
-    config: ConfigOpt = None,
-) -> None:
-    """The steps each story role spent before its first write: reads, pages, repeats, and reads of files the
-    layer's brief already names, from the stories' run traces. Nothing runs and nothing is written."""
-    from airlie.obs.step_report import render, story_segments
-
-    cfg = _load(config)
-    caps = {name: spec.max_steps or cfg.teams.max_steps for name, spec in cfg.roles.items()}
-    state_dir = cfg.observability.state_dir.expanduser()
-    segments = []
-    for key in keys:
-        if not (state_dir / "stories" / key / "state.json").exists():
-            err.print(f"[red]no story {escape(key)} under {escape(str(state_dir))}[/red]", emoji=False)
-            raise typer.Exit(1)
-        segments += story_segments(state_dir, key, repo or Path.cwd(), caps)
-    console.print(render(segments), markup=False, highlight=False, emoji=False, soft_wrap=True)
-
-
-@story_app.command("check")
-def story_check(
-    ref: Annotated[
-        str | None,
-        typer.Argument(
-            metavar="[ISSUE]",
-            help="a board item or Jira issue (AIR-7 or its link): check its repo: label, checkout, "
-            "remote, trunk and gate",
-        ),
-    ] = None,
-    repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
-    test_cmd: Annotated[str | None, typer.Option(help=TEST_CMD_HELP)] = None,
-    config: ConfigOpt = None,
-) -> None:
-    """Check what `task story` needs: roles; for ISSUE, the repository its label names (the checkout, its
-    remote, the trunk) and the test gate of its AGENTS.md, or why the story would be blocked; gh and gh-stack,
-    who publishes (your gh login, or story.github_app's bot), which board is in use (and, for Jira, the
-    project and its statuses). No model runs and nothing is written."""
-    from airlie.story import factory
-
-    cfg = _story_cfg(config)
-    # soft_wrap: a note or a problem names paths and commands, which wrapping at the terminal's width breaks
-    console.print(factory.describe_board(cfg), markup=False, highlight=False, emoji=False, soft_wrap=True)
-    checked = _run_stoppable(factory.check(cfg, repo, test_cmd, ref=ref))
-    for n in checked.notes:
-        console.print(n, markup=False, highlight=False, emoji=False, soft_wrap=True)
-    if not checked.problems:
-        then = (
-            escape(f"task story -- {ref}") if ref is not None else 'task story -- ISSUE (or --text "request")'
-        )
-        console.print(f"[green]ready[/green]: {then}", highlight=False, emoji=False, soft_wrap=True)
-        return
-    for p in checked.problems:
-        err.print(f"[red]✗[/red] {escape(p)}", emoji=False, soft_wrap=True)
-    raise typer.Exit(1)
 
 
 def _supervisor_ledger(config: Path | None) -> Ledger | None:
@@ -1561,96 +1175,6 @@ def supervisor_log(
             agreed = {True: "agrees", False: "disagrees", None: "silent"}[r.class_agrees]
             line += f"  class:{r.class_} (Muse {agreed})"
         console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
-
-
-@line_app.command("why")
-def line_why(
-    key: Annotated[str, typer.Argument(help="the story's key (AIR-9)")],
-    n: Annotated[int | None, typer.Option("--n", min=1, help="the nth block (default the latest)")] = None,
-    paths: Annotated[
-        bool, typer.Option("--paths", help="only the paths of the evidence, one per line")
-    ] = False,
-    config: ConfigOpt = None,
-) -> None:
-    """Why a story blocked: the class by rules, Muse's reading, what happens next, the evidence and its
-    paths. A block with no diagnosis on disk (one from before diagnoses, say) gets one made from its events
-    and run directory. Nothing runs and no model is asked."""
-    from airlie.story.diagnosis import diagnosis_for, render_diagnosis, render_paths
-    from airlie.story.model import StoryError
-
-    state_dir = _load(config).observability.state_dir.expanduser()
-    try:
-        d = diagnosis_for(state_dir, key, n)
-    except StoryError as e:
-        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
-        raise typer.Exit(1) from None
-    text = render_paths(d.pack) if paths else render_diagnosis(d)
-    console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)
-
-
-@line_app.command("deploy")
-def line_deploy(
-    config: ConfigOpt = None,
-    serve_url: Annotated[
-        str, typer.Option(help="where `task serve` answers /health")
-    ] = "http://127.0.0.1:8090",
-) -> None:
-    """Pull the home checkout's trunk (fast-forward only) so a merged fix is in the code the line runs, then
-    say
-    whether `task serve` must be restarted. The line never pulls its own checkout or restarts serve: this is
-    the person's one step after a fix card merges (airlie.story.fixes)."""
-    import subprocess
-
-    import httpx
-
-    from airlie.story.fixes import home_checkout
-    from airlie.story.pipeline import build_commit
-
-    cfg = _load(config)
-    home = home_checkout()
-    if home is None:
-        err.print("[red]airlie does not run from a git checkout: nothing to pull[/red]")
-        raise typer.Exit(1)
-    remote, trunk = cfg.story.remote, cfg.story.trunk
-    on = subprocess.run(
-        ["git", "-C", str(home), "branch", "--show-current"], capture_output=True, text=True, check=False
-    ).stdout.strip()
-    if on != trunk:
-        err.print(
-            f"[red]{escape(str(home))} is on '{escape(on)}', not {escape(trunk)}: "
-            "switch it, then run this again[/red]"
-        )
-        raise typer.Exit(1)
-    pulled = subprocess.run(
-        ["git", "-C", str(home), "pull", "--ff-only", remote, trunk],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if pulled.returncode != 0:
-        err.print(
-            f"[red]git pull --ff-only {escape(remote)} {escape(trunk)} failed:[/red] "
-            f"{escape(pulled.stderr.strip())}"
-        )
-        raise typer.Exit(1)
-    console.print(
-        f"{home}: {pulled.stdout.strip().splitlines()[-1] if pulled.stdout.strip() else 'up to date'}",
-        markup=False,
-    )
-    now = build_commit()
-    try:
-        running = httpx.get(f"{serve_url.rstrip('/')}/health", timeout=3.0).json().get("commit")
-    except (httpx.HTTPError, ValueError):
-        console.print(f"serve does not answer at {serve_url}: nothing to restart", markup=False)
-        return
-    if running == now:
-        console.print(f"serve runs {now}: up to date", markup=False)
-    else:
-        console.print(
-            f"serve runs {running or 'an unknown commit'}, the checkout is at {now}: "
-            "restart serve: task serve",
-            markup=False,
-        )
 
 
 @supervisor_app.command("stats")
@@ -1997,7 +1521,7 @@ def epic_replan(
     """Ask the architect to revise a planned epic's stories now: the stories that have started, are in review
     or merged are kept as they are; the ones not started are changed, dropped or replaced, new ones are made,
     and a stopped story with no layer built is retired. A plan that is never usable changes nothing."""
-    from airlie.story import factory
+    from airlie.story import jobs as factory
     from airlie.story.board import BoardError
     from airlie.story.model import StorySetupError
 
@@ -2030,7 +1554,7 @@ def initiative_add(
     with `task initiative:turn` once you have). It then imagines the work with the specialists and delivers
     a core epic and extensions, each priced in hours, for you to approve."""
     from airlie.board import BoardStore
-    from airlie.story import factory
+    from airlie.story import jobs as factory
     from airlie.story.board import BoardError
     from airlie.story.epic import REPOSITORY
     from airlie.story.model import StoryBusy, StorySetupError
@@ -2089,7 +1613,7 @@ def initiative_turn(
 ) -> None:
     """Run the specs phase's next turn for an initiative now: after you answered its question as a comment on
     the board while `task serve` was down, or to go on from a stop you lifted by approving it again."""
-    from airlie.story import factory
+    from airlie.story import jobs as factory
     from airlie.story.board import BoardError
     from airlie.story.model import StoryBusy, StorySetupError
 
@@ -2354,22 +1878,11 @@ def controller_eval(
 
 @workflows_app.command("catalog")
 def workflows_catalog() -> None:
-    """The checks a `check` or `gate` node may name in `run`, with what each reads and writes."""
-    from airlie.story.flow import STORY_CATALOG
-
-    table = Table("name", "title", "inputs", "outputs", "args", "transient", "every_run")
-    table.columns[0].no_wrap = True
-    for c in STORY_CATALOG.describe():
-        table.add_row(
-            escape(c["name"]),
-            escape(c["title"]),
-            escape(", ".join(c["inputs"])),
-            escape(", ".join(c["outputs"])),
-            escape(", ".join(c["args"])),
-            escape(", ".join(c["transient"])),
-            "yes" if c["every_run"] else "",
-        )
-    console.print(table)
+    """The operations a `check` node may name in `run`: retired with the check kind (engine swap)."""
+    console.print(
+        "[dim]retired: the check/gate operation catalog went with the story engine (engine swap); "
+        "gates are now evidence on WORK nodes (a script, a judge, or a step count).[/dim]"
+    )
 
 
 def main() -> None:

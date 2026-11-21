@@ -83,7 +83,7 @@ const bundles = computed(() => defs.value.map((d) => d.name).filter((n) => n !==
 const cardTypes = computed(() => [...new Set(defs.value.map((d) => d.type).filter((t): t is string => !!t))]);
 
 const title = computed(() => detail.value?.name ?? name.value);
-const typeLabel = computed(() => (detail.value ? (detail.value.type ?? "bundle") : null));
+const typeLabel = computed(() => (detail.value ? (detail.value.type ?? "") : null));
 const nodeOf = (id: string) => graph.value.nodes.find((n) => n.id === id);
 
 /** The box whose fields the modal shows; null while it is closed. */
@@ -111,7 +111,7 @@ function openBox(id: string) {
  * that exists, so its name can be fixed) opens its fields. */
 function enterBox(id: string) {
   const node = nodeOf(id);
-  const target = node?.type === "bundle" ? node.spec.workflow : undefined;
+  const target = node?.kind === "WORK" ? node.spec.workflow : undefined;
   if (typeof target === "string" && defs.value.some((d) => d.name === target)) {
     selected.value = id;
     selectedEdge.value = null;
@@ -211,13 +211,13 @@ async function saveClick() {
     asking.value = true;
     return;
   }
-  await saveAs(detail.value?.name ?? name.value, graph.value.type);
+  await saveAs(detail.value?.name ?? name.value, graph.value.type ?? detail.value?.type ?? null);
 }
 /** The workflow's own fields, in the modal the title bar opens: its type, the inputs its caller supplies and the
  * outputs it hands back. */
 const editingWorkflow = ref(false);
 function updateWorkflow(change: { type?: string | null; inputs?: string[]; outputs?: string[] }) {
-  b.edit((g) => ({ ...g, ...(change.type !== undefined ? { type: change.type } : {}), ...(change.inputs ? { inputs: change.inputs } : {}), ...(change.outputs ? { outputs: change.outputs } : {}) }));
+  b.edit((g) => ({ ...g, ...(change.type !== undefined ? { type: change.type || null } : {}), ...(change.inputs ? { inputs: change.inputs } : {}), ...(change.outputs ? { outputs: change.outputs } : {}) }));
 }
 
 // Delete draft: asked first; the draft goes (an edit of a file leaves the file as it is) and the builder returns
@@ -332,7 +332,6 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       <span v-if="typeLabel" data-workflow-type class="rounded-full bg-chip px-2 py-px text-xs font-semibold text-chip-foreground">{{ typeLabel }}</span>
       <span v-if="detail?.edits_file" data-edits-file :title="`Publishing changes the repo's ${detail.name}; until it merges, the file runs`" class="rounded-full bg-warn px-2 py-px text-xs font-semibold text-warn-foreground">edit of {{ detail.name }}</span>
       <span v-else-if="detail?.source === 'draft'" class="rounded-full bg-warn px-2 py-px text-xs font-semibold text-warn-foreground">draft</span>
-      <span v-if="b.upgraded.value" data-upgraded class="rounded-full bg-warn px-2 py-px text-xs font-semibold text-warn-foreground">upgraded to the current schema, unsaved</span>
       <span v-if="count" data-problems class="rounded-full bg-danger px-2 py-px text-xs font-semibold text-danger-foreground">{{ count }} {{ count === 1 ? "problem" : "problems" }}</span>
       <a v-if="detail?.pr" data-pr :href="detail.pr.url" target="_blank" rel="noopener" class="text-[13px] text-muted-foreground underline">PR #{{ detail.pr.number }}</a>
       <span v-if="b.dirty.value" data-dirty class="text-xs text-muted-foreground">Unsaved changes</span>
@@ -430,8 +429,8 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       @apply="applyWire"
       @remove="dropWire"
     />
-    <WorkflowModal v-model:open="editingWorkflow" :type="graph.type" :inputs="graph.inputs" :outputs="graph.outputs" :types="cardTypes" @update="updateWorkflow" />
-    <SaveDialog v-model:open="asking" :taken="taken" :files="files" :types="cardTypes" :type="graph.type" :reason="reason" @save="saveAs" />
+    <WorkflowModal v-model:open="editingWorkflow" :type="graph.type ?? detail?.type ?? null" :inputs="graph.inputs" :outputs="graph.outputs" :types="cardTypes" @update="updateWorkflow" />
+    <SaveDialog v-model:open="asking" :taken="taken" :files="files" :types="cardTypes" :type="graph.type ?? detail?.type ?? null" :reason="reason" @save="saveAs" />
     <Dialog :open="deleting" @update:open="(v) => !v && (deleting = false)">
       <DialogContent :show-close-button="false">
         <DialogHeader>

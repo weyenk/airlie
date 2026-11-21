@@ -38,8 +38,8 @@ from tests.support.serve_chat import superpowers_tree
 
 CHAT_SKILLS = Path(__file__).resolve().parents[2] / "skills" / "chat"
 """The chat skills airlie ships: the / menu is tested on the real /story."""
-WORKFLOWS = Path(__file__).resolve().parents[2] / "config" / "workflows"
-"""The workflows airlie ships (airlie.yaml includes them), for a server the builder is tested on."""
+WORKFLOWS = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "workflows"
+"""The story/layer workflows kept as test fixtures: production ships none."""
 KEY = "e2e-admin-key"
 """The admin key the test server is started with: made up here, for this server only."""
 CARDS = (
@@ -89,7 +89,7 @@ def _config(root: Path, *, workflows: bool = False) -> AirlieConfig:
     """The least airlie.yaml the app starts with: one engine it never reaches (the board needs none), the
     roles the config requires, and the state under `root`. Its own, so the image needs no engine packages.
     `workflows` includes the shipped workflow files, as airlie.yaml does."""
-    roles = ("architect", "summarizer", "judge", "aggregator")
+    roles = ("architect", "summarizer", "judge", "aggregator", "coder", "product", "tester")
     for r in roles:
         (root / f"{r}.md").write_text("x")
     (root / "chat.md").write_text("---\nroutable: false\n---\nYou are the chat role.\n")
@@ -109,7 +109,15 @@ def _config(root: Path, *, workflows: bool = False) -> AirlieConfig:
         },
         "observability": {"state_dir": str(root / "state")},
     }
-    data["roles"]["coder"]["summary"] = "writes the code"  # a role the studio may route a subtask to
+    # studio.check_plan only allows roles that have a summary (and are not chief/judge/…)
+    for name, summary in (
+        ("coder", "writes the code"),
+        ("architect", "designs the change"),
+        ("product", "speaks for the user"),
+        ("tester", "proves it works"),
+    ):
+        if name in data["roles"]:
+            data["roles"][name]["summary"] = summary
     if workflows:
         data["includes"] = [str(f) for f in sorted(WORKFLOWS.glob("*.yaml"))]
     (root / "airlie.yaml").write_text(yaml.safe_dump(data))
