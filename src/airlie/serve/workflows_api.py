@@ -75,7 +75,22 @@ class Validate(BaseModel):
 
 
 def _layout(spec: WorkflowSpec) -> dict[str, dict[str, float]]:
-    return {node: {"x": at.x, "y": at.y} for node, at in spec.layout.items()}
+    """Builder positions when the schema still carries them; empty means the client lays the graph out."""
+    layout = getattr(spec, "layout", None)
+    if not layout:
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    for node, at in layout.items():
+        if isinstance(at, dict):
+            out[node] = {"x": float(at["x"]), "y": float(at["y"])}
+        else:
+            out[node] = {"x": float(at.x), "y": float(at.y)}
+    return out
+
+
+def _workflow_type(spec: WorkflowSpec) -> str | None:
+    """Card/workflow label type: prefer an explicit `type` if present, else the workflow's title."""
+    return getattr(spec, "type", None) or spec.title or None
 
 
 def _pr(draft: WorkflowDraft) -> dict[str, Any] | None:
@@ -177,9 +192,9 @@ def workflows_router(
         files: list[dict[str, Any]] = [
             {
                 "name": name,
-                "type": spec.type,
+                "type": _workflow_type(spec),
                 "source": "file",
-                "bundle": spec.type is None,
+                "bundle": False,  # the bundle node kind is retired; files are ordinary workflows
                 "problems": [],
                 "pr": None,
                 "used_by": users.get(name, []),
@@ -191,7 +206,7 @@ def workflows_router(
                 "name": d.name,
                 "type": d.type,
                 "source": "draft",
-                "bundle": d.type is None,
+                "bundle": False,
                 "problems": problems(d.name, drafts, prompts),
                 "pr": _pr(d),
                 # an edit of a file waiting for its PR (or a merge the serve has not loaded): never run
@@ -236,7 +251,7 @@ def workflows_router(
         if (spec := cfg.workflows.get(name)) is not None:
             return {
                 "name": name,
-                "type": spec.type,
+                "type": _workflow_type(spec),
                 "source": "file",
                 "yaml": file_text(name, spec),
                 "layout": _layout(spec),
