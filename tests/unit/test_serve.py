@@ -866,9 +866,7 @@ def test_the_line_row_shows_both_lanes_the_gates_and_the_blocked_cards(tmp_path:
         json.dumps({"key": building, "what": "story", "started": time.time() - 90})
     )
     (state / "line" / "status.json").write_text(
-        json.dumps(
-            {"ts": 1700000000.0, "gates": {"engine": "ok", "profile_match": "mismatch", "github": "ok"}}
-        )
+        json.dumps({"ts": 1700000000.0, "gates": {"engine": "ok", "github": "ok"}})
     )
     app = create_app(c, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
     auth = {"Authorization": "Bearer k"}
@@ -884,7 +882,7 @@ def test_the_line_row_shows_both_lanes_the_gates_and_the_blocked_cards(tmp_path:
             assert held
             row = client.get("/v1/airlie/line", headers=auth).json()
         assert row["paused"] is False and row["last_tick"] == 1700000000.0
-        assert row["gates"] == {"engine": "ok", "profile_match": "mismatch", "github": "ok"}
+        assert row["gates"] == {"engine": "ok", "github": "ok"}
         build = row["lanes"]["build"]
         assert (build["card"], build["title"], build["stage"], build["layer"]) == (
             building,

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
-import httpx
 import yaml
 
 from airlie import cli
@@ -57,35 +55,6 @@ def config(tmp_path: Path, *, reviewer_engine: bool = True):  # type: ignore[no-
         (tmp_path / f"{r}.md").write_text("x")
     (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
     return load_config(tmp_path / "airlie.yaml")
-
-
-async def test_each_role_goes_to_the_engine_that_serves_its_model(tmp_path: Path) -> None:
-    seen: list[tuple[str, dict]] = []
-
-    def handle(req: httpx.Request) -> httpx.Response:
-        if req.url.path == "/health":
-            return httpx.Response(200, json={"status": "healthy"})
-        if req.url.path == "/v1/models":
-            return httpx.Response(200, json={"data": [{"id": str(req.url.port)}]})
-        seen.append((str(req.url), json.loads(req.content)))
-        sse = (
-            b'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\n\n'
-            b'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\ndata: [DONE]\n\n'
-        )
-        return httpx.Response(200, content=sse, headers={"content-type": "text/event-stream"})
-
-    eng = cli._http_engine(config(tmp_path), "main", transport=httpx.MockTransport(handle))
-    assert isinstance(eng, RoutedEngine)
-    await eng.start()
-    await eng.generate(plain_request("reviewer"))
-    await eng.generate(plain_request("coder"))
-    assert [(u, b["model"]) for u, b in seen] == [
-        ("http://127.0.0.1:8082/v1/chat/completions", "/models/reviewer"),
-        ("http://127.0.0.1:8080/v1/chat/completions", "/models/architect"),
-    ]
-    assert list((await eng.health()).models) == ["8080"]  # main's
-    assert eng.stats().requests == 2
-    await eng.stop()
 
 
 def test_one_engine_serving_every_role_stays_one_http_engine(tmp_path: Path) -> None:

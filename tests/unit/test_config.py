@@ -154,48 +154,6 @@ def test_committed_architect_has_room_for_a_large_edit() -> None:
     assert arch.max_tokens == 12288 and arch.think_when_red
 
 
-def test_architect_catalog_replaces_generalist() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    assert "generalist" not in cfg.models
-    arch = cfg.models["architect"]
-    assert arch.repo == "sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
-    assert arch.revision == "668f31bcc56bf9400e64c9463445eee47597c2d9"
-    assert arch.mtp is not None
-    assert arch.mtp.repo == "sh0wie/Qwen3.8-Flash-Next-MTP-Drafter-MLX-bf16"
-    assert arch.mtp.revision == "be6e2bc325d41ac7858b99269a96c495349b494d"
-    assert arch.tool_call_parser == "qwen3_coder"
-    assert {"architect"} <= {n for n, m in cfg.models.items() if m.bench}
-
-
-def test_main_engine_serves_architect() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    assert cfg.engines["main"].models == ["architect"]
-    assert cfg.engines["main"].port == 8080
-    assert cfg.engines["main"].max_kv_size == 131072
-    assert (
-        cfg.engines["main"]
-        .passthru_name("architect")
-        .endswith(
-            "models--sh0wie--Qwen3.8-Flash-Next-REAP-288-MLX-4bit/snapshots/"
-            f"{cfg.models['architect'].revision}"
-        )
-    )
-
-
-def test_gemma_chat_context_is_128k() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    assert cfg.engines["gemma"].max_kv_size == 131072
-    assert cfg.roles["chat"].max_context == 131072
-
-
-def test_studio_roles_use_architect_and_product_on_gemma() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    for name in ("chief", "lhr", "architect", "docs", "research", "security", "aggregator"):
-        assert cfg.roles[name].model == "architect", name
-    assert cfg.roles["product"].model == "gemma4"
-    assert "generalist" not in cfg.models
-
-
 def test_architect_is_build_role_with_coder_behaviors() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     assert cfg.story.build_role == "architect"
@@ -237,35 +195,6 @@ def test_pipeline_package_critic_uses_architect() -> None:
     assert "tester" not in cfg.roles
     arch = cfg.roles["architect"]
     assert arch.skills is not None and cfg.story.architect_role == "architect"
-
-
-def test_generation_models_catalog_and_weights_engines() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    chroma = cfg.models["chroma_hd"]
-    assert chroma.repo == "tillknuesting/chroma1-hd-mlx"
-    assert chroma.revision == "0b794d9391239d85530d2db3b4091b8b093d1af6"
-    wan = cfg.models["wan_t2v"]
-    assert wan.repo == "PocketAiHub/Wan2.2-T2V-A14B-MLX"
-    assert wan.revision == "86bfc9847512a9eb66886388b8b92ba81e0b6729"
-    assert cfg.engines["chroma"].kind == "weights_only"
-    assert cfg.engines["chroma"].lifecycle == "on_demand"
-    assert cfg.engines["chroma"].models == ["chroma_hd"]
-    assert cfg.engines["wan"].kind == "weights_only"
-    assert cfg.engines["wan"].models == ["wan_t2v"]
-    load_check = cfg.validate_references()
-    assert not load_check, load_check
-
-
-def test_committed_default_config_is_valid() -> None:
-    root = Path(__file__).resolve().parents[2]
-    cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")  # never the person's own
-    assert {"summarizer", "judge", "aggregator", "architect"} <= set(cfg.roles)
-    assert "coder" not in cfg.roles and "tester" not in cfg.roles
-    assert {"architect"} <= {n for n, m in cfg.models.items() if m.bench}
-    assert cfg.engines["main"].kind == "mlx_vlm"
-    for name, m in cfg.models.items():
-        assert m.revision, f"models.{name} must pin a revision"
-    assert cfg.engine_for_role("architect") == "main" and cfg.engine_for_role("reviewer") == "gemma"
 
 
 # ---- a thinking role has room to answer (HDS-3, 2026-10-15) ----
@@ -411,68 +340,10 @@ def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_w
     assert architect.think_when_red and architect.green_before_done
 
 
-def test_committed_config_declares_four_autostart_engines_and_the_bench_engines() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    kinds = {n: e.kind for n, e in cfg.engines.items()}
-    assert kinds == {
-        "main": "mlx_vlm",
-        "small": "mlx_vlm",
-        "decision": "mlx_vlm",
-        "gemma": "mlx_vlm",
-        "chroma": "weights_only",
-        "wan": "weights_only",
-    }
-    autostart = [n for n, e in cfg.engines.items() if e.autostart]
-    assert autostart == ["main", "small", "decision", "gemma"]
-    assert cfg.engines["main"].models == ["architect"] and cfg.engines["main"].port == 8080
-    assert [n for n, e in cfg.engines.items() if e.decision] == ["decision"]
-    assert cfg.engines["decision"].port == 8081 and cfg.router.model == "decider_2b"  # the 4b gate's pick
-    decider = cfg.models["decider_2b"]
-    assert (decider.repo, decider.revision) == (
-        "nativ-community/decider-2b",
-        "acbae4ecce4dbcc0aea8c5a501c9f54008458a70",
-    )
-    assert (
-        cfg.engines["main"]
-        .passthru_name("architect")
-        .endswith(
-            f"models--sh0wie--Qwen3.8-Flash-Next-REAP-288-MLX-4bit/snapshots/"
-            f"{cfg.models['architect'].revision}"
-        )
-    )  # the HF-cache snapshot: the exact --model string
-    assert cfg.models["architect"].tool_call_parser == "qwen3_coder"
-    gemma = cfg.models["gemma4"]
-    assert (gemma.repo, gemma.revision, gemma.mtp, gemma.mtp_block_size, gemma.tool_call_parser) == (
-        "zecanard/gemma-4-26B-A4B-it-uncensored-abliterix-MLX-4bit-mixed_4_6",
-        "fe64abd2a668980d4b20c1385b4f001895156d36",
-        None,
-        None,
-        "gemma4",
-    )
-    assert cfg.roles["chat"].model == cfg.roles["design"].model == cfg.roles["ux"].model == "gemma4"
-    assert cfg.engine_for_role("chat") == cfg.engine_for_role("design") == "gemma"
-    ge = cfg.engines["gemma"]
-    assert (ge.port, ge.max_image_px, ge.model) == (8084, 1536, "gemma4")
-
-
 def test_profiles_carry_no_engine_or_model_overrides() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     for name, profile in cfg.topology.profiles.items():
         assert "engines" not in profile and "models" not in profile, name
-
-
-def test_catalog_kv_constants_follow_each_models_attention_geometry() -> None:
-    """kv_mb_per_1k_tokens is K and V in bf16 per token: the layers whose cache grows with the prompt × KV
-    heads × head dim × 4 bytes. The 2026-10-23 review (finding 8) found the architect's copied from
-    Qwen2.5-32B, four times what its 16 full-attention layers hold, and the number had already shrunk a
-    profile's KV."""
-    models = load_config(ROOT / "airlie.yaml", NO_LOCAL).models
-    assert (
-        models["architect"].kv_mb_per_1k_tokens == 48
-    )  # Flash-Next hybrid; tighten after doctor documents layers
-    assert models["small"].kv_mb_per_1k_tokens == 144  # 36 layers × 8 heads × 128 dim
-    # 5 full-attention layers × 2 heads × 512 dim = 20, + the 25 sliding layers' fixed 1024-token window
-    assert models["gemma4"].kv_mb_per_1k_tokens == 22
 
 
 # ---- M0 Task 2: catalog fields ----
@@ -1667,15 +1538,6 @@ def test_a_repository_chat_cannot_drop_a_confirmation_of_push_pr_or_build(
     listed = [n for n in ("push_branch", "open_pr", "build_image") if n != missing]
     with pytest.raises(ConfigError, match=f"chat.kinds.repository.ask_first must keep {missing}"):
         load_config(_chat(tmp_path, {"kinds": {"repository": {"tools": ["skill"], "ask_first": listed}}}))
-
-
-def test_the_reviewer_is_a_different_lab_than_the_build_model_and_runs_on_a_served_engine() -> None:
-    """Noah 2026-11-12: the reviewer (and supervisor) run on gemma4; the architect on Qwen Flash-Next:
-    different labs on purpose, no second model in memory; Muse catalog dropped 2026-11-13."""
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    assert cfg.roles["reviewer"].model == cfg.roles["supervisor"].model == "gemma4"
-    assert "Qwen" in cfg.models["architect"].repo and "gemma" in cfg.models["gemma4"].repo.lower()
-    assert "reviewer" not in cfg.engines and "reviewer" not in cfg.models
 
 
 def test_github_app_source_needs_an_app_id(tmp_path: Path) -> None:

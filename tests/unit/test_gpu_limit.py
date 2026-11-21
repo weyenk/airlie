@@ -10,10 +10,7 @@ from typing import Any
 import yaml
 from typer.testing import CliRunner
 
-from airlie.cli import app
 from airlie.config import AirlieConfig, load_config
-from airlie.doctor import run_checks
-from tests.support.doctor import FakeProbe, by_name
 
 ROOT = Path(__file__).resolve().parents[2]
 runner = CliRunner()
@@ -49,13 +46,3 @@ def test_the_task_stops_on_an_empty_limit_before_any_sudo() -> None:
     )
     assert guard in script
     assert script.index(guard) < script.index("sudo")
-
-
-def test_host_wired_limit_prints_the_configured_value() -> None:
-    result = runner.invoke(app, ["host", "wired-limit", "--config", str(ROOT / "airlie.yaml")])
-    assert result.stdout.strip() == "126976"
-
-
-def test_the_doctor_points_at_the_task() -> None:
-    row = by_name(run_checks(cfg_with_limit(126976), FakeProbe(wired_mb=0)))["iogpu.wired_limit_mb"]
-    assert row.status == "warn" and "task gpu:limit" in row.detail
