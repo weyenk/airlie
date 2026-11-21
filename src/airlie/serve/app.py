@@ -58,6 +58,7 @@ from airlie.notify.vapid import application_server_key, load_or_create_vapid
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
 from airlie.rev import build_commit
+from airlie.serve.board_runs import build_dispatcher
 from airlie.serve.bridge.clock import RealClock
 from airlie.serve.feed import Feed, event_stream
 from airlie.serve.flow import epic_flow, initiative_flow, job_detail, story_flow
@@ -642,6 +643,8 @@ def create_app(
     repo_sessions: Callable[..., RepoSessions] | None = None,
     pinnable: Callable[[], Awaitable[list[str]]] | None = None,
     repo_sources: Mapping[str, RepoSource] | None = None,
+    run_start: Callable[..., Awaitable[Any]] | None = None,
+    run_engine: Callable[[], Any] | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
@@ -662,7 +665,10 @@ def create_app(
     read from the checkouts and the board's labels): with no source linked they are the repositories a person
     may use, else the ones no source reaches may be pinned as extras.
     `repo_sources` are the accounts a person may link to list their repositories from (default: GitHub, for
-    each of `chat.sources` the config gives a client id; tests give one over a mock transport)."""
+    each of `chat.sources` the config gives a client id; tests give one over a mock transport).
+    `run_start` replaces what the board run dispatcher calls to run an approved card's workflow (default:
+    airlie.workflow.trigger.start_workflow, in the card's checkout, over `run_engine`'s engine: default an
+    HTTP engine; tests give a fake). The dispatcher is `app.state.dispatcher`."""
     app = FastAPI(title="airlie", version="0.1.0")
     started_commit = (
         build_commit()
@@ -672,7 +678,6 @@ def create_app(
     feed = Feed()
     app.state.feed = feed
     jobs = Jobs(feed.publish)
-    ticker = LineTicker(cfg, jobs, commit=started_commit, tick_s=tick_s, beat=line_beat, now=now)
     watcher = Watcher(cfg.observability.state_dir.expanduser(), feed)
     app.state.watcher = watcher
     make_story = story_job or _story_job_factory()
@@ -680,6 +685,18 @@ def create_app(
     restart_story = story_restart or _story_restart_factory()
     adopt_story = story_adopt or _story_adopt_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
+    dispatcher = build_dispatcher(
+        cfg,
+        board,
+        feed.publish,
+        now,
+        start=run_start,
+        engine_factory=run_engine,
+    )
+    app.state.dispatcher = dispatcher
+    ticker = LineTicker(
+        cfg, jobs, commit=started_commit, tick_s=tick_s, beat=line_beat, pump=dispatcher.pump, now=now
+    )
     # imported here: the manager's clock lives under airlie.serve, whose package imports this module (and the
     # chat routes import the manager)
     from airlie.chat.api import Busy, chat_router
@@ -721,6 +738,7 @@ def create_app(
             feed.publish,
             workflow_check=workflow_check if local else None,
             started=started if local else None,
+            notify=dispatcher.notify_status,
         )
     )
     if local:
@@ -1079,6 +1097,7 @@ def create_app(
             access=repo_access,
             background=chat_prewarms,
             start_story=lambda text, repo: begin_story(None, text, repo),
+            chat_slot=dispatcher.request_chat_slot,
         )
     )
     app.include_router(

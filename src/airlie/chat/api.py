@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from functools import partial
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import anyio
 import httpx
@@ -52,6 +52,9 @@ from airlie.sources.access import RepoAccess
 from airlie.story.publish import PublishError
 from airlie.tools.protocol import Tool, ToolContext
 
+if TYPE_CHECKING:
+    from airlie.serve.dispatcher import ChatLease
+
 log = logging.getLogger("airlie.chat.api")
 MISCONFIGURED = "chat is misconfigured; see the server log or run airlie doctor"
 """What a client is told when chat cannot serve: the reason names server paths, so it goes to the log only."""
@@ -63,6 +66,8 @@ EMPTY_CHATS_MAX = 20
 NO_ENGINE = "the chat role has no engine; see the server log or run airlie doctor"
 STORED_PART_TYPES = ("text", "airlie_upload")
 """The parts of a user message the server keeps and the model can take; any other part is dropped."""
+ChatSlot = Callable[[str], "Awaitable[ChatLease]"]
+"""Claims a run slot for a chat turn (the dispatcher's `request_chat_slot`)."""
 Attach = Callable[[Principal, list[dict[str, Any]]], Awaitable[list[dict[str, Any]]]]
 """Wire messages (`content` lists with `airlie_upload` parts) resolved for the chat model, in order."""
 
@@ -324,13 +329,16 @@ def chat_router(
     access: RepoAccess | None = None,
     background: set[asyncio.Task[None]] | None = None,
     start_story: StartStoryJob | None = None,
+    chat_slot: ChatSlot | None = None,
 ) -> APIRouter:
     """`publish` is the live feed's: each change to a thread (made, a turn's end, an answer, deleted) sends
     the `chat` hint with no key (the feed reaches every signed-in client: it names no one's chat; each
     refetches its own). `access` is the server-side rule for repository chats: making one, each turn and the
     pre-warm ask it (a person's own repositories, nothing else: 403); without one every repository is
     allowed and none is pre-warmed. `background` keeps those starts (serve's shutdown and tests wait on
-    them). `start_story` starts a story card's story on the board."""
+    them). `start_story` starts a story card's story on the board. `chat_slot`, when given, is what a turn
+    awaits (with its thread's id) for one of the system's run slots before it streams: it may pause a board
+    run to make room or wait for one, and the slot is released when the turn ends."""
     router = APIRouter()
     background = background if background is not None else set()
     prewarmed: dict[str, list[str]] = {}  # per person: the chats whose VM was started before a message
@@ -559,7 +567,10 @@ def chat_router(
 
         async def stream() -> AsyncIterator[str]:
             started[0] = True
+            lease: ChatLease | None = None
             try:
+                if chat_slot is not None:
+                    lease = await chat_slot(thread.id)  # may pause a board run, or wait for a slot
                 async for chunk in run_turn(
                     TurnRequest(
                         thread,
@@ -598,6 +609,8 @@ def chat_router(
                 with anyio.CancelScope(
                     shield=True
                 ):  # also when the response was cancelled as the client left
+                    if lease is not None:
+                        await lease.release()
                     await cleanup()
 
         return TurnStream(stream(), cleanup, started, media_type="text/event-stream", headers=STREAM_HEADERS)

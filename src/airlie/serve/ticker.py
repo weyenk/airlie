@@ -1,12 +1,12 @@
-"""`task serve` ticks the line itself (planning-line P5b, D3): every `line.tick_s` seconds it runs one beat of
-`story.line.Line` on its own loop, so a person's move or answer is acted on within a minute while serve is up.
-The launchd agent keeps its 15 minutes and runs the same beat in another process; the lane locks make the two
-safe together, and a beat that finds a lane held by the other logs `busy` and runs the other lane.
+"""`task serve`'s heartbeat. The hand-written story line is retired: nothing here runs a story, and the
+board's runs are started by the run dispatcher (`airlie.serve.dispatcher`) the moment a card is approved. What
+is left is the beat `/health` and the board's line row read: every `line.tick_s` seconds `LineTicker` records
+the time and a line (`dispatcher`, unless a test injects its own beat), and a line that differs from the last
+one is a `tick` event on the line's log. The default beat also pumps the dispatcher, so an Approved card that
+waited on a workdir lock another process has since freed starts.
 
-Every job a beat starts is registered in this process's `Jobs` as kind `line` with the id
-`line-<lane>-<key>` and its events path, so `/v1/airlie/jobs` and the Workflows screen follow a tick-started
-build as they follow one a route started. The beat's blocking helpers (SQLite, files, `gh`) run in worker
-threads (`Line`); the ticker is cancelled on shutdown."""
+Jobs this process holds as kind `line` (id `line-<lane>-<key>`) still show in `lanes()`; with the line retired
+none is started, and a lane another process holds shows as `?`."""
 
 from __future__ import annotations
 
@@ -18,18 +18,20 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from airlie.config import AirlieConfig, ConfigError
+from airlie.config import AirlieConfig
 from airlie.serve.jobs import Jobs
 from airlie.story import jobs as factory
 from airlie.story.fixes import line_event
-from airlie.story.model import StoryError
 from airlie.story.phase import paused
 from airlie.story.state import lock_held
 
 log = logging.getLogger(__name__)
 
+QUIET = "dispatcher"
+"""The line a beat reports when it has nothing of its own: board runs are the dispatcher's."""
+
 LineFor = Callable[..., Awaitable[str]]
-"""One beat hook for tests (replaces the retired hand-written line)."""
+"""One beat hook for tests."""
 
 
 class LineTicker:
@@ -41,6 +43,7 @@ class LineTicker:
         commit: str | None,
         tick_s: float | None = None,
         beat: LineFor | None = None,
+        pump: Callable[[], Awaitable[None]] | None = None,
         now: Callable[[], float] = time.time,
     ) -> None:
         self.cfg = cfg
@@ -48,27 +51,24 @@ class LineTicker:
         self.commit = commit
         self.tick_s = float(tick_s if tick_s is not None else cfg.line.tick_s)
         self._beat = beat
+        self._pump = pump
         self.now = now
         self.last_tick: float | None = None
         self.last_line: str | None = None
         self._task: asyncio.Task[None] | None = None
 
     async def beat(self) -> str:
-        """One beat on this process's loop. The hand-written line is retired; tests may inject `_beat`."""
+        """One beat on this process's loop. It runs no story (the line is retired); with a `pump` it asks the
+        dispatcher to retry the Approved cards that wait on a workdir lock another process has since freed.
+        Tests may inject `_beat`."""
         try:
             if self._beat is not None:
                 return await self._beat()
-            scfg = factory.story_config(self.cfg)
-            problems = factory.story_problems(scfg)
-            if problems:
-                return "not ticking: " + "; ".join(problems)
-            return await factory.tick(scfg)
-        except StoryError as e:
-            return str(e)
+            if self._pump is not None:
+                await self._pump()
+            return QUIET
         except asyncio.CancelledError:
             raise
-        except ConfigError as e:
-            return f"not ticking: {e}"
         except Exception as e:  # noqa: BLE001 - one bad beat must not end the ticker
             log.exception("line beat failed")
             return f"beat failed ({type(e).__name__}: {e})"
