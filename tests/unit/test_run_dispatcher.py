@@ -49,7 +49,7 @@ async def test_approved_with_workflow_starts_and_moves_doing_then_review(tmp_pat
     published: list[tuple[str, str]] = []
 
     async def start(*, name: str, card: dict[str, Any], key: str) -> object:
-        seen.append(board.get(key).status)
+        seen.append(card["status"])
         entered.set()
         await release.wait()
         return SimpleNamespace(ok=True)
@@ -97,6 +97,8 @@ async def test_hard_fail_moves_to_blocked(tmp_path: Path) -> None:
     start = AsyncMock(return_value=SimpleNamespace(ok=False, error="engine said no"))
     card = board.create(level="story", title="bad", labels=("workflow:story",))
     disp = make_dispatcher(board, start)
+    published: list[tuple[str, str]] = []
+    disp.publish = lambda topic, key: published.append((topic, key))
 
     board.move(card.key, "approved")
     await disp.notify_status(card.key, "approved")
@@ -105,6 +107,8 @@ async def test_hard_fail_moves_to_blocked(tmp_path: Path) -> None:
     blocked = board.get(card.key)
     assert blocked.status == "blocked"
     assert [(c.author, c.text) for c in blocked.comments] == [("dispatcher", "engine said no")]
+    assert published[-1] == ("board", card.key)
+    assert len(published) >= 2  # Doing, then Blocked
     board.close()
 
 
@@ -146,4 +150,19 @@ async def test_repeat_notify_while_in_flight_starts_once(tmp_path: Path) -> None
 
     start.assert_awaited_once()
     assert board.get(card.key).status == "review"
+    board.close()
+
+
+async def test_concurrent_notify_starts_once(tmp_path: Path) -> None:
+    board = BoardStore(tmp_path / "board.sqlite")
+    start = AsyncMock(return_value=SimpleNamespace(ok=True))
+    card = board.create(level="story", title="race", labels=("workflow:story",))
+    disp = make_dispatcher(board, start)
+
+    board.move(card.key, "approved")
+    await asyncio.gather(*(disp.notify_status(card.key, "approved") for _ in range(3)))
+    await disp.drain()
+
+    start.assert_awaited_once()
+    assert [m.to_status for m in board.moves(card.key)].count("doing") == 1
     board.close()

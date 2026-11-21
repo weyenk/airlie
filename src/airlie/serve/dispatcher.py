@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict
 from typing import Any, Protocol
 
 from airlie.board import BoardStore
@@ -44,7 +43,8 @@ class RunDispatcher:
         self.start = start
         self.publish = publish
         self.clock = clock
-        self._inflight: dict[str, asyncio.Task[None]] = {}
+        self._inflight: dict[str, asyncio.Task[None] | None] = {}
+        """A key is claimed (None) before anything can await, then holds its run's task."""
 
     async def notify_status(self, key: str, status: str) -> None:
         """A card of this key has just been moved to `status`. Only Approved matters here."""
@@ -57,14 +57,19 @@ class RunDispatcher:
         if name is None:
             self._block(key, MISSING_WORKFLOW)
             return
-        self.board.move(key, "doing", by=DISPATCHER)
-        self.publish("board", key)
-        self._inflight[key] = asyncio.create_task(self._run(key, name, asdict(item)))
+        self._inflight[key] = None
+        try:
+            doing = self.board.move(key, "doing", by=DISPATCHER)
+            self.publish("board", key)
+            self._inflight[key] = asyncio.create_task(self._run(key, name, doing.to_dict()))
+        except BaseException:
+            self._inflight.pop(key, None)
+            raise
 
     async def drain(self) -> None:
         """Wait until every started run has finished."""
-        while self._inflight:
-            await asyncio.gather(*self._inflight.values())
+        while tasks := [t for t in self._inflight.values() if t is not None]:
+            await asyncio.gather(*tasks)
 
     async def _run(self, key: str, name: str, card: dict[str, Any]) -> None:
         try:
