@@ -1,5 +1,7 @@
 import { mount } from "@vue/test-utils";
+import { CATALOG } from "@/test-utils/catalog";
 import Palette from "./Palette.vue";
+import { PALETTE_TYPES } from "./palette_types";
 
 test("the node types in their shapes, then the bundles by name", () => {
   const w = mount(Palette, { props: { bundles: ["layer", "fix"] } });
@@ -46,4 +48,8 @@ test("read-only, nothing drags or adds", async () => {
   expect(w.get("[data-palette-type=WORK]").attributes("draggable")).toBe("false");
   await w.get("[data-palette-type=WORK]").trigger("click");
   expect(w.emitted("add")).toBeUndefined();
+});
+
+test("the palette paints exactly the node kinds the server catalog lists", () => {
+  expect([...PALETTE_TYPES]).toEqual(CATALOG.node_kinds.map((k) => k.kind));
 });

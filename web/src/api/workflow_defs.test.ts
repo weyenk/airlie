@@ -49,6 +49,8 @@ test("the recorded server payload is a Catalog, and the client returns what the 
   const got = await registryCatalog();
   expect(got.formats.length).toBeGreaterThan(0);
   expect(got.kinds.length).toBeGreaterThan(0);
+  expect(got.node_kinds.map((k) => k.kind)).toEqual(["WORK", "ROUND_ROBIN", "SUPERVISOR_WORKERS", "K_INDEPENDENT_TEAMS"]);
+  expect(got.node_kinds[1]).toMatchObject({ kind: "ROUND_ROBIN", required: ["roles", "prompt", "agreement_when"] });
   const check = got.checks.find((c) => c.name === "story.intake")!;
   expect(check).toMatchObject({ inputs: ["card"], every_run: true, args: [] });
   expect(got.meetings[0]).toEqual({ roles: ["product", "architect"], inputs: ["story", "layers"] });

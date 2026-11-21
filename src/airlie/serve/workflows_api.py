@@ -41,7 +41,7 @@ from airlie.workflow.retired import (
     old_schema_problems,
     upgrade_v1,
 )
-from airlie.workflow.spec import WorkflowSpec
+from airlie.workflow.spec import WorkflowSpec, node_kind_catalog
 
 KINDS = ("text", "number", "bool", "list of …", "one of …")
 """The field kinds an output's field list may use (`airlie.flow.outputs.parse_kind`), as the builder offers
@@ -206,6 +206,7 @@ def workflows_router(
     async def catalog() -> dict[str, Any]:
         return {
             "roles": sorted(cfg.roles),
+            "node_kinds": node_kind_catalog(),
             "types": list(get_args(NodeType)),
             "deprecated_types": sorted(DEPRECATED_NODE_TYPES),
             "formats": list(get_args(Format)),

@@ -168,6 +168,25 @@ NodeSpec = Annotated[
 ]
 
 
+NODE_MODELS: dict[str, type[Strict]] = {
+    "WORK": WorkNode,
+    "ROUND_ROBIN": RoundRobinNode,
+    "SUPERVISOR_WORKERS": SupervisorWorkersNode,
+    "K_INDEPENDENT_TEAMS": KIndependentTeamsNode,
+}
+"""Each node kind's spec model, in `NodeKind` order: what the catalog describes."""
+
+
+def node_kind_catalog() -> list[dict[str, Any]]:
+    """The four kinds: the fields each takes (its spec model, less the `kind` tag) and those it requires."""
+    out: list[dict[str, Any]] = []
+    for kind, model in NODE_MODELS.items():
+        fields = [(n, f) for n, f in model.model_fields.items() if n != "kind"]
+        required = [n for n, f in fields if f.is_required()]
+        out.append({"kind": kind, "fields": [n for n, _ in fields], "required": required})
+    return out
+
+
 class WorkflowSpec(Strict):
     """A workflow as nodes joined by wires."""
 

@@ -26,6 +26,7 @@ const detail = (over: Partial<WorkflowDetail> = {}): WorkflowDetail => ({
 const def = (name: string, over: Partial<WorkflowDef> = {}): WorkflowDef => ({ name, type: "story", source: "file", problems: [], pr: null, used_by: [], ...over });
 const CATALOG: Catalog = {
   roles: ["architect", "coder", "product", "tester"],
+  node_kinds: [{ kind: "WORK", fields: ["prompt", "run", "inputs", "outputs"], required: [] }],
   types: ["ask", "check"],
   formats: ["text"],
   kinds: ["text"],

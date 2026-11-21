@@ -50,9 +50,13 @@ export type CheckDef = {
 /** A meeting the engine knows: the roles that sit in it and what it reads. */
 export type MeetingDef = { roles: string[]; inputs: string[] };
 
+/** One node kind the engine runs (`GET /v1/workflows/catalog` `node_kinds`): the fields its box takes, some required. */
+export type NodeKindDef = { kind: string; fields: string[]; required: string[] };
+
 /** What the builder's palette and forms may pick from. */
 export type Catalog = {
   roles: string[];
+  node_kinds: NodeKindDef[];
   types: string[];
   /** Legacy node types still loadable; prefer `model` + `protocol`. */
   deprecated_types?: string[];
@@ -65,6 +69,7 @@ export type Catalog = {
 
 export const EMPTY_CATALOG: Catalog = {
   roles: [],
+  node_kinds: [],
   types: [],
   deprecated_types: [],
   formats: [],
