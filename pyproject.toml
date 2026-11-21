@@ -1,14 +1,13 @@
 [project]
 name = "airlie"
 version = "0.1.0"
-description = "Multi-agent build system on Apple Silicon: parallel agent teams over an in-process MLX engine with Learning-to-Share memory"
+description = "Multi-agent build system on Apple Silicon: parallel agent teams over remote HTTP inference engines with Learning-to-Share memory"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "PolyForm-Noncommercial-1.0.0" }
 dependencies = [
     # Spec 01 §3 dependency list, floors raised to current releases (2026-10-12).
     "mlx>=0.32.4; sys_platform == 'darwin'",
-    "mlx-vlm==0.7.12; sys_platform == 'darwin'",
     "torch>=2.8", # used solely for LTS controller RL training (spec 03)
     "transformers>=5.7",
     "peft>=0.14", # LoRA adapters for the admission controller
@@ -32,8 +31,8 @@ dependencies = [
     "duckdb>=1.0", # airlie.metrics: DuckDB aggregation over the event JSONL
     "pypdf>=6.21", # chat attachments: the text of an attached PDF
     "pillow>=11", # chat attachments: a picture scaled before it is sent
-    # chat attachments: airlie samples a video's frames (the batched engine refuses video parts). The build
-    # mlx-vlm installs on the Mac; headless on Linux (the e2e image): one cv2 either way.
+    # chat attachments: airlie samples a video's frames (the batched engine refuses video parts). opencv on the Mac,
+    # headless on Linux (the e2e image): one cv2 either way.
     "opencv-python>=4.10 ; sys_platform == 'darwin'",
     "opencv-python-headless>=4.10 ; sys_platform == 'linux'",
     "huggingface-hub>=2.2",

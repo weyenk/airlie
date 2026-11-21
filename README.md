@@ -27,7 +27,7 @@ The Chat screen still talks to `/v1/chat/completions`; it moves to the turn rout
 server keeps the conversation, so only the newest user message is read (its `text` parts and `file` parts naming
 `/v1/airlie/uploads/<id>`); the rest of `messages` and any `tools` list are ignored. The stream carries the
 standard chunks (`start`, `start-step`, `text-*`, `reasoning-*`, `tool-input-*`, `tool-output-*`, `finish-step`,
-`finish`, `error`) plus `data-engine` status parts ("Starting gemma…" while the manager brings the engine up).
+`finish`, `error`) plus `data-engine` status parts ("Starting gemma…" while a VM or job comes up).
 `finish` carries `messageMetadata.usage` with `prompt_tokens` and `max_context`, the context readout.
 
 | Route | Does |
@@ -120,8 +120,13 @@ venv, or install anything else by hand. Then:
 task doctor
 ```
 
+airlie runs no model. Every catalog model is served by a remote HTTP endpoint (the `workflow` engine in
+`airlie.yaml`, OpenAI or Anthropic wire format). Point it at yours in the environment (or `.env` beside
+`airlie.yaml`) before `task serve`, and let `task doctor` check that it answers:
+
 ```bash
-task models:pull
+export AIRLIE_WORKFLOW_BASE_URL=https://inference.example.com/v1
+export AIRLIE_WORKFLOW_API_KEY=...   # optional: unset means none
 ```
 
 ## Phone
@@ -157,12 +162,11 @@ Run `task` to list them. The ones that exist today:
 | Task | Does |
 | --- | --- |
 | `task setup` | one-time, idempotent setup |
-| `task doctor` | validates `airlie.yaml`, checks the wired-memory limit, RAM, tools (node against the pin in `web/package.json`: the first `node` on your `PATH` must be that major), mlx-vlm, model weights, and the spec's memory projection; exit 1 on any red row |
+| `task doctor` | validates `airlie.yaml`, checks the wired-memory limit, RAM, tools (node against the pin in `web/package.json`: the first `node` on your `PATH` must be that major), and that each engine's `base_url` answers `GET …/models` over HTTP; exit 1 on any red row |
 | `task config` | prints the fully resolved configuration (`airlie.yaml` + `airlie.local.yaml`) |
 | `task searxng:up` / `:status` / `:down` / `:destroy` | SearXNG for the web roles' `web_search`, in a Tart Linux VM reached at `127.0.0.1:8888` (the first `up` downloads a few GB and installs it); `docs/integrations/web-tools.md` |
 | `task web:e2e [-- --roles chief,ux]` | asks every web-enabled role (chief, research, ux, design, reviewer) about something after its training data and checks it searched and cited what it found |
-| `task models:list` / `task models:pull [-- name…]` | show the catalog with pinned revisions / download exactly those revisions (the same downloader an engine's first start uses: progress line, disk check, one download per snapshot) |
-| `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop the pinned engines in `airlie.yaml` (`main`, `gemma`, `decision`: decider-2b on `/v1/decisions`, and any other without `lifecycle: on_demand`); the on-demand one (`small`) start when a call needs them, see *Engines on demand*; `airlie engine up <name>` starts any engine by hand; status shows pid and per-model readiness |
+| `task models:list` | show the model catalog and the engine serving each model (airlie starts no inference server: the engines are remote HTTP endpoints, see *Engines*) |
 | `task gpu:limit` | set `iogpu.wired_limit_mb` to `memory.wired_limit_mb` now and at every boot (a LaunchDaemon; asks for your password) |
 | `task run -- "goal" --repo PATH [--topology fork] [--k 3] [--test-cmd "pytest -q"]` | run a topology on a goal (default `topology.kind: single`; `single` / `teams` / `fork` are experimental — use `task studio` or `--topology studio` for the supported path); every team/branch works in its own git worktree under the run directory and the report lists each one's outcome, branch and trace |
 | `task eval -- lang_detect [--topology fork] [--k 1]` | materialize a graded task from `evals/tasks/`, run it, grade every worktree with the hidden tests (same topology note as `task run`) |
@@ -195,7 +199,6 @@ Run `task` to list them. The ones that exist today:
 | `task bridge` / `bridge:launchd:install` / `bridge:launchd:uninstall` | Job Bus worker: claim/result to the hub, studio and llm jobs on loopback `task serve` (`src/airlie/serve/bridge/README.md`) |
 | `task hub:install` / `hub:check` / `hub:gate` | Job Bus hub npm deps / typecheck + contract tests / the hub gate |
 | `task opencode:install` | copy the OpenCode chief, its subagents, `/studio` and `/story` into `~/.config/opencode` and register `airlie mcp`, an MCP server (stdio) that gives OpenCode the tools `airlie_plan`, `airlie_run`, `airlie_status`, `airlie_cancel` and `airlie_story` over `task serve`'s jobs API, in its `opencode.json` (merged into an entry you already have; after a backup when it changes the file; `docs/integrations/local-agents.md`) |
-| `task route:eval -- --min-accuracy 0.9 --out docs/bench/routing.json` | score the decision-model router on `evals/routing.jsonl` (54 labelled tasks seeded from ai-mode) against the role criteria in `evals/routing-roles.yaml`: accuracy, mean confidence, wrong-but-clear, confusions |
 | `task bench:topology -- --topologies single,teams,fork,studio --repeats 3` | experimental topologies and studio on the graded tasks: wall-clock, steps, forks, winner graded by the hidden tests |
 | `task bench:lts -- --tasks lang_detect --repeats 2` | memory-free baseline vs the configured controller on graded tasks: wall-clock, steps, admissions, retrievals, pass rate, and the spec's ≥25 % verdict (experimental `teams` / LTS path) |
 | `task bench:story` / `bench:story-compare` | a fixed story built end to end, measured and graded / deltas between two story bench records |
@@ -204,7 +207,7 @@ Run `task` to list them. The ones that exist today:
 | `task bench [-- --model NAME --ctx 4k,32k --n 1,2,4]` | engine throughput through the seam: TTFT, prefill and decode tok/s, aggregate at N streams, and whether turn 2 of a conversation hits the prefix cache |
 | `task bench:models` | the same for every catalog model marked `bench: true`, one table |
 | `task bench:compare -- a.json b.json` | per-cell deltas between two saved runs |
-| `task test` / `task test:live` / `task test:mac` / `task lint` / `task typecheck` / `task check` | unit tests / tests against the running engine / mac-only unit tests (mlx) / ruff / mypy / lint+types+unit |
+| `task test` / `task test:live` / `task test:mac` / `task lint` / `task typecheck` / `task check` | unit tests / tests against the configured HTTP engine / mac-only unit tests / ruff / mypy / lint+types+unit |
 | `task static` | lint + typecheck: part of pipeline stage 1 and the pre-push gate (`task hooks:install`, run by `task setup`) |
 | `task test:unit` / `test:functional` / `test:contract` / `test:integration` / `test:e2e` / `test:journey` / `test:performance` / `test:security` | one layer of the test pyramid, `tests/<layer>/`; a layer with no tests yet succeeds |
 | `task mutate [-- --max-children 6]` / `task mutate:results` | mutation-test every enrolled module (`[tool.airlie.mutation].enrolled`); an uncaught mutant exits 1 |
@@ -238,7 +241,7 @@ before it is green:
 
 Stages 3 to 5 pass while their `tests/<layer>/` directory is empty and start enforcing as soon as it has tests.
 `.github/workflows/mutation-nightly.yml` runs `task mutate` (`--scope enrolled`) every night over every enrolled
-module, in 8 Linux shards and a mac job for the sources that import mlx, and uploads the merged report and the
+module, in 8 Linux shards and a mac job for the sources that need macOS, and uploads the merged report and the
 surviving mutants; airlie's line turns those survivors into fix cards (`line.mutation_cards`). The whole project,
 the modules that are not enrolled too, is mutated weekly on the Mac by a launchd agent (`task
 mutate:launchd:install`), which writes the per-module score table: the backlog. To enrol a module,
@@ -265,17 +268,15 @@ open draft PRs:** run `task serve -- --api-key SECRET` (or set `AIRLIE_SERVE_API
 
 **`studio`** is the topology the line and the web app run (design:
 `docs/superpowers/specs/2026-10-13-studio-topology-design.md`). One generalist (`chief`, Qwen3.8-27B, also the
-vision model) scopes the request into a JSON plan of subtasks; the router (the decision model on mlx-vlm, or the chief's
-own hint with `router.kind: chief`) assigns each subtask a specialist role from the roles whose prompts carry a
+vision model) scopes the request into a JSON plan of subtasks; the router (`router.kind`: the chief's
+own hint, or a catalog model) assigns each subtask a specialist role from the roles whose prompts carry a
 `summary:` line, and for roles with a skill library (`skills/qa/*.md`, folded into the coder's test brief) picks
 the guideline to inject; specialists are prompts over the catalog (generalist for most seats, Gemma for
 the `reviewer`) and run as single agents on one worktree, writers one at a time, readers in parallel; after a
 code subtask the reviewer (Gemma, a different lab than the coder's Qwen, on purpose: judges favour their own family's text) returns
 a JSON verdict and blocking findings give the coder one fix round; the chief synthesises. Run it with
-`task studio -- "goal" --repo . [--image shot.png]` after `task restart` (the committed engines are the studio's:
-one mlx-vlm server each for the generalist, Gemma (the reviewer's) and the small model; mlx-vlm parses the tool calls,
-the parser named per model in the catalog). Every routing decision is logged
-(`runs/<id>/routing.jsonl`) and scorable with `task route:eval`.
+`task studio -- "goal" --repo . [--image shot.png]` (the committed `workflow` engine serves every model the studio's roles name, see *Engines*). Every routing
+decision is logged (`runs/<id>/routing.jsonl`).
 
 Every topology injects a deterministic repository map (tree, sizes, Python signatures; `repo_map.*`, cached under
 `<state_dir>/repo_maps/`) before the goal, so no branch re-discovers the layout.
@@ -305,7 +306,7 @@ for those tasks; pass `--topology studio` (or use `task studio`) for the support
   events: `fork_point`, `fork_resolved`, `branch_done`.
 
 The EdgeAgent HAL scheduler (spec 04 §1) can run alongside multi-team layouts: accepted-draft counts update each
-team's EMA and re-allocate the 16-slot draft budget after every step (`hal` events). mlx-vlm cannot take a
+team's EMA and re-allocate the 16-slot draft budget after every step (`hal` events). a remote endpoint cannot take a
 per-request draft length, so the budgets are computed and logged but not applied. Every step of a run is written to
 `~/.local/state/airlie/runs/<run_id>/events.jsonl` and `trace/`.
 
@@ -315,28 +316,22 @@ and models. `--topology` on `task run`/`task eval`/`task studio` and `topology` 
 the profile for one run; a profile name that is not a kind (a named variant, or a parent other profiles
 `extends`) can be selected the same way and takes its kind from its own `topology.kind` or the file's.
 `--k N` with `N > 1` under the `single` kind selects the `teams` profile. `task doctor` projects memory per
-profile across every managed engine. Profiles carry no engine flags: the engines come from the base config, and
-`task restart` takes no `--topology`.
+profile. Profiles carry no engine flags: the engines come from the base config.
 
-## Engines on demand
 
-Each engine in `airlie.yaml` has a `lifecycle`. `pinned` (the default): `task up` starts it and it stays up (`main`, `decision` and
-`gemma`, which sets no `lifecycle`). `on_demand` (`small`; the reviewer runs on the pinned `gemma`, so a review never waits for a cold start): nothing starts it until a call needs it, and it is stopped once it has
-been unused and unheld for `idle_unload_s` (default 600). Every role call holds its engine for its duration, so a
-busy engine is never stopped; when memory is short the manager stops idle on-demand engines to make room, and a
-caller that must wait gets the reason (shown in the chat strip and the Admin Engines table).
+## Engines
 
-- `task serve` owns the manager: chat, stories and the tick's jobs start engines through it, and it adopts engines
-  that are already running (by their pid files) rather than starting a second copy.
-- A process outside serve (`task story`, `airlie run`, the tick) takes a lease from serve
-  (`POST /v1/airlie/engines/{name}/leases`, renewed with `PUT`, released with `DELETE`; it expires after
-  `manager.lease_ttl_s`, default 120 s). With no serve answering, it starts the engine itself and leaves it running for
-  serve's reaper to stop later. Starts are serialized within one process, and a start that loses the race to another
-  process is tolerated.
-- Weights download on first use: the engine's start fetches the pinned snapshot with a progress line and fails early
-  when the disk is too small. `task models:pull` fetches ahead of time.
-- The `manager:` block tunes it: `margin_gb`, `start_timeout_s`, `wait_timeout_s`, `reap_every_s`, `lease_ttl_s`.
-- `task doctor` projects the pinned set as the floor and every resident engine on top of it against the wired limit.
+airlie never starts or stops an inference server. `engines:` in `airlie.yaml` lists remote HTTP endpoints; the
+committed one is `workflow`:
+
+- `base_url` and `api_key` come from `AIRLIE_WORKFLOW_BASE_URL` and `AIRLIE_WORKFLOW_API_KEY` (an unset key is none);
+  a person's own endpoint goes in `airlie.local.yaml`.
+- `format` is the wire dialect (`openai` or `anthropic`); `models` are the catalog names the endpoint serves;
+  `passthru` renames a catalog name to the one the server expects.
+- Roles pick a catalog model and the engine is derived from it, so swapping endpoints never touches the roles.
+- `task serve` is airlie's own OpenAI-compatible endpoint on top of those engines (roles and catalog models).
+- `task doctor` asks each engine's `GET <base_url>/models`: an unreachable or failing one is a red row naming the
+  engine and the URL; a 401 or 403 counts as reachable and says to check the key.
 
 ## Repository chats
 
@@ -425,9 +420,7 @@ trains the spec 03 §2 model (frozen Qwen3-0.6B embedder, three projection layer
 
 ## Choosing the team model
 
-The default team / chief model is `generalist` (Qwen3.8-27B, hybrid attention). mlx-vlm's prefix cache stores
-hybrid (linear/SSM) state as checkpoints (`cache_checkpoints`), so a resumed turn is not re-prefilled; `task
-doctor` reports that as ok. Swap with one line:
+The default team / chief model is `generalist` (Qwen3.8-27B, hybrid attention). Swap with one line:
 `roles.coder.model` (and `roles.aggregator.model`) at another catalog entry; numbers in
 [`docs/bench/`](docs/bench/).
 
@@ -441,12 +434,8 @@ fragment is deep-merged in list order, then the root file's other keys merge on
 top, then `airlie.local.yaml` (deep-merged, gitignored, and **not** processed for `includes:`), then the selected
 topology profile. Role prompts, model paths, `story.repo`, and the like resolve against the **root** config file's
 directory (`airlie.yaml`'s parent), not the including fragment's directory. Copy `airlie.local.example.yaml` to
-`airlie.local.yaml` for local overrides. Every seam is a key there: engines (`mlx_vlm` managed process, one per model,
-or any `openai_http` server), the model catalog (pinned
-Hugging Face revisions; `bench: true` entries are compared by `task bench:models`; `tool_call_parser`
-names mlx-vlm's parser for the model, sent per request: `qwen3_coder`, `atem`; unset lets the server infer it
-from the chat template), roles, tools and MCP servers, the router (`jev` on the decision engine's `/v1/decisions`
-or `chief`), the LTS admission controller, summarizer, scheduler, teams, aggregator, topology profiles, and the
+`airlie.local.yaml` for local overrides. Every seam is a key there: engines (remote HTTP endpoints, `workflow` by default), the model catalog (names and labels;
+`bench: true` entries are compared by `task bench:models`), roles, tools and MCP servers, the router, the LTS admission controller, summarizer, scheduler, teams, aggregator, topology profiles, and the
 `studio` block (chief role, parallelism, the review: which roles are reviewed, how many fix rounds; `done_check`:
 a coder that stops on a brief with acceptance criteria ticks each one against its diff before review, and
 `done_check_steps` is what a miss may cost). A role may
@@ -530,7 +519,7 @@ Built for a Mac Studio M5 Max with 128 GB unified memory. Set the wired limit (`
 task gpu:limit
 ```
 
-`task doctor` tells you if it is missing (its memory projection counts the pinned engines as the floor, the on-demand ones on top).
+`task doctor` tells you if it is missing.
 
 ## License
 

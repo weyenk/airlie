@@ -189,3 +189,48 @@ def test_box_leftovers_reports_old_building_disks_with_their_size_and_never_dele
     assert row.status == "warn" and row.detail.startswith("2 leftover image-build disk(s), 32 GB")
     probe.vms = probe.vms[2:]  # type: ignore[attr-defined]
     assert box_leftovers_check(probe, now).status == "ok"
+
+
+def _http_cfg(tmp_path: Path) -> AirlieConfig:
+    return make_cfg(
+        tmp_path,
+        {"workflow": {"kind": "http", "base_url": "http://workflow.invalid/v1", "models": ["team"]}},
+        {"team": "org/model"},
+    )
+
+
+def test_an_unreachable_engine_url_is_a_problem_string_naming_engine_and_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    from airlie.doctor import RealProbe
+
+    seen: list[str] = []
+
+    def refuse(url: str, **_: object) -> httpx.Response:
+        seen.append(url)
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(httpx, "get", refuse)
+    row = by_name(run_checks(_http_cfg(tmp_path), RealProbe()))["engine:workflow"]
+    assert row.status == "fail"
+    assert "workflow" in row.detail and "http://workflow.invalid/v1" in row.detail
+    assert "AIRLIE_WORKFLOW_BASE_URL" in row.detail
+    assert "http://workflow.invalid/v1/models" in seen
+
+
+def test_a_reachable_engine_is_ok_and_an_auth_refusal_still_counts_as_reachable(tmp_path: Path) -> None:
+    class Answers(FakeProbe):
+        def __init__(self, status: int | None) -> None:
+            super().__init__()
+            self.status = status
+
+        def http_status(self, url: str, headers: dict[str, str] | None = None) -> int | None:
+            return self.status
+
+    cfg = _http_cfg(tmp_path)
+    assert by_name(run_checks(cfg, Answers(200)))["engine:workflow"].status == "ok"
+    assert by_name(run_checks(cfg, Answers(401)))["engine:workflow"].status == "ok"
+    assert by_name(run_checks(cfg, Answers(502)))["engine:workflow"].status == "fail"
+    assert by_name(run_checks(cfg, Answers(None)))["engine:workflow"].status == "fail"

@@ -27,7 +27,7 @@ tasks:
       - echo "ready — try 'task doctor'"
 
   doctor:
-    desc: Check config, hardware limits, models on disk and tooling; exit 1 on any red row
+    desc: Check config, each engine's base_url answers over HTTP, hardware limits and tooling; exit 1 on any red row
     cmds:
       - '{{.RUN}} airlie doctor {{.CLI_ARGS}}'
 
@@ -40,31 +40,6 @@ tasks:
     desc: Show the model catalog and the engine serving each model
     cmds:
       - '{{.RUN}} airlie models list {{.CLI_ARGS}}'
-
-  up:
-    desc: Start the mlx-vlm engines from airlie.yaml (autostart ones; `-- NAME` starts one by hand) and wait until their models are ready
-    cmds:
-      - '{{.RUN}} airlie engine up {{.CLI_ARGS}}'
-
-  down:
-    desc: Stop the managed engine(s)
-    cmds:
-      - '{{.RUN}} airlie engine down {{.CLI_ARGS}}'
-
-  restart:
-    desc: Stop then start the managed mlx-vlm engines
-    cmds:
-      - '{{.RUN}} airlie engine restart {{.CLI_ARGS}}'
-
-  status:
-    desc: Show engine pid, health and per-model readiness
-    cmds:
-      - '{{.RUN}} airlie engine status {{.CLI_ARGS}}'
-
-  logs:
-    desc: "Tail the engine log (task logs -- -f to follow)"
-    cmds:
-      - '{{.RUN}} airlie engine logs {{.CLI_ARGS}}'
 
   run:
     desc: "Run the configured topology on a goal in a repo (task run -- \"goal\" --repo PATH --topology fork --test-cmd \"pytest -q\")"
@@ -572,7 +547,7 @@ tasks:
       - '{{.RUN}} python scripts/run_layer.py unit --quarantined only {{.CLI_ARGS}}'
 
   test:live:
-    desc: Live tests against a running engine (Apple Silicon, after `task up`)
+    desc: Live tests against the configured HTTP engine (AIRLIE_WORKFLOW_BASE_URL reachable; `task doctor` checks)
     cmds:
       - '{{.RUN}} pytest -m live {{.CLI_ARGS}}'
 

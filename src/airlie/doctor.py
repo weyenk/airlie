@@ -15,6 +15,7 @@ import httpx
 
 from airlie.boxes.sweep import Vm, leftovers, tart_vms
 from airlie.config import AirlieConfig
+from airlie.config.schema import EngineSpec
 
 Status = Literal["ok", "warn", "fail"]
 REQUIRED_TOOLS = ("task", "uv", "git")
@@ -196,6 +197,40 @@ def node_check(version: str | None, pin: str) -> CheckResult:
     )
 
 
+def engine_check(name: str, spec: EngineSpec, probe: SystemProbe) -> CheckResult:
+    """An engine is a remote HTTP endpoint airlie never starts: it must answer `GET <base_url>/models`.
+    Any answer below 500 counts (a 401 means the server is there and the key is the question)."""
+    url = f"{spec.base_url.rstrip('/')}/models"
+    headers: dict[str, str] | None = None
+    if spec.api_key:
+        headers = (
+            {"x-api-key": spec.api_key, "anthropic-version": "2023-06-01"}
+            if spec.format == "anthropic"
+            else {"Authorization": f"Bearer {spec.api_key}"}
+        )
+    status = probe.http_status(url, headers)
+    row = f"engine:{name}"
+    if status is None:
+        return CheckResult(
+            row,
+            "fail",
+            f"engine {name!r} not reachable at {spec.base_url} (GET {url} got no answer); "
+            "check AIRLIE_WORKFLOW_BASE_URL (or engines.%s.base_url in airlie.local.yaml) and that "
+            "the server is up" % name,
+        )
+    if status >= 500:
+        return CheckResult(
+            row,
+            "fail",
+            f"engine {name!r} at {spec.base_url} answers {status} to GET {url}; the server is unwell",
+        )
+    if status in (401, 403):
+        return CheckResult(
+            row, "ok", f"{spec.base_url} answers {status}: reachable, but check AIRLIE_WORKFLOW_API_KEY"
+        )
+    return CheckResult(row, "ok", f"{spec.base_url} answers {status}")
+
+
 def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT) -> list[CheckResult]:
     results: list[CheckResult] = []
     for tool in REQUIRED_TOOLS:
@@ -205,6 +240,7 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
                 f"tool:{tool}", "ok" if v else "fail", v or f"'{tool}' not on PATH (see README install)"
             )
         )
+    results.extend(engine_check(name, spec, probe) for name, spec in cfg.engines.items())
     results.append(tart_check(cfg, probe))
     results.append(box_leftovers_check(probe))
     results.append(softnet_check(cfg, probe))
