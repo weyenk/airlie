@@ -39,6 +39,7 @@ DISPATCHER = "dispatcher"
 MISSING_WORKFLOW = "missing workflow"
 PAUSED_FOR_CHAT = "paused for chat"
 RESUMED = "resumed after chat"
+INTERRUPTED = "interrupted: serve shut down"
 
 log = logging.getLogger("airlie.serve.dispatcher")
 
@@ -101,6 +102,7 @@ class RunDispatcher:
         self._resuming: set[asyncio.Task[None]] = set()
         self._resuming_keys: set[str] = set()
         """Keys whose `resume_run` has not returned yet; not pausable until it has."""
+        self._closed = False
 
     async def notify_status(self, key: str, status: str) -> None:
         """A card of this key has just been moved to `status`. Only Approved matters here."""
@@ -122,6 +124,8 @@ class RunDispatcher:
         return len(self._inflight) - len(self._paused)
 
     def _pump(self) -> None:
+        if self._closed:
+            return
         self._grant_chats()
         self._resume_paused()
         for key in list(self._queue):
@@ -161,6 +165,22 @@ class RunDispatcher:
         """Wait until every started run has finished."""
         while tasks := [t for t in (*self._inflight.values(), *self._resuming) if t is not None]:
             await asyncio.gather(*tasks)
+
+    async def shutdown(self) -> None:
+        """Stop for good: nothing more starts, every in-flight run is cancelled (its card goes to Blocked with
+        a comment saying it was interrupted) and waited for. Call it before the board is closed."""
+        self._closed = True
+        running = {k: t for k, t in self._inflight.items() if t is not None}
+        tasks = [*running.values(), *self._resuming]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for key in running:
+            if self.board.get(key).status == "doing":  # a cancelled run ends no card itself
+                self._block(key, INTERRUPTED)
+        for _, future in self._chat_waiters:
+            future.cancel()
+        self._chat_waiters.clear()
 
     async def request_chat_slot(self, session_id: str) -> ChatLease:
         """Claim a slot for a chat turn, ahead of every queued card. At the cap it pauses a Doing board run;

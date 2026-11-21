@@ -692,6 +692,7 @@ def create_app(
         now,
         start=run_start,
         engine_factory=run_engine,
+        transport=transport,
     )
     app.state.dispatcher = dispatcher
     ticker = LineTicker(
@@ -1832,6 +1833,7 @@ def create_app(
     @app.on_event("shutdown")
     async def shutdown() -> None:
         await ticker.stop()
+        await dispatcher.shutdown()  # in-flight board runs end (their cards Blocked) before the board closes
         for t in engine_tasks:
             t.cancel()
         await asyncio.gather(*engine_tasks, return_exceptions=True)

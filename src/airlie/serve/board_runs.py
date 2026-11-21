@@ -161,10 +161,12 @@ def build_dispatcher(
     *,
     start: StartWorkflow | None = None,
     engine_factory: EngineFactory | None = None,
+    transport: Any = None,
 ) -> RunDispatcher:
     """The dispatcher over `board` for `task serve`. `start`, when given, replaces the whole start (tests);
-    `engine_factory` replaces the engine a real start builds."""
-    runs = BoardRuns(cfg, engine_factory or default_engine_factory(cfg))
+    `engine_factory` replaces the engine a real start builds, and `transport` is the HTTP transport the
+    default one uses (the app's, so a test's mock transport reaches the runs' engines too)."""
+    runs = BoardRuns(cfg, engine_factory or default_engine_factory(cfg, transport))
     return RunDispatcher(
         board=board,
         cfg=cfg,

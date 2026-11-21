@@ -525,3 +525,38 @@ async def test_run_mid_resume_is_not_paused_by_another_chat(tmp_path: Path) -> N
     await lease.release()
     await disp.drain()
     board.close()
+
+
+async def test_shutdown_cancels_runs_blocks_their_cards_and_starts_nothing_more(tmp_path: Path) -> None:
+    board = BoardStore(tmp_path / "board.sqlite")
+    entered = asyncio.Event()
+    started: list[str] = []
+
+    async def start(*, name: str, card: dict[str, Any], key: str) -> object:
+        started.append(key)
+        entered.set()
+        await asyncio.Event().wait()  # never finishes on its own
+        return SimpleNamespace(ok=True)
+
+    one = board.create(level="story", title="one", labels=("workflow:story",))
+    two = board.create(level="story", title="two", labels=("workflow:story",))
+    disp = RunDispatcher(
+        board=board,
+        cfg=SimpleNamespace(runs=RunsSpec(max_concurrent=1)),
+        start=start,  # type: ignore[arg-type]
+        publish=lambda topic, key: None,
+        clock=lambda: 0.0,
+    )
+    for card in (one, two):
+        board.move(card.key, "approved")
+        await disp.notify_status(card.key, "approved")
+    await entered.wait()
+
+    await disp.shutdown()
+
+    assert started == [one.key]  # the queued card was not started by the cancelled run's finish
+    assert board.get(one.key).status == "blocked"
+    assert [c.text for c in board.get(one.key).comments] == ["interrupted: serve shut down"]
+    assert board.get(two.key).status == "approved"
+    await disp.drain()
+    board.close()

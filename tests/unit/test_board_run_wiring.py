@@ -307,3 +307,65 @@ async def test_a_chat_turn_holds_a_dispatcher_slot_and_gives_it_back(tmp_path: P
     assert r.status_code == 200 and "hi" in r.text
     assert slots == ["t1"] and held_during == [1]
     assert app.state.dispatcher._leases == []  # released when the turn ended
+
+
+def test_a_failing_dispatcher_does_not_fail_the_board_write(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    store = BoardStore(tmp_path / "b.sqlite")
+    notify = AsyncMock(side_effect=RuntimeError("dispatcher down"))
+    c = board_client(store, notify)
+    key = c.post("/v1/board/items", json={"level": "initiative", "title": "a"}).json()["key"]
+
+    moved = c.post(f"/v1/board/items/{key}/move", json={"status": "approved"})
+    changed = c.patch(f"/v1/board/items/{key}", json={"status": "doing"})
+
+    assert (moved.status_code, moved.json()["status"]) == (200, "approved")
+    assert (changed.status_code, changed.json()["status"]) == (200, "doing")
+    assert store.get(key).status == "doing"
+    assert "the run dispatcher failed" in caplog.text
+    store.close()
+
+
+async def test_app_shutdown_ends_board_runs_before_the_board_closes(tmp_path: Path) -> None:
+    entered = asyncio.Event()
+
+    async def run_start(*, name: str, card: dict[str, Any], key: str) -> object:
+        entered.set()
+        await asyncio.Event().wait()
+        return SimpleNamespace(ok=True)
+
+    c = cfg(tmp_path)
+    app = create_app(c, run_start=run_start)
+    async with app.router.lifespan_context(app):  # its exit is serve's shutdown, board.close() included
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as http:
+            made = await http.post(
+                "/v1/board/items", json={"level": "initiative", "title": "x", "labels": ["workflow:story"]}
+            )
+            key = made.json()["key"]
+            await http.post(f"/v1/board/items/{key}/move", json={"status": "approved"})
+            await entered.wait()
+        dispatcher = app.state.dispatcher
+
+    assert dispatcher._inflight == {}
+    reopened = BoardStore(c.observability.state_dir.expanduser() / "board.sqlite", prefix=c.board.prefix)
+    assert reopened.get(key).status == "blocked"
+    assert [m.text for m in reopened.get(key).comments] == ["interrupted: serve shut down"]
+    reopened.close()
+
+
+async def test_the_apps_transport_reaches_the_default_run_engine(tmp_path: Path) -> None:
+    seen: list[httpx.Request] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"data": []})
+
+    from airlie.serve.board_runs import default_engine_factory
+
+    c = cfg(tmp_path)
+    engine = default_engine_factory(c, httpx.MockTransport(upstream))()
+    await engine.start()
+    await engine.health()
+    await engine.stop()
+    assert seen  # the mock transport served it: nothing went to the network

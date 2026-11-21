@@ -4,6 +4,7 @@ export. v1 has one person: every comment and item is noah's; a later per-person 
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
@@ -13,6 +14,8 @@ from pydantic import BaseModel, ConfigDict
 from airlie.board.model import Level, Status
 from airlie.board.store import BoardStore, BoardStoreError
 from airlie.story.workflows import workflow_label
+
+log = logging.getLogger("airlie.board.api")
 
 PERSON = "noah"
 STARTED = "the workflow of a started card cannot be changed; make a new card for the other workflow"
@@ -85,8 +88,12 @@ def board_router(
             publish("board", key)
 
     async def moved_to(key: str, before: str, after: str) -> None:
+        """Tell the dispatcher; its failure is logged, never the write's: the card has already moved."""
         if notify is not None and after != before:
-            await notify(key, after)
+            try:
+                await notify(key, after)
+            except Exception:
+                log.exception("the run dispatcher failed on %s moving to %s", key, after)
 
     def mover(request: Request) -> str:
         """Who a status change is recorded as made by: the request's principal, else the one person (v1)."""
