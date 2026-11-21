@@ -78,6 +78,21 @@ test("Open builder goes to the builder, on the chosen workflow when there is one
   expect(router.currentRoute.value.fullPath).toBe("/workflows/build/story");
 });
 
+test("Start story sends the chosen workflow, and leaves it out when none is chosen", async () => {
+  const { w } = await open();
+  await w.get("select[aria-label=Workflow]").setValue("bug-fix");
+  await w.get("[data-start]").trigger("click");
+  await flushPromises();
+  expect(sessions.startStoryCard).toHaveBeenLastCalledWith("chat-1", "story-1", { text: STORY, repo: "acme/api", workflow: "bug-fix" });
+
+  const again = await open();
+  await again.w.get("select[aria-label=Workflow]").setValue("bug-fix");
+  await again.w.get("select[aria-label=Workflow]").setValue("");
+  await again.w.get("[data-start]").trigger("click");
+  await flushPromises();
+  expect(sessions.startStoryCard).toHaveBeenLastCalledWith("chat-1", "story-1", { text: STORY, repo: "acme/api" });
+});
+
 test("a failed workflow list is said and Start story still works without it", async () => {
   defsApi.listWorkflowDefs.mockRejectedValue(new Error("down"));
   const { w } = await open();

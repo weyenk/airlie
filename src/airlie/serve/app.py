@@ -424,6 +424,11 @@ ISSUE_REPO = (
 )
 """Why a story request with both a card and a repo is refused."""
 
+ISSUE_WORKFLOW = (
+    "workflow is for a written request (text) only: an issue's workflow is its workflow:<name> label"
+)
+"""Why a story request with both a card and a workflow is refused."""
+
 
 class StoryRequest(BaseModel):
     """A story: an issue (`card`) or a written request (`text`), and `repo`, a written request's repository
@@ -436,6 +441,7 @@ class StoryRequest(BaseModel):
     card: str | None = None
     text: str | None = None
     repo: str | None = None
+    workflow: str | None = None
 
 
 class InitiativeRequest(BaseModel):
@@ -1097,7 +1103,7 @@ def create_app(
             publish=lambda topic, key: feed.publish(topic, key),
             access=repo_access,
             background=chat_prewarms,
-            start_story=lambda text, repo: begin_story(None, text, repo),
+            start_story=lambda text, repo, workflow: begin_story(None, text, repo, workflow),
             chat_slot=dispatcher.request_chat_slot,
         )
     )
@@ -1364,23 +1370,31 @@ def create_app(
 
     @app.post("/v1/airlie/stories", status_code=202)
     async def start_story(req: StoryRequest) -> dict[str, Any]:
-        return await begin_story(req.card, req.text, req.repo)
+        return await begin_story(req.card, req.text, req.repo, req.workflow)
 
-    async def begin_story(card: str | None, text: str | None, repo_in: str | None) -> dict[str, Any]:
+    async def begin_story(
+        card: str | None, text: str | None, repo_in: str | None, workflow_in: str | None = None
+    ) -> dict[str, Any]:
         """Start a story job from a board card or a written request (also the chat's Start story): its
-        `job_id` and `kind`, or an HTTPException saying why not."""
+        `job_id` and `kind`, or an HTTPException saying why not. A written request's `workflow` (blank is
+        none) goes to the job, which makes the card with a `workflow:<name>` label for it; none, no label."""
         if (card is None) == (text is None):
             raise HTTPException(400, "pass exactly one of card or text")
         repo = (repo_in or "").strip() or None  # a blank repo is none, all the way to the story
         if card is not None and repo is not None:
             raise HTTPException(422, ISSUE_REPO)
+        workflow = (workflow_in or "").strip() or None
+        if card is not None and workflow is not None:
+            raise HTTPException(422, ISSUE_WORKFLOW)
 
         def running(job_id: str) -> bool:
             job = jobs.get(job_id)
             return job is not None and job.state == "running"
 
         try:
-            job_id, events, work = await make_story(cfg, card=card, text=text, repo=repo, running=running)
+            job_id, events, work = await make_story(
+                cfg, card=card, text=text, repo=repo, workflow=workflow, running=running
+            )
         except StoryRunning as e:  # decided before the story is placed: its issue is read, not told or moved
             raise HTTPException(409, str(e)) from e
         except (StorySetupError, BoardError) as e:

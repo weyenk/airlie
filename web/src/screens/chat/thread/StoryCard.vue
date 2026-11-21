@@ -34,7 +34,7 @@ const text = ref(props.text);
 // a repository chat's story is for its repository; a plain chat's for the one last used here
 const first = turns.rowOf(props.sessionId)?.repo ?? remembered();
 const repo = ref(first);
-/** The workflow chosen here. Start story does not send it yet (the start request has no workflow field). */
+/** The workflow chosen here, "" for none: Start story sends it (the card gets its `workflow:` label), or leaves it out. */
 const workflow = ref("");
 const error = ref("");
 const busy = ref(false);
@@ -58,7 +58,7 @@ async function start(): Promise<void> {
   }
   busy.value = true;
   try {
-    const part = await startStoryCard(props.sessionId, props.storyId, { text: body, repo: chosen });
+    const part = await startStoryCard(props.sessionId, props.storyId, { text: body, repo: chosen, ...(workflow.value ? { workflow: workflow.value } : {}) });
     if (chosen !== first) {
       try {
         localStorage.setItem(REPO, chosen); // remembered only when the person chose it

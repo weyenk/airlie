@@ -44,8 +44,11 @@ async def story_job(
     card: str | None,
     text: str | None,
     repo: str | None,
+    workflow: str | None = None,
     running: Callable[[str], bool] | None = None,
 ) -> Any:
+    """A written request's `workflow` (None: none chosen) is the card's `workflow:<name>` label when the job
+    makes the card; none chosen, no label (the card runs `story`, as one without a label does)."""
     raise StoryError(RETIRED)
 
 

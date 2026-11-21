@@ -190,18 +190,30 @@ def _said(text: str) -> str:
     return text
 
 
+def _workflow_name(value: str | None) -> str | None:
+    """A workflow name as the card's `workflow:<name>` label holds it: blank is none (no label), and a name
+    with whitespace in it could not be one."""
+    name = (value or "").strip()
+    if any(c.isspace() for c in name):
+        raise ValueError("a workflow name has no spaces")
+    return name or None
+
+
 class StartStory(BaseModel):
-    """`POST .../stories/{story}/start`: the story card's request as the person edited it, and the
-    repository it is for (owner/name, or the path of a checkout)."""
+    """`POST .../stories/{story}/start`: the story card's request as the person edited it, the repository it
+    is for (owner/name, or the path of a checkout) and, when one was chosen, the workflow the card runs (its
+    `workflow:<name>` label; blank or left out: no label)."""
 
     model_config = ConfigDict(extra="forbid")
     text: Annotated[str, Field(max_length=20_000), AfterValidator(_said)]
     repo: str = Field(min_length=1, max_length=500)
+    workflow: Annotated[str | None, Field(max_length=200), AfterValidator(_workflow_name)] = None
 
 
-StartStoryJob = Callable[[str, str], Awaitable[dict[str, Any]]]
-"""Start a story from a written request on a repository: `{job_id, kind}`, or an HTTPException saying why
-not (serve's `POST /v1/airlie/stories`)."""
+StartStoryJob = Callable[[str, str, str | None], Awaitable[dict[str, Any]]]
+"""Start a story from a written request on a repository, with the workflow its card is to run (None: no
+`workflow:` label): `{job_id, kind}`, or an HTTPException saying why not (serve's
+`POST /v1/airlie/stories`)."""
 
 
 def branch_of(thread_id: str, kind: ChatKind) -> str | None:
@@ -876,7 +888,7 @@ def chat_router(
         starting.add(claim)  # no await since the check: the claim and the check are one step
         try:
             try:
-                job = await start_story(body.text.strip(), body.repo.strip())
+                job = await start_story(body.text.strip(), body.repo.strip(), body.workflow)
             except HTTPException as e:  # the board's reason: the card is free to try again
                 return error(str(e.detail), e.status_code)
             label = f"{body.repo.strip().rstrip('/').rsplit('/', 1)[-1]} · story"
