@@ -145,6 +145,13 @@ def test_write_file_overwrite_limit_defaults_to_200_and_can_be_set(tmp_path: Pat
     assert load_config(write(tmp_path, data)).tools.write_file_max_overwrite_lines == 50
 
 
+def test_runs_max_concurrent_defaults_and_rejects_zero(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, MINIMAL))
+    assert cfg.runs.max_concurrent >= 1
+    with pytest.raises(ConfigError):
+        load_config(write(tmp_path, {**MINIMAL, "runs": {"max_concurrent": 0}}))
+
+
 def test_committed_architect_has_room_for_a_large_edit() -> None:
     """HDS-5 2026-10-16: 4096 tokens cut a whole-file rewrite mid-call; the build architect keeps
     10240 for answers (think_when_red covers red turns)."""

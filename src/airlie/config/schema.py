@@ -1101,6 +1101,10 @@ class ForkSpec(Strict):
     temperatures: list[float] = Field(default=[0.3, 0.7], min_length=1)
 
 
+class RunsSpec(Strict):
+    max_concurrent: int = Field(default=2, ge=1, description="system-wide in-flight start_workflow runs")
+
+
 class RepoMapSpec(Strict):
     enabled: bool = Field(default=True, description="inject a deterministic repository map before the goal")
     max_chars: int = Field(default=6000, ge=0)
@@ -1134,6 +1138,7 @@ class AirlieConfig(Strict):
     topology: TopologySpec = Field(default_factory=TopologySpec)
     fork: ForkSpec = Field(default_factory=ForkSpec)
     router: RouterSpec = Field(default_factory=RouterSpec)
+    runs: RunsSpec = Field(default_factory=RunsSpec)
     studio: StudioSpec = Field(default_factory=StudioSpec)
     story: StorySpec = Field(default_factory=StorySpec)
     workflows: dict[str, WorkflowSpec] = Field(default_factory=dict)

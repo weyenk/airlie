@@ -275,6 +275,11 @@ line:
 #       default: true
 #   test_cmds: []                    # optional allowlist; first entry is the default test_cmd sent to serve
 
+# ---- In-flight workflow runs (board dispatcher) ------------------------------------------------------------------
+# System-wide cap on concurrent start_workflow runs; default 2.
+# runs:
+#   max_concurrent: 2
+
 # ---- The local board (task serve: /v1/board; task board:export) ---------------------------------------------------
 # airlie's own board: initiative → epic → story → subtask, in observability.state_dir/board.sqlite. The story pipeline
 # takes its stories from it (story.board: local, the default; `jira` keeps Jira). Keys are <prefix>-<n>; an import
