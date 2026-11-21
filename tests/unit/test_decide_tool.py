@@ -65,7 +65,7 @@ def test_attach_decide_only_with_a_decision_router_engine(tmp_path: Path) -> Non
     (tmp_path / "p.md").write_text("x")
     base = {
         "version": 1,
-        "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
+        "engines": {"main": {"kind": "http", "base_url": "http://127.0.0.1:8080/v1", "models": ["team"]}},
         "models": {"team": {"repo": "org/t", "revision": "r", "path": "/models/team"}},
         "roles": {
             r: {"prompt": "p.md", "model": "team"} for r in ("architect", "summarizer", "judge", "aggregator")
@@ -118,7 +118,7 @@ def _tool_config(tmp_path: Path, **router):  # type: ignore[no-untyped-def]
     cfg = {
         "version": 1,
         "engines": {
-            "main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]},
+            "main": {"kind": "http", "base_url": "http://127.0.0.1:8080/v1", "models": ["team"]},
             "decision": {"kind": "mlx_vlm", "port": 8081, "models": ["kev"], "decision": True},
         },
         "models": {

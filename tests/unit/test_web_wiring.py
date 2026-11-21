@@ -31,8 +31,8 @@ def _write_config(tmp_path: Path, research_tools: list[str] | None, web: dict | 
         roles["research"]["tools"] = research_tools
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
-        "models": {"team": {"repo": "mlx-community/Qwen3.8-27B-4bit", "revision": "abc123"}},
+        "engines": {"main": {"kind": "http", "base_url": "http://127.0.0.1:8080/v1", "models": ["team"]}},
+        "models": {"team": {}},
         "roles": roles,
     }
     if web is not None:

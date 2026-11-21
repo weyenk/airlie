@@ -39,8 +39,8 @@ def cfg_for(tmp_path: Path, **fork: object):  # type: ignore[no-untyped-def]
         (cfg_dir / f"{r}.md").write_text(f"you are {r}")
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
-        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "engines": {"main": {"kind": "http", "base_url": "http://x/v1", "models": ["base"]}},
+        "models": {"base": {}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
             for r in ("architect", "summarizer", "judge", "aggregator")

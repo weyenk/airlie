@@ -1,9 +1,10 @@
 # Local overrides for airlie.yaml (deep-merged on top). Copy to airlie.local.yaml (gitignored).
-# Example: run everything through an external OpenAI-compatible server instead of in-process MLX.
+# Example: point the workflow engine at an Anthropic-format endpoint of your own.
 # engines:
-#   main:
-#     kind: openai_http
-#     base_url: http://127.0.0.1:8080/v1
+#   workflow:
+#     format: anthropic              # openai (default) | anthropic
+#     base_url: https://your-endpoint.example/v1
+#     api_key: ...                   # or export AIRLIE_WORKFLOW_API_KEY
 
 # Push notifications to the installed phone app (README, Phone): who a push service may reach about this server,
 # mailto:... (a dotted domain) or https://... ; without it push is off and `task doctor` warns.

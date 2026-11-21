@@ -96,9 +96,7 @@ def story_yaml(tmp_path: Path, repos_root: Path) -> Path:
             roles[name]["tools"] = tools
     data = {
         "version": 1,
-        "engines": {
-            "main": {"kind": "openai_http", "base_url": BASE_URL, "models": [f"m-{r}" for r in roles]}
-        },
+        "engines": {"main": {"kind": "http", "base_url": BASE_URL, "models": [f"m-{r}" for r in roles]}},
         "models": {f"m-{r}": {"repo": f"org/{r}", "revision": "r"} for r in roles},
         "roles": roles,
         "teams": {"orchestrator": "native", "max_steps": 6},

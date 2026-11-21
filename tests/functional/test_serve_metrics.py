@@ -33,7 +33,7 @@ def _cfg(tmp_path: Path) -> object:
                 "models": ["base"],
             }
         },
-        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "models": {"base": {}},
         "roles": {
             "architect": {"prompt": "architect.md", "model": "base"},
             "summarizer": {"prompt": "summarizer.md", "model": "base"},

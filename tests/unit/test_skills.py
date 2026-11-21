@@ -50,8 +50,8 @@ def test_routable_roles_need_a_summary(tmp_path: Path) -> None:
     names = ("architect", "qa", "chief", "summarizer", "judge", "aggregator")
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["m"]}},
-        "models": {"m": {"repo": "o/m", "revision": "r"}},
+        "engines": {"main": {"kind": "http", "base_url": "http://x/v1", "models": ["m"]}},
+        "models": {"m": {}},
         "roles": {n: {"prompt": f"{n}.md", "model": "m"} for n in names},
     }
     (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
@@ -76,8 +76,8 @@ def test_routable_false_in_frontmatter_excludes_the_role(tmp_path: Path) -> None
         (tmp_path / f"{n}.md").write_text(f"# {n}\n")
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["m"]}},
-        "models": {"m": {"repo": "o/m", "revision": "r"}},
+        "engines": {"main": {"kind": "http", "base_url": "http://x/v1", "models": ["m"]}},
+        "models": {"m": {}},
         "roles": {
             n: {"prompt": f"{n}.md", "model": "m"}
             for n in ("chief", "architect", "summarizer", "judge", "aggregator")

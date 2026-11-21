@@ -56,7 +56,7 @@ def test_a_workflow_problem_and_a_missing_composer_workflow_are_both_reported(tm
 
 
 def test_engine_serving_unknown_model_fails(tmp_path: Path) -> None:
-    data = {**MINIMAL, "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["ghost"]}}}
+    data = {**MINIMAL, "engines": {"main": {"kind": "http", "base_url": "http://x/v1", "models": ["ghost"]}}}
     with pytest.raises(ConfigError, match=r"engines\.main\.models.*'ghost'"):
         load_config(write(tmp_path, data))
 
@@ -64,7 +64,7 @@ def test_engine_serving_unknown_model_fails(tmp_path: Path) -> None:
 def test_model_used_by_a_role_but_served_by_no_engine_fails(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
-        "models": {**MINIMAL["models"], "orphan": {"repo": "x/y", "revision": "r"}},
+        "models": {**MINIMAL["models"], "orphan": {}},
         "roles": {**MINIMAL["roles"], "judge": {"prompt": "prompts/roles/judge.md", "model": "orphan"}},
     }
     with pytest.raises(ConfigError, match=r"models\.orphan.*no engine"):
@@ -75,8 +75,8 @@ def test_model_served_by_two_engines_fails(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
         "engines": {
-            "main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]},
-            "dup": {"kind": "mlx_vlm", "port": 8081, "models": ["team"]},
+            "main": {"kind": "http", "base_url": "http://x/v1", "models": ["team"]},
+            "dup": {"kind": "http", "base_url": "http://y/v1", "models": ["team"]},
         },
     }
     with pytest.raises(ConfigError, match=r"models\.team.*(main.*dup|dup.*main)"):
@@ -103,7 +103,7 @@ def test_controller_kind_must_be_known(tmp_path: Path) -> None:
 
 
 def test_openai_http_engine_requires_base_url(tmp_path: Path) -> None:
-    data = {**MINIMAL, "engines": {"main": {"kind": "openai_http", "models": ["team"]}}}
+    data = {**MINIMAL, "engines": {"main": {"kind": "http", "models": ["team"]}}}
     with pytest.raises(ConfigError, match=r"engines\.main.*base_url"):
         load_config(write(tmp_path, data))
 
@@ -117,7 +117,7 @@ def test_teams_role_must_exist(tmp_path: Path) -> None:
 def test_two_managed_engines_cannot_share_a_port(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
-        "models": {**MINIMAL["models"], "small": {"repo": "x/y", "revision": "r"}},
+        "models": {**MINIMAL["models"], "small": {}},
         "engines": {
             "main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]},
             "aux": {"kind": "mlx_vlm", "port": 8080, "models": ["small"]},
@@ -144,7 +144,7 @@ def test_local_overrides_deep_merge(tmp_path: Path) -> None:
         yaml.safe_dump(
             {
                 "teams": {"k": 1},
-                "engines": {"main": {"kind": "openai_http", "base_url": "http://127.0.0.1:1/v1"}},
+                "engines": {"main": {"kind": "http", "base_url": "http://127.0.0.1:1/v1"}},
             }
         )
     )
@@ -152,7 +152,7 @@ def test_local_overrides_deep_merge(tmp_path: Path) -> None:
     assert cfg.teams.k == 1
     assert cfg.teams.role == "architect"  # untouched sibling survives the merge
     e = cfg.engines["main"]
-    assert e.kind == "openai_http"
+    assert e.kind == "http"
     assert e.base_url == "http://127.0.0.1:1/v1"
     assert e.models == ["team"]  # untouched sibling survives the merge
 
@@ -1544,7 +1544,7 @@ def mlx(tmp_path: Path, engines: dict, *, roles: dict | None = None, models: dic
         "models": models
         or {
             "team": {"repo": "org/team", "revision": "r0", "path": "/models/team"},
-            "base": {"repo": "org/base", "revision": "r1"},
+            "base": {},
         },
         "roles": {**MINIMAL["roles"], **(roles or {})},
     }
@@ -1571,9 +1571,7 @@ def test_an_mlx_vlm_engine_is_addressed_by_its_exact_model_path(tmp_path: Path) 
 
 
 def test_passthru_name_falls_back_to_the_model_key_itself() -> None:
-    e = EngineSpec(
-        kind="http", base_url="http://h/v1", models=["team"], passthru={"team": "alias"}
-    )
+    e = EngineSpec(kind="http", base_url="http://h/v1", models=["team"], passthru={"team": "alias"})
     assert e.passthru_name("team") == "alias"
     assert e.passthru_name("other") == "other"
 

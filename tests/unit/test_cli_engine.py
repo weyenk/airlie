@@ -16,7 +16,7 @@ def write_cfg(tmp_path: Path) -> Path:
         "version": 1,
         "engines": {
             "main": {"kind": "mlx_vlm", "port": 8080, "models": ["base"]},
-            "ext": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["small"]},
+            "ext": {"kind": "http", "base_url": "http://x/v1", "models": ["small"]},
         },
         "models": {
             "base": {"repo": "org/base", "revision": "r1", "estimated_memory_gb": 16},

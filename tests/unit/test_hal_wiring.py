@@ -68,8 +68,8 @@ async def test_orchestrator_updates_hal_from_steps_and_emits_budgets(tmp_path: P
         (cfg_dir / f"{r}.md").write_text("x")
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
-        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "engines": {"main": {"kind": "http", "base_url": "http://x/v1", "models": ["base"]}},
+        "models": {"base": {}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
             for r in ("architect", "summarizer", "judge", "aggregator")

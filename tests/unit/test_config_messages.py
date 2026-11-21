@@ -37,7 +37,7 @@ def test_a_consistent_config_has_no_problems(tmp_path: Path) -> None:
 
 def test_engine_naming_an_unknown_model(tmp_path: Path) -> None:
     data = valid(tmp_path)
-    data["models"]["spare"] = {"repo": "o/spare", "revision": "r"}
+    data["models"]["spare"] = {}
     data["engines"]["ext"] = {
         "kind": "openai_http",
         "base_url": "http://x/v1",
@@ -48,11 +48,11 @@ def test_engine_naming_an_unknown_model(tmp_path: Path) -> None:
 
 def test_managed_engines_may_not_share_a_port_but_unmanaged_ones_may(tmp_path: Path) -> None:
     data = valid(tmp_path)
-    data["models"]["kev"] = {"repo": "o/kev", "revision": "r"}
+    data["models"]["kev"] = {}
     data["engines"]["dec"] = {"kind": "mlx_vlm", "port": 8080, "models": ["kev"], "decision": True}
     assert problems(data) == ["port 8080 is used by more than one managed engine: main, dec"]
     data["engines"]["dec"]["port"] = 8081
-    data["models"]["spare"] = {"repo": "o/spare", "revision": "r"}
+    data["models"]["spare"] = {}
     data["engines"]["ext"] = {
         "kind": "openai_http",
         "port": 8080,
@@ -64,8 +64,8 @@ def test_managed_engines_may_not_share_a_port_but_unmanaged_ones_may(tmp_path: P
 
 def test_an_mlx_vlm_engine_serves_exactly_one_model(tmp_path: Path) -> None:
     data = valid(tmp_path)  # the first engine is fine: a skipped engine must not end the checks
-    data["models"]["kev"] = {"repo": "o/kev", "revision": "r"}
-    data["models"]["kev2"] = {"repo": "o/kev2", "revision": "r"}
+    data["models"]["kev"] = {}
+    data["models"]["kev2"] = {}
     data["engines"]["dec"] = {"kind": "mlx_vlm", "port": 8081, "models": ["kev", "kev2"]}
     assert problems(data) == ["engines.dec: an mlx_vlm engine serves exactly one model"]
     data["engines"]["dec"]["models"] = ["kev2"]
@@ -96,7 +96,7 @@ def test_role_problems_do_not_stop_the_checks_of_later_roles(tmp_path: Path) -> 
 
 def test_a_role_model_served_by_no_engine_or_by_two(tmp_path: Path) -> None:
     data = valid(tmp_path)
-    data["models"]["loose"] = {"repo": "o/l", "revision": "r"}
+    data["models"]["loose"] = {}
     data["roles"]["architect"]["model"] = "loose"
     assert problems(data) == [
         "models.loose (used by roles.architect) is served by no engine; add it to an engine's models list"
@@ -203,8 +203,8 @@ def test_a_missing_config_file_is_named(tmp_path: Path) -> None:
 
 def test_problems_are_reported_together_under_one_heading(tmp_path: Path) -> None:
     data = copy.deepcopy(MINIMAL)
-    data["models"]["spare"] = {"repo": "o/spare", "revision": "r"}
-    data["engines"]["ext"] = {"kind": "openai_http", "base_url": "http://x/v1", "models": ["spare", "ghost"]}
+    data["models"]["spare"] = {}
+    data["engines"]["ext"] = {"kind": "http", "base_url": "http://x/v1", "models": ["spare", "ghost"]}
     data["roles"]["summarizer"]["model"] = "ghost"
     with pytest.raises(ConfigError) as ei:
         load_config(write(tmp_path, data))
@@ -340,9 +340,9 @@ def test_an_engine_that_is_not_mlx_vlm_does_not_end_the_one_model_check_of_later
     tmp_path: Path,
 ) -> None:
     data = valid(tmp_path)
-    data["models"]["spare"] = {"repo": "o/spare", "revision": "r"}
-    data["models"]["kev"] = {"repo": "o/kev", "revision": "r"}
-    data["models"]["kev2"] = {"repo": "o/kev2", "revision": "r"}
-    data["engines"]["ext"] = {"kind": "openai_http", "base_url": "http://x/v1", "models": ["spare"]}
+    data["models"]["spare"] = {}
+    data["models"]["kev"] = {}
+    data["models"]["kev2"] = {}
+    data["engines"]["ext"] = {"kind": "http", "base_url": "http://x/v1", "models": ["spare"]}
     data["engines"]["dec"] = {"kind": "mlx_vlm", "port": 8081, "models": ["kev", "kev2"]}
     assert problems(data) == ["engines.dec: an mlx_vlm engine serves exactly one model"]

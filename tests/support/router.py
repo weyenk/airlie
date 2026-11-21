@@ -44,11 +44,11 @@ def _decision_cfg(tmp_path, *, decision: bool = True):  # type: ignore[no-untype
     data = {
         "version": 1,
         "engines": {
-            "main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]},
+            "main": {"kind": "http", "base_url": "http://127.0.0.1:8080/v1", "models": ["team"]},
             "dec": {"kind": "mlx_vlm", "port": 8084, "model": "clef", "decision": decision},
         },
         "models": {
-            "team": {"repo": "org/t", "revision": "r"},
+            "team": {},
             "clef": {"repo": "org/c", "revision": "r", "path": "/models/clef"},
         },
         "roles": {
