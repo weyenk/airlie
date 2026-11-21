@@ -491,3 +491,37 @@ async def test_paused_run_resumes_when_a_slot_frees_while_chat_still_holds_one(t
     await disp.drain()
     assert board.get(b.key).status == "review"
     board.close()
+
+
+async def test_run_mid_resume_is_not_paused_by_another_chat(tmp_path: Path) -> None:
+    board = BoardStore(tmp_path / "board.sqlite")
+    a = board.create(level="story", title="a", labels=("workflow:story",))
+    gate = Gate([a.key])
+    disp = chat_dispatcher(board, gate)
+    resume_entered, resume_gate = asyncio.Event(), asyncio.Event()
+
+    async def slow_resume(key: str) -> None:
+        gate.calls.append(("resume", key))
+        resume_entered.set()
+        await resume_gate.wait()
+
+    await approve(board, disp, a.key)
+    await gate.entered[a.key].wait()
+    first = await disp.request_chat_slot("s1")
+    disp.resume_run = slow_resume
+
+    releasing = asyncio.create_task(first.release())
+    await resume_entered.wait()  # a is mid-resume
+    second = asyncio.create_task(disp.request_chat_slot("s2"))
+    await asyncio.sleep(0)  # a yield, not a wait: lets a (wrong) pause of a run
+    assert not second.done()
+    assert gate.pause.await_count == 1  # only the first chat's pause
+
+    resume_gate.set()
+    await releasing
+    gate.gates[a.key].set()  # a finishes, which frees the slot for the waiting chat
+    lease = await second
+    assert gate.pause.await_count == 1
+    await lease.release()
+    await disp.drain()
+    board.close()

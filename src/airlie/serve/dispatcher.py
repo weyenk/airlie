@@ -99,6 +99,8 @@ class RunDispatcher:
         self._leases: list[ChatLease] = []
         self._chat_waiters: deque[tuple[str, asyncio.Future[ChatLease]]] = deque()
         self._resuming: set[asyncio.Task[None]] = set()
+        self._resuming_keys: set[str] = set()
+        """Keys whose `resume_run` has not returned yet; not pausable until it has."""
 
     async def notify_status(self, key: str, status: str) -> None:
         """A card of this key has just been moved to `status`. Only Approved matters here."""
@@ -215,7 +217,7 @@ class RunDispatcher:
         if self.pause_run is None:
             return None
         for key, task in reversed(self._inflight.items()):
-            if task is not None and key not in self._paused:
+            if task is not None and key not in self._paused and key not in self._resuming_keys:
                 return key
         return None
 
@@ -233,14 +235,18 @@ class RunDispatcher:
             and self._running() + len(self._leases) < self.cfg.runs.max_concurrent
         ):
             key = self._paused.popleft()
+            self._resuming_keys.add(key)
             task = asyncio.create_task(self._resume(key))
             self._resuming.add(task)
             task.add_done_callback(self._resuming.discard)
 
     async def _resume(self, key: str) -> None:
         try:
-            if self.resume_run is not None:
-                await self.resume_run(key)
+            try:
+                if self.resume_run is not None:
+                    await self.resume_run(key)
+            finally:
+                self._resuming_keys.discard(key)
         except Exception as exc:
             log.exception("resuming %s failed", key)
             self._paused.appendleft(key)  # still Doing, still holding its place; retried on the next pump
