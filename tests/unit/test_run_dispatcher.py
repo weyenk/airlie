@@ -166,3 +166,107 @@ async def test_concurrent_notify_starts_once(tmp_path: Path) -> None:
     start.assert_awaited_once()
     assert [m.to_status for m in board.moves(card.key)].count("doing") == 1
     board.close()
+
+
+def _gated_start(entered: dict[str, asyncio.Event], gates: dict[str, asyncio.Event], order: list[str]) -> Any:
+    async def start(*, name: str, card: dict[str, Any], key: str) -> object:
+        order.append(key)
+        entered[key].set()
+        await gates[key].wait()
+        return SimpleNamespace(ok=True)
+
+    return start
+
+
+async def test_second_card_stays_approved_until_slot_frees(tmp_path: Path) -> None:
+    board = BoardStore(tmp_path / "board.sqlite")
+    a = board.create(level="story", title="a", labels=("workflow:story",))
+    b = board.create(level="story", title="b", labels=("workflow:story",))
+    entered = {a.key: asyncio.Event(), b.key: asyncio.Event()}
+    gates = {a.key: asyncio.Event(), b.key: asyncio.Event()}
+    order: list[str] = []
+    disp = make_dispatcher(board, _gated_start(entered, gates, order))  # type: ignore[arg-type]
+    disp.cfg = SimpleNamespace(runs=RunsSpec(max_concurrent=1))
+
+    for card in (a, b):
+        board.move(card.key, "approved")
+        await disp.notify_status(card.key, "approved")
+    await entered[a.key].wait()
+    assert board.get(a.key).status == "doing"
+    assert board.get(b.key).status == "approved"
+    assert order == [a.key]
+
+    gates[a.key].set()
+    await entered[b.key].wait()
+    assert board.get(b.key).status == "doing"
+    gates[b.key].set()
+    await disp.drain()
+
+    assert board.get(a.key).status == "review"
+    assert board.get(b.key).status == "review"
+    board.close()
+
+
+async def test_fifo_order_when_slot_opens(tmp_path: Path) -> None:
+    board = BoardStore(tmp_path / "board.sqlite")
+    cards = [board.create(level="story", title=t, labels=("workflow:story",)) for t in "xabc"]
+    x, a, b, c = (card.key for card in cards)
+    entered = {k: asyncio.Event() for k in (x, a, b, c)}
+    gates = {k: asyncio.Event() for k in (x, a, b, c)}
+    order: list[str] = []
+    disp = make_dispatcher(board, _gated_start(entered, gates, order))  # type: ignore[arg-type]
+    disp.cfg = SimpleNamespace(runs=RunsSpec(max_concurrent=1))
+
+    for key in (x, a, b, c):
+        board.move(key, "approved")
+        await disp.notify_status(key, "approved")
+    await entered[x].wait()
+    for key in (x, a, b, c):
+        gates[key].set()
+    await disp.drain()
+
+    assert order == [x, a, b, c]
+    board.close()
+
+
+async def test_busy_worktree_stays_approved_and_queued_without_blocking(tmp_path: Path) -> None:
+    board = BoardStore(tmp_path / "board.sqlite")
+    busy = board.create(level="story", title="busy", labels=("workflow:story",))
+    free = board.create(level="story", title="free", labels=("workflow:story",))
+    start = AsyncMock(return_value=SimpleNamespace(ok=True))
+    locked = {"busy": True}
+    disp = make_dispatcher(board, start)
+    disp.workdir_for = lambda card: Path(card["title"])
+    disp.can_lock = lambda path: not (locked.get(path.name, False))
+
+    for card in (busy, free):
+        board.move(card.key, "approved")
+        await disp.notify_status(card.key, "approved")
+    await disp.drain()
+
+    assert board.get(busy.key).status == "approved"
+    assert board.get(busy.key).comments == ()
+    assert board.get(free.key).status == "review"  # a busy card does not hold up the one behind it
+    assert [c.kwargs["key"] for c in start.await_args_list] == [free.key]
+
+    locked["busy"] = False
+    await disp.pump()
+    await disp.drain()
+
+    assert board.get(busy.key).status == "review"
+    board.close()
+
+
+async def test_can_lock_defaults_to_free(tmp_path: Path) -> None:
+    board = BoardStore(tmp_path / "board.sqlite")
+    start = AsyncMock(return_value=SimpleNamespace(ok=True))
+    card = board.create(level="story", title="d", labels=("workflow:story",))
+    disp = make_dispatcher(board, start)
+    disp.workdir_for = lambda card: Path(card["title"])  # no can_lock injected
+
+    board.move(card.key, "approved")
+    await disp.notify_status(card.key, "approved")
+    await disp.drain()
+
+    assert board.get(card.key).status == "review"
+    board.close()
