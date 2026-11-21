@@ -38,8 +38,8 @@ from tests.support.serve_chat import superpowers_tree
 
 CHAT_SKILLS = Path(__file__).resolve().parents[2] / "skills" / "chat"
 """The chat skills airlie ships: the / menu is tested on the real /story."""
-WORKFLOWS = Path(__file__).resolve().parents[2] / "config" / "workflows"
-"""The workflows airlie ships (airlie.yaml includes them), for a server the builder is tested on."""
+WORKFLOWS = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "workflows"
+"""The story/layer workflows kept as test fixtures: production ships none."""
 KEY = "e2e-admin-key"
 """The admin key the test server is started with: made up here, for this server only."""
 CARDS = (

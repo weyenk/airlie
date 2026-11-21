@@ -11,7 +11,7 @@ This file is already in session context for Qwen Code and VS Code chat. Do not r
 | `src/airlie/` | Python package (serve, workflows, chat, board, …) |
 | `web/` | Vue Studio UI (built into `src/airlie/serve/web_next`) |
 | `hub/` | Job Bus API (Vercel); Mac bridge claims work for `task serve` |
-| `config/` | `models.yaml`, `roles.yaml`, `profiles.yaml`, `workflows/*.yaml` |
+| `config/` | `models.yaml`, `roles.yaml`, `profiles.yaml`; optional `workflows/*.yaml` |
 | `airlie.yaml` | Root config (`includes:`); overrides in gitignored `airlie.local.yaml` |
 | `tests/` | Pyramid under `tests/<layer>/`; quarantine in `tests/unit/quarantine.toml` |
 | `docs/` | Deep dives — open only when the task needs them |
@@ -23,7 +23,7 @@ Merge order: `includes` → root keys → `airlie.local.yaml` → topology profi
 
 - Engines are remote HTTP only (`kind: http`). The committed `workflow` engine takes `AIRLIE_WORKFLOW_BASE_URL` / optional `AIRLIE_WORKFLOW_API_KEY` (or the same keys in `airlie.local.yaml`). Airlie never starts an inference server; `task doctor` probes `GET <base_url>/models`. Point at omlx, llama.cpp, or any OpenAI/Anthropic-compatible API — real URLs stay out of git.
 - Catalog models are names/labels in [`config/models.yaml`](config/models.yaml); roles pick a model and the engine is derived.
-- Workflows live under [`config/workflows/`](config/workflows/) (glob include; empty match is an error). Four node kinds: `WORK`, `ROUND_ROBIN`, `SUPERVISOR_WORKERS`, `K_INDEPENDENT_TEAMS`, wired by `edges` (`when` / `loop` on the wire). A `WORK` node has exactly one of `prompt` / `prompt_id` / `run`.
+- Workflows (when you have them) live under [`config/workflows/`](config/workflows/) and are pulled in by an `includes:` glob (empty match is an error — omit the include until a file exists). Production ships none; test copies of story/layer are under `tests/fixtures/workflows/`. Four node kinds: `WORK`, `ROUND_ROBIN`, `SUPERVISOR_WORKERS`, `K_INDEPENDENT_TEAMS`, wired by `edges` (`when` / `loop` on the wire). A `WORK` node has exactly one of `prompt` / `prompt_id` / `run`.
 - Chat: `chat.kinds.<plain|repository>.tools` / `ask_first`, `chat.max_steps`; repository tools only on repository kind.
 - `task serve`'s manager still owns on-demand resources it registers (repository-chat VMs under `boxes`). SearXNG for `web_search` is outside the manager (`task searxng:up`).
 

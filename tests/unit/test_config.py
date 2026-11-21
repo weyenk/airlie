@@ -1367,12 +1367,9 @@ def test_a_glob_that_matches_nothing_is_an_error(tmp_path: Path) -> None:
         load_config(write(tmp_path, {**MINIMAL, "includes": ["parts/*.yaml"]}))
 
 
-def test_the_shipped_story_workflow_is_four_kind() -> None:
-    story = load_config(ROOT / "airlie.yaml", NO_LOCAL).workflows["story"]
-    assert story.title == "story"
-    assert story.nodes
-    assert all(getattr(n, "kind", None) for n in story.nodes.values())
-    assert story.edges
+def test_production_ships_no_workflows() -> None:
+    # story/layer are not ported; builder/e2e use tests/fixtures/workflows.
+    assert load_config(ROOT / "airlie.yaml", NO_LOCAL).workflows == {}
 
 
 def test_passthru_name_falls_back_to_the_model_key_itself() -> None:

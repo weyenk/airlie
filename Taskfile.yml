@@ -273,7 +273,7 @@ tasks:
     sources:
       - web/**/*
       - exclude: web/node_modules/**/*
-      - config/workflows/*.yaml  # the builder's tests read the shipped workflows
+      - tests/fixtures/workflows/*.yaml  # builder/e2e fixtures (production ships no workflows)
       - src/airlie/prompts/rules/output-format.md  # fields.test.ts holds the format sentence to it
     # Task stores the checksum of `sources` before the commands run and drops it only when one fails, so a run killed
     # partway (a tool's timeout, a closed terminal) would count as passed next time. The task is up to date only while

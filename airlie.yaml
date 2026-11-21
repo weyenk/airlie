@@ -6,7 +6,6 @@ includes:
   - config/models.yaml
   - config/roles.yaml
   - config/profiles.yaml
-  - config/workflows/*.yaml
 
 # ---- Inference engines ------------------------------------------------------------------------------------------
 # airlie never runs a model: one HTTP endpoint serves every catalog model the roles name. `format` is the wire
