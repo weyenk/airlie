@@ -261,9 +261,6 @@ def load_config(
             role.skills = (base / role.skills.expanduser()).resolve()
         if role.knowledge is not None:
             role.knowledge = (base / role.knowledge.expanduser()).resolve()
-    for m in cfg.models.values():
-        if m.path is not None:
-            m.path = (base / m.path.expanduser()).resolve()
     cfg.observability.state_dir = cfg.observability.state_dir.expanduser()
     if cfg.story.repo is not None:
         cfg.story.repo = (base / cfg.story.repo.expanduser()).resolve()
@@ -276,9 +273,6 @@ def load_config(
     problems = cfg.validate_references()
     if problems:
         raise ConfigError("config invalid:\n  " + "\n  ".join(problems))
-    for eng in cfg.engines.values():
-        if eng.kind == "mlx_vlm":  # the server knows its model only by the exact --model string
-            eng.served_names[eng.models[0]] = str(model_dir(cfg.models[eng.models[0]]))
     return cfg
 
 

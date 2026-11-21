@@ -853,7 +853,7 @@ def create_app(
             raise HTTPException(404, f"unknown model '{name}'; roles and catalog models: {known}")
         e = cfg.engines[cfg.engine_for_model(model)]
         headers = {"Authorization": f"Bearer {e.api_key}"} if e.api_key else {}
-        return (e.base_url or "").rstrip("/"), e.served_name(model), headers, prompt
+        return (e.base_url or "").rstrip("/"), e.passthru_name(model), headers, prompt
 
     next_root = (next_dir or NEXT_DIR).resolve()
 

@@ -16,7 +16,7 @@ MLX_VLM_ENTRY = ["python", "-m", "mlx_vlm.server"]
 
 def served_model(cfg: AirlieConfig, engine_name: str) -> str:
     e = cfg.engines[engine_name]
-    return e.served_name(e.models[0])
+    return e.passthru_name(e.models[0])
 
 
 def build_mlx_vlm_command(

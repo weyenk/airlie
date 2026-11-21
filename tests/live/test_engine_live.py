@@ -27,7 +27,7 @@ async def test_health_lists_models(engine, cfg) -> None:
     h = await engine.health()
     assert h.ok
     e = cfg.engines["main"]
-    assert {e.served_name(m) for m in e.models} <= set(h.models)  # an mlx_vlm engine lists its model's path
+    assert {e.passthru_name(m) for m in e.models} <= set(h.models)  # an mlx_vlm engine lists its model's path
 
 
 async def test_plain_generation_streams(engine) -> None:

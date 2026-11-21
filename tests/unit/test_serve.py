@@ -40,7 +40,7 @@ def test_chat_completion_maps_role_to_served_model_and_prepends_system_prompt(tm
     )
     assert r.status_code == 200 and r.json()["choices"][0]["message"]["content"] == "hi"
     sent = json.loads(up.requests[0].content)
-    assert sent["model"] == "tiny"  # served_names mapping
+    assert sent["model"] == "tiny"  # passthru mapping
     assert sent["messages"][0] == {"role": "system", "content": "x"}  # role prompt prepended
     assert str(up.requests[0].url).startswith("http://engine.test/v1/chat/completions")
 

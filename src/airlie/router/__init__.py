@@ -19,7 +19,7 @@ def jev_client(cfg: AirlieConfig, *, transport: httpx.AsyncBaseTransport | None 
     e = cfg.engines[cfg.engine_for_model(cfg.router.model)]
     return JevClient(
         e.base_url or "",
-        model=e.served_name(cfg.router.model),
+        model=e.passthru_name(cfg.router.model),
         transport=transport,
         api_key=e.api_key,
     )

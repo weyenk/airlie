@@ -376,7 +376,7 @@ def _http_engine(
         e = cfg.engines[name]
         http = HTTPEngine(
             e.base_url or "",
-            lambda role: e.served_name(model_override or cfg.roles[role].model),
+            lambda role: e.passthru_name(model_override or cfg.roles[role].model),
             lambda role: cfg.roles[role],
             api_key=e.api_key,
             **given,
