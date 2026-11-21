@@ -20,7 +20,7 @@ def main(engines: list[str]) -> None:
     cfg = load_config(ROOT / "airlie.yaml")
     for name in engines:
         e = cfg.engines[name]
-        model = e.served_name(e.models[0])
+        model = e.passthru_name(e.models[0])
         headers = {"Authorization": f"Bearer {e.api_key}"} if e.api_key else {}
         body = {
             "model": model,

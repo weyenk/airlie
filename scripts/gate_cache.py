@@ -98,7 +98,7 @@ def main(
         from airlie.config import load_config
 
         e = load_config(ROOT / "airlie.yaml").engines[engine]
-        url, model, key = e.base_url, e.served_name(e.models[0]), e.api_key
+        url, model, key = e.base_url, e.passthru_name(e.models[0]), e.api_key
     assert url and model
     extra = {"chat_template_kwargs": {"enable_thinking": False}, "temperature": 0}
     if engine is not None:

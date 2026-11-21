@@ -1633,8 +1633,8 @@ def _publish_cfg(tmp_path: Path, *, publish: str | None) -> object:
         story["publish"] = publish
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
-        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "engines": {"main": {"kind": "http", "base_url": "http://x/v1", "models": ["base"]}},
+        "models": {"base": {}},
         "roles": role_cfg,
         "teams": {"orchestrator": "native", "max_steps": 6},
         "tools": {"builtin": ["read_file", "write_file", "list_dir", "run_tests"]},

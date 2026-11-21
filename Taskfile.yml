@@ -27,7 +27,7 @@ tasks:
       - echo "ready — try 'task doctor'"
 
   doctor:
-    desc: Check config, hardware limits, models on disk and tooling; exit 1 on any red row
+    desc: Check config, each engine's base_url answers over HTTP, hardware limits and tooling; exit 1 on any red row
     cmds:
       - '{{.RUN}} airlie doctor {{.CLI_ARGS}}'
 
@@ -37,39 +37,9 @@ tasks:
       - '{{.RUN}} airlie config show {{.CLI_ARGS}}'
 
   models:list:
-    desc: Show the model catalog with pinned revisions and serving engine
+    desc: Show the model catalog and the engine serving each model
     cmds:
       - '{{.RUN}} airlie models list {{.CLI_ARGS}}'
-
-  models:pull:
-    desc: "Download every catalog model at its pinned revision (pass names to limit: task models:pull -- small)"
-    cmds:
-      - '{{.RUN}} airlie models pull {{.CLI_ARGS}}'
-
-  up:
-    desc: Start the mlx-vlm engines from airlie.yaml (autostart ones; `-- NAME` starts one by hand) and wait until their models are ready
-    cmds:
-      - '{{.RUN}} airlie engine up {{.CLI_ARGS}}'
-
-  down:
-    desc: Stop the managed engine(s)
-    cmds:
-      - '{{.RUN}} airlie engine down {{.CLI_ARGS}}'
-
-  restart:
-    desc: Stop then start the managed mlx-vlm engines
-    cmds:
-      - '{{.RUN}} airlie engine restart {{.CLI_ARGS}}'
-
-  status:
-    desc: Show engine pid, health and per-model readiness
-    cmds:
-      - '{{.RUN}} airlie engine status {{.CLI_ARGS}}'
-
-  logs:
-    desc: "Tail the engine log (task logs -- -f to follow)"
-    cmds:
-      - '{{.RUN}} airlie engine logs {{.CLI_ARGS}}'
 
   run:
     desc: "Run the configured topology on a goal in a repo (task run -- \"goal\" --repo PATH --topology fork --test-cmd \"pytest -q\")"
@@ -486,7 +456,7 @@ tasks:
       - '{{.RUN}} python scripts/searxng_vm.py destroy'
 
   web:e2e:
-    desc: "Ask every web-enabled role (research, ux, design, chief, reviewer) about something after its training data and check it searched and cited what it found (task web:e2e -- --roles chief,ux); needs `task up` and `task searxng:up`"
+    desc: "Ask every web-enabled role (research, ux, design, chief, reviewer) about something after its training data and check it searched and cited what it found (task web:e2e -- --roles chief,ux); needs a reachable workflow engine and `task searxng:up`"
     cmds:
       - '{{.RUN}} python scripts/web_e2e.py {{.CLI_ARGS}}'
 
@@ -505,11 +475,6 @@ tasks:
     desc: "Memory-free baseline vs LTS on graded tasks; spec 04 §4 ≥25% verdict (task bench:lts -- --tasks lang_detect)"
     cmds:
       - '{{.RUN}} airlie bench lts {{.CLI_ARGS}}'
-
-  route:eval:
-    desc: "Score the decision-model router on evals/routing.jsonl (task route:eval -- --min-accuracy 0.9 --out docs/bench/routing.json)"
-    cmds:
-      - '{{.RUN}} airlie route eval {{.CLI_ARGS}}'
 
   bench:topology:
     desc: "single agent vs K teams vs fork-when-stuck vs studio on graded tasks (task bench:topology -- --topologies single,studio --repeats 3)"
@@ -582,7 +547,7 @@ tasks:
       - '{{.RUN}} python scripts/run_layer.py unit --quarantined only {{.CLI_ARGS}}'
 
   test:live:
-    desc: Live tests against a running engine (Apple Silicon, after `task up`)
+    desc: Live tests against the configured HTTP engine (AIRLIE_WORKFLOW_BASE_URL reachable; `task doctor` checks)
     cmds:
       - '{{.RUN}} pytest -m live {{.CLI_ARGS}}'
 

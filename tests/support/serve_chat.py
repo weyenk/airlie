@@ -57,8 +57,8 @@ def chat_cfg(tmp_path: Path, skills: dict[str, str] | None = None):
     roles["chat"] = {"prompt": "chat.md", "model": "base", "skills": "skills"}
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "openai_http", "base_url": "http://engine.test/v1", "models": ["base"]}},
-        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "engines": {"main": {"kind": "http", "base_url": "http://engine.test/v1", "models": ["base"]}},
+        "models": {"base": {}},
         "roles": roles,
         "observability": {"state_dir": str(tmp_path / "state")},
         "chat": {"superpowers": {"path": str(superpowers_tree(tmp_path / "superpowers"))}},

@@ -10,11 +10,11 @@ from typing import Any
 
 import pytest
 
-from airlie.config import RoleSpec, load_config
+from airlie.config import RoleSpec
 from airlie.engine.fake import FakeEngine, FakeReply
 from airlie.engine.types import GenRequest, GenResult, ToolCall
 from airlie.supervisor.evidence import TriageInput
-from airlie.supervisor.triage import RunOneTest, Triage, TriageFailed, triage_for
+from airlie.supervisor.triage import RunOneTest, Triage, TriageFailed
 from airlie.tools.fs import ReadFile
 from airlie.tools.protocol import ToolContext
 from airlie.tools.registry import ToolRegistry
@@ -177,10 +177,3 @@ async def test_a_failure_still_says_how_long_it_took_and_what_it_spent(tmp_path:
     with pytest.raises(TriageFailed) as slow:
         await triage(SlowEngine(seconds=5), timeout_s=0.05)(an_input(), tmp_path)
     assert slow.value.seconds >= 0.05
-
-
-def test_the_ledger_names_the_model_muse_runs_on_not_its_seat() -> None:
-    cfg = load_config(REPO / "airlie.yaml", REPO / "no-local-overrides.yaml")
-    seat = cfg.roles[cfg.story.supervisor.role].model
-    t = triage_for(cfg, FakeEngine({}), None)
-    assert t.model == cfg.models[seat].repo and t.model.startswith("mlx-community/")

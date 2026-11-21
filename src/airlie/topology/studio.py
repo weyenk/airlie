@@ -41,7 +41,7 @@ from airlie.teams.worktree import (
     read_blob,
     seed_mypy_cache,
 )
-from airlie.tools import ToolContext, ToolRegistry, attach_decide
+from airlie.tools import ToolContext, ToolRegistry
 from airlie.tools.knowledge import SearchKnowledge
 from airlie.tools.loop import DEFAULT_STEPS, generate_with_tools
 from airlie.tools.scope import GateMemo, autofix_steps, tree_fingerprint
@@ -321,7 +321,7 @@ class StudioOrchestrator:
         names = [
             t
             for t in self._tool_names(role, subtask)
-            if t not in ("decide", "search_knowledge", "retrieve_value", "web_search", "web_fetch")
+            if t not in ("search_knowledge", "retrieve_value", "web_search", "web_fetch")
         ]
         pinned = subtask if subtask is not None and subtask.pinned else None
         ctx = ToolContext(
@@ -341,8 +341,6 @@ class StudioOrchestrator:
             **self.cfg.tools.confinement(),
         )
         reg = ToolRegistry.builtin(names, ctx)
-        if role.tools and "decide" in role.tools:
-            attach_decide(reg, self.cfg)
         if role.knowledge is not None and (role.tools is None or "search_knowledge" in role.tools):
             reg.add(SearchKnowledge(KnowledgeIndex.build(role.knowledge)))
         if "web_search" in self._tool_names(role):

@@ -1,26 +1,19 @@
-"""Router: the decision-engine (/v1/decisions) client, the decision policy, chief fallback, JSONL log."""
+"""Router: the decision policy, the chief router and the JSONL routing log."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-import httpx
 import pytest
 
-from airlie.router import ChiefRouter, JevClient, JevRouter, RoutingLog, policy, ranked
-from tests.support.router import _decision_cfg, decisions
+from airlie.router import ChiefRouter, RoutingLog, policy, ranked
 
 CRITERIA = {
     "architect": "Implement or change code",
     "qa": "Tests and edge cases",
     "docs": "README and guides",
 }
-
-
-def jev(handler, **kw) -> JevRouter:  # type: ignore[no-untyped-def]
-    client = JevClient("http://k/v1", transport=httpx.MockTransport(handler))
-    return JevRouter(client, ambiguous_gap=0.15, min_confidence=0.5, **kw)
 
 
 def test_ranked_orders_by_probability_then_name() -> None:
@@ -37,64 +30,6 @@ def test_policy_matches_ai_mode() -> None:
         policy([("architect", 0.8), ("qa", 0.2)], 0.3, ambiguous_gap=0.15, min_confidence=0.5)
         == "low-confidence"
     )
-
-
-async def test_client_posts_the_system_one_request_shape() -> None:
-    handler, seen = decisions({"architect": 0.9, "qa": 0.1}, 0.95)
-    client = JevClient("http://decider.test/v1", model="decider", transport=httpx.MockTransport(handler))
-    ans = await client.ask("fix the 500", "role", "Which specialist should handle this task?", CRITERIA)
-    assert seen[0] == {
-        "model": "decider",
-        "state": "fix the 500",
-        "questions": {
-            "role": {
-                "type": "choice",
-                "instructions": "Which specialist should handle this task?",
-                "criteria": CRITERIA,
-            }
-        },
-    }
-    assert ans.choice == "architect" and ans.confidence == 0.95 and ans.input_tokens == 42
-
-
-async def test_clear_decision_takes_the_choice_over_the_hint() -> None:
-    handler, _ = decisions({"architect": 0.9, "qa": 0.1}, 0.95)
-    d = await jev(handler).route("fix the 500", CRITERIA, hint="docs")
-    assert d.decision == "clear" and d.chosen == "architect" and d.hint == "docs"
-
-
-async def test_ambiguous_takes_the_hint_when_it_is_in_the_top_two() -> None:
-    handler, _ = decisions({"architect": 0.45, "qa": 0.4, "docs": 0.15}, 0.9)
-    r = jev(handler)
-    assert (await r.route("add tests for the fix", CRITERIA, hint="qa")).chosen == "qa"
-    assert (await r.route("add tests for the fix", CRITERIA, hint="docs")).chosen == "architect"
-    assert (await r.route("add tests for the fix", CRITERIA)).chosen == "architect"
-
-
-async def test_low_confidence_takes_the_hint_else_top() -> None:
-    handler, _ = decisions({"architect": 0.8, "qa": 0.2}, 0.2)
-    r = jev(handler)
-    assert (await r.route("x", CRITERIA, hint="docs")).chosen == "docs"
-    assert (await r.route("x", CRITERIA)).chosen == "architect"
-
-
-async def test_choice_outside_closed_set_falls_back() -> None:
-    handler, _ = decisions({"architect": 0.6, "qa": 0.4}, 0.9, choice="chief")
-    r = jev(handler)
-    d = await r.route("x", CRITERIA, hint="qa")
-    assert d.decision == "invalid" and d.chosen == "qa"
-    assert (await r.route("x", CRITERIA)).chosen == "architect"  # top in-set probability
-
-
-async def test_transport_error_is_a_decision_not_an_exception() -> None:
-    def boom(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("down")
-
-    r = jev(boom)
-    d = await r.route("x", CRITERIA, hint="qa")
-    assert d.decision == "error" and d.chosen == "qa"
-    with pytest.raises(ValueError, match="no hint"):
-        await r.route("x", CRITERIA)
 
 
 async def test_chief_router_uses_the_hint_and_rejects_unknown_roles() -> None:
@@ -118,25 +53,3 @@ def test_policy_thresholds_are_strict() -> None:
     assert policy([("a", 0.75), ("b", 0.25)], 0.5, ambiguous_gap=0.25, min_confidence=0.5) == "clear"
     assert policy([("a", 0.75)], 0.1, ambiguous_gap=0.25, min_confidence=0.5) == "low-confidence"
     assert policy([("a", 0.5), ("b", 0.5)], 0.1, ambiguous_gap=0.25, min_confidence=0.5) == "ambiguous"
-
-
-async def test_jev_client_targets_decisions_on_an_mlx_vlm_decision_engine(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    import json
-
-    import httpx
-
-    from airlie.router import jev_client
-
-    seen: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        return httpx.Response(
-            200,
-            json={"answers": {"role": {"type": "choice", "value": "a", "probabilities": {"a": 1.0}}}},
-        )
-
-    client = jev_client(_decision_cfg(tmp_path), transport=httpx.MockTransport(handler))
-    await client.ask("s", "role", "i", {"a": "x"})
-    assert str(seen[0].url) == "http://127.0.0.1:8084/v1/decisions"
-    assert json.loads(seen[0].content)["model"] == "/models/clef"

@@ -3,7 +3,7 @@
     task web:e2e                       # all five roles, then a no-tools control
     task web:e2e -- --roles chief,ux   # some of them
 
-Needs the live engine (`task up`) and SearXNG (`task searxng:up`). Each role runs the way airlie runs it: the
+Needs a reachable workflow engine and SearXNG (`task searxng:up`). Each role runs the way airlie runs it: the
 research, ux and design roles as studio subtasks (the team loop and its tool registry), the chief through its
 planning call and the reviewer through its review call (the bounded tool loop). A role passes when it
   1. called the web (a web_search or web_fetch that was not refused), and

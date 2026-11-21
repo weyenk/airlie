@@ -1,5 +1,6 @@
-"""The reviewer and the supervisor reach an mlx_vlm engine with their reasoning effort: built the way the
-studio review step builds the request (Reviewer over cli._http_engine, MockTransport capturing the body)."""
+"""The reviewer and the supervisor reach an engine with their reasoning strength and thinking flag, in the
+chat template kwargs: built the way the studio review step builds the request (Reviewer over
+cli._http_engine, MockTransport capturing the body)."""
 
 from __future__ import annotations
 
@@ -23,8 +24,10 @@ ROLE = {"model": "muse", "thinking": False, "chat_template_kwargs": {"reasoning_
 def _config(tmp_path: Path) -> Any:
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "mlx_vlm", "port": 8094, "model": "muse"}},
-        "models": {"muse": {"repo": "mlx-community/muse", "revision": "r", "path": "/models/muse"}},
+        "engines": {
+            "main": {"kind": "http", "base_url": "http://engine.test/v1", "models": ["muse"]},
+        },
+        "models": {"muse": {}},
         "roles": {r: {"prompt": f"{r}.md", **ROLE} for r in ROLES},
         "observability": {"state_dir": str(tmp_path / "state")},
     }
@@ -40,7 +43,7 @@ def _sse(text: str) -> bytes:
 
 
 @pytest.mark.parametrize("role", ["reviewer", "supervisor"])
-async def test_the_review_request_carries_reasoning_effort_and_thinking(tmp_path: Path, role: str) -> None:
+async def test_the_review_request_carries_reasoning_strength_and_thinking(tmp_path: Path, role: str) -> None:
     bodies: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -52,6 +55,5 @@ async def test_the_review_request_carries_reasoning_effort_and_thinking(tmp_path
     assert isinstance(eng, HTTPEngine)
     await Reviewer(eng, role, cfg.roles[role]).review("brief", "diff", "tests", {})
     body = bodies[0]
-    assert body["reasoning_effort"] == "low"
-    assert body["enable_thinking"] is False
-    assert "chat_template_kwargs" not in body
+    assert body["chat_template_kwargs"] == {"enable_thinking": False, "reasoning_strength": "low"}
+    assert not {"reasoning_effort", "enable_thinking"} & set(body)

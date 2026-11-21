@@ -558,7 +558,7 @@ def test_the_real_meeting_speaks_to_each_roles_engine_with_the_configured_limits
         assert isinstance(client, RepairingOpenAIClient)
         engine = CFG.engines[CFG.engine_for_model(CFG.roles[role].model)]
         assert client.dump_component().config["base_url"] == engine.base_url
-        assert client.dump_component().config["model"] == engine.served_name(CFG.roles[role].model)
+        assert client.dump_component().config["model"] == engine.passthru_name(CFG.roles[role].model)
     made = default_meeting(CFG, lambda role: pytest.fail("no tools are built until a role speaks"), noop)
     spec = CFG.story.amigos
     assert (made.max_turns, made.tool_iterations, made.max_scope_files) == (

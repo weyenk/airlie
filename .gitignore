@@ -18,3 +18,4 @@ web/node_modules/
 hub/node_modules/
 .task/
 .continue
+.worktrees/

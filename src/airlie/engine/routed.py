@@ -1,7 +1,7 @@
 """RoutedEngine: one Engine over several, each role's requests going to the engine that serves its model.
 
-An mlx_vlm engine holds one model, so a config whose roles use several models runs several engines; the
-orchestrator still holds one Engine, and this routes by role."""
+A config whose roles use models on several engines has several endpoints; the orchestrator still holds one
+Engine, and this routes by role."""
 
 from __future__ import annotations
 

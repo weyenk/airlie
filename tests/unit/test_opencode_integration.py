@@ -384,37 +384,6 @@ def thinking_room() -> tuple[Any, dict[str, int]]:
     return cfg, wanted
 
 
-def test_the_samples_thinking_models_have_room_for_a_reply_after_their_thinking() -> None:
-    """OpenCode sends a model's limit.output as max_tokens through task serve, and max_tokens caps the
-    thinking and the reply together (HDS-3, 2026-10-15): a thinking model needs the room airlie.yaml gives its
-    role, and the sample's output must stay below its context."""
-    _, wanted = thinking_room()
-    sample = json.loads((ROOT / "docs/integrations/opencode.json").read_text())
-    models = sample["provider"]["airlie"]["models"]
-    listed = {
-        n: tokens for n, tokens in wanted.items() if n in models
-    }  # the roles and models the sample lists
-    assert listed == {"architect": 16384, "research": 16384}
-    for name, tokens in listed.items():
-        limit = models[name]["limit"]
-        assert tokens <= limit["output"] < limit["context"], name
-
-
-def test_the_vscode_samples_thinking_models_have_room_for_a_reply_after_their_thinking() -> None:
-    """The same for VS Code's chat: maxOutputTokens is its max_tokens, and what it may send in
-    (maxInputTokens) plus what it may ask for must fit the kv window the engine keeps."""
-    cfg, wanted = thinking_room()
-    groups = json.loads((ROOT / "docs/integrations/vscode-chatLanguageModels.json").read_text())
-    listed = {m["id"]: m for group in groups for m in group["models"]}
-    thinking = {n for n, m in listed.items() if m["thinking"]}
-    assert thinking == {"architect"} == {n for n in listed if n in wanted}
-    window = cfg.engines["main"].max_kv_size
-    for name in thinking:
-        m = listed[name]
-        assert wanted[name] <= m["maxOutputTokens"] < m["maxInputTokens"], name
-        assert m["maxInputTokens"] + m["maxOutputTokens"] <= window, name
-
-
 def test_a_story_that_stopped_is_a_done_job_with_the_reason_in_its_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

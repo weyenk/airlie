@@ -95,8 +95,8 @@ def _config(root: Path, *, workflows: bool = False) -> AirlieConfig:
     (root / "chat.md").write_text("---\nroutable: false\n---\nYou are the chat role.\n")
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "openai_http", "base_url": "http://engine.test/v1", "models": ["base"]}},
-        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "engines": {"main": {"kind": "http", "base_url": "http://engine.test/v1", "models": ["base"]}},
+        "models": {"base": {}},
         "roles": {
             **{r: {"prompt": f"{r}.md", "model": "base"} for r in roles},
             "chat": {"prompt": "chat.md", "model": "base", "skills": str(CHAT_SKILLS), "vision": True},

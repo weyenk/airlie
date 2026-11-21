@@ -1,24 +1,18 @@
-"""Every engine path goes through the manager: a role call holds its engine while it runs.
-
-Inside serve the hold is the manager's own; from another process (the launchd story tick, `task run`) it is a
-lease taken from serve over HTTP; with no serve running the engine is started here and left for serve's
-reaper, which stops it once it is idle.
+"""Holding a manager resource for the length of a call: inside serve the hold is the manager's own; from
+another process it is a lease taken from serve over HTTP. airlie starts no inference server, so an engine call
+holds nothing unless a resource of that name is registered.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Iterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager, suppress
-from pathlib import Path
 from typing import Protocol
 
 import httpx
 
-from airlie.config import AirlieConfig
-from airlie.engine.process import EngineProcess
 from airlie.engine.protocol import Engine, OnToken
 from airlie.engine.types import (
     EngineCapabilities,
@@ -30,8 +24,7 @@ from airlie.engine.types import (
     Message,
 )
 from airlie.manager.core import Manager
-from airlie.manager.engines import start_or_join
-from airlie.serve.bridge.clock import Clock, RealClock
+from airlie.serve.bridge.clock import Clock
 
 log = logging.getLogger(__name__)
 
@@ -151,34 +144,6 @@ def _why(r: httpx.Response) -> str:
         return f"serve answered {r.status_code}"
 
 
-class LocalHolder:
-    """No serve: start the engine here if it is down. Never stopped from here: serve's reaper does that."""
-
-    def __init__(
-        self,
-        cfg: AirlieConfig,
-        state_dir: Path,
-        *,
-        process_for: Callable[[str], EngineProcess] | None = None,
-    ) -> None:
-        self._cfg = cfg
-        self._process_for = process_for or (lambda name: EngineProcess(cfg, name, state_dir=state_dir))
-        self._starting: dict[str, asyncio.Lock] = {}
-
-    async def _up(self, process: EngineProcess) -> None:
-        if await process.prober.health_ok():
-            return
-        # another process may start it between the probe and the start: then it is waited on
-        await start_or_join(process, self._cfg.manager.start_timeout_s)
-
-    @asynccontextmanager
-    async def hold(self, engine: str, owner: str) -> AsyncIterator[None]:
-        process = self._process_for(engine)
-        async with self._starting.setdefault(engine, asyncio.Lock()):  # one start at a time per engine
-            await self._up(process)
-        yield
-
-
 class ManagedEngine:
     """`inner` with each generation held on its engine."""
 
@@ -210,61 +175,3 @@ class ManagedEngine:
 
     def stats(self) -> EngineStats:
         return self._inner.stats()
-
-
-class LazyHolder:
-    """A holder chosen at its first hold, off the event loop: choosing probes serve (maybe this loop). A local
-    choice is made again at every hold, so a caller that first found serve down takes leases once it answers
-    (its starts then count in serve's budget, and serve sees its holds)."""
-
-    def __init__(self, choose: Callable[[], Holder]) -> None:
-        self._choose = choose
-        self._chosen: Holder | None = None
-        self._lock = asyncio.Lock()
-
-    async def _holder(self) -> Holder:
-        async with self._lock:
-            if self._chosen is None or isinstance(self._chosen, LocalHolder):
-                chosen = await asyncio.to_thread(self._choose)
-                if not (isinstance(chosen, LocalHolder) and isinstance(self._chosen, LocalHolder)):
-                    self._chosen = chosen  # still local: keep the first, whose start locks every hold shares
-            return self._chosen
-
-    @asynccontextmanager
-    async def hold(self, engine: str, owner: str) -> AsyncIterator[None]:
-        async with (await self._holder()).hold(engine, owner):
-            yield
-
-
-def serve_target(cfg: AirlieConfig, env: Mapping[str, str] | None = None) -> tuple[str, str | None]:
-    """Where serve is and the key it wants, as `airlie mcp` reads them."""
-    from airlie.serve.bridge.session import resolve_serve_api_key
-
-    e = os.environ if env is None else env
-    return e.get("AIRLIE_URL") or DEFAULT_SERVE_URL, resolve_serve_api_key(cfg, env=e)
-
-
-def holder_for(
-    cfg: AirlieConfig,
-    *,
-    manager: Manager | None,
-    env: Mapping[str, str] | None = None,
-    transport: httpx.MockTransport | None = None,
-    clock: Clock | None = None,
-) -> Holder:
-    """The manager when given (inside serve), else serve's lease routes when its /health answers, else here.
-    `transport` is for tests: the one stand-in for serve's network."""
-    manager = manager or _serving
-    if manager is not None:
-        return InProcessHolder(manager)
-    url, key = serve_target(cfg, env)
-    try:
-        with httpx.Client(timeout=2.0, transport=transport) as probe:
-            up = probe.get(f"{url.rstrip('/')}/health").status_code == 200
-    except httpx.HTTPError:
-        up = False
-    if up:
-        # a lease request waits for the engine to start: no read timeout
-        client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=10.0), transport=transport)
-        return LeaseHolder(url, key, client, clock or RealClock())
-    return LocalHolder(cfg, cfg.observability.state_dir.expanduser())

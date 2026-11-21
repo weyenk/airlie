@@ -56,7 +56,7 @@ def test_a_workflow_problem_and_a_missing_composer_workflow_are_both_reported(tm
 
 
 def test_engine_serving_unknown_model_fails(tmp_path: Path) -> None:
-    data = {**MINIMAL, "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["ghost"]}}}
+    data = {**MINIMAL, "engines": {"main": {"kind": "http", "base_url": "http://x/v1", "models": ["ghost"]}}}
     with pytest.raises(ConfigError, match=r"engines\.main\.models.*'ghost'"):
         load_config(write(tmp_path, data))
 
@@ -64,7 +64,7 @@ def test_engine_serving_unknown_model_fails(tmp_path: Path) -> None:
 def test_model_used_by_a_role_but_served_by_no_engine_fails(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
-        "models": {**MINIMAL["models"], "orphan": {"repo": "x/y", "revision": "r"}},
+        "models": {**MINIMAL["models"], "orphan": {}},
         "roles": {**MINIMAL["roles"], "judge": {"prompt": "prompts/roles/judge.md", "model": "orphan"}},
     }
     with pytest.raises(ConfigError, match=r"models\.orphan.*no engine"):
@@ -75,8 +75,8 @@ def test_model_served_by_two_engines_fails(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
         "engines": {
-            "main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]},
-            "dup": {"kind": "mlx_vlm", "port": 8081, "models": ["team"]},
+            "main": {"kind": "http", "base_url": "http://x/v1", "models": ["team"]},
+            "dup": {"kind": "http", "base_url": "http://y/v1", "models": ["team"]},
         },
     }
     with pytest.raises(ConfigError, match=r"models\.team.*(main.*dup|dup.*main)"):
@@ -103,7 +103,7 @@ def test_controller_kind_must_be_known(tmp_path: Path) -> None:
 
 
 def test_openai_http_engine_requires_base_url(tmp_path: Path) -> None:
-    data = {**MINIMAL, "engines": {"main": {"kind": "openai_http", "models": ["team"]}}}
+    data = {**MINIMAL, "engines": {"main": {"kind": "http", "models": ["team"]}}}
     with pytest.raises(ConfigError, match=r"engines\.main.*base_url"):
         load_config(write(tmp_path, data))
 
@@ -114,29 +114,6 @@ def test_teams_role_must_exist(tmp_path: Path) -> None:
         load_config(write(tmp_path, data))
 
 
-def test_two_managed_engines_cannot_share_a_port(tmp_path: Path) -> None:
-    data = {
-        **MINIMAL,
-        "models": {**MINIMAL["models"], "small": {"repo": "x/y", "revision": "r"}},
-        "engines": {
-            "main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]},
-            "aux": {"kind": "mlx_vlm", "port": 8080, "models": ["small"]},
-        },
-    }
-    with pytest.raises(ConfigError, match=r"port 8080.*(main.*aux|aux.*main)"):
-        load_config(write(tmp_path, data))
-
-
-def test_mlx_vlm_engine_launch_defaults(tmp_path: Path) -> None:
-    e = load_config(write(tmp_path, MINIMAL)).engines["main"]
-    assert e.host == "127.0.0.1"
-    assert e.base_url == "http://127.0.0.1:8080/v1"
-    assert e.max_num_seqs == 16
-    assert e.max_kv_size == 65536
-    assert e.prefill_step_size == 2048
-    assert e.extra_args == []
-
-
 def test_local_overrides_deep_merge(tmp_path: Path) -> None:
     base = write(tmp_path, MINIMAL)
     local = tmp_path / "airlie.local.yaml"
@@ -144,7 +121,7 @@ def test_local_overrides_deep_merge(tmp_path: Path) -> None:
         yaml.safe_dump(
             {
                 "teams": {"k": 1},
-                "engines": {"main": {"kind": "openai_http", "base_url": "http://127.0.0.1:1/v1"}},
+                "engines": {"main": {"kind": "http", "base_url": "http://127.0.0.1:1/v1"}},
             }
         )
     )
@@ -152,7 +129,7 @@ def test_local_overrides_deep_merge(tmp_path: Path) -> None:
     assert cfg.teams.k == 1
     assert cfg.teams.role == "architect"  # untouched sibling survives the merge
     e = cfg.engines["main"]
-    assert e.kind == "openai_http"
+    assert e.kind == "http"
     assert e.base_url == "http://127.0.0.1:1/v1"
     assert e.models == ["team"]  # untouched sibling survives the merge
 
@@ -175,48 +152,6 @@ def test_committed_architect_has_room_for_a_large_edit() -> None:
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")
     arch = cfg.roles["architect"]
     assert arch.max_tokens == 12288 and arch.think_when_red
-
-
-def test_architect_catalog_replaces_generalist() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    assert "generalist" not in cfg.models
-    arch = cfg.models["architect"]
-    assert arch.repo == "sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
-    assert arch.revision == "668f31bcc56bf9400e64c9463445eee47597c2d9"
-    assert arch.mtp is not None
-    assert arch.mtp.repo == "sh0wie/Qwen3.8-Flash-Next-MTP-Drafter-MLX-bf16"
-    assert arch.mtp.revision == "be6e2bc325d41ac7858b99269a96c495349b494d"
-    assert arch.tool_call_parser == "qwen3_coder"
-    assert {"architect"} <= {n for n, m in cfg.models.items() if m.bench}
-
-
-def test_main_engine_serves_architect() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    assert cfg.engines["main"].models == ["architect"]
-    assert cfg.engines["main"].port == 8080
-    assert cfg.engines["main"].max_kv_size == 131072
-    assert (
-        cfg.engines["main"]
-        .served_name("architect")
-        .endswith(
-            "models--sh0wie--Qwen3.8-Flash-Next-REAP-288-MLX-4bit/snapshots/"
-            f"{cfg.models['architect'].revision}"
-        )
-    )
-
-
-def test_gemma_chat_context_is_128k() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    assert cfg.engines["gemma"].max_kv_size == 131072
-    assert cfg.roles["chat"].max_context == 131072
-
-
-def test_studio_roles_use_architect_and_product_on_gemma() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    for name in ("chief", "lhr", "architect", "docs", "research", "security", "aggregator"):
-        assert cfg.roles[name].model == "architect", name
-    assert cfg.roles["product"].model == "gemma4"
-    assert "generalist" not in cfg.models
 
 
 def test_architect_is_build_role_with_coder_behaviors() -> None:
@@ -260,35 +195,6 @@ def test_pipeline_package_critic_uses_architect() -> None:
     assert "tester" not in cfg.roles
     arch = cfg.roles["architect"]
     assert arch.skills is not None and cfg.story.architect_role == "architect"
-
-
-def test_generation_models_catalog_and_weights_engines() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    chroma = cfg.models["chroma_hd"]
-    assert chroma.repo == "tillknuesting/chroma1-hd-mlx"
-    assert chroma.revision == "0b794d9391239d85530d2db3b4091b8b093d1af6"
-    wan = cfg.models["wan_t2v"]
-    assert wan.repo == "PocketAiHub/Wan2.2-T2V-A14B-MLX"
-    assert wan.revision == "86bfc9847512a9eb66886388b8b92ba81e0b6729"
-    assert cfg.engines["chroma"].kind == "weights_only"
-    assert cfg.engines["chroma"].lifecycle == "on_demand"
-    assert cfg.engines["chroma"].models == ["chroma_hd"]
-    assert cfg.engines["wan"].kind == "weights_only"
-    assert cfg.engines["wan"].models == ["wan_t2v"]
-    load_check = cfg.validate_references()
-    assert not load_check, load_check
-
-
-def test_committed_default_config_is_valid() -> None:
-    root = Path(__file__).resolve().parents[2]
-    cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")  # never the person's own
-    assert {"summarizer", "judge", "aggregator", "architect"} <= set(cfg.roles)
-    assert "coder" not in cfg.roles and "tester" not in cfg.roles
-    assert {"architect"} <= {n for n, m in cfg.models.items() if m.bench}
-    assert cfg.engines["main"].kind == "mlx_vlm"
-    for name, m in cfg.models.items():
-        assert m.revision, f"models.{name} must pin a revision"
-    assert cfg.engine_for_role("architect") == "main" and cfg.engine_for_role("reviewer") == "gemma"
 
 
 # ---- a thinking role has room to answer (HDS-3, 2026-10-15) ----
@@ -434,88 +340,13 @@ def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_w
     assert architect.think_when_red and architect.green_before_done
 
 
-def test_committed_config_declares_four_autostart_engines_and_the_bench_engines() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    kinds = {n: e.kind for n, e in cfg.engines.items()}
-    assert kinds == {
-        "main": "mlx_vlm",
-        "small": "mlx_vlm",
-        "decision": "mlx_vlm",
-        "gemma": "mlx_vlm",
-        "chroma": "weights_only",
-        "wan": "weights_only",
-    }
-    autostart = [n for n, e in cfg.engines.items() if e.autostart]
-    assert autostart == ["main", "small", "decision", "gemma"]
-    assert cfg.engines["main"].models == ["architect"] and cfg.engines["main"].port == 8080
-    assert [n for n, e in cfg.engines.items() if e.decision] == ["decision"]
-    assert cfg.engines["decision"].port == 8081 and cfg.router.model == "decider_2b"  # the 4b gate's pick
-    decider = cfg.models["decider_2b"]
-    assert (decider.repo, decider.revision) == (
-        "nativ-community/decider-2b",
-        "acbae4ecce4dbcc0aea8c5a501c9f54008458a70",
-    )
-    assert (
-        cfg.engines["main"]
-        .served_name("architect")
-        .endswith(
-            f"models--sh0wie--Qwen3.8-Flash-Next-REAP-288-MLX-4bit/snapshots/"
-            f"{cfg.models['architect'].revision}"
-        )
-    )  # the HF-cache snapshot: the exact --model string
-    assert cfg.models["architect"].tool_call_parser == "qwen3_coder"
-    gemma = cfg.models["gemma4"]
-    assert (gemma.repo, gemma.revision, gemma.mtp, gemma.mtp_block_size, gemma.tool_call_parser) == (
-        "zecanard/gemma-4-26B-A4B-it-uncensored-abliterix-MLX-4bit-mixed_4_6",
-        "fe64abd2a668980d4b20c1385b4f001895156d36",
-        None,
-        None,
-        "gemma4",
-    )
-    assert cfg.roles["chat"].model == cfg.roles["design"].model == cfg.roles["ux"].model == "gemma4"
-    assert cfg.engine_for_role("chat") == cfg.engine_for_role("design") == "gemma"
-    ge = cfg.engines["gemma"]
-    assert (ge.port, ge.max_image_px, ge.model) == (8084, 1536, "gemma4")
-
-
 def test_profiles_carry_no_engine_or_model_overrides() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     for name, profile in cfg.topology.profiles.items():
         assert "engines" not in profile and "models" not in profile, name
 
 
-def test_catalog_kv_constants_follow_each_models_attention_geometry() -> None:
-    """kv_mb_per_1k_tokens is K and V in bf16 per token: the layers whose cache grows with the prompt × KV
-    heads × head dim × 4 bytes. The 2026-10-23 review (finding 8) found the architect's copied from
-    Qwen2.5-32B, four times what its 16 full-attention layers hold, and the number had already shrunk a
-    profile's KV."""
-    models = load_config(ROOT / "airlie.yaml", NO_LOCAL).models
-    assert (
-        models["architect"].kv_mb_per_1k_tokens == 48
-    )  # Flash-Next hybrid; tighten after doctor documents layers
-    assert models["small"].kv_mb_per_1k_tokens == 144  # 36 layers × 8 heads × 128 dim
-    # 5 full-attention layers × 2 heads × 512 dim = 20, + the 25 sliding layers' fixed 1024-token window
-    assert models["gemma4"].kv_mb_per_1k_tokens == 22
-
-
 # ---- M0 Task 2: catalog fields ----
-
-
-def test_model_bench_and_tags_default_off(tmp_path: Path) -> None:
-    m = load_config(write(tmp_path, MINIMAL)).models["team"]
-    assert m.bench is False
-    assert m.tags == []
-    assert m.kv_mb_per_1k_tokens == 256.0
-
-
-def test_a_model_may_be_a_bench_model_with_tags(tmp_path: Path) -> None:
-    data = {
-        **MINIMAL,
-        "models": {"team": {**MINIMAL["models"]["team"], "bench": True, "tags": ["spec"]}},
-    }
-    cfg = load_config(write(tmp_path, data))
-    assert cfg.models["team"].bench is True
-    assert cfg.models["team"].tags == ["spec"]
 
 
 # ---- M0 Task 4: aggregator role, orchestrator and summarizer kinds ----
@@ -638,12 +469,6 @@ def test_profile_extends_unknown_parent_is_a_config_error(tmp_path: Path) -> Non
 def test_unknown_topology_override_is_a_config_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"topology.*'ring'.*single, teams, fork, studio"):
         load_config(write(tmp_path, MINIMAL), topology="ring")
-
-
-def test_jev_router_needs_a_decision_engine_serving_its_model(tmp_path: Path) -> None:
-    data = {**MINIMAL, "router": {"kind": "jev", "model": "team"}}
-    with pytest.raises(ConfigError, match=r"router\.model.*'team'.*decision: true"):
-        load_config(write(tmp_path, data))
 
 
 def test_profile_configs_loads_every_profile_from_the_source_file(tmp_path: Path) -> None:
@@ -1537,159 +1362,13 @@ def test_the_shipped_story_workflow_declares_its_type() -> None:
     assert load_config(ROOT / "airlie.yaml", NO_LOCAL).workflows["story"].type == "story"
 
 
-def mlx(tmp_path: Path, engines: dict, *, roles: dict | None = None, models: dict | None = None):
-    data = {
-        **MINIMAL,
-        "engines": engines,
-        "models": models
-        or {
-            "team": {"repo": "org/team", "revision": "r0", "path": "/models/team"},
-            "base": {"repo": "org/base", "revision": "r1"},
-        },
-        "roles": {**MINIMAL["roles"], **(roles or {})},
-    }
-    return load_config(write(tmp_path, data))
-
-
-def test_mlx_vlm_engine_spells_one_model_as_model_or_models(tmp_path: Path) -> None:
-    cfg = mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team"}})
-    assert cfg.engines["main"].models == ["team"]
-    assert cfg.engines["main"].base_url == "http://127.0.0.1:8080/v1"
-    assert cfg.engine_for_model("team") == "main"
-
-
-def test_an_mlx_vlm_engine_is_addressed_by_its_exact_model_path(tmp_path: Path) -> None:
-    cfg = mlx(
-        tmp_path,
-        {
-            "main": {"kind": "mlx_vlm", "port": 8080, "model": "team"},
-            "other": {"kind": "mlx_vlm", "port": 8083, "model": "base", "autostart": False},
-        },
-    )
-    assert cfg.engines["main"].served_name("team") == "/models/team"  # models.team.path
-    assert cfg.engines["other"].served_name("base").endswith("/models--org--base/snapshots/r1")  # HF cache
-
-
-def test_served_name_falls_back_to_the_model_key_itself() -> None:
-    e = EngineSpec(
-        kind="openai_http", base_url="http://h/v1", port=8080, models=["team"], served_names={"team": "alias"}
-    )
-    assert e.served_name("team") == "alias"
-    assert e.served_name("other") == "other"
-
-
-def test_an_mlx_vlm_engine_takes_no_served_alias(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="served_names"):
-        mlx(
-            tmp_path,
-            {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", "served_names": {"team": "t"}}},
-        )
-
-
-def test_mlx_vlm_engine_refuses_two_models(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="engines.main: an mlx_vlm engine serves exactly one model"):
-        mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team", "base"]}})
-
-
-def test_the_removed_engine_kinds_and_settings_are_refused(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="kind"):
-        mlx(tmp_path, {"main": {"kind": "removed", "port": 8080, "model": "team"}})
-    for field in ("buffer_cache_mb", "server_parsers", "memory_budget_gb", "ctx_size", "binary"):
-        with pytest.raises(ConfigError, match=field):
-            mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", field: 1}})
-
-
-def test_mlx_vlm_engine_defaults(tmp_path: Path) -> None:
-    e = mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team"}}).engines["main"]
-    assert (e.autostart, e.decision, e.kv_bits, e.prefix_cache) == (True, False, None, False)
-    assert (e.cache_memory_gb, e.cache_checkpoints, e.cache_checkpoint_interval) == (1.0, 4, 2048)
-    assert e.env == {} and e.entry is None and e.max_image_px is None
-
-
-def test_a_role_on_an_mlx_vlm_engine_may_only_pass_known_template_arguments(tmp_path: Path) -> None:
-    with pytest.raises(
-        ConfigError, match="roles.architect.chat_template_kwargs: mlx_vlm engines accept only"
-    ):
-        mlx(
-            tmp_path,
-            {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team"}},
-            roles={
-                "architect": {
-                    "prompt": "prompts/roles/architect.md",
-                    "model": "team",
-                    "chat_template_kwargs": {"foo": 1},
-                }
-            },
-        )
-
-
-@pytest.mark.parametrize(
-    "field, value",
-    [("kv_bits", 0), ("cache_memory_gb", 0), ("cache_checkpoints", -1), ("cache_checkpoint_interval", 0)],
-)
-def test_mlx_vlm_engine_refuses_out_of_range_cache_settings(tmp_path: Path, field: str, value: float) -> None:
-    with pytest.raises(ConfigError, match=f"engines.main.{field}"):
-        mlx(tmp_path, {"main": {"kind": "mlx_vlm", "port": 8080, "model": "team", field: value}})
-
-
-def test_router_model_may_be_served_by_an_mlx_vlm_decision_engine(tmp_path: Path) -> None:
-    def data(decision: bool) -> dict:
-        return {
-            **MINIMAL,
-            "engines": {
-                **MINIMAL["engines"],
-                "dec": {"kind": "mlx_vlm", "port": 8084, "model": "clef", "decision": decision},
-            },
-            "models": {
-                **MINIMAL["models"],
-                "clef": {"repo": "org/c", "revision": "r", "path": "/models/clef"},
-            },
-            "router": {"kind": "jev", "model": "clef"},
-        }
-
-    assert load_config(write(tmp_path, data(True))).router.model == "clef"
-    with pytest.raises(ConfigError, match="an mlx_vlm engine with decision: true"):
-        load_config(write(tmp_path, data(False)))
-
-
-def test_hf_snapshot_dir_defaults_to_the_home_huggingface_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from airlie.config.load import hf_snapshot_dir
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-    m = load_config(write(tmp_path, MINIMAL)).models["team"]
-    got = hf_snapshot_dir(m, None)
-    assert (
-        got
-        == tmp_path
-        / ".cache/huggingface/hub"
-        / "models--mlx-community--Qwen3.8-27B-4bit"
-        / "snapshots/abc123"
-    )
-
-
-def test_hf_snapshot_dir_honours_an_explicit_cache(tmp_path: Path) -> None:
-    from airlie.config.load import hf_snapshot_dir
-
-    m = load_config(write(tmp_path, MINIMAL)).models["team"]
-    got = hf_snapshot_dir(m, tmp_path / "elsewhere")
-    assert got == tmp_path / "elsewhere" / "models--mlx-community--Qwen3.8-27B-4bit" / "snapshots" / "abc123"
+def test_passthru_name_falls_back_to_the_model_key_itself() -> None:
+    e = EngineSpec(kind="http", base_url="http://h/v1", models=["team"], passthru={"team": "alias"})
+    assert e.passthru_name("team") == "alias"
+    assert e.passthru_name("other") == "other"
 
 
 # ---- engine lifecycles and the manager ----
-
-
-def test_the_committed_lifecycles() -> None:
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    assert {n: e.lifecycle for n, e in cfg.engines.items()} == {
-        "main": "pinned",
-        "small": "on_demand",
-        "decision": "pinned",
-        "gemma": "pinned",
-        "chroma": "on_demand",
-        "wan": "on_demand",
-    }
 
 
 def test_manager_spec_defaults() -> None:
@@ -1701,16 +1380,7 @@ def test_manager_spec_defaults() -> None:
         30.0,
         120.0,
     )
-    e = EngineSpec(kind="mlx_vlm", model="m")
-    assert e.lifecycle == "pinned" and e.idle_unload_s == 600.0
     assert AirlieConfig.model_fields["manager"].default_factory is ManagerSpec
-
-
-def test_manager_spec_rejects_unknown_keys_and_a_bad_lifecycle() -> None:
-    with pytest.raises(ValidationError):
-        ManagerSpec(nope=1)  # type: ignore[call-arg]
-    with pytest.raises(ValidationError):
-        EngineSpec(kind="mlx_vlm", model="m", lifecycle="sometimes")  # type: ignore[arg-type]
 
 
 def test_notifications_push_hosts_can_be_replaced_and_rejects_non_hosts(tmp_path: Path) -> None:
@@ -1868,15 +1538,6 @@ def test_a_repository_chat_cannot_drop_a_confirmation_of_push_pr_or_build(
     listed = [n for n in ("push_branch", "open_pr", "build_image") if n != missing]
     with pytest.raises(ConfigError, match=f"chat.kinds.repository.ask_first must keep {missing}"):
         load_config(_chat(tmp_path, {"kinds": {"repository": {"tools": ["skill"], "ask_first": listed}}}))
-
-
-def test_the_reviewer_is_a_different_lab_than_the_build_model_and_runs_on_a_served_engine() -> None:
-    """Noah 2026-11-12: the reviewer (and supervisor) run on gemma4; the architect on Qwen Flash-Next:
-    different labs on purpose, no second model in memory; Muse catalog dropped 2026-11-13."""
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    assert cfg.roles["reviewer"].model == cfg.roles["supervisor"].model == "gemma4"
-    assert "Qwen" in cfg.models["architect"].repo and "gemma" in cfg.models["gemma4"].repo.lower()
-    assert "reviewer" not in cfg.engines and "reviewer" not in cfg.models
 
 
 def test_github_app_source_needs_an_app_id(tmp_path: Path) -> None:

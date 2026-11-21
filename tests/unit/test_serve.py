@@ -11,15 +11,13 @@ from typing import Any
 
 import httpx
 import pytest
-import yaml
 
-from airlie.config import load_config
 from airlie.obs import RunDir
 from airlie.orchestrator import RunReport
 from airlie.prompts import text
 from airlie.serve.app import create_app
 from airlie.teams import TeamResult
-from tests.support.serve import FakeUpstream, cfg, unmanaged
+from tests.support.serve import FakeUpstream, cfg
 from tests.unit.serve_helpers import TestClient
 
 
@@ -40,7 +38,7 @@ def test_chat_completion_maps_role_to_served_model_and_prepends_system_prompt(tm
     )
     assert r.status_code == 200 and r.json()["choices"][0]["message"]["content"] == "hi"
     sent = json.loads(up.requests[0].content)
-    assert sent["model"] == "tiny"  # served_names mapping
+    assert sent["model"] == "tiny"  # passthru mapping
     assert sent["messages"][0] == {"role": "system", "content": "x"}  # role prompt prepended
     assert str(up.requests[0].url).startswith("http://engine.test/v1/chat/completions")
 
@@ -116,171 +114,175 @@ def test_a_streamed_reply_cut_off_at_max_tokens_ends_with_finish_reason_length(t
     assert b'"finish_reason":"length"' in body and b"[DONE]" in body
 
 
-def test_a_role_on_an_mlx_vlm_engine_is_sent_mlx_vlms_thinking_fields_and_its_model_path(
-    tmp_path: Path,
-) -> None:
-    names = ("architect", "summarizer", "judge", "aggregator")
-    for r in names:
-        (tmp_path / f"{r}.md").write_text("x")
-    data = {
-        "version": 1,
-        "engines": {"main": {"kind": "mlx_vlm", "port": 8094, "model": "base"}},
-        "models": {"base": {"repo": "org/m", "revision": "r", "path": "/models/base"}},
-        "roles": {r: {"prompt": f"{r}.md", "model": "base"} for r in names},
-        "observability": {"state_dir": str(tmp_path / "state")},
-    }
-    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
-    c = load_config(tmp_path / "airlie.yaml")
-    up = FakeUpstream()
-    client = TestClient(create_app(c, transport=httpx.MockTransport(up), manager=unmanaged()))
-    ask = {"messages": [{"role": "user", "content": "yo"}]}
-    client.post("/v1/chat/completions", json={"model": "judge", **ask})
-    client.post("/v1/chat/completions", json={"model": "judge", "thinking_budget": 100, **ask})
-    first, second = (json.loads(r.content) for r in up.requests)
-    assert first["model"] == "/models/base"
-    assert first["enable_thinking"] is True and first["thinking_budget"] == c.roles["judge"].thinking_budget
-    assert "chat_template_kwargs" not in first and "thinking_token_budget" not in first
-    assert second["thinking_budget"] == 100  # a client's own value wins
-
-
-def mlx_vlm_upstream(tmp_path: Path) -> tuple[FakeUpstream, TestClient, Any]:
-    names = ("architect", "summarizer", "judge", "aggregator")
-    for r in names:
-        (tmp_path / f"{r}.md").write_text("x")
-    data = {
-        "version": 1,
-        "engines": {"main": {"kind": "mlx_vlm", "port": 8094, "model": "base"}},
-        "models": {
-            "base": {
-                "repo": "org/m",
-                "revision": "r",
-                "path": "/models/base",
-                "tool_call_parser": "qwen3_coder",
-            }
-        },
-        "roles": {
-            r: {"prompt": f"{r}.md", "model": "base", "thinking": True, "thinking_budget": 4096}
-            for r in names
-        },
-        "observability": {"state_dir": str(tmp_path / "state")},
-    }
-    data["roles"]["judge"]["chat_template_kwargs"] = {"reasoning_strength": "low"}
-    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
-    c = load_config(tmp_path / "airlie.yaml")
-    up = FakeUpstream()
-    return up, TestClient(create_app(c, transport=httpx.MockTransport(up), manager=unmanaged())), c
-
-
 ASK = {"messages": [{"role": "user", "content": "yo"}]}
 
 
-def test_the_old_thinking_field_names_from_a_client_are_translated_for_an_mlx_vlm_role(
-    tmp_path: Path,
-) -> None:
-    """The Press Box bridge speaks the old names (thinking_token_budget); mlx-vlm would drop the budget."""
-    up, client, _ = mlx_vlm_upstream(tmp_path)
-    body = {
-        "model": "architect",
-        "chat_template_kwargs": {"enable_thinking": False},
-        "thinking_token_budget": 64,
-        **ASK,
-    }
-    client.post("/v1/chat/completions", json=body)
-    sent = json.loads(up.requests[0].content)
-    assert sent["enable_thinking"] is False and sent["thinking_budget"] == 64
-    assert "thinking_token_budget" not in sent and "chat_template_kwargs" not in sent
+def _sent(up: FakeUpstream) -> list[dict[str, Any]]:
+    return [json.loads(r.content) for r in up.requests]
 
 
-def test_other_client_template_kwargs_survive_the_translation(tmp_path: Path) -> None:
-    up, client, _ = mlx_vlm_upstream(tmp_path)
+def test_an_openai_role_is_sent_its_thinking_default_and_template_kwargs(tmp_path: Path) -> None:
+    c = cfg(tmp_path)
+    c.roles["judge"] = c.roles["judge"].model_copy(
+        update={"thinking": False, "chat_template_kwargs": {"reasoning_strength": "low"}}
+    )
+    up = FakeUpstream()
+    client = TestClient(create_app(c, transport=httpx.MockTransport(up)))
+    client.post("/v1/chat/completions", json={"model": "architect", **ASK})
+    client.post("/v1/chat/completions", json={"model": "judge", **ASK})
+    architect, judge = _sent(up)
+    assert architect["chat_template_kwargs"] == {"enable_thinking": c.roles["architect"].thinking}
+    assert judge["chat_template_kwargs"] == {"enable_thinking": False, "reasoning_strength": "low"}
+    for body in (architect, judge):  # the openai wire has no top-level thinking fields
+        assert not {"enable_thinking", "thinking_budget", "tool_parser", "thinking"} & set(body)
+
+
+def test_a_clients_template_kwargs_win_over_the_roles_default_and_the_rest_merge(tmp_path: Path) -> None:
+    up = FakeUpstream()
+    client = TestClient(create_app(cfg(tmp_path), transport=httpx.MockTransport(up)))
     client.post(
         "/v1/chat/completions",
-        json={"model": "architect", "chat_template_kwargs": {"enable_thinking": True, "x": 1}, **ASK},
+        json={"model": "architect", "chat_template_kwargs": {"enable_thinking": False, "x": 1}, **ASK},
     )
+    client.post("/v1/chat/completions", json={"model": "architect", "chat_template_kwargs": {"x": 2}, **ASK})
+    first, second = _sent(up)
+    assert first["chat_template_kwargs"] == {"enable_thinking": False, "x": 1}
+    assert second["chat_template_kwargs"] == {"enable_thinking": True, "x": 2}
+
+
+def test_a_raw_catalog_model_gets_no_thinking_default(tmp_path: Path) -> None:
+    up = FakeUpstream()
+    client = TestClient(create_app(cfg(tmp_path), transport=httpx.MockTransport(up)))
+    client.post("/v1/chat/completions", json={"model": "small", **ASK})
+    sent = _sent(up)[0]
+    assert sent["model"] == "tiny" and "chat_template_kwargs" not in sent
+
+
+def test_the_proxy_leaves_reasoning_effort_and_tool_turns_as_the_client_sent_them(tmp_path: Path) -> None:
+    up = FakeUpstream()
+    client = TestClient(create_app(cfg(tmp_path), transport=httpx.MockTransport(up)))
+    tool_turn = [
+        {"role": "user", "content": "run"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "done"},
+    ]
+    client.post(
+        "/v1/chat/completions",
+        json={"model": "architect", "reasoning_effort": "high", "messages": tool_turn},
+    )
+    sent = _sent(up)[0]
+    assert sent["reasoning_effort"] == "high"  # no remap: the server reads what the client sent
+    assert sent["messages"][1:] == tool_turn  # no "Continue." turn appended
+
+
+def anthropic_cfg(tmp_path: Path) -> Any:
+    c = cfg(tmp_path)
+    c.engines["main"] = c.engines["main"].model_copy(
+        update={"format": "anthropic", "base_url": "https://api.anthropic.test/v1", "api_key": "sk-ant"}
+    )
+    c.roles["architect"] = c.roles["architect"].model_copy(
+        update={"thinking": True, "thinking_budget": 2000, "max_tokens": 4000}
+    )
+    c.roles["judge"] = c.roles["judge"].model_copy(update={"thinking": False})
+    return c
+
+
+class FakeAnthropic:
+    """An Anthropic Messages server: one canned text reply, whole or streamed."""
+
+    def __init__(self, status: int = 200) -> None:
+        self.requests: list[httpx.Request] = []
+        self.status = status
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        body = json.loads(request.content)
+        if self.status != 200:
+            error = {
+                "type": "error",
+                "error": {"type": "authentication_error", "message": "invalid x-api-key"},
+            }
+            return httpx.Response(self.status, json=error)
+        if body.get("stream"):
+            events = [
+                ("message_start", {"message": {"id": "m1", "model": "small", "usage": {"input_tokens": 4}}}),
+                ("content_block_start", {"index": 0, "content_block": {"type": "text", "text": ""}}),
+                ("content_block_delta", {"index": 0, "delta": {"type": "text_delta", "text": "hi"}}),
+                ("content_block_stop", {"index": 0}),
+                ("message_delta", {"delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 2}}),
+                ("message_stop", {}),
+            ]
+            sse = "".join(f"event: {k}\ndata: {json.dumps({'type': k, **v})}\n\n" for k, v in events)
+            return httpx.Response(200, content=sse.encode(), headers={"content-type": "text/event-stream"})
+        return httpx.Response(
+            200,
+            json={
+                "id": "m1",
+                "type": "message",
+                "role": "assistant",
+                "model": body["model"],
+                "content": [{"type": "text", "text": "hi"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 4, "output_tokens": 2},
+            },
+        )
+
+
+def test_an_anthropic_role_is_posted_to_messages_and_answered_in_chat_completions(tmp_path: Path) -> None:
+    up = FakeAnthropic()
+    client = TestClient(create_app(anthropic_cfg(tmp_path), transport=httpx.MockTransport(up)))
+    r = client.post("/v1/chat/completions", json={"model": "architect", **ASK})
+    assert r.status_code == 200
+    reply = r.json()
+    assert (
+        reply["choices"][0]["message"]["content"] == "hi" and reply["choices"][0]["finish_reason"] == "stop"
+    )
+    assert reply["usage"]["prompt_tokens"] == 4 and reply["usage"]["completion_tokens"] == 2
+    request = up.requests[0]
+    assert str(request.url) == "https://api.anthropic.test/v1/messages"
+    assert request.headers["x-api-key"] == "sk-ant" and request.headers["anthropic-version"] == "2023-06-01"
+    assert "authorization" not in request.headers
+    sent = json.loads(request.content)
+    assert sent["model"] == "base" and sent["system"] == "x"  # the role prompt, as Anthropic's system
+    assert sent["messages"] == [{"role": "user", "content": "yo"}]
+    assert sent["max_tokens"] == 4000
+    assert sent["thinking"] == {"type": "enabled", "budget_tokens": 2000}  # the role's thinking
+    assert not {"chat_template_kwargs", "temperature", "top_p"} & set(sent)
+
+
+def test_an_anthropic_role_that_does_not_think_sends_no_thinking_block(tmp_path: Path) -> None:
+    up = FakeAnthropic()
+    client = TestClient(create_app(anthropic_cfg(tmp_path), transport=httpx.MockTransport(up)))
+    client.post("/v1/chat/completions", json={"model": "judge", "temperature": 0.2, "top_p": 0.9, **ASK})
     sent = json.loads(up.requests[0].content)
-    assert sent["enable_thinking"] is True and sent["chat_template_kwargs"] == {"x": 1}
+    assert "thinking" not in sent
+    assert sent["temperature"] == 0.2 and "top_p" not in sent  # one of the two
 
 
-def test_the_serve_proxy_remaps_reasoning_effort_high_for_an_mlx_vlm_role(tmp_path: Path) -> None:
-    up, client, _ = mlx_vlm_upstream(tmp_path)
-    ask = {"messages": [{"role": "user", "content": "yo"}], "reasoning_effort": "high"}
-    client.post("/v1/chat/completions", json={"model": "architect", **ask})
-    assert json.loads(up.requests[0].content)["reasoning_effort"] == "xhigh"
+def test_an_anthropic_reply_streams_back_as_chat_completion_chunks(tmp_path: Path) -> None:
+    up = FakeAnthropic()
+    client = TestClient(create_app(anthropic_cfg(tmp_path), transport=httpx.MockTransport(up)))
+    with client.stream(
+        "POST", "/v1/chat/completions", json={"model": "architect", "stream": True, **ASK}
+    ) as r:
+        assert r.status_code == 200
+        body = b"".join(r.iter_bytes())
+    assert json.loads(up.requests[0].content)["stream"] is True
+    assert b'"content":"hi"' in body or b'"content": "hi"' in body
+    assert b'"finish_reason":"stop"' in body or b'"finish_reason": "stop"' in body
+    assert body.rstrip().endswith(b"data: [DONE]")
 
 
-def test_tool_loop_follow_ups_gain_a_user_turn_on_the_proxy(tmp_path: Path) -> None:
-    up, client, _ = mlx_vlm_upstream(tmp_path)
-    body = {
-        "model": "architect",
-        "messages": [
-            {"role": "user", "content": "run"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
-                ],
-            },
-            {"role": "tool", "tool_call_id": "c1", "content": "done"},
-        ],
-    }
-    client.post("/v1/chat/completions", json=body)
-    sent = json.loads(up.requests[0].content)["messages"]
-    assert sent[-1] == {"role": "user", "content": "Continue."}
-
-
-def test_pending_tool_calls_gain_continue_on_the_proxy(tmp_path: Path) -> None:
-    up, client, _ = mlx_vlm_upstream(tmp_path)
-    body = {
-        "model": "architect",
-        "messages": [
-            {"role": "user", "content": "run"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
-                ],
-            },
-        ],
-    }
-    client.post("/v1/chat/completions", json=body)
-    sent = json.loads(up.requests[0].content)["messages"]
-    assert sent[-1] == {"role": "user", "content": "Continue."}
-
-
-def test_tool_only_threads_gain_continue_on_the_proxy(tmp_path: Path) -> None:
-    up, client, _ = mlx_vlm_upstream(tmp_path)
-    body = {
-        "model": "architect",
-        "messages": [
-            {"role": "system", "content": "you are helpful"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
-                ],
-            },
-            {"role": "tool", "tool_call_id": "c1", "content": "timed out"},
-        ],
-    }
-    client.post("/v1/chat/completions", json=body)
-    sent = json.loads(up.requests[0].content)["messages"]
-    assert sent[-1] == {"role": "user", "content": "Continue."}
-
-
-def test_an_mlx_vlm_role_gets_its_tool_parser_when_tools_are_sent_and_its_reasoning_effort(
-    tmp_path: Path,
-) -> None:
-    up, client, _ = mlx_vlm_upstream(tmp_path)
-    tool = {"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}
-    client.post("/v1/chat/completions", json={"model": "architect", "tools": [tool], **ASK})
-    client.post("/v1/chat/completions", json={"model": "summarizer", **ASK})
-    client.post("/v1/chat/completions", json={"model": "judge", **ASK})
-    with_tools, without, strength = (json.loads(r.content) for r in up.requests)
-    assert with_tools["tool_parser"] == "qwen3_coder" and "tool_parser" not in without
-    assert strength["reasoning_effort"] == "low" and "reasoning_effort" not in without
+def test_an_anthropic_error_status_reaches_the_client(tmp_path: Path) -> None:
+    client = TestClient(
+        create_app(anthropic_cfg(tmp_path), transport=httpx.MockTransport(FakeAnthropic(status=401)))
+    )
+    r = client.post("/v1/chat/completions", json={"model": "architect", **ASK})
+    assert r.status_code == 401 and "invalid x-api-key" in r.json()["detail"]
 
 
 def test_unknown_role_is_404(tmp_path: Path) -> None:
@@ -864,9 +866,7 @@ def test_the_line_row_shows_both_lanes_the_gates_and_the_blocked_cards(tmp_path:
         json.dumps({"key": building, "what": "story", "started": time.time() - 90})
     )
     (state / "line" / "status.json").write_text(
-        json.dumps(
-            {"ts": 1700000000.0, "gates": {"engine": "ok", "profile_match": "mismatch", "github": "ok"}}
-        )
+        json.dumps({"ts": 1700000000.0, "gates": {"engine": "ok", "github": "ok"}})
     )
     app = create_app(c, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
     auth = {"Authorization": "Bearer k"}
@@ -882,7 +882,7 @@ def test_the_line_row_shows_both_lanes_the_gates_and_the_blocked_cards(tmp_path:
             assert held
             row = client.get("/v1/airlie/line", headers=auth).json()
         assert row["paused"] is False and row["last_tick"] == 1700000000.0
-        assert row["gates"] == {"engine": "ok", "profile_match": "mismatch", "github": "ok"}
+        assert row["gates"] == {"engine": "ok", "github": "ok"}
         build = row["lanes"]["build"]
         assert (build["card"], build["title"], build["stage"], build["layer"]) == (
             building,

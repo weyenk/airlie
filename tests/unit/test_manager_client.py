@@ -1,49 +1,25 @@
-"""Every role call holds its engine: ManagedEngine holds around generate and yes_no, and holder_for picks the
-manager, serve's lease routes or a local start. Fakes only: a recording holder, httpx.MockTransport for serve,
-FakeRunner and FakeProber for the local start."""
+"""A call holds its engine: ManagedEngine holds around generate and yes_no, and a LeaseHolder takes serve's
+lease routes. Fakes only: a recording holder and httpx.MockTransport for serve."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import httpx
 import pytest
-import yaml
 
-from airlie.config import AirlieConfig, Sampling, load_config
+from airlie.config import Sampling
 from airlie.engine.fake import FakeEngine, FakeReply
-from airlie.engine.process import EngineProcess
 from airlie.engine.types import EngineError, GenRequest, Message
 from airlie.manager.client import (
     InProcessHolder,
-    LazyHolder,
     LeaseHolder,
-    LocalHolder,
     ManagedEngine,
-    holder_for,
 )
 from airlie.manager.core import Manager
 from airlie.serve.bridge.clock import FakeClock
-from tests.support.process import FakeProber, FakeRunner
-from tests.support.serve import FakeEngine as FakeResource
-
-
-def make_cfg(tmp_path: Path) -> AirlieConfig:
-    data = {
-        "version": 1,
-        "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "model": "base", "lifecycle": "on_demand"}},
-        "models": {"base": {"repo": "org/base", "revision": "r1", "path": "/models/base"}},
-        "roles": {
-            r: {"prompt": "p.md", "model": "base"} for r in ("architect", "summarizer", "judge", "aggregator")
-        },
-        "observability": {"state_dir": str(tmp_path / "state")},
-    }
-    (tmp_path / "p.md").write_text("x")
-    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
-    return load_config(tmp_path / "airlie.yaml")
 
 
 class RecordingHolder:
@@ -121,62 +97,10 @@ async def test_the_hold_is_released_when_the_call_raises() -> None:
 # ---- holder_for ----
 
 
-def serve_transport(health: int | None, seen: list[httpx.Request] | None = None) -> httpx.MockTransport:
-    def answer(req: httpx.Request) -> httpx.Response:
-        if seen is not None:
-            seen.append(req)
-        if health is None:
-            raise httpx.ConnectError("refused")
-        return httpx.Response(health, json={"ok": True})
-
-    return httpx.MockTransport(answer)
-
-
-async def test_holder_for_uses_the_in_process_manager_when_given(tmp_path: Path) -> None:
-    seen: list[httpx.Request] = []
-    manager = Manager([FakeResource("main")], budget_gb=100.0, clock=FakeClock())
-    h = holder_for(make_cfg(tmp_path), manager=manager, transport=serve_transport(200, seen))
-    assert isinstance(h, InProcessHolder)
-    assert seen == []  # serve is not even asked
-    async with h.hold("main", "role:architect"):
-        assert manager.status()[0].holders == ("role:architect",)
-    assert manager.status()[0].holders == ()
-
-
 async def test_the_in_process_holder_leaves_an_engine_the_manager_does_not_run() -> None:
     manager = Manager([], budget_gb=100.0, clock=FakeClock())
     async with InProcessHolder(manager).hold("elsewhere", "role:architect"):
         pass
-
-
-async def test_holder_for_uses_serve_when_its_health_answers(tmp_path: Path) -> None:
-    seen: list[httpx.Request] = []
-    h = holder_for(
-        make_cfg(tmp_path),
-        manager=None,
-        env={"AIRLIE_URL": "http://serve.test:9000"},
-        transport=serve_transport(200, seen),
-    )
-    assert isinstance(h, LeaseHolder)
-    assert [str(r.url) for r in seen] == ["http://serve.test:9000/health"]
-
-
-async def test_holder_for_falls_back_to_local_when_serve_is_down(tmp_path: Path) -> None:
-    assert isinstance(
-        holder_for(make_cfg(tmp_path), manager=None, transport=serve_transport(None)), LocalHolder
-    )
-
-
-async def test_holder_for_falls_back_to_local_when_health_is_not_a_200(tmp_path: Path) -> None:
-    assert isinstance(
-        holder_for(make_cfg(tmp_path), manager=None, transport=serve_transport(503)), LocalHolder
-    )
-
-
-async def test_the_default_serve_is_loopback_8090(tmp_path: Path) -> None:
-    seen: list[httpx.Request] = []
-    holder_for(make_cfg(tmp_path), manager=None, env={}, transport=serve_transport(200, seen))
-    assert str(seen[0].url) == "http://127.0.0.1:8090/health"
 
 
 # ---- LeaseHolder ----
@@ -360,186 +284,13 @@ async def test_a_503_without_a_json_body_is_still_an_engine_error() -> None:
 # ---- LocalHolder ----
 
 
-def local(tmp_path: Path, prober: FakeProber, runner: FakeRunner) -> LocalHolder:
-    cfg = make_cfg(tmp_path)
-
-    def process_for(name: str) -> EngineProcess:
-        return EngineProcess(
-            cfg,
-            name,
-            state_dir=tmp_path / "state",
-            runner=runner,
-            prober=prober,
-            snapshot_dir=lambda m: Path(f"/hf/{m.repo}/{m.revision}"),
-            poll_s=0,
-        )
-
-    return LocalHolder(cfg, tmp_path / "state", process_for=process_for)
-
-
-async def test_local_holder_starts_a_down_engine_and_leaves_it(tmp_path: Path) -> None:
-    runner = FakeRunner()
-    prober = FakeProber(health=[False, True], loaded=[["/models/base"]])
-    async with local(tmp_path, prober, runner).hold("main", "role:architect"):
-        assert len(runner.spawned) == 1
-    assert runner.killed == []  # serve's reaper stops it, not the caller
-    assert runner.alive == {4242}
-
-
-async def test_local_holder_leaves_a_running_engine_alone(tmp_path: Path) -> None:
-    runner = FakeRunner()
-    async with local(tmp_path, FakeProber(health=[True]), runner).hold("main", "role:architect"):
-        pass
-    assert runner.spawned == [] and runner.killed == []
-
-
-async def test_local_holder_raises_when_the_start_fails(tmp_path: Path) -> None:
-    runner = FakeRunner(port_holder=999)
-    with pytest.raises(EngineError, match="port 8080 is held"):
-        async with local(tmp_path, FakeProber(health=[False]), runner).hold("main", "role:architect"):
-            raise AssertionError("not held")
-
-
 # ---- LazyHolder ----
-
-
-async def test_a_lazy_holder_chooses_once_at_its_first_hold() -> None:
-    events: list[str] = []
-    chosen: list[int] = []
-
-    def choose() -> RecordingHolder:
-        chosen.append(1)
-        return RecordingHolder(events)
-
-    h = LazyHolder(choose)
-    assert chosen == []
-    async with h.hold("main", "a"):
-        pass
-    async with h.hold("main", "b"):
-        pass
-    assert chosen == [1]
-    assert events == ["enter main a", "exit main", "enter main b", "exit main"]
-
-
-async def test_a_lazy_holder_that_chose_local_takes_a_lease_once_serve_answers(tmp_path: Path) -> None:
-    serve = FakeServe()
-    choices: list[LocalHolder | LeaseHolder] = [
-        local(tmp_path, FakeProber(health=[True]), FakeRunner()),  # serve down: the engine is up, used here
-        lease_holder(serve, FakeClock()),  # serve up at the next hold
-    ]
-    h = LazyHolder(lambda: choices.pop(0))
-    async with h.hold("main", "a"):
-        pass
-    async with h.hold("main", "b"):
-        pass
-    assert [m for m, _ in serve.calls] == ["POST", "DELETE"]
-    assert serve.owners == ['{"owner":"b"}']
-
-
-async def test_a_lazy_holder_keeps_asking_while_serve_is_down(tmp_path: Path) -> None:
-    asked: list[int] = []
-    runner = FakeRunner()
-
-    def choose() -> LocalHolder:
-        asked.append(1)
-        return local(tmp_path, FakeProber(health=[True]), runner)
-
-    h = LazyHolder(choose)
-    async with h.hold("main", "a"):
-        pass
-    async with h.hold("main", "b"):
-        pass
-    assert asked == [1, 1] and runner.spawned == []
-
-
-async def test_a_lazy_holder_that_stays_local_keeps_its_first_local_holder(tmp_path: Path) -> None:
-    runner = FakeRunner()
-    first = local(tmp_path, FakeProber(health=[True]), runner)
-    choices = [first, local(tmp_path, FakeProber(health=[True]), runner)]
-    h = LazyHolder(lambda: choices.pop(0))
-    async with h.hold("main", "a"):
-        pass
-    async with h.hold("main", "b"):
-        pass
-    assert h._chosen is first  # its per-engine start locks stay the ones every hold shares
 
 
 # ---- _http_engine ----
 
 
-async def test_a_scripted_transport_goes_without_a_hold(tmp_path: Path) -> None:
-    from airlie import cli
-    from airlie.engine.http_engine import HTTPEngine
-
-    eng = cli._http_engine(make_cfg(tmp_path), "main", transport=serve_transport(200))
-    assert isinstance(eng, HTTPEngine)
-
-
-async def test_a_scripted_transport_with_a_manager_holds_through_it(tmp_path: Path) -> None:
-    from airlie import cli
-    from airlie.engine.http_engine import HTTPEngine
-
-    manager = Manager([FakeResource("main")], budget_gb=100.0, clock=FakeClock())
-    eng = cli._http_engine(make_cfg(tmp_path), "main", transport=serve_transport(200), manager=manager)
-    assert isinstance(eng, ManagedEngine) and isinstance(eng._inner, HTTPEngine)
-
-
 # ---- the serving manager ----
 
 
-async def test_holder_for_uses_the_serving_manager_without_asking_serve(tmp_path: Path) -> None:
-    from airlie.manager.client import serving
-
-    seen: list[httpx.Request] = []
-    manager = Manager([FakeResource("main")], budget_gb=100.0, clock=FakeClock())
-    with serving(manager):
-        h = holder_for(make_cfg(tmp_path), manager=None, transport=serve_transport(200, seen))
-    assert isinstance(h, InProcessHolder)
-    assert seen == []
-
-
-async def test_without_a_serving_manager_holder_for_asks_serve(tmp_path: Path) -> None:
-    from airlie.manager.client import serving
-
-    manager = Manager([], budget_gb=100.0, clock=FakeClock())
-    with serving(manager):
-        pass
-    h = holder_for(make_cfg(tmp_path), manager=None, transport=serve_transport(None))
-    assert isinstance(h, LocalHolder)
-
-
 # ---- LocalHolder: concurrent holds ----
-
-
-async def test_concurrent_local_holds_start_the_engine_once(tmp_path: Path) -> None:
-    runner = FakeRunner()
-
-    class Loading(FakeProber):
-        probes_since_spawn = 0
-
-        async def health_ok(self) -> bool:
-            await asyncio.sleep(0)  # a real probe waits on the network: the other hold runs meanwhile
-            if runner.spawned:
-                self.probes_since_spawn += 1
-            return self.probes_since_spawn >= 3  # a spawned engine takes a few probes to answer
-
-    holder = local(tmp_path, Loading(health=[], loaded=[["/models/base"]]), runner)
-
-    async def one() -> None:
-        async with holder.hold("main", "role:architect"):
-            await asyncio.sleep(0)
-
-    await asyncio.gather(one(), one())
-    assert len(runner.spawned) == 1
-
-
-async def test_a_start_that_loses_the_race_is_not_an_error(tmp_path: Path) -> None:
-    """Another process started the engine between the health probe and the start: it is up, so go on."""
-    runner = FakeRunner()
-    runner.alive.add(77)
-    holder = local(tmp_path, FakeProber(health=[False, True]), runner)
-    (tmp_path / "state" / "engines" / "main").mkdir(parents=True)
-    (tmp_path / "state" / "engines" / "main" / "pid").write_text("77\n")
-    async with holder.hold("main", "role:architect"):
-        pass
-    assert runner.spawned == []
