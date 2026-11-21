@@ -2,6 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { createMemoryHistory, createRouter } from "vue-router";
 import type { Item } from "@/api/board";
+import type { WorkflowDef } from "@/api/workflow_defs";
 import type { Flow } from "@/api/workflows";
 import { useBoardStore } from "@/stores/board";
 import { useSessionStore } from "@/stores/session";
@@ -21,6 +22,8 @@ const api = vi.hoisted(() => ({
 vi.mock("@/api/board", () => api);
 const wf = vi.hoisted(() => ({ storyFlow: vi.fn(), repoNames: vi.fn() }));
 vi.mock("@/api/workflows", () => wf);
+const defsApi = vi.hoisted(() => ({ listWorkflowDefs: vi.fn() }));
+vi.mock("@/api/workflow_defs", () => defsApi);
 const STORY = item("AIR-4", {
   title: "Board: panel width",
   status: "approved",
@@ -53,11 +56,15 @@ const FLOW: Flow = {
   ],
 };
 
+const def = (name: string, extra: Partial<WorkflowDef> = {}): WorkflowDef => ({ name, type: "story", source: "file", problems: [], pr: null, used_by: [], ...extra });
+const DEFS: WorkflowDef[] = [def("story"), def("bug-fix", { type: "bug" }), def("my-draft", { source: "draft" })];
+
 async function open(key = "AIR-4") {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
       { path: "/board/:key?", name: "board", component: { template: "<i/>" } },
+      { path: "/workflows/build/:name", name: "builder", component: { template: "<i/>" } },
       { path: "/workflows/:key/:node?/:job?", name: "story", component: { template: "<i/>" } },
     ],
   });
@@ -79,6 +86,7 @@ beforeEach(() => {
   api.addComment.mockReset().mockResolvedValue({ ...STORY, updated_at: 3000 });
   api.editComment.mockReset().mockResolvedValue({ ...STORY, updated_at: 3000 });
   wf.storyFlow.mockReset().mockResolvedValue(structuredClone(FLOW));
+  defsApi.listWorkflowDefs.mockReset().mockResolvedValue(structuredClone(DEFS));
   wf.repoNames.mockReset().mockResolvedValue(["weyenk/airlie", "weyenk/openhand"]);
 });
 afterEach(() => {
@@ -335,14 +343,75 @@ test("a card that was on the board and is gone says it was deleted", async () =>
   expect(q("[data-title]")).toBeNull();
 });
 
-const workflowSelect = () => q<HTMLSelectElement>("[data-workflow-select]")!;
+/** The workflow select by its role and name (a combobox called Workflow). */
+const picker = () => q<HTMLSelectElement>("select[aria-label=Workflow]")!;
+const optionNames = () => [...picker().options].map((o) => o.textContent?.trim());
+const buttonNamed = (name: string) => [...body().querySelectorAll<HTMLElement>("button, a")].find((b) => b.textContent?.trim() === name);
+async function choose(value: string) {
+  picker().value = value;
+  picker().dispatchEvent(new Event("change", { bubbles: true }));
+  await flushPromises();
+}
 
-test("a story card's Workflow row is blank with nothing to choose yet", async () => {
+test("a story card's Workflow select offers the registry's workflows and None", async () => {
   await open();
-  const select = workflowSelect();
-  expect(select.disabled).toBe(true);
-  expect([...select.options].map((o) => o.value)).toEqual([""]);
-  expect(select.options[0]!.textContent).toBe("No workflow selected");
+  expect(picker().disabled).toBe(false);
+  expect(optionNames()).toEqual(["No workflow selected", "story", "bug-fix", "my-draft (draft)"]);
+  expect(picker().value).toBe("");
+});
+
+test("a card that names a workflow shows it chosen", async () => {
+  const labelled = item("AIR-4", { labels: ["repo:weyenk/airlie", "workflow:bug-fix"], updated_at: 2000 });
+  api.getItem.mockResolvedValue(labelled);
+  api.listItems.mockResolvedValue([labelled]);
+  await open();
+  expect(picker().value).toBe("bug-fix");
+});
+
+test("choosing a workflow sets its workflow: label and keeps the others", async () => {
+  await open();
+  await choose("bug-fix");
+  expect(api.patchItem).toHaveBeenCalledWith("AIR-4", { labels: ["repo:weyenk/airlie", "web", "workflow:bug-fix"] });
+  expect(picker().value).toBe("bug-fix");
+});
+
+test("choosing No workflow selected clears the workflow: label", async () => {
+  const labelled = item("AIR-4", { labels: ["repo:weyenk/airlie", "workflow:story", "web"], updated_at: 2000 });
+  api.getItem.mockResolvedValue(labelled);
+  api.listItems.mockResolvedValue([labelled]);
+  await open();
+  await choose("");
+  expect(api.patchItem).toHaveBeenCalledWith("AIR-4", { labels: ["repo:weyenk/airlie", "web"] });
+});
+
+test("a failed label write says so and leaves the choice as it was", async () => {
+  await open();
+  api.patchItem.mockRejectedValueOnce(new Error("boom"));
+  await choose("bug-fix");
+  expect(q("[role=dialog]")!.textContent).toContain("Can't set the workflow of AIR-4: boom");
+  expect(picker().value).toBe("");
+});
+
+test("Open builder goes to the builder with the chosen workflow, or a new one when none is", async () => {
+  const { router } = await open();
+  buttonNamed("Open builder")!.click();
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe("/workflows/build/new");
+  await router.push("/board/AIR-4");
+  await choose("bug-fix");
+  buttonNamed("Open builder")!.click();
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe("/workflows/build/bug-fix");
+});
+
+test("when the workflows do not load the select says so and Retry asks again", async () => {
+  defsApi.listWorkflowDefs.mockRejectedValueOnce(new Error("down"));
+  await open();
+  expect(q("[role=dialog]")!.textContent).toContain("Workflows did not load");
+  buttonNamed("Retry")!.click();
+  await flushPromises();
+  expect(q("[role=dialog]")!.textContent).not.toContain("Workflows did not load");
+  expect(optionNames()).toContain("bug-fix");
 });
 
 test("only a story card has a Workflow row", async () => {

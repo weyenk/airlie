@@ -5,6 +5,7 @@ import { startStoryCard } from "@/api/sessions";
 import Typeahead from "@/components/Typeahead.vue";
 import { useRepoNames } from "@/composables/useRepoNames";
 import { cleanRepo, isRepo, REPO_RULE } from "@/screens/board/repo";
+import WorkflowPicker from "@/screens/board/WorkflowPicker.vue";
 import { useTurns } from "@/stores/turns";
 
 /**
@@ -33,7 +34,7 @@ const text = ref(props.text);
 // a repository chat's story is for its repository; a plain chat's for the one last used here
 const first = turns.rowOf(props.sessionId)?.repo ?? remembered();
 const repo = ref(first);
-/** Reserved for a future workflow choice; nothing to pick yet and Start story does not send it. */
+/** The workflow chosen here. Start story does not send it yet (the start request has no workflow field). */
 const workflow = ref("");
 const error = ref("");
 const busy = ref(false);
@@ -87,18 +88,13 @@ async function start(): Promise<void> {
         aria-label="Story request"
         class="w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 leading-normal outline-none focus:border-ring"
       />
-      <main class="flex flex-col gap-2">
-        <label class="text-xs font-semibold text-muted-foreground">Workflow</label>
-        <select
+      <section class="flex flex-col gap-2" aria-label="Workflow">
+        <span class="text-xs font-semibold text-muted-foreground">Workflow</span>
+        <WorkflowPicker
           v-model="workflow"
-          data-workflow-select
-          disabled
-          aria-label="Workflow"
-          class="h-9 w-full rounded-lg border border-input bg-muted/40 px-3 text-sm text-muted-foreground outline-none dark:bg-input/20"
-        >
-          <option value="">No workflow selected</option>
-        </select>
-      </main>
+          select-class="h-9 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-sm outline-none focus:border-ring"
+        />
+      </section>
       <div class="flex items-center gap-2 max-[640px]:flex-wrap">
         <span class="text-xs text-muted-foreground">in</span>
         <div class="min-w-[180px] flex-1">

@@ -6,6 +6,8 @@ import { openStream, textChunks } from "@/test-utils/ui-stream";
 import MessageView from "./MessageView.vue";
 
 vi.mock("@/stores/workflows", () => ({ useWorkflowsStore: () => ({ running: [] }) }));
+// a story card lists the workflows it may name; none here
+vi.mock("@/api/workflow_defs", () => ({ listWorkflowDefs: async () => [] }));
 
 const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/:rest(.*)*", component: { template: "<i/>" } }] });
 const view = (m: AirlieUIMessage, last = false) =>

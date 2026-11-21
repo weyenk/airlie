@@ -19,6 +19,8 @@ import { repoOf, repoProblem, withRepo } from "./repo";
 import { STATUSES } from "./statuses";
 import StoryFlow from "./StoryFlow.vue";
 import { ago, date } from "./time";
+import { chosenWorkflow, withoutWorkflow, withWorkflow } from "./workflow";
+import WorkflowPicker from "./WorkflowPicker.vue";
 
 defineOptions({ name: "AirlieCardModal" });
 
@@ -86,6 +88,22 @@ async function patch(body: ItemChange): Promise<void> {
 }
 const saveRepo = (value: string) => patch({ labels: withRepo(item.value?.labels ?? [], value) });
 
+// The workflow is the card's one `workflow:<name>` label. The select shows the choice at once and goes back to the
+// label if the write fails.
+const picked = ref("");
+watch(() => chosenWorkflow(item.value?.labels ?? []), (name) => (picked.value = name), { immediate: true });
+async function setWorkflow(name: string): Promise<void> {
+  problem.value = "";
+  const labels = item.value?.labels ?? [];
+  picked.value = name;
+  try {
+    await patch({ labels: name ? withWorkflow(labels, name) : withoutWorkflow(labels) });
+  } catch (e) {
+    picked.value = chosenWorkflow(item.value?.labels ?? []);
+    problem.value = `Can't set the workflow of ${props.itemKey}: ${(e as Error).message}`;
+  }
+}
+
 async function moveTo(status: Status): Promise<void> {
   problem.value = "";
   try {
@@ -146,16 +164,12 @@ function giveFocusBack(e: Event): void {
           <!-- only a story runs a workflow this round (D17) -->
           <template v-if="item.level === 'story'">
             <span class="text-xs text-muted-foreground">· Workflow</span>
-            <div data-workflow-field class="flex min-w-0 items-center text-xs">
-              <select
-                data-workflow-select
-                disabled
-                aria-label="Workflow"
-                class="h-7 max-w-[200px] rounded-md border border-input bg-muted/40 px-2 text-xs text-muted-foreground outline-none dark:bg-input/20"
-              >
-                <option value="" selected>No workflow selected</option>
-              </select>
-            </div>
+            <WorkflowPicker
+              data-workflow-field
+              :model-value="picked"
+              select-class="h-7 max-w-[200px] rounded-md border border-input bg-transparent px-2 text-xs outline-none focus-visible:border-ring dark:bg-input/30"
+              @update:model-value="setWorkflow"
+            />
           </template>
         </div>
       </div>
