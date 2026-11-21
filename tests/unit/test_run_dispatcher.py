@@ -4,8 +4,10 @@ No agent, engine, clock or sleep is involved: the start function is a mock and t
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 from airlie.board import BoardStore
@@ -37,4 +39,111 @@ async def test_approved_without_workflow_moves_to_blocked(tmp_path: Path) -> Non
     assert [(m.to_status, m.by) for m in board.moves(card.key)][-1] == ("blocked", "dispatcher")
     assert [(c.author, c.text) for c in blocked.comments] == [("dispatcher", "missing workflow")]
     start.assert_not_awaited()
+    board.close()
+
+
+async def test_approved_with_workflow_starts_and_moves_doing_then_review(tmp_path: Path) -> None:
+    board = BoardStore(tmp_path / "board.sqlite")
+    entered, release = asyncio.Event(), asyncio.Event()
+    seen: list[str] = []
+    published: list[tuple[str, str]] = []
+
+    async def start(*, name: str, card: dict[str, Any], key: str) -> object:
+        seen.append(board.get(key).status)
+        entered.set()
+        await release.wait()
+        return SimpleNamespace(ok=True)
+
+    card = board.create(level="story", title="go", labels=("workflow:story",))
+    disp = make_dispatcher(board, start)  # type: ignore[arg-type]
+    disp.publish = lambda topic, key: published.append((topic, key))
+
+    board.move(card.key, "approved")
+    await disp.notify_status(card.key, "approved")
+    await entered.wait()
+    assert seen == ["doing"]
+    assert board.get(card.key).status == "doing"
+
+    release.set()
+    await disp.drain()
+
+    assert board.get(card.key).status == "review"
+    assert [(m.to_status, m.by) for m in board.moves(card.key)][-2:] == [
+        ("doing", "dispatcher"),
+        ("review", "dispatcher"),
+    ]
+    assert published == [("board", card.key)] * 2
+    board.close()
+
+
+async def test_start_receives_workflow_name_and_card(tmp_path: Path) -> None:
+    board = BoardStore(tmp_path / "board.sqlite")
+    start = AsyncMock(return_value=SimpleNamespace(ok=True))
+    card = board.create(level="story", title="named", labels=("area:web", "workflow:layer"))
+    disp = make_dispatcher(board, start)
+
+    board.move(card.key, "approved")
+    await disp.notify_status(card.key, "approved")
+    await disp.drain()
+
+    start.assert_awaited_once()
+    kwargs = start.await_args.kwargs
+    assert (kwargs["name"], kwargs["key"], kwargs["card"]["title"]) == ("layer", card.key, "named")
+    board.close()
+
+
+async def test_hard_fail_moves_to_blocked(tmp_path: Path) -> None:
+    board = BoardStore(tmp_path / "board.sqlite")
+    start = AsyncMock(return_value=SimpleNamespace(ok=False, error="engine said no"))
+    card = board.create(level="story", title="bad", labels=("workflow:story",))
+    disp = make_dispatcher(board, start)
+
+    board.move(card.key, "approved")
+    await disp.notify_status(card.key, "approved")
+    await disp.drain()
+
+    blocked = board.get(card.key)
+    assert blocked.status == "blocked"
+    assert [(c.author, c.text) for c in blocked.comments] == [("dispatcher", "engine said no")]
+    board.close()
+
+
+async def test_start_exception_moves_to_blocked_with_error(tmp_path: Path) -> None:
+    board = BoardStore(tmp_path / "board.sqlite")
+    start = AsyncMock(side_effect=RuntimeError("boom"))
+    card = board.create(level="story", title="raises", labels=("workflow:story",))
+    disp = make_dispatcher(board, start)
+
+    board.move(card.key, "approved")
+    await disp.notify_status(card.key, "approved")
+    await disp.drain()
+
+    blocked = board.get(card.key)
+    assert blocked.status == "blocked"
+    assert [c.text for c in blocked.comments] == ["boom"]
+    board.close()
+
+
+async def test_repeat_notify_while_in_flight_starts_once(tmp_path: Path) -> None:
+    board = BoardStore(tmp_path / "board.sqlite")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def run(**_: object) -> object:
+        entered.set()
+        await release.wait()
+        return SimpleNamespace(ok=True)
+
+    start = AsyncMock(side_effect=run)
+    card = board.create(level="story", title="twice", labels=("workflow:story",))
+    disp = make_dispatcher(board, start)
+
+    board.move(card.key, "approved")
+    await disp.notify_status(card.key, "approved")
+    await entered.wait()
+    await disp.notify_status(card.key, "approved")
+    release.set()
+    await disp.drain()
+
+    start.assert_awaited_once()
+    assert board.get(card.key).status == "review"
     board.close()
