@@ -109,7 +109,15 @@ def _config(root: Path, *, workflows: bool = False) -> AirlieConfig:
         },
         "observability": {"state_dir": str(root / "state")},
     }
-    data["roles"]["coder"]["summary"] = "writes the code"  # a role the studio may route a subtask to
+    # studio.check_plan only allows roles that have a summary (and are not chief/judge/…)
+    for name, summary in (
+        ("coder", "writes the code"),
+        ("architect", "designs the change"),
+        ("product", "speaks for the user"),
+        ("tester", "proves it works"),
+    ):
+        if name in data["roles"]:
+            data["roles"][name]["summary"] = summary
     if workflows:
         data["includes"] = [str(f) for f in sorted(WORKFLOWS.glob("*.yaml"))]
     (root / "airlie.yaml").write_text(yaml.safe_dump(data))

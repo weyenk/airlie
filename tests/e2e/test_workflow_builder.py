@@ -61,9 +61,10 @@ def test_build_new_from_a_card_saves_a_draft_and_returns_with_it_chosen(
     box.dblclick()
     modal = app_page.locator("[data-node-modal]")
     evidence.expect(modal, "a double-click opens the node's fields").to_be_visible()
-    prompt = modal.locator("[data-input=prompt]")
-    evidence.expect(prompt, "a new WORK box starts as a prompt node").to_be_visible()
-    prompt.fill("Handle {card}.")
+    # Empty prompt on a new WORK box is treated as a run node (freeform when checks are empty).
+    run = modal.locator("[data-input=run]")
+    evidence.expect(run, "a new WORK box starts ready for a shell run").to_be_visible()
+    run.fill("true")
     modal.locator("[data-input-name=card]").check()
     modal.locator("[data-node-done]").click()
     evidence.expect(modal, "Done closes the modal").to_have_count(0)
