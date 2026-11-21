@@ -36,21 +36,21 @@ def test_role_referencing_unknown_model_fails_with_named_error(tmp_path: Path) -
         load_config(write(tmp_path, data))
 
 
-def test_a_workflow_check_naming_a_run_outside_the_story_catalog_fails_at_load(tmp_path: Path) -> None:
-    """validate_references holds every workflow to the story's catalog (rule 9); without it this passes."""
-    wf = {"nodes": {"c": {"type": "check", "run": "story.nothing_like_this"}}}
-    with pytest.raises(ConfigError, match=r"node c: run 'story\.nothing_like_this' is not in the catalog"):
+def test_a_workflow_with_no_nodes_fails_at_load(tmp_path: Path) -> None:
+    """validate_references runs validate_workflow on every workflow."""
+    wf = {"title": "w", "inputs": [], "nodes": {}, "edges": {}}
+    with pytest.raises(ConfigError, match=r"w: no nodes"):
         load_config(write(tmp_path, {**MINIMAL, "workflows": {"w": wf}}))
 
 
 def test_a_workflow_problem_and_a_missing_composer_workflow_are_both_reported(tmp_path: Path) -> None:
     """The composer check adds to the workflow problems; replacing them would hide the first."""
-    wf = {"nodes": {"c": {"type": "check", "run": "story.nothing_like_this"}}}
+    wf = {"title": "w", "inputs": [], "nodes": {}, "edges": {}}
     data = {**MINIMAL, "workflows": {"w": wf}, "story": {"composer": True}}
     with pytest.raises(ConfigError) as exc:
         load_config(write(tmp_path, data))
     text = str(exc.value)
-    assert "node c: run 'story.nothing_like_this' is not in the catalog" in text
+    assert "w: no nodes" in text
     assert "story.composer is on but workflows.story is missing" in text
     assert "story.composer is on but workflows.layer is missing" in text
 
@@ -1336,7 +1336,16 @@ def test_tool_written_packages_stay_off_in_the_schema_and_the_committed_config()
 
 
 def _wf(name: str) -> dict:
-    return {"workflows": {name: {"nodes": {"a": {"type": "check", "run": "story.build_done"}}}}}
+    return {
+        "workflows": {
+            name: {
+                "title": name,
+                "inputs": [],
+                "edges": {},
+                "nodes": {"a": {"kind": "WORK", "run": "echo ok"}},
+            }
+        }
+    }
 
 
 def test_includes_accept_a_glob_in_sorted_order(tmp_path: Path) -> None:
@@ -1358,8 +1367,12 @@ def test_a_glob_that_matches_nothing_is_an_error(tmp_path: Path) -> None:
         load_config(write(tmp_path, {**MINIMAL, "includes": ["parts/*.yaml"]}))
 
 
-def test_the_shipped_story_workflow_declares_its_type() -> None:
-    assert load_config(ROOT / "airlie.yaml", NO_LOCAL).workflows["story"].type == "story"
+def test_the_shipped_story_workflow_is_four_kind() -> None:
+    story = load_config(ROOT / "airlie.yaml", NO_LOCAL).workflows["story"]
+    assert story.title == "story"
+    assert story.nodes
+    assert all(getattr(n, "kind", None) for n in story.nodes.values())
+    assert story.edges
 
 
 def test_passthru_name_falls_back_to_the_model_key_itself() -> None:

@@ -18,3 +18,5 @@ src/airlie/serve/web_next/
 .continue
 **/node_modules/*
 .worktrees/
+.qwen/QWEN.local.md
+.qwen/worktrees/

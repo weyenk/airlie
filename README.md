@@ -3,9 +3,18 @@
   <img src="docs/readme/wordart.png" alt="airlie" width="420" />
 </p>
 
-airlie is an agentic workflow platform. Today it runs development workflows end to end — from a board card
-through planning, build, review to PR — with specialist agents that share what they learn on one
-Apple Silicon Mac. Dynamic workflows are next: the same line, for work that isn't only software.
+airlie is an agentic workflow platform: board, chat, roles, topologies and the Job Bus around work you want
+done. Today it runs development workflows end to end — from a card through planning, build and review to PR.
+Dynamic workflows are next: the same line, for work that isn't only software.
+
+Airlie does not host models. You point it at an OpenAI- or Anthropic-compatible HTTP endpoint (omlx, llama.cpp,
+a cloud API, …). Airlie is the agent and workflow layer; inference is yours.
+
+| Airlie provides | You bring |
+| --- | --- |
+| Studio (`task serve`): chat, board, workflows, metrics, admin | Inference: any remote HTTP engine (`AIRLIE_WORKFLOW_BASE_URL`, see *Engines*) |
+| Roles, prompts, tools, topologies, workflow engine, test gate | Optional SearXNG for `web_search` (`task searxng:up`) |
+| Job Bus `hub/` + Mac bridge so other products enqueue work | Secrets and real endpoints in env / `airlie.local.yaml` (never committed) |
 
 `task serve` hosts the web app. The tabs:
 
@@ -407,9 +416,9 @@ trains the spec 03 §2 model (frozen Qwen3-0.6B embedder, three projection layer
 
 ## Choosing the team model
 
-The default team / chief model is `generalist` (Qwen3.8-27B, hybrid attention). Swap with one line:
-`roles.coder.model` (and `roles.aggregator.model`) at another catalog entry; numbers in
-[`docs/bench/`](docs/bench/).
+Roles pick catalog names (`smart`, `fast`, `small`, …) served by the `workflow` engine. Swap with one line on
+`roles.<role>.model`; the engine is derived from the catalog, so changing endpoints never touches the roles.
+Numbers in [`docs/bench/`](docs/bench/).
 
 ## Configuration
 
@@ -431,14 +440,11 @@ guidelines with `summary:` frontmatter, routed by the decision model), `knowledg
 indexes with BM25), `vision` (receives the run's images) and `max_steps`. Unknown keys are errors, and every
 error names the key path.
 
-A workflow is nodes and lines: a node's `to` names the nodes its outputs feed, a model node's `prompt` is text or
-`prompt:<id>`, and a `check`/`gate` node's `run` comes from the catalog that `airlie workflows catalog` prints.
+A workflow has four node kinds (`WORK`, `ROUND_ROBIN`, `SUPERVISOR_WORKERS`, `K_INDEPENDENT_TEAMS`) wired by
+`edges` (`when` / `loop` on the wire). A `WORK` node has exactly one of `prompt`, `prompt_id`, or `run`.
 
-The web app's workflow builder (Workflows, then a name or New) draws that file: a box per node, a port per output,
-a line per `to` entry with its condition or loop on it. A click selects a box and shows a small card; a double-click
-opens the box's fields (a check or gate picks its `run` from the catalog by title). A bundle box opens its own
-workflow in place with a breadcrumb back. Validate runs the composer's checks; Save draft stores the workflow
-as a draft a card can choose, and the story screen can adopt the current workflow with one confirm.
+The web app's workflow builder (Workflows, then a name or New) draws that file: a box per node, ports for outputs,
+lines for edges. Double-click a box for its fields; Save draft stores a draft a card can choose.
 
 A role that thinks (`thinking: true` with a `thinking_budget`) needs `max_tokens` larger than the budget: `max_tokens`
 caps the thinking and the answer together, so the config is refused otherwise, naming the role and both numbers.
