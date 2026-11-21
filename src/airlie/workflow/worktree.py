@@ -1,8 +1,8 @@
-"""A run's git worktree and its lock: one run per workdir at a time.
+"""Per-workdir run lock: one workflow run at a time on a given directory.
 
-The runner builds its repository in a git worktree under the run directory. This guards a workdir with a
-lock file (one run at a time) and re-exports the git helpers the runner and CLI use. The Tart VMs and
-container engines the old story pipeline drove are retired: a repository is only ever built in a worktree.
+`start_workflow` claims `workdir` with an `O_EXCL` lock file before the runner starts and releases it
+when the run ends. This module is that lock only — it does not create git worktrees. Callers that need
+an isolated checkout still use `airlie.teams.worktree` (or pass a worktree path as `workdir`).
 """
 
 from __future__ import annotations

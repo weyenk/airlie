@@ -1,6 +1,5 @@
-# The story workflow on the four kinds: every node is a self-contained unit. `check` is gone (a step is a
-# WORK node that runs its own command or prompt); `bundle` is removed for now (revisit later), so the lane
-# ends at the agreement and building a layer is a separate workflow a future change runs per layer.
+# Test fixture only (production ships no workflows). Runnable WORK nodes use `true` — there is no
+# `story` CLI. Graph edges always declare a complementary path when conditioned.
 # Design: docs/superpowers/specs/2026-11-19-legacy-story-removal-design.md
 workflows:
   story:
@@ -10,16 +9,16 @@ workflows:
     nodes:
       intake:
         kind: WORK
-        run: "story intake"
+        run: "true"
         inputs: [card]
       base:
         kind: WORK
-        run: "story base"
+        run: "true"
         inputs: [card, repo]
         outputs: {base: json}
       to_build:
         kind: WORK
-        run: "story to_build"
+        run: "true"
         inputs: [layers, built, satisfied]
         outputs: {to_build: {format: bool, transient: true}}
       survey:
@@ -30,20 +29,20 @@ workflows:
         outputs: {survey: markdown}
       refine:
         kind: WORK
-        run: "story refine"
+        run: "true"
         inputs: [card]
         outputs: {story: json}
       layers:
         kind: WORK
-        run: "story plan_layers"
+        run: "true"
         inputs: [card, story, base, survey]
         outputs: {layers: list}
       agree_plain:
         kind: WORK
-        run: "story agree_plain"
+        run: "true"
         inputs: [story, layers]
         outputs: {agreement: json}
-      amigos:  # the meeting: its own kind, agents take turns until they agree
+      amigos:
         kind: ROUND_ROBIN
         roles: [product, architect]
         prompt: "align on {story} and {layers}"
@@ -51,12 +50,17 @@ workflows:
         inputs: [story, layers, base]
         outputs: {agreement: json}
         steps: 12
+      skip_build:
+        kind: WORK
+        run: "true"
+        outputs: {agreement: json}
     edges:
       intake: [{target: base}]
       base: [{target: to_build}]
       to_build:
         - {target: refine, when: "to_build"}
         - {target: survey, when: "to_build"}
+        - {target: skip_build, when: "not to_build"}
       refine: [{target: layers}]
       survey: [{target: layers}]
       layers:

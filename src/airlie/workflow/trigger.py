@@ -1,4 +1,8 @@
-"""One seam to start a workflow: chat's start, a card, or the job hub all call it.
+"""One seam to start a workflow run on this machine.
+
+Callers today: `airlie run` / `task run`, and the board `RunDispatcher` when a card is Approved with a
+`workflow:` label. Chat "Start story" and the retired story job routes do not call this yet (they refuse).
+Hub/bridge remains public ingress, not the default board starter.
 
 Resolves the workflow by name from the config, claims the run's workdir (one run at a time), and hands off
 to the generic runner. A start refused because the workdir is already locked is not an error: it reports

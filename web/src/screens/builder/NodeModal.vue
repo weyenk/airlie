@@ -401,9 +401,20 @@ const label = "text-muted-foreground";
 
             <template v-else-if="isRunBox">
               <div data-form-field="run" class="flex min-h-0 flex-1 flex-col gap-1">
-                <span :class="label">run (a check from the catalog)</span>
-                <p v-if="text(spec.run) && !check" data-run-unknown class="text-xs text-danger-foreground">{{ text(spec.run) }} is not in the catalog.</p>
-                <CatalogPicker :checks="catalog.checks" :value="text(spec.run)" @pick="pick" />
+                <span :class="label">{{ catalog.checks.length ? "run (a check from the catalog)" : "run (shell command)" }}</span>
+                <template v-if="catalog.checks.length">
+                  <p v-if="text(spec.run) && !check" data-run-unknown class="text-xs text-danger-foreground">{{ text(spec.run) }} is not in the catalog.</p>
+                  <CatalogPicker :checks="catalog.checks" :value="text(spec.run)" @pick="pick" />
+                </template>
+                <input
+                  v-else
+                  data-input="run"
+                  type="text"
+                  :value="text(spec.run)"
+                  :class="control"
+                  placeholder="true"
+                  @change="set('run', valueOf($event) || undefined)"
+                />
               </div>
             </template>
 

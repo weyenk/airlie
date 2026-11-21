@@ -160,6 +160,45 @@ def test_dead_end_condition_must_declare_alternative():
     assert validate_workflow(raw), "unmet condition needs another path"
 
 
+def test_same_when_on_every_edge_is_a_dead_end():
+    raw = {
+        "title": "t",
+        "inputs": [],
+        "nodes": {
+            "a": {"kind": "WORK", "prompt": "x", "outputs": {"go": {"format": "bool"}}},
+            "b": {"kind": "WORK", "prompt": "y"},
+            "c": {"kind": "WORK", "prompt": "z"},
+        },
+        "edges": {
+            "a": [
+                {"target": "b", "when": "go"},
+                {"target": "c", "when": "go"},
+            ]
+        },
+    }
+    problems = validate_workflow(raw)
+    assert problems and "silent dead end" in problems[0]
+
+
+def test_complementary_whens_are_not_a_dead_end():
+    raw = {
+        "title": "t",
+        "inputs": [],
+        "nodes": {
+            "a": {"kind": "WORK", "prompt": "x", "outputs": {"go": {"format": "bool"}}},
+            "b": {"kind": "WORK", "prompt": "y"},
+            "c": {"kind": "WORK", "prompt": "z"},
+        },
+        "edges": {
+            "a": [
+                {"target": "b", "when": "go"},
+                {"target": "c", "when": "not go"},
+            ]
+        },
+    }
+    assert validate_workflow(raw) == []
+
+
 def test_edge_to_undeclared_node_invalid():
     raw = {
         "title": "t",

@@ -237,8 +237,17 @@ def validate_workflow(raw: dict[str, Any]) -> list[str]:
             if w.target not in spec.nodes:
                 problems.append(f"edge {src}->{w.target}: target not a node")
     for src, wires in spec.edges.items():
-        if wires and all(w.when is not None and w.when.strip() == "false" for w in wires):
-            problems.append(f"{src}: every edge is `when: false` -- silent dead end")
+        if not wires:
+            continue
+        # Every outgoing edge conditioned with the same expression and no complementary path:
+        # silent dead end. A single edge that carries `loop` may stop when its when is unmet.
+        whens = [w.when.strip() if w.when is not None else None for w in wires]
+        if None in whens or len(set(whens)) != 1:
+            continue
+        only = whens[0]
+        looping = any(w.loop is not None for w in wires)
+        if only == "false" or len(wires) > 1 or not looping:
+            problems.append(f"{src}: every edge has the same when {only!r} -- silent dead end")
     unreachable = _unreachable_nodes(spec)
     if unreachable:
         problems.append(f"unreachable nodes: {sorted(unreachable)}")

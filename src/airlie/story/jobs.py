@@ -1,10 +1,10 @@
 # mypy: ignore-errors
-"""Stubs for the story run system, retired with the hand-written pipeline (engine swap, 2026-11-19).
+"""Stubs for the retired hand-written story *job* routes (engine swap, 2026-11-19).
 
-The serve app still names these as its story-endpoint job factories, so it must import them; they keep the
-app running and the routes defined, and answer a clear error until the run system is rebuilt on the generic
-engine (a follow-up plan). The lookup/config helpers return safe values rather than error, so non-run routes
-keep behaving; the *run* jobs raise, so a story-run request is told plainly it is not built yet."""
+Board cards run through `RunDispatcher` → `start_workflow` (not these factories). The serve app still wires
+`POST /v1/airlie/stories` (and restart/adopt/initiative) to these stubs so those routes refuse clearly until
+they are deleted or rewired. Lookup/config helpers return safe values so non-run routes keep working; the
+*run* jobs raise `StoryError(RETIRED)`."""
 
 from __future__ import annotations
 
