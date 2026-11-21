@@ -1,9 +1,9 @@
-"""Live tests need `task up` (the engines from airlie.yaml); skipped unless the engine under test answers.
+"""Live tests need the engines from airlie.yaml to answer; skipped unless the engine under test answers.
 
 `AIRLIE_LIVE_ENGINE` names that engine (default `main`; `reviewer` runs the reviewer's subset). The engine
 is built by `airlie.cli._http_engine`, the same code the line runs, so the dialect, the exact model path an
-mlx_vlm server knows its model by, and the per-role routing come from the config: a bare HTTPEngine would
-send the reviewer's or small's path to main, which makes an mlx-vlm server unload its model."""
+inference server knows its model by, and the per-role routing come from the config: a bare HTTPEngine would
+send the reviewer's or small's name to main, which may not serve it."""
 
 from __future__ import annotations
 

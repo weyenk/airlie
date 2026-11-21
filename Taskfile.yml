@@ -37,14 +37,9 @@ tasks:
       - '{{.RUN}} airlie config show {{.CLI_ARGS}}'
 
   models:list:
-    desc: Show the model catalog with pinned revisions and serving engine
+    desc: Show the model catalog and the engine serving each model
     cmds:
       - '{{.RUN}} airlie models list {{.CLI_ARGS}}'
-
-  models:pull:
-    desc: "Download every catalog model at its pinned revision (pass names to limit: task models:pull -- small)"
-    cmds:
-      - '{{.RUN}} airlie models pull {{.CLI_ARGS}}'
 
   up:
     desc: Start the mlx-vlm engines from airlie.yaml (autostart ones; `-- NAME` starts one by hand) and wait until their models are ready
@@ -505,11 +500,6 @@ tasks:
     desc: "Memory-free baseline vs LTS on graded tasks; spec 04 §4 ≥25% verdict (task bench:lts -- --tasks lang_detect)"
     cmds:
       - '{{.RUN}} airlie bench lts {{.CLI_ARGS}}'
-
-  route:eval:
-    desc: "Score the decision-model router on evals/routing.jsonl (task route:eval -- --min-accuracy 0.9 --out docs/bench/routing.json)"
-    cmds:
-      - '{{.RUN}} airlie route eval {{.CLI_ARGS}}'
 
   bench:topology:
     desc: "single agent vs K teams vs fork-when-stuck vs studio on graded tasks (task bench:topology -- --topologies single,studio --repeats 3)"

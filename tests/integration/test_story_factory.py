@@ -413,7 +413,7 @@ async def test_a_tick_does_not_start_a_story_while_the_engine_is_down(
     board = Intake(TOP)
     cfg, _ = tick_setup(tmp_path, monkeypatch, board, Engine(health))
     asked = github_answers(monkeypatch)
-    assert (await tick(cfg)).startswith("engine down: start it with")
+    assert (await tick(cfg)).startswith("engine down: nothing answers at")
     assert board.asked == 0  # the issue stays where it is
     assert asked == []  # the engine is named first; GitHub is not asked
 

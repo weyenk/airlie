@@ -810,7 +810,7 @@ async def test_a_hold_on_a_failed_resource_found_running_adopts_it_without_a_sta
 
 async def test_a_resource_adopted_on_hold_counts_for_memory() -> None:
     a, b = FakeResource("a", 10, lifecycle="pinned"), FakeResource("b", 10)
-    a.up, a.fail = True, "already running"  # a start would fail as EngineProcess.start does
+    a.up, a.fail = True, "already running"  # a start would fail as a second start of a server does
     m, _ = manager(a, b, budget_gb=15, wait_timeout_s=5)
     await _hold(m, "a")
     with pytest.raises(EngineError, match="gave up waiting"):

@@ -47,13 +47,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip, append=False)
 
 
-@pytest.fixture(autouse=True)
-def _serve_manages_no_real_engine(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`create_app` without a `manager=` builds one over the config's mlx-vlm engines, which would download
-    models and start processes; a test that wants a manager passes its own (tests/support/serve.py)."""
-    monkeypatch.setattr("airlie.manager.engines.engine_resources", lambda *a, **k: [])
-
-
 def pytest_configure(config: pytest.Config) -> None:
     """The committed airlie.yaml names its one engine by `${AIRLIE_WORKFLOW_BASE_URL}`; a test that loads it
     (from a module-scoped fixture too) gets a placeholder endpoint unless the environment has one."""

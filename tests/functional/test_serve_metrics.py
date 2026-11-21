@@ -28,7 +28,7 @@ def _cfg(tmp_path: Path) -> object:
         "version": 1,
         "engines": {
             "main": {
-                "kind": "openai_http",
+                "kind": "http",
                 "base_url": "http://engine.test/v1",
                 "models": ["base"],
             }

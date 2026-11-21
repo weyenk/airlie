@@ -140,15 +140,12 @@ also_copy = [
 # Modules held to "every mutant is caught" (the pipeline and `task mutate:enrolled` fail on a survivor).
 # Enrol a module once its tests are thorough; everything else is reported, never failed.
 enrolled = [
-    "src/airlie/models_download.py",
     "src/airlie/manager/core.py",
     "src/airlie/router/policy.py",
     "src/airlie/scheduler/states.py",
-    "src/airlie/tools/decide.py",
     "src/airlie/tools/jsonargs.py",
     "src/airlie/engine/sse.py",
     "src/airlie/lts/bank.py",
-    "src/airlie/router/jev.py",
     "src/airlie/lts/inject.py",
     "src/airlie/tools/fs.py",
     "src/airlie/config/load.py",

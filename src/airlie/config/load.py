@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from airlie.config.schema import TOPOLOGY_KINDS, AirlieConfig, ModelSpec
+from airlie.config.schema import TOPOLOGY_KINDS, AirlieConfig
 
 DEFAULT_CONFIG = "airlie.yaml"
 DEFAULT_LOCAL = "airlie.local.yaml"
@@ -218,11 +218,6 @@ def apply_profile(data: dict[str, Any], kind: str | None) -> dict[str, Any]:
         )
     out["topology"] = {**(out.get("topology") or {}), "kind": effective}
     return out
-
-
-def hf_snapshot_dir(m: ModelSpec, hf_cache: Path | None = None) -> Path:
-    cache = hf_cache or Path("~/.cache/huggingface/hub").expanduser()
-    return cache / f"models--{m.repo.replace('/', '--')}" / "snapshots" / m.revision
 
 
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")

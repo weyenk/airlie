@@ -79,9 +79,6 @@ class _FakeProbe:
     def total_ram_bytes(self) -> int:
         return 64 * 2**30
 
-    def model_snapshot_dir(self, repo: str, revision: str):
-        return None
-
     def tool_version(self, name: str):
         return "present"
 
@@ -91,16 +88,10 @@ class _FakeProbe:
     def tart_vms(self):
         return None
 
-    def model_config(self, repo: str, revision: str):
-        return None
-
     def http_ok(self, url: str) -> bool:
         return False
 
     def http_status(self, url: str, headers=None):
-        return None
-
-    def package_version(self, dist: str):
         return None
 
 

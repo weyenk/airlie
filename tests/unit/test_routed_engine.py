@@ -15,7 +15,6 @@ from airlie.engine import EngineCapabilities, EngineHealth, GenRequest, GenResul
 from airlie.engine.http_engine import HTTPEngine
 from airlie.engine.routed import RoutedEngine
 from airlie.engine.types import EngineStats
-from airlie.manager.client import ManagedEngine
 from tests.unit.engine_contract import plain_request
 
 ROLES = ("architect", "summarizer", "judge", "aggregator", "reviewer")
@@ -25,17 +24,26 @@ def config(tmp_path: Path, *, reviewer_engine: bool = True):  # type: ignore[no-
     data = {
         "version": 1,
         "engines": {
-            "main": {"kind": "mlx_vlm", "port": 8080, "model": "architect"},
+            "main": {
+                "kind": "http",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "models": ["architect"],
+                "passthru": {"architect": "/models/architect"},
+            },
             **(
-                {"reviewer": {"kind": "mlx_vlm", "port": 8082, "model": "reviewer"}}
+                {
+                    "reviewer": {
+                        "kind": "http",
+                        "base_url": "http://127.0.0.1:8082/v1",
+                        "models": ["reviewer"],
+                        "passthru": {"reviewer": "/models/reviewer"},
+                    }
+                }
                 if reviewer_engine
                 else {}
             ),
         },
-        "models": {
-            "architect": {"repo": "org/g", "revision": "r", "path": "/models/architect"},
-            "reviewer": {"repo": "org/r", "revision": "r", "path": "/models/reviewer"},
-        },
+        "models": {"architect": {}, "reviewer": {}},
         "roles": {
             r: {
                 "prompt": f"{r}.md",
@@ -82,12 +90,12 @@ async def test_each_role_goes_to_the_engine_that_serves_its_model(tmp_path: Path
 
 def test_one_engine_serving_every_role_stays_one_http_engine(tmp_path: Path) -> None:
     eng = cli._http_engine(config(tmp_path, reviewer_engine=False), "main")
-    assert isinstance(eng, ManagedEngine) and isinstance(eng._inner, HTTPEngine)
+    assert isinstance(eng, HTTPEngine)
 
 
 def test_a_model_override_is_one_http_engine_even_with_roles_elsewhere(tmp_path: Path) -> None:
     eng = cli._http_engine(config(tmp_path), "main", "architect")
-    assert isinstance(eng, ManagedEngine) and isinstance(eng._inner, HTTPEngine)
+    assert isinstance(eng, HTTPEngine)
 
 
 class Fake:

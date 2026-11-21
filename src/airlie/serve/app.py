@@ -15,7 +15,6 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, ExitStack
 from dataclasses import dataclass, field
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -583,9 +582,7 @@ def _ended(job: Job | None) -> bool:
     return job is not None and job.state in ("failed", "cancelled")
 
 
-def _default_factory(
-    cfg: AirlieConfig, k: int | None, topology: str | None = None, *, manager: Manager | None = None
-) -> Any:
+def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = None) -> Any:
     from airlie.cli import _orchestrator, apply_k, select_topology
     from airlie.config import TOPOLOGY_KINDS
 
@@ -593,7 +590,7 @@ def _default_factory(
         raise HTTPException(400, f"unknown topology '{topology}'; use one of {', '.join(TOPOLOGY_KINDS)}")
     cfg = select_topology(cfg, topology)
     cfg = apply_k(cfg if cfg.source_path is not None else cfg.model_copy(deep=True), k)
-    return _orchestrator(cfg, manager=manager)
+    return _orchestrator(cfg)
 
 
 def _workflow_publisher(cfg: AirlieConfig) -> Callable[[WorkflowDraft], Awaitable[tuple[int, str]]]:
@@ -655,8 +652,8 @@ def create_app(
     `auth_store` (default: observability.state_dir/auth.sqlite), `now` and `next_dir` (the Vue app's build,
     default NEXT_DIR), `tick_s` (the line's beat interval, default line.tick_s) and `line_beat` (replaces the
     line's beat, given the function that starts a lane's job) are for tests.
-    `manager` starts, holds and stops the engines (default: one over the config's mlx-vlm engines, inside
-    the memory budget `memory.wired_limit_mb` less the OS reserve and `manager.margin_gb`).
+    `manager` starts, holds and stops the repository chats' VMs (default: one with no resources at first,
+    inside the memory budget `memory.wired_limit_mb` less the OS reserve and `manager.margin_gb`).
     `repo_sessions` builds what runs repository chats in VMs, given `(cfg, manager, threads, confirmations,
     access)`
     (default: Tart boxes, chat.repo_session.default_repo_sessions; tests give one over FakeBox).
@@ -689,14 +686,10 @@ def create_app(
     from airlie.chat.repo_session import default_repo_sessions
     from airlie.manager.api import Leases, UnknownLease
     from airlie.manager.core import Manager as ManagerImpl
-    from airlie.manager.engines import engine_resources
-    from airlie.models_download import Downloader
 
     if manager is None:
         manager = ManagerImpl(
-            engine_resources(
-                cfg, state_dir=cfg.observability.state_dir.expanduser(), downloader=Downloader()
-            ),
+            [],  # airlie starts no inference server: the manager holds only the repository chats' VMs
             budget_gb=cfg.memory.wired_limit_mb / 1024 - cfg.memory.os_reserve_gb - cfg.manager.margin_gb,
             clock=RealClock(),
             wait_timeout_s=cfg.manager.wait_timeout_s,
@@ -705,8 +698,6 @@ def create_app(
     leases = Leases(manager, ttl_s=cfg.manager.lease_ttl_s)
     managed = {s.name for s in manager.status()}
     app.state.manager = manager
-    if orchestrator_factory is None:
-        factory = partial(_default_factory, manager=manager)  # its engine calls hold through this manager
     engine_tasks: list[asyncio.Task[Any]] = []
     serving_cm = ExitStack()
 
@@ -1157,7 +1148,7 @@ def create_app(
             from airlie.tools.protocol import ToolContext
 
             role = cfg.roles[tool_role]
-            engine = _http_engine(cfg, cfg.engine_for_role(tool_role), transport=transport, manager=manager)
+            engine = _http_engine(cfg, cfg.engine_for_role(tool_role), transport=transport)
             await engine.start()
             try:
                 ctx = ToolContext(

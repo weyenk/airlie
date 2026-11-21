@@ -331,37 +331,17 @@ def test_a_failing_adopt_does_not_stop_the_pinned_engines_starting(
     assert engine.up
 
 
-def test_serve_built_without_a_manager_manages_no_engine_in_tests(tmp_path: Path) -> None:
+def test_serve_built_without_a_manager_manages_no_engine(tmp_path: Path) -> None:
     config = cfg(tmp_path)
-    config.engines["main"] = config.engines["main"].model_copy(update={"kind": "mlx_vlm"})
     with TestClient(create_app(config, transport=httpx.MockTransport(FakeUpstream()))) as c:
         assert c.get("/v1/airlie/engines").json() == []
-
-
-def test_a_story_engine_built_inside_serve_holds_through_the_serve_manager(
-    tmp_path: Path, manager: Manager, engine: FakeEngine
-) -> None:
-    from airlie.story.factory import _engine
-
-    base = cfg(tmp_path)
-    c = base.model_copy(
-        update={"engines": {"main": base.engines["main"].model_copy(update={"kind": "mlx_vlm"})}}
-    )
-    with TestClient(serve(tmp_path, manager)) as client:
-
-        async def held() -> tuple[str, ...]:
-            async with _engine(c)._holder.hold("main", "role:architect"):  # type: ignore[attr-defined]
-                return status(manager).holders
-
-        assert client.portal.call(held) == ("role:architect",)
-        assert engine.up
 
 
 def test_a_chat_to_an_engine_started_out_of_band_adopts_it_and_answers(
     tmp_path: Path, manager: Manager, engine: FakeEngine
 ) -> None:
     with TestClient(serve(tmp_path, manager)) as c:
-        engine.up = True  # `airlie engine up main` while serve runs: a second start would say so
+        engine.up = True  # started by someone else while serve runs: a second start would say so
         engine.fail = "engine 'main' is already running (pid 4242); use restart"
         r = c.post("/v1/chat/completions", json=ASK)
         assert r.status_code == 200

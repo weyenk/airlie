@@ -338,7 +338,7 @@ async def test_the_beat_runs_the_bookkeeping_first_and_adds_its_lines(
     monkeypatch.setattr(factory, "_engine", lambda c: Down())
     # the fix lines come first, ahead of what the gates and the lanes say
     out = await factory.tick(cfg)
-    assert out.startswith("AIR-3: transient block, retried; engine down: start it with")
+    assert out.startswith("AIR-3: transient block, retried; engine down: nothing answers at")
 
 
 def _named(name: str) -> str:
