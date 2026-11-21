@@ -104,7 +104,9 @@ def test_the_story_workflow_is_drawn_a_box_per_node(
     evidence.expect(
         canvas.locator("[data-port=out][data-node=base]"), "base shows its output port"
     ).to_be_visible()
-    evidence.expect(canvas.locator("[data-edge]"), f"a line per edge ({STORY_LINES})").to_have_count(STORY_LINES)
+    evidence.expect(canvas.locator("[data-edge]"), f"a line per edge ({STORY_LINES})").to_have_count(
+        STORY_LINES
+    )
     evidence.expect(
         canvas.locator("[data-edge-label][data-label-fits=true]").first,
         "a label the room takes is drawn above its line",
