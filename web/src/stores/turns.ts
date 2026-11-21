@@ -43,6 +43,9 @@ type SessionState = {
   refused: Record<string, string>;
   /** The settle loop after a cut, while it runs (a second Reconnect joins it). */
   settling: Promise<void> | null;
+  /** The model and persona (role) the person chose for the next turns; undefined: the server's default. */
+  model: string | undefined;
+  persona: string | undefined;
 };
 
 function rowOfEngine(data: EngineData): EngineStatus {
@@ -190,6 +193,8 @@ export const useTurns = defineStore("turns", () => {
             repo: s.row.repo ?? undefined,
             base_ref: s.row.base_ref ?? undefined,
             skill,
+            model_key: s.model,
+            persona: s.persona,
             approvals,
             // an answer carries no new message of the person's; a send (and a retry) only the newest one
             messages: approvals?.length ? [] : messages.slice(-1),
@@ -218,6 +223,8 @@ export const useTurns = defineStore("turns", () => {
       todos: [],
       refused: {},
       settling: null,
+      model: undefined,
+      persona: undefined,
     };
     const s = sessions[session.id];
     const chat = new Chat<AirlieUIMessage>({
@@ -265,6 +272,18 @@ export const useTurns = defineStore("turns", () => {
       url: `/v1/airlie/uploads/${a.id}`,
     }));
     await chat.sendMessage({ text: opts.sent ?? opts.text, files });
+  }
+
+  /** What the person chose for this chat's next turns (`undefined`: the server's default); each turn sends it. */
+  function choice(id: string): { model: string | undefined; persona: string | undefined } {
+    const s = sessions[id];
+    return { model: s?.model, persona: s?.persona };
+  }
+
+  function choose(id: string, pick: { model?: string | undefined; persona?: string | undefined }): void {
+    const { s } = existing(id);
+    if ("model" in pick) s.model = pick.model;
+    if ("persona" in pick) s.persona = pick.persona;
   }
 
   /** Stop the turn: the server cancels it and saves what it had; then the Chat stops reading. */
@@ -384,6 +403,8 @@ export const useTurns = defineStore("turns", () => {
     rowOf: (id: string): ThreadRow | null => sessions[id]?.row ?? null,
     addPart,
     send,
+    choice,
+    choose,
     stop,
     retry,
     answer,

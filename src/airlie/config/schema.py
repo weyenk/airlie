@@ -317,6 +317,11 @@ class ChatSpec(Strict):
     kinds: ChatKindsSpec = Field(default_factory=ChatKindsSpec)
     task: ChatTaskSpec = Field(default_factory=ChatTaskSpec)
     max_steps: int = Field(default=12, ge=1, description="model turns a chat message may take (tool rounds)")
+    personas: list[str] = Field(
+        default_factory=list,
+        description="roles a person may pick in the composer to answer a chat turn with that role's prompt "
+        "(besides `chat`, the default); each must be in roles",
+    )
     sources: list[Literal["github_app"]] = Field(
         default_factory=list,
         description="where a person's repositories come from; github_app needs story.github_app.app_id",
@@ -1173,6 +1178,11 @@ class AirlieConfig(Strict):
             ]
             if task.default_role not in task.roles:
                 problems.append(f"chat.task.default_role '{task.default_role}' is not in chat.task.roles")
+        problems += [
+            f"chat.personas names role '{r}', which is not in roles ({sorted(self.roles)})"
+            for r in dict.fromkeys(self.chat.personas)
+            if r not in self.roles
+        ]
         if "github_app" in self.chat.sources and self.story.github_app.app_id is None:
             problems.append("chat.sources lists github_app, which needs story.github_app.app_id")
         served_by: dict[str, list[str]] = {m: [] for m in self.models}

@@ -334,3 +334,82 @@ test("focusing, typing and sending a message never magnifies the page: the texta
   expect(turnBodies()).toHaveLength(1); // the send went through
   expect(declaredFontSize(el)).toBe(16); // the property that keeps the visual-viewport scale unchanged after the send
 });
+
+const OPTIONS = {
+  models: [
+    { key: "gemma4", label: "Gemma 4" },
+    { key: "smart", label: "Smart" },
+  ],
+  personas: [
+    { key: "chat", label: "Chat" },
+    { key: "architect", label: "Architect" },
+  ],
+  default_model: "gemma4",
+  default_persona: "chat",
+};
+const modelSelect = (w: Awaited<ReturnType<typeof open>>["w"]) => w.get("select[aria-label='Model']");
+const personaSelect = (w: Awaited<ReturnType<typeof open>>["w"]) => w.get("select[aria-label='Persona']");
+
+test("the footer lists the models and personas with the defaults chosen, and a turn names neither until one is chosen", async () => {
+  server.options = OPTIONS;
+  const { w } = await open();
+  expect((modelSelect(w).element as HTMLSelectElement).value).toBe("gemma4");
+  expect((personaSelect(w).element as HTMLSelectElement).value).toBe("chat");
+  expect(modelSelect(w).findAll("option").map((o) => o.text())).toEqual(["Gemma 4", "Smart"]);
+  expect(personaSelect(w).findAll("option").map((o) => o.text())).toEqual(["Chat", "Architect"]);
+  await box(w).setValue("hello");
+  await w.get("form").trigger("submit");
+  await flushPromises();
+  const [body] = turnBodies();
+  expect(body.model_key).toBeUndefined();
+  expect(body.persona).toBeUndefined();
+});
+
+test("a chosen model and persona are shown and sent on the next turn, and kept for the turns after", async () => {
+  server.options = OPTIONS;
+  const { w } = await open();
+  await modelSelect(w).setValue("smart");
+  await personaSelect(w).setValue("architect");
+  expect((modelSelect(w).element as HTMLSelectElement).value).toBe("smart");
+  expect((personaSelect(w).element as HTMLSelectElement).value).toBe("architect");
+  await box(w).setValue("first");
+  await w.get("form").trigger("submit");
+  await flushPromises();
+  await box(w).setValue("second");
+  await w.get("form").trigger("submit");
+  await flushPromises();
+  const bodies = turnBodies();
+  expect(bodies).toHaveLength(2);
+  for (const b of bodies) expect(b).toMatchObject({ model_key: "smart", persona: "architect" });
+});
+
+test("choosing the default again sends nothing, and a chat's choice is its own", async () => {
+  server.options = OPTIONS;
+  const { w } = await open();
+  await modelSelect(w).setValue("smart");
+  await modelSelect(w).setValue("gemma4");
+  await box(w).setValue("hello");
+  await w.get("form").trigger("submit");
+  await flushPromises();
+  expect(turnBodies()[0].model_key).toBeUndefined();
+  await w.setProps({ session: { ...ROW, id: "chat-2" } });
+  await flushPromises();
+  expect((modelSelect(w).element as HTMLSelectElement).value).toBe("gemma4");
+});
+
+test("the dropdowns are off while a reply streams, and without options the footer only names the model", async () => {
+  server.options = OPTIONS;
+  server.turn = () => new Promise<Response>(() => {});
+  const { w } = await open();
+  await box(w).setValue("hello");
+  await w.get("form").trigger("submit");
+  await flushPromises();
+  expect((modelSelect(w).element as HTMLSelectElement).disabled).toBe(true);
+  expect((personaSelect(w).element as HTMLSelectElement).disabled).toBe(true);
+});
+
+test("a server that offers no options leaves the model chip and no dropdown", async () => {
+  const { w } = await open();
+  expect(w.find("select").exists()).toBe(false);
+  expect(w.get("[data-model]").text()).toBe("Gemma 4");
+});

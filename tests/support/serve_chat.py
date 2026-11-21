@@ -32,7 +32,7 @@ def superpowers_tree(root: Path) -> Path:
     return root
 
 
-def chat_cfg(tmp_path: Path, skills: dict[str, str] | None = None):
+def chat_cfg(tmp_path: Path, skills: dict[str, str] | None = None, *, personas: list[str] | None = None):
     skills = (
         {"story": "---\nsummary: Make a story\naction: story\n---\nSTORY BODY\n"}
         if skills is None
@@ -57,12 +57,20 @@ def chat_cfg(tmp_path: Path, skills: dict[str, str] | None = None):
     roles["chat"] = {"prompt": "chat.md", "model": "base", "skills": "skills"}
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "http", "base_url": "http://engine.test/v1", "models": ["base"]}},
-        "models": {"base": {}},
+        "engines": {
+            "main": {
+                "kind": "http",
+                "base_url": "http://engine.test/v1",
+                "models": ["base", "alt"] if personas is not None else ["base"],
+            }
+        },
+        "models": {"base": {}, "alt": {"label": "Alt"}} if personas is not None else {"base": {}},
         "roles": roles,
         "observability": {"state_dir": str(tmp_path / "state")},
         "chat": {"superpowers": {"path": str(superpowers_tree(tmp_path / "superpowers"))}},
     }
+    if personas is not None:  # a second model and the roles a person may pick in the composer
+        data["chat"]["personas"] = personas
     (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
     return load_config(tmp_path / "airlie.yaml")
 

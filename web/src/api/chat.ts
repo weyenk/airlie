@@ -15,6 +15,11 @@ export class StreamCut extends Error {
 
 export type Skill = { name: string; summary: string; action: string };
 
+/** What the composer's dropdowns offer (`GET /v1/airlie/chat/options`): the models a turn may run on and the personas
+ * (roles) that may answer it, with the key each defaults to. A turn that names neither runs on the defaults. */
+export type ChatChoice = { key: string; label: string };
+export type ChatOptions = { models: ChatChoice[]; personas: ChatChoice[]; default_model: string; default_persona: string };
+
 export type AttachmentLimits = {
   max_per_message: number;
   max_image_mb: number;
@@ -27,6 +32,10 @@ export type Upload = { id: string; name: string; mime: string; size: number; kin
 
 export async function chatSkills(): Promise<Skill[]> {
   return (await request<{ skills: Skill[] }>("/v1/airlie/chat/skills")).skills;
+}
+
+export function chatOptions(): Promise<ChatOptions> {
+  return request<ChatOptions>("/v1/airlie/chat/options");
 }
 
 export function attachmentLimits(): Promise<AttachmentLimits> {

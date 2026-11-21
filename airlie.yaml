@@ -61,6 +61,7 @@ lhr:
   timeout_s: 60
 
 chat:
+  personas: [architect, reviewer, product]   # roles the composer's persona dropdown offers besides chat
   attachments:
     max_image_mb: 20
     max_video_mb: 100

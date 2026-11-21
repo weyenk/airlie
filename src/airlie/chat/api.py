@@ -133,16 +133,19 @@ BaseRef = Annotated[str, Field(max_length=200), AfterValidator(_a_ref)]
 
 
 class TurnBody(BaseModel):
-    """The AI SDK's request body plus `kind`, `skill` and, for a repository chat, `repo` (owner/name, named
-    when the chat is first opened), `base_ref` (a branch or commit; default main) and `approvals` (the
-    person's answers to the permission requests the stream carried); unknown fields (a `tools` list among
-    them) are ignored."""
+    """The AI SDK's request body plus `kind`, `skill`, the person's pick of `model_key` (a model an engine
+    serves) and `persona` (a role of `chat.personas`) for this turn (none: the chat role's own) and, for a
+    repository chat, `repo` (owner/name, named when the chat is first opened), `base_ref` (a branch or commit;
+    default main) and `approvals` (the person's answers to the permission requests the stream carried);
+    unknown fields (a `tools` list, a `model` among them) are ignored."""
 
     model_config = ConfigDict(extra="ignore")
     id: str = Field(min_length=1, max_length=128)
     kind: ChatKind
     messages: list[UIMessage]
     skill: str | None = None
+    model_key: str | None = Field(default=None, max_length=128)
+    persona: str | None = Field(default=None, max_length=128)
     repo: RepoName | None = None
     base_ref: BaseRef | None = None
     approvals: list[Approval] = Field(default_factory=list, max_length=50)
@@ -386,6 +389,30 @@ def chat_router(
             f"you have no access to {repo}: {why or 'connect GitHub, or ask for access to it on GitHub'}", 403
         )
 
+    def served_models() -> list[str]:
+        """The catalog models some engine serves: what a turn may be asked to run on."""
+        served = [m for m in cfg.models if any(m in e.models for e in cfg.engines.values())]
+        default = cfg.roles["chat"].model
+        return sorted(
+            served, key=lambda m: m != default
+        )  # the default first, the rest as the catalog has them
+
+    def personas() -> list[str]:
+        """The roles that may answer a turn: the chat role first, then `chat.personas`."""
+        return list(dict.fromkeys(["chat", *cfg.chat.personas]))
+
+    @router.get("/v1/airlie/chat/options")
+    async def chat_options(request: Request) -> Any:
+        """What the composer's dropdowns offer: the models and personas a turn may name, and each default."""
+        if principal_of(request) is None:
+            return error("not signed in", 401)
+        return {
+            "models": [{"key": m, "label": cfg.models[m].label or m} for m in served_models()],
+            "personas": [{"key": r, "label": r.replace("_", " ").title()} for r in personas()],
+            "default_model": cfg.roles["chat"].model,
+            "default_persona": "chat",
+        }
+
     @router.post("/v1/airlie/chat/turn")
     async def chat_turn(body: TurnBody, request: Request) -> Any:
         principal = principal_of(request)
@@ -400,6 +427,13 @@ def chat_router(
         except Exception as e:  # no engine serves the chat role's model
             log.error("the chat role has no engine: %s", e)
             return error(NO_ENGINE, 503)
+        if body.model_key is not None:  # the person's pick of model: an engine must serve it
+            try:
+                engine_name = cfg.engine_for_model(body.model_key)
+            except KeyError:
+                return error(f"unknown model '{body.model_key}'; models: {', '.join(served_models())}", 422)
+        if body.persona is not None and body.persona not in personas():
+            return error(f"unknown persona '{body.persona}'; personas: {', '.join(personas())}", 422)
         if body.resumes and not threads.exists(body.id):  # an answer is for a chat that asked
             return error("no such thread", 404)
         if body.kind == "repository":
@@ -505,6 +539,7 @@ def chat_router(
             principal,
             attachments=sum(p.get("type") == "airlie_upload" for p in parts),
             skill=body.skill,
+            persona=body.persona if body.persona != "chat" else None,
         )
         try:
             await hooks.run("session_start", ctx)
@@ -559,7 +594,7 @@ def chat_router(
             return error(str(e), 400)
         from airlie.cli import _http_engine  # imported here: the cli imports serve
 
-        engine = _http_engine(cfg, engine_name, transport=transport)
+        engine = _http_engine(cfg, engine_name, body.model_key, transport=transport)
         engines.append(engine)
         await engine.start()
         answers = {a.id: a.approved for a in answered}

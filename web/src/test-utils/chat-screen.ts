@@ -1,6 +1,7 @@
 // Test helper: the server the whole chat screen talks to (sign-in, the chat list, a chat's saved thread and status, pins,
 // the repositories, the turn route, the attachment limits and commands), in one fetch stub. Rebuilt per test.
 
+import type { ChatOptions } from "@/api/chat";
 import type { SessionStatusData, StoredMessage, ThreadRow } from "@/api/sessions";
 import { thread } from "./chat-panel";
 import { STATUS } from "./chat-status";
@@ -12,6 +13,8 @@ export type ScreenServer = {
   /** A chat's saved messages, by chat id. */
   messages: Record<string, StoredMessage[]>;
   status: SessionStatusData;
+  /** What the composer's model and persona dropdowns list (`GET /v1/airlie/chat/options`); empty lists show no dropdown. */
+  options: ChatOptions;
   /** What `POST /v1/airlie/chat/turn` answers with, given its JSON body. */
   turn: (body: Record<string, unknown>) => Response | Promise<Response>;
   calls: { method: string; url: string; body: unknown }[];
@@ -30,6 +33,7 @@ export function screenServer(init: Partial<ScreenServer> = {}): ScreenServer {
     repos: [],
     messages: {},
     status: STATUS,
+    options: { models: [], personas: [], default_model: "", default_persona: "" },
     turn: () => new Response(null, { status: 500 }),
     calls: [],
     ...init,
@@ -44,6 +48,7 @@ export function screenServer(init: Partial<ScreenServer> = {}): ScreenServer {
       server.calls.push({ method, url, body: raw });
       if (url === "/v1/auth/me") return Response.json({ name: "Noah Kruswicki", role: "admin", via: "cookie" });
       if (url === "/v1/airlie/chat/skills") return Response.json({ skills: SKILLS });
+      if (url === "/v1/airlie/chat/options") return Response.json(server.options);
       if (url === "/v1/airlie/chat/attachments") return Response.json(LIMITS);
       if (url === "/v1/airlie/engines") return Response.json([]);
       if (url === "/v1/airlie/chat/turn") return server.turn(raw);

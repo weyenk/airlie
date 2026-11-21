@@ -54,7 +54,9 @@ device reads the same conversation.
 Only the `plain` kind exists (`repository` answers 400 until plan 4). A plain chat has no repository: its tools are
 `web_search` and `web_fetch` (when the web tools are configured), `skill` and `todo`; there is no file or shell
 tool. `chat.kinds.<kind>.tools` names them (`ask_first` marks tools to confirm), and `chat.max_steps` caps the
-tool rounds in a turn.
+tool rounds in a turn. The composer's model and persona dropdowns come from `GET /v1/airlie/chat/options`: every
+model an engine serves, and `chat` plus the roles in `chat.personas`; a turn's `model_key` and `persona` pick them
+for that turn (a persona swaps the system prompt for that role's).
 
 The session prompt carries the [superpowers](https://github.com/obra/superpowers) bootstrap, and `skill` loads any
 of its skills (`brainstorming`, `writing-plans`, …) on demand. They are vendored at 7.0.0 in `vendor/superpowers/`

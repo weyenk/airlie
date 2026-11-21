@@ -987,3 +987,69 @@ def test_a_start_for_a_story_that_is_not_there_or_not_yours_is_404(tmp_path: Pat
         assert c.post(start_url("story-nope"), json=body, headers=as_pat).status_code == 404
         assert c.post(start_url(story["id"]), json=body).status_code == 401
         assert board.started == []
+
+
+# --- the person's pick of model and persona -----------------------------------------------------------------
+
+
+def picking_client(tmp_path: Path) -> tuple[TestClient, ScriptedUpstream]:
+    up = ScriptedUpstream()
+    cfg = chat_cfg(tmp_path, personas=["chief"])
+    return TestClient(create_app(cfg, transport=httpx.MockTransport(up))), up
+
+
+def test_the_options_list_the_served_models_and_personas_with_the_defaults(tmp_path: Path) -> None:
+    c, _ = picking_client(tmp_path)
+    assert c.get("/v1/airlie/chat/options").json() == {
+        "models": [{"key": "base", "label": "base"}, {"key": "alt", "label": "Alt"}],
+        "personas": [{"key": "chat", "label": "Chat"}, {"key": "chief", "label": "Chief"}],
+        "default_model": "base",
+        "default_persona": "chat",
+    }
+
+
+def test_a_turn_runs_on_the_chosen_model(tmp_path: Path) -> None:
+    c, up = picking_client(tmp_path)
+    assert post(c, turn_body(model_key="alt")).status_code == 200
+    assert up.bodies[0]["model"] == "alt"
+
+
+def test_a_turn_naming_no_model_runs_on_the_chat_roles(tmp_path: Path) -> None:
+    c, up = picking_client(tmp_path)
+    post(c)
+    assert up.bodies[0]["model"] == "base"
+
+
+def test_a_turn_answers_with_the_chosen_personas_prompt(tmp_path: Path) -> None:
+    c, up = picking_client(tmp_path)
+    assert post(c, turn_body(persona="chief")).status_code == 200
+    assert up.bodies[0]["messages"][0]["content"].startswith("CHIEF PROMPT")
+    post(c, turn_body("again", persona="chat") | {"id": "t2"})
+    assert up.bodies[1]["messages"][0]["content"].startswith("CHAT PROMPT")
+
+
+@pytest.mark.parametrize(
+    ("pick", "named"),
+    [({"model_key": "nope"}, "unknown model 'nope'"), ({"persona": "judge"}, "unknown persona 'judge'")],
+)
+def test_an_unknown_model_or_persona_is_422_before_any_byte_streams(
+    tmp_path: Path, pick: dict[str, str], named: str
+) -> None:
+    c, up = picking_client(tmp_path)
+    r = post(c, turn_body(**pick))
+    assert r.status_code == 422 and named in r.json()["error"]
+    assert up.calls == 0
+    assert c.get("/v1/airlie/chat/threads").json() == []
+
+
+def test_a_persona_that_is_not_a_role_fails_the_config_load(tmp_path: Path) -> None:
+    with pytest.raises(Exception, match="chat.personas names role 'ghost'"):
+        chat_cfg(tmp_path, personas=["ghost"])
+
+
+def test_the_options_need_a_session(tmp_path: Path) -> None:
+    app = create_app(
+        chat_cfg(tmp_path, personas=[]), transport=httpx.MockTransport(ScriptedUpstream()), api_key="k"
+    )
+    r = TestClient(app, client=ELSEWHERE).get("/v1/airlie/chat/options")
+    assert r.status_code == 401
