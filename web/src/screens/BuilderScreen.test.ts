@@ -304,7 +304,7 @@ test("Save on a draft saves it in place: the canvas's YAML and the draft's promp
   expect(name).toBe("fix");
   expect(body.type).toBe("bug");
   expect(body.prompts).toEqual({ "fix-brief": "---\nkind: rule\n---\n" });
-  expect(body.yaml).toContain("  fix:\n    type: bug\n");
+  expect(body.yaml).toContain("  fix:\n    title: fix\n    type: bug\n");
   expect(body.yaml).toContain("work-1:\n        kind: WORK\n");
   expect(body.yaml).toContain("    layout:\n");
   expect(w.find("[data-dirty]").exists()).toBe(false);
@@ -351,7 +351,9 @@ test("Save on a new canvas asks for a kebab-case name and a type first, then ope
   const [name, body] = api.saveDraft.mock.calls[0];
   expect(name).toBe("my-flow");
   expect(body).toMatchObject({ type: "bug", prompts: {} });
-  expect(body.yaml).toContain("workflows:\n  my-flow:\n    type: bug\n    inputs: [card, repo]\n    nodes:\n      work-1:\n");
+  expect(body.yaml).toContain(
+    "workflows:\n  my-flow:\n    title: my-flow\n    type: bug\n    inputs: [card, repo]\n    nodes:\n      work-1:\n",
+  );
   expect(router.currentRoute.value.fullPath).toBe("/workflows/build/my-flow");
   expect(w.get("h1").text()).toBe("my-flow");
 });
