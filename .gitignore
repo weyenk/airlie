@@ -11,6 +11,7 @@ runs/
 airlie.local.yaml
 .DS_Store
 .env
+scripts/studio-gen/gen.env.local
 mutants/
 test-results/
 src/airlie/serve/web_next/
