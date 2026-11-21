@@ -44,7 +44,7 @@ def test_build_new_from_a_card_saves_a_draft_and_returns_with_it_chosen(
     )
 
     app_page.locator("[data-palette-type=WORK]").click()
-    box = app_page.locator("[data-box][data-type=WORK]")
+    box = app_page.locator("[data-box][data-kind=WORK]")
     evidence.expect(box, "a click on the palette's WORK adds a work box").to_have_count(1)
     evidence.expect(
         app_page.locator("[data-box-card]"), "the new box is selected, a small card shows"
