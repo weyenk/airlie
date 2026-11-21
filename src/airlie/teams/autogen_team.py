@@ -127,6 +127,17 @@ def reply_timeout_s(role: RoleSpec) -> float:
     return max(600.0, (role.max_tokens or 0) / SLOWEST_DECODE_TPS + 120.0)
 
 
+def require_openai_wire(dialect: Dialect) -> None:
+    if dialect != "openai":
+        # this client speaks Chat Completions straight to base_url; an Anthropic Messages endpoint would
+        # get the wrong wire (wrong path, headers and body), and fail late or oddly
+        raise ValueError(
+            f"AutoGen cannot use an engine with format {dialect!r}: its model client speaks the OpenAI "
+            "Chat Completions wire, so point this role at an engine with format: openai (or use the "
+            "native team, which translates Anthropic Messages)"
+        )
+
+
 def build_model_client(
     base_url: str,
     served_model: str,
@@ -136,6 +147,7 @@ def build_model_client(
     team_id: str = "",
     dialect: Dialect = "openai",
 ) -> RepairingOpenAIClient:
+    require_openai_wire(dialect)
     info: ModelInfo = {
         "vision": False,
         "function_calling": True,
@@ -220,6 +232,7 @@ class AutoGenTeam:
     def __init__(
         self, base_url: str, served_model: str, api_key: str | None = None, *, dialect: Dialect = "openai"
     ) -> None:
+        require_openai_wire(dialect)  # at construction, not at the first reply
         self.base_url = base_url
         self.dialect = dialect
         self.served_model = served_model

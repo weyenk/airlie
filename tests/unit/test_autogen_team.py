@@ -368,3 +368,12 @@ def test_each_message_carries_its_speaker_in_its_text(tmp_path: Path) -> None:
     assert client._add_name_prefixes is True
     said = to_oai_type(UserMessage(content="I post the proof.", source="product"), prepend_name=True)
     assert said[0]["content"] == "product said:\nI post the proof."
+
+
+def test_autogen_refuses_an_anthropic_format_engine(tmp_path: Path) -> None:
+    (tmp_path / "p.md").write_text("x")
+    role = RoleSpec(prompt=tmp_path / "p.md", model="base", thinking=False, max_tokens=64)
+    with pytest.raises(ValueError, match="format 'anthropic'.*format: openai"):
+        build_model_client("https://api.anthropic.test/v1", "base", role, api_key="k", dialect="anthropic")
+    with pytest.raises(ValueError, match="AutoGen cannot use"):
+        AutoGenTeam("https://api.anthropic.test/v1", "base", "k", dialect="anthropic")

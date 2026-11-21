@@ -506,6 +506,18 @@ async def test_anthropic_error_event_mid_stream_raises_with_partial_text() -> No
     assert ei.value.partial_text == "part"
 
 
+async def test_anthropic_error_event_before_any_content_raises_not_empty_success() -> None:
+    events = [
+        ev("message_start", message={"id": "m", "model": "small", "usage": {"input_tokens": 1}}),
+        ev("error", error={"type": "overloaded_error", "message": "Overloaded"}),
+    ]
+    eng, _ = anthropic_engine({"stream": anthropic_sse(*events)})
+    with pytest.raises(EngineError, match="Overloaded") as ei:
+        await eng.generate(plain_request())
+    assert ei.value.partial_text == ""
+    assert eng.stats().errors == 1
+
+
 async def test_anthropic_stream_without_message_stop_raises() -> None:
     cut = text_stream("pa", "rt").decode().split("event: message_delta")[0].encode()
     eng, _ = anthropic_engine({"stream": cut})
