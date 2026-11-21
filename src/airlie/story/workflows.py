@@ -188,7 +188,12 @@ def resolve_workflows(
         else:  # a bundle that is nowhere: check_workflows names it on the node that calls it
             continue
         specs[wanted] = spec
-        todo += [n.workflow for n in spec.nodes.values() if n.type == "bundle" and n.workflow is not None]
+        # bundle nodes are retired; keep the getattr guard so old drafts never AttributeError
+        todo += [
+            w
+            for n in spec.nodes.values()
+            if getattr(n, "type", None) == "bundle" and (w := getattr(n, "workflow", None)) is not None
+        ]
     try:
         texts = parse_draft_prompts(closure_prompts(prompts, from_drafts))
     except PromptError as e:
@@ -302,7 +307,11 @@ def changed_nodes(
     def reworded(node: NodeSpec) -> bool:
         ids = [
             t.removeprefix(PREFIX)
-            for t in (node.prompt, node.turn, node.worker)
+            for t in (
+                getattr(node, "prompt", None),
+                getattr(node, "turn", None),
+                getattr(node, "worker", None),
+            )
             if t and t.startswith(PREFIX)
         ]
         return any(texts_were.get(id) != texts.get(id) for id in ids)
@@ -311,7 +320,11 @@ def changed_nodes(
     for n, node in specs[name].nodes.items():
         if n not in was:
             continue
-        inner = specs.get(node.workflow) if node.type == "bundle" and node.workflow is not None else None
+        inner = (
+            specs.get(node.workflow)
+            if getattr(node, "type", None) == "bundle" and getattr(node, "workflow", None) is not None
+            else None
+        )
         if (
             node.model_dump(mode="json") != was[n]
             or reworded(node)
@@ -346,7 +359,11 @@ def _outputs(spec: WorkflowSpec, specs: Mapping[str, WorkflowSpec], node: str) -
     (`built`), whole: every item runs again."""
     n = spec.nodes[node]
     names = list(n.outputs)
-    if n.type == "bundle" and n.workflow is not None and n.workflow in specs:
+    if (
+        getattr(n, "type", None) == "bundle"
+        and getattr(n, "workflow", None) is not None
+        and n.workflow in specs
+    ):
         inner = specs[n.workflow]
         names += [o for m in inner.nodes for o in _outputs(inner, specs, m)]
     return list(dict.fromkeys(o.partition(".")[0] if "{item}" in o else o for o in names))
@@ -477,7 +494,11 @@ def bundle_users(cfg: AirlieConfig, drafts: Mapping[str, str]) -> dict[str, list
     found: dict[str, set[str]] = {}
     for wname, spec in specs:
         for n in spec.nodes.values():
-            if n.type == "bundle" and n.workflow is not None and n.workflow != wname:
+            if (
+                getattr(n, "type", None) == "bundle"
+                and getattr(n, "workflow", None) is not None
+                and n.workflow != wname
+            ):
                 found.setdefault(n.workflow, set()).add(wname)
     return {name: sorted(users) for name, users in found.items()}
 

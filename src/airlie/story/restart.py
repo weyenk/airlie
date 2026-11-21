@@ -264,7 +264,7 @@ def rewind_point(nodes: Mapping[str, Any]) -> str | None:
     found = {
         OPERATIONS[key]
         for n in nodes.values()
-        for key in (n.run, n.type)
+        for key in (getattr(n, "run", None), getattr(n, "type", None), getattr(n, "kind", None))
         if isinstance(key, str) and key in OPERATIONS
     }
     return next((p for p in POINTS if p in found), None)
