@@ -117,15 +117,15 @@ test("toYaml keeps the node order and writes title, nodes, edges and layout in o
   expect(text.indexOf("edges:")).toBeLessThan(text.indexOf("layout:"));
 });
 
-test("toYaml writes no empty lists or keys", () => {
+test("toYaml writes no empty inputs/outputs; title and edges always (engine requires them)", () => {
   const text = toYaml(
     fromWorkflow("e", { inputs: [], outputs: [], nodes: twoNodes, edges: {} }, {}),
   );
+  expect(text).toContain("title: e");
   expect(text).toContain("nodes:\n      a:\n        kind: WORK");
+  expect(text).toContain("edges: {}");
   expect(text).not.toContain("inputs: []");
   expect(text).not.toContain("outputs: {}");
-  expect(text).not.toContain("edges: {}");
-  expect(text).not.toContain("layout: {}");
 });
 
 test("a line with a condition but no bound writes no empty loop", () => {

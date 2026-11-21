@@ -76,6 +76,14 @@ class WireSpec(Strict):
     carries: list[str] = []
 
 
+def _wire(value: Any) -> Any:
+    """A bare target name (`b`) and the full `{target, when, loop}` both give a WireSpec."""
+    return {"target": value} if isinstance(value, str) else value
+
+
+WireValue = Annotated[WireSpec, BeforeValidator(_wire)]
+
+
 class WorkNode(Strict):
     """One agent task, or one shell command."""
 
@@ -193,8 +201,12 @@ class WorkflowSpec(Strict):
     title: str
     inputs: list[str]
     nodes: dict[str, NodeSpec]
-    edges: dict[str, list[WireSpec]]
+    edges: dict[str, list[WireValue]] = Field(default_factory=dict)
     outputs: list[str] = []
+    # Builder-only: where boxes sit on the canvas. The engine ignores it.
+    layout: dict[str, dict[str, float]] | None = None
+    # Card/picker label when set; otherwise callers fall back to `title`.
+    type: str | None = None
 
 
 def _unreachable_nodes(spec: WorkflowSpec) -> set[str]:

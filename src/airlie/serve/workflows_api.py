@@ -75,22 +75,18 @@ class Validate(BaseModel):
 
 
 def _layout(spec: WorkflowSpec) -> dict[str, dict[str, float]]:
-    """Builder positions when the schema still carries them; empty means the client lays the graph out."""
-    layout = getattr(spec, "layout", None)
-    if not layout:
+    """Builder positions when the YAML carries them; empty means the client lays the graph out."""
+    if not spec.layout:
         return {}
     out: dict[str, dict[str, float]] = {}
-    for node, at in layout.items():
-        if isinstance(at, dict):
-            out[node] = {"x": float(at["x"]), "y": float(at["y"])}
-        else:
-            out[node] = {"x": float(at.x), "y": float(at.y)}
+    for node, at in spec.layout.items():
+        out[node] = {"x": float(at["x"]), "y": float(at["y"])}
     return out
 
 
 def _workflow_type(spec: WorkflowSpec) -> str | None:
     """Card/workflow label type: prefer an explicit `type` if present, else the workflow's title."""
-    return getattr(spec, "type", None) or spec.title or None
+    return spec.type or spec.title or None
 
 
 def _pr(draft: WorkflowDraft) -> dict[str, Any] | None:

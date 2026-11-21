@@ -76,13 +76,14 @@ const FLOW_MAPS = new Set(["outputs", "args", "events", "role"]);
  * a condition or a loop goes a line per entry. */
 export function toYaml(graph: Graph): string {
   const { spec, layout } = toWorkflow(graph);
+  // Engine requires title + edges; layout is builder-only (WorkflowSpec keeps it optional).
   const wf: Record<string, unknown> = {
-    ...(spec.title ? { title: spec.title } : {}),
+    title: spec.title ?? graph.name,
     ...(spec.type ? { type: spec.type } : {}),
     ...(spec.inputs.length ? { inputs: spec.inputs } : {}),
     ...(spec.outputs.length ? { outputs: spec.outputs } : {}),
     nodes: spec.nodes,
-    ...(Object.keys(spec.edges ?? {}).length ? { edges: spec.edges! } : {}),
+    edges: spec.edges ?? {},
     layout,
   };
 
