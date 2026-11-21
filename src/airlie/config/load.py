@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from airlie.config.schema import TOPOLOGY_KINDS, AirlieConfig, ModelSpec
+from airlie.config.schema import TOPOLOGY_KINDS, AirlieConfig
 
 DEFAULT_CONFIG = "airlie.yaml"
 DEFAULT_LOCAL = "airlie.local.yaml"
@@ -220,14 +220,37 @@ def apply_profile(data: dict[str, Any], kind: str | None) -> dict[str, Any]:
     return out
 
 
-def hf_snapshot_dir(m: ModelSpec, hf_cache: Path | None = None) -> Path:
-    cache = hf_cache or Path("~/.cache/huggingface/hub").expanduser()
-    return cache / f"models--{m.repo.replace('/', '--')}" / "snapshots" / m.revision
+_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
-def model_dir(m: ModelSpec) -> Path:
-    """Where a model's weights are: `path` when set, else the HF cache snapshot."""
-    return m.path if m.path is not None else hf_snapshot_dir(m)
+def _expand_engine_env(data: dict[str, Any]) -> None:
+    """Replace `${VAR}` in each engine's base_url and api_key with the environment's value. An unset variable
+    is a ConfigError for base_url (there is no endpoint without it) and no key for api_key."""
+    engines = data.get("engines")
+    if not isinstance(engines, dict):
+        return
+    for name, spec in engines.items():
+        if not isinstance(spec, dict):
+            continue
+        for field in ("base_url", "api_key"):
+            value = spec.get(field)
+            if not isinstance(value, str):
+                continue
+            missing: list[str] = []
+
+            def sub(m: re.Match[str], missing: list[str] = missing) -> str:
+                got = os.environ.get(m[1])
+                if got is None:
+                    missing.append(m[1])
+                return got or ""
+
+            expanded = _ENV_REF.sub(sub, value)
+            if field == "api_key":
+                spec[field] = expanded or None
+            elif missing:
+                raise ConfigError(f"engines.{name}.{field}: environment variable {missing[0]} is not set")
+            else:
+                spec[field] = expanded
 
 
 def load_config(
@@ -243,6 +266,7 @@ def load_config(
     if local.is_file():
         data = deep_merge(data, _read_yaml(local))
     data = apply_profile(data, topology)
+    _expand_engine_env(data)
     models = data.get("models")
     if isinstance(models, dict) and "generalist" in models:
         raise ConfigError(
@@ -261,9 +285,6 @@ def load_config(
             role.skills = (base / role.skills.expanduser()).resolve()
         if role.knowledge is not None:
             role.knowledge = (base / role.knowledge.expanduser()).resolve()
-    for m in cfg.models.values():
-        if m.path is not None:
-            m.path = (base / m.path.expanduser()).resolve()
     cfg.observability.state_dir = cfg.observability.state_dir.expanduser()
     if cfg.story.repo is not None:
         cfg.story.repo = (base / cfg.story.repo.expanduser()).resolve()
@@ -276,9 +297,6 @@ def load_config(
     problems = cfg.validate_references()
     if problems:
         raise ConfigError("config invalid:\n  " + "\n  ".join(problems))
-    for eng in cfg.engines.values():
-        if eng.kind == "mlx_vlm":  # the server knows its model only by the exact --model string
-            eng.served_names[eng.models[0]] = str(model_dir(cfg.models[eng.models[0]]))
     return cfg
 
 

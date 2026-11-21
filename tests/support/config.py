@@ -8,8 +8,8 @@ import yaml
 
 MINIMAL: dict = {
     "version": 1,
-    "engines": {"main": {"kind": "mlx_vlm", "port": 8080, "models": ["team"]}},
-    "models": {"team": {"repo": "mlx-community/Qwen3.8-27B-4bit", "revision": "abc123"}},
+    "engines": {"main": {"kind": "http", "base_url": "http://127.0.0.1:8080/v1", "models": ["team"]}},
+    "models": {"team": {}},
     "roles": {
         "architect": {"prompt": "prompts/roles/architect.md", "model": "team"},
         "summarizer": {"prompt": "prompts/roles/summarizer.md", "model": "team"},

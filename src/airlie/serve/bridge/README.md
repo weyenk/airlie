@@ -13,7 +13,7 @@ Outbound Mac worker for the [Job Bus](../../../docs/bridge-contract.md): HTTPS c
    - Or export those for a one-off session
    - Do **not** put these in `~/.config/airlie/.env` (that file is for ATLASSIAN_* / story)
 3. Start inference and serve:
-   - `task up` then `task serve` (or your usual Studio serve command with `--api-key` when tunneled)
+   - `task serve` (or your usual Studio serve command with `--api-key` when tunneled; workflow endpoint reachable)
 4. Run the bridge:
    - Foreground: `task bridge`
    - launchd: `task bridge:launchd:install` (log: `~/.local/state/airlie/bridge.log`)

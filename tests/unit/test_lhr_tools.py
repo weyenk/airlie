@@ -135,8 +135,8 @@ def _mini_cfg(tmp_path: Path) -> Path:
     (tmp_path / "skills" / "chat" / "lhr-publish.md").write_text("---\nsummary: pub\n---\nBODY\n")
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "openai_http", "base_url": "http://engine.test/v1", "models": ["base"]}},
-        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "engines": {"main": {"kind": "http", "base_url": "http://engine.test/v1", "models": ["base"]}},
+        "models": {"base": {}},
         "roles": {
             "architect": {"prompt": "prompts/roles/architect.md", "model": "base"},
             "summarizer": {"prompt": "prompts/roles/summarizer.md", "model": "base"},

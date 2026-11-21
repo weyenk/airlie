@@ -1229,11 +1229,10 @@ def http_clients(cfg: AirlieConfig) -> ClientFactory:
         engine = cfg.engines[cfg.engine_for_model(spec.model)]
         return build_model_client(
             engine.base_url or "",
-            engine.served_name(spec.model),
+            engine.passthru_name(spec.model),
             spec,
             engine.api_key,
-            model=cfg.models.get(spec.model),
-            dialect=dialect_for(engine.kind),
+            dialect=dialect_for(engine.format),
         )
 
     return make

@@ -9,62 +9,19 @@ includes:
   - config/workflows/*.yaml
 
 # ---- Inference engines ------------------------------------------------------------------------------------------
-# An `mlx_vlm` engine is one mlx-vlm server process serving one model; airlie starts the `autostart` ones
-# (`task up`), and `airlie engine up <name>` starts any other by hand (the bench engines). `openai_http` is any
-# external OpenAI-compatible server. Roles pick a model; the engine that serves that model is derived, so swapping
-# engines never touches the roles. The studio's values (131072 KV) are the base; main omits kv_bits because
-# Flash-Next REAP's model-specific cache state rejects quantized KV with continuous batching (mlx-vlm QSAKVCache).
+# airlie never runs a model: one HTTP endpoint serves every catalog model the roles name. `format` is the wire
+# dialect (openai | anthropic), `base_url` and `api_key` come from the environment (AIRLIE_WORKFLOW_BASE_URL,
+# AIRLIE_WORKFLOW_API_KEY; an unset key is none) and `passthru` renames a catalog name to the one the server
+# expects. Roles pick a model; the engine that serves it is derived, so swapping endpoints never touches the roles.
+# A person's own endpoint goes in airlie.local.yaml.
 engines:
-  smart:                            # the team model; its MTP head rides as the draft model
-    kind: mlx_vlm
-    port: 8080
-    model: smart
-    max_num_seqs: 16               # docs/wiki/build-spec/02 §1
-    max_kv_size: 131072
-    prefill_step_size: 2048
-    prefix_cache: true
-    cache_memory_gb: 8
-    cache_checkpoints: 8
-    max_image_px: 1536
-  small:
-    kind: mlx_vlm
-    port: 8083
-    model: small
-    lifecycle: on_demand
-    max_num_seqs: 8
-    max_kv_size: 16384
-    prefix_cache: true
-    cache_memory_gb: 1
-  decision:                        # typed decisions (router, decide tool) on mlx-vlm's /v1/decisions; the phase 4b
-    kind: mlx_vlm                  # gate's pick over Kev: 20/20 the same choices on the routing briefs
-    port: 8081
-    model: decider
-    decision: true
-    max_num_seqs: 4
-  fast:                           # Gemma 4 26B-A4B for chat, design, ux; MTP assistant with --draft-block-size 4
-    kind: mlx_vlm
-    port: 8084
-    model: fast
-    max_num_seqs: 8
-    max_kv_size: 131072
-    kv_bits: 8
-    prefill_step_size: 2048
-    prefix_cache: true              # same as main; mlx-vlm Gemma 4 MTP docs do not disable APC (issue #1471 is DFlash/EAGLE)
-    cache_memory_gb: 4
-    cache_checkpoints: 8
-    max_image_px: 1536
-  image:
-    kind: weights_only
-    model: image
-    lifecycle: on_demand
-    autostart: false
-    idle_unload_s: 300
-  video:
-    kind: weights_only
-    model: video
-    lifecycle: on_demand
-    autostart: false
-    idle_unload_s: 300
+  workflow:
+    kind: http
+    format: openai
+    base_url: ${AIRLIE_WORKFLOW_BASE_URL}
+    api_key: ${AIRLIE_WORKFLOW_API_KEY}
+    models: [smart, small, fast]
+    passthru: {}
 
 
 # ---- Tools --------------------------------------------------------------------------------------------------------
@@ -148,9 +105,8 @@ lts:
   inline_chars: 1500
 
 # ---- Router (design 2026-10-13 §6) ------------------------------------------------------------------------------
-router:                            # jev | chief
-  kind: jev
-  model: decider
+router:
+  kind: chief
   ambiguous_gap: 0.15
   min_confidence: 0.5
 
@@ -220,7 +176,7 @@ observability:
 # repository its repo:<owner>/<name> label names (its clone under story.repos_root, default ~/git), gated by that
 # repository's AGENTS.md "## Test gate". Personal settings go in airlie.local.yaml.
 story:
-  topology: studio                 # the profile story runs load (start the engines with `task restart`)
+  topology: studio                 # the profile story runs load
   build_role: architect
   trunk: main                      # the stack's base branch
   publish: single                  # one draft PR on the top layer's branch; stack = one per layer, the schema default

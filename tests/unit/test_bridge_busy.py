@@ -19,19 +19,12 @@ NOW = 1_800_000_000.0
 
 
 def _cfg(tmp_path: Path) -> Any:
-    """The committed config's two probed shapes: the `main` mlx-vlm engine serving `generalist` and the
-    `decision` one."""
+    """The committed config with two probed HTTP engines: `main` serves `smart`, `second` serves `small`."""
     cfg = load_config(ROOT / "airlie.yaml", local_path=ROOT / "no-local-overrides.yaml")
     cfg.observability.state_dir = tmp_path
-    main = EngineSpec(kind="mlx_vlm", port=8080, models=["generalist"], base_url="http://127.0.0.1:8080/v1")
-    decision = EngineSpec(
-        kind="mlx_vlm",
-        port=8081,
-        models=["decider_2b"],
-        decision=True,
-        base_url="http://127.0.0.1:8081/v1",
-    )
-    cfg.engines = {"main": main, "decision": decision}
+    main = EngineSpec(kind="http", models=["smart"], base_url="http://127.0.0.1:8080/v1")
+    second = EngineSpec(kind="http", models=["small"], base_url="http://127.0.0.1:8081/v1")
+    cfg.engines = {"main": main, "second": second}
     return cfg
 
 
@@ -106,7 +99,7 @@ def test_plan_lock_held_is_busy(tmp_path: Path) -> None:
 
 def test_recent_engine_use_is_busy(tmp_path: Path) -> None:
     reason = _probe(_cfg(tmp_path), FakeEngines(_metrics(0, NOW - 14)))
-    assert reason == "model generalist used 14 s ago on engine main"
+    assert reason == "model smart used 14 s ago on engine main"
 
 
 def test_old_or_never_used_engine_is_idle(tmp_path: Path) -> None:
@@ -128,7 +121,7 @@ def test_the_newest_use_across_engines_names_the_busy_model(tmp_path: Path) -> N
                 self.metrics = _metrics(0, NOW - 14)
             return await super().handle_async_request(request)
 
-    assert _probe(_cfg(tmp_path), Staggered()) == "model decider_2b used 3 s ago on engine decision"
+    assert _probe(_cfg(tmp_path), Staggered()) == "model small used 3 s ago on engine second"
 
 
 def test_engine_connection_refused_is_busy(tmp_path: Path) -> None:
@@ -151,10 +144,10 @@ def test_a_server_with_no_metrics_answers_404_and_stays_idle(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize("code", [401, 403])
-def test_a_denied_probe_is_not_idle(tmp_path: Path, code: int) -> None:
-    """A wrong or rotated key must not open the gate."""
+def test_a_denied_probe_is_idle(tmp_path: Path, code: int) -> None:
+    """A server that denies the probe answered: the engine is not down, so it reads as idle."""
     denied = FakeEngines({"detail": "no"}, status=code)
-    assert _probe(_cfg(tmp_path), denied) == f"engine main not answering (HTTP {code})"
+    assert _probe(_cfg(tmp_path), denied) is None
 
 
 @pytest.mark.parametrize("health", ["down", 500, 503, 404])
@@ -251,10 +244,8 @@ def test_a_trailing_slash_after_v1_is_the_same_root(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("code", [401, 403, 500])
-def test_an_openai_http_engine_that_denies_or_fails_the_probe_is_idle(tmp_path: Path, code: int) -> None:
+def test_an_engine_that_denies_or_fails_the_probe_is_idle(tmp_path: Path, code: int) -> None:
     cfg = _cfg(tmp_path)
-    cfg.engines = {
-        "ext": EngineSpec(kind="openai_http", models=["generalist"], base_url="http://127.0.0.1:9000/v1")
-    }
+    cfg.engines = {"ext": EngineSpec(kind="http", models=["smart"], base_url="http://127.0.0.1:9000/v1")}
     assert _probe(cfg, FakeEngines({"detail": "no"}, status=code)) is None
     assert _probe(cfg, FakeEngines(error=True)) == "engine ext not answering"

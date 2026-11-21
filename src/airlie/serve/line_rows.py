@@ -20,7 +20,7 @@ from airlie.story.diagnosis import latest
 from airlie.story.phase import decode_state, paused
 from airlie.story.state import lock_held
 
-GATES = ("engine", "profile_match", "github")
+GATES = ("engine", "github")
 
 
 def _json(path: Path) -> dict[str, Any]:
@@ -89,7 +89,7 @@ def _lane(cfg: AirlieConfig, store: BoardStore, lane: str, now: float) -> dict[s
 
 
 def line_row(cfg: AirlieConfig, store: BoardStore, *, last_tick: float | None, now: float) -> dict[str, Any]:
-    """`{paused, gates: {engine, profile_match, github}, lanes: {build, plan}, queue_hours, blocked,
+    """`{paused, gates: {engine, github}, lanes: {build, plan}, queue_hours, blocked,
     last_tick}`:
     a lane is null while it is free; a gate is `ok`, `down`, `mismatch` or `unknown` (not asked yet, or the
     beat stopped before it); `blocked` lists the stories in blocked with their diagnosis's class and kind and

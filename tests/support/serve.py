@@ -24,13 +24,13 @@ def cfg(tmp_path: Path):
         "version": 1,
         "engines": {
             "main": {
-                "kind": "openai_http",
+                "kind": "http",
                 "base_url": "http://engine.test/v1",
                 "models": ["base", "small"],
-                "served_names": {"small": "tiny"},
+                "passthru": {"small": "tiny"},
             }
         },
-        "models": {"base": {"repo": "org/m", "revision": "r"}, "small": {"repo": "org/s", "revision": "r"}},
+        "models": {"base": {}, "small": {}},
         "roles": {
             "architect": {"prompt": "architect.md", "model": "base"},
             "summarizer": {"prompt": "summarizer.md", "model": "small"},

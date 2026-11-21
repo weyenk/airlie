@@ -20,7 +20,6 @@ from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config
 
 if TYPE_CHECKING:
     from airlie.engine.protocol import Engine
-    from airlie.manager.core import Manager
     from airlie.supervisor.ledger import Ledger
 
 app = typer.Typer(
@@ -33,18 +32,14 @@ app = typer.Typer(
 )
 config_app = typer.Typer(no_args_is_help=True, help="Inspect configuration.")
 app.add_typer(config_app, name="config")
-models_app = typer.Typer(no_args_is_help=True, help="Model catalog: list and pull pinned revisions.")
+models_app = typer.Typer(no_args_is_help=True, help="Model catalog: names and the engine serving each.")
 app.add_typer(models_app, name="models")
-engine_app = typer.Typer(no_args_is_help=True, help="Manage the mlx-vlm process(es) declared in airlie.yaml.")
-app.add_typer(engine_app, name="engine")
 bench_app = typer.Typer(no_args_is_help=True, help="Benchmarks through the Engine seam.")
 app.add_typer(bench_app, name="bench")
 eval_app = typer.Typer(no_args_is_help=True, help="Graded coding tasks (evals/tasks).")
 app.add_typer(eval_app, name="eval")
 controller_app = typer.Typer(no_args_is_help=True, help="Learned LTS admission controller (spec 03 §2–3).")
 app.add_typer(controller_app, name="controller")
-route_app = typer.Typer(no_args_is_help=True, help="Routing (Kev / chief) decisions and their eval.")
-app.add_typer(route_app, name="route")
 host_app = typer.Typer(no_args_is_help=True, help="Host settings airlie keeps.")
 app.add_typer(host_app, name="host")
 supervisor_app = typer.Typer(
@@ -158,185 +153,18 @@ def config_show(config: ConfigOpt = None) -> None:
 
 @models_app.command("list")
 def models_list(config: ConfigOpt = None) -> None:
-    """List catalog models, their pinned revisions and the engine serving each."""
+    """List catalog models and the engine serving each."""
     cfg = _load(config)
     table = Table(title="models")
-    for col in ("name", "repo", "revision", "engine"):
+    for col in ("name", "label", "engine"):
         table.add_column(col)
     for name, m in cfg.models.items():
         try:
             engine = cfg.engine_for_model(name)
         except KeyError:
             engine = "-"
-        table.add_row(name, str(m.path or m.repo), m.revision[:12], engine)
+        table.add_row(name, m.label or "-", engine)
     console.print(table)
-
-
-@models_app.command("pull")
-def models_pull(
-    names: Annotated[list[str] | None, typer.Argument(help="catalog names (default: all)")] = None,
-    config: ConfigOpt = None,
-) -> None:
-    """Download each catalog model at exactly its pinned revision, with progress."""
-    from airlie.models_cmd import plan_pulls, pull
-
-    cfg = _load(config)
-    plans = plan_pulls(cfg, names or ())
-    if not plans:
-        err.print("[yellow]nothing to pull[/yellow]")
-        return
-    for p in plans:
-        console.print(f"[bold]{p.name}[/bold]: {p.repo} @ {p.revision[:12]}")
-
-    def show(p, prog) -> None:  # type: ignore[no-untyped-def]
-        left = "" if prog.eta_s is None else f", {max(1, round(prog.eta_s / 60))} min left"
-        sys.stdout.write(
-            f"\r{p.name}: {prog.done_bytes / 1e9:.1f} of {prog.total_bytes / 1e9:.1f} GB{left}\x1b[K"
-        )
-        sys.stdout.flush()
-
-    def failed_with(p, e) -> None:  # type: ignore[no-untyped-def]
-        sys.stdout.write("\n")
-        err.print(f"[red]{escape(p.name)}: {escape(str(e))}[/red]")
-
-    results = pull(cfg, names or (), on_progress=show, on_error=failed_with)
-    sys.stdout.write("\n")
-    failed = [p.name for p, rc in results if rc != 0]
-    if failed:
-        err.print(f"[red]failed: {', '.join(failed)}[/red]")
-        raise typer.Exit(1)
-
-
-# ---- engine process management (task up/down/restart/status/logs) ----
-
-
-def _engine_process(cfg: AirlieConfig, name: str):  # type: ignore[no-untyped-def]
-    """Factory, patched in tests."""
-    from airlie.engine.process import EngineProcess
-
-    return EngineProcess(cfg, name, state_dir=cfg.observability.state_dir.expanduser())
-
-
-def _managed(cfg: AirlieConfig) -> list[str]:
-    return [n for n, e in cfg.engines.items() if e.kind == "mlx_vlm"]
-
-
-def _health_table(rows: list[tuple[str, object]]) -> Table:
-    table = Table(title="engines")
-    for col in ("engine", "pid", "ok", "models", "detail"):
-        table.add_column(col)
-    colors = {"ready": "green", "loading": "yellow", "lazy": "cyan", "missing": "red"}
-    for name, h in rows:
-        models = "  ".join(f"{m}: [{colors[s]}]{s}[/{colors[s]}]" for m, s in h.models.items())  # type: ignore[attr-defined]
-        table.add_row(name, str(h.pid or "-"), "yes" if h.ok else "no", models, h.detail)  # type: ignore[attr-defined]
-    return table
-
-
-@engine_app.command("up")
-def engine_up(
-    name: Annotated[
-        str | None, typer.Argument(help="start only this engine (even if autostart is off)")
-    ] = None,
-    config: ConfigOpt = None,
-    timeout: Annotated[float, typer.Option(help="seconds to wait for models")] = 900,
-) -> None:
-    """Start the named engine, else every autostart pinned engine, and wait until its models are ready."""
-    import asyncio
-
-    from airlie.engine.types import EngineError
-
-    cfg = _load(config)
-    if name is not None and name not in _managed(cfg):
-        err.print(
-            f"[red]no managed engine named '{name}' (managed: {', '.join(_managed(cfg)) or 'none'})[/red]"
-        )
-        raise typer.Exit(1)
-    names = (
-        [name]
-        if name is not None
-        else [n for n in _managed(cfg) if cfg.engines[n].autostart and cfg.engines[n].lifecycle == "pinned"]
-    )
-    rows = []
-    for engine in names:
-        p = _engine_process(cfg, engine)
-        console.print(f"starting engine [bold]{engine}[/bold] (log: {p.log_path})")
-        try:
-            rows.append((engine, asyncio.run(p.start(timeout_s=timeout))))
-        except EngineError as e:
-            if "already running" in str(e):
-                console.print(f"engine [bold]{engine}[/bold] is already running; leaving it (use restart)")
-                rows.append((engine, asyncio.run(p.status())))
-                continue
-            err.print(f"[red]{e}[/red]")
-            raise typer.Exit(1) from None
-    console.print(_health_table(rows))
-
-
-def _named_or_all(cfg: AirlieConfig, name: str | None) -> list[str]:
-    if name is not None and name not in _managed(cfg):
-        err.print(
-            f"[red]no managed engine named '{name}' (managed: {', '.join(_managed(cfg)) or 'none'})[/red]"
-        )
-        raise typer.Exit(1)
-    return [name] if name is not None else _managed(cfg)
-
-
-@engine_app.command("down")
-def engine_down(
-    name: Annotated[str | None, typer.Argument(help="stop only this engine")] = None,
-    config: ConfigOpt = None,
-) -> None:
-    """Stop the named engine, else every managed engine."""
-    import asyncio
-
-    cfg = _load(config)
-    for engine in _named_or_all(cfg, name):
-        asyncio.run(_engine_process(cfg, engine).stop())
-        console.print(f"stopped engine [bold]{engine}[/bold]")
-
-
-@engine_app.command("restart")
-def engine_restart(
-    name: Annotated[
-        str | None, typer.Argument(help="restart only this engine (even if autostart is off)")
-    ] = None,
-    config: ConfigOpt = None,
-    timeout: float = 900,
-) -> None:
-    """Stop then start the named engine, else every managed engine (the autostart ones come back up)."""
-    engine_down(name, config)
-    engine_up(name=name, config=config, timeout=timeout)
-
-
-@engine_app.command("status")
-def engine_status(config: ConfigOpt = None) -> None:
-    """Show pid, health and per-model readiness for every managed engine."""
-    import asyncio
-
-    cfg = _load(config)
-    rows = [(name, asyncio.run(_engine_process(cfg, name).status())) for name in _managed(cfg)]
-    console.print(_health_table(rows))
-    if not rows:
-        console.print("no managed engines in config")
-
-
-@engine_app.command("logs")
-def engine_logs(
-    config: ConfigOpt = None,
-    n: Annotated[int, typer.Option("-n", help="lines")] = 50,
-    follow: Annotated[bool, typer.Option("--follow", "-f")] = False,
-) -> None:
-    """Print the tail of each managed engine's server log (use -f to follow the first one)."""
-    import subprocess
-
-    cfg = _load(config)
-    for name in _managed(cfg):
-        p = _engine_process(cfg, name)
-        console.rule(f"{name}: {p.log_path}")
-        console.print(p.tail_log(n), markup=False, highlight=False)
-        if follow:
-            subprocess.run(["tail", "-f", str(p.log_path)], check=False)
-            break
 
 
 # ---- bench ----
@@ -348,16 +176,13 @@ def _http_engine(
     model_override: str | None = None,
     *,
     transport: httpx.AsyncBaseTransport | None = None,
-    manager: Manager | None = None,
 ) -> Engine:
     """One HTTPEngine on `engine_name`; when `model_override` is not set and some role's model is served by
-    another engine, a RoutedEngine over one HTTPEngine per engine that serves a role. Each managed (mlx_vlm)
-    engine's calls hold it: through `manager` inside serve, else serve's lease routes, else a start here. A
-    scripted `transport` (tests) goes without."""
+    another engine, a RoutedEngine over one HTTPEngine per engine that serves a role. airlie starts no
+    inference server, so nothing holds an engine."""
     from airlie.engine.dialect import dialect_for
     from airlie.engine.http_engine import HTTPEngine
     from airlie.engine.routed import RoutedEngine
-    from airlie.manager.client import LazyHolder, ManagedEngine, holder_for
 
     # only a transport given: passing None would override one HTTPEngine already carries (the story harness
     # wraps HTTPEngine with a scripted transport; None sent its runs to the network)
@@ -365,18 +190,14 @@ def _http_engine(
 
     def one(name: str) -> Engine:
         e = cfg.engines[name]
-        http = HTTPEngine(
-            e.base_url or "",
-            lambda role: e.served_name(model_override or cfg.roles[role].model),
+        return HTTPEngine(
+            e.base_url,
+            lambda role: e.passthru_name(model_override or cfg.roles[role].model),
             lambda role: cfg.roles[role],
             api_key=e.api_key,
             **given,
-            model_spec_for=lambda role: cfg.models[model_override or cfg.roles[role].model],
-            dialect=dialect_for(e.kind),
+            dialect=dialect_for(e.format),
         )
-        if e.kind != "mlx_vlm" or (transport is not None and manager is None):
-            return http
-        return ManagedEngine(http, name, LazyHolder(lambda: holder_for(cfg, manager=manager)))
 
     owners = {role: cfg.engine_for_role(role) for role in cfg.roles}  # a role no engine serves raises
     if model_override or set(owners.values()) <= {engine_name}:
@@ -1074,7 +895,7 @@ def bench_models(
     runs: int = 1,
     out_dir: Annotated[Path, typer.Option(help="directory for per-model JSON")] = Path("docs/bench"),
 ) -> None:
-    """Bench every catalog model with `bench: true` on the running engine (registry loads them on demand)."""
+    """Bench every catalog model on the engine that serves it."""
     import asyncio
 
     from airlie.bench.engine_bench import run_matrix, save
@@ -1082,9 +903,9 @@ def bench_models(
     from airlie.engine.types import EngineError
 
     cfg = _load(config)
-    names = [m for m, spec in cfg.models.items() if spec.bench]
+    names = list(cfg.models)
     if not names:
-        err.print("[yellow]no catalog model has bench: true[/yellow]")
+        err.print("[yellow]the catalog has no models[/yellow]")
         raise typer.Exit(1)
     all_results = []
     for name in names:
@@ -1149,12 +970,12 @@ def apply_k(cfg: AirlieConfig, k: int | None) -> AirlieConfig:
     return cfg
 
 
-def _orchestrator(cfg: AirlieConfig, run_id: str | None = None, manager: Manager | None = None):  # type: ignore[no-untyped-def]
+def _orchestrator(cfg: AirlieConfig, run_id: str | None = None):  # type: ignore[no-untyped-def]
     """Factory, patched in tests: the topology named by cfg.topology.kind over the HTTP engine."""
     from airlie.topology.protocol import build_topology
 
     role = cfg.roles[cfg.teams.role]
-    engine = _http_engine(cfg, cfg.engine_for_model(role.model), manager=manager)
+    engine = _http_engine(cfg, cfg.engine_for_model(role.model))
     return build_topology(cfg, engine, run_id=run_id)
 
 
@@ -1262,7 +1083,6 @@ def _run_stoppable[T](coro: Coroutine[Any, Any, T]) -> T:
     import asyncio
     import io
     import signal
-    import sys
     import threading
 
     caught: list[signal.Signals] = []
@@ -1586,7 +1406,8 @@ def prompts_audit(
             health = await engine.health()
             if not health.ok:
                 err.print(
-                    f"[red]the engine is unreachable: {escape(health.detail)}; start it with task up[/red]",
+                    f"[red]the engine is unreachable: {escape(health.detail)}; "
+                    "check AIRLIE_WORKFLOW_BASE_URL and `task doctor`[/red]",
                     emoji=False,
                 )
                 return None
@@ -1984,7 +1805,7 @@ def controller_train(
         err.print("[red]no train.jsonl; run `task controller:dataset` first[/red]")
         raise typer.Exit(1)
     examples = load_dataset(d / "train.jsonl")
-    base = cfg.models["controller_base"].repo if "controller_base" in cfg.models else "Qwen/Qwen3-0.6B"
+    base = "Qwen/Qwen3-0.6B"
     dev = pick_device(device)
     llm, tok = _controller_backbone(base, device)
     ctrl = LTSAdmissionController.from_modules(
@@ -2053,47 +1874,6 @@ def controller_eval(
         table.add_row(name, str(m["yes_rate"]), str(m["useful_precision"]), str(m["useful_recall"]))
     console.print(table)
     console.print(f"agreement with logged decisions: {rep['agreement']}")
-
-
-@route_app.command("eval")
-def route_eval(
-    cases: Annotated[Path, typer.Option(help="labelled JSONL: question, task, expect")] = Path(
-        "evals/routing.jsonl"
-    ),
-    roles: Annotated[
-        Path | None, typer.Option(help="role -> criterion YAML (default: the config's routable roles)")
-    ] = None,
-    min_accuracy: Annotated[float, typer.Option(help="exit 1 below this")] = 0.0,
-    out: Annotated[Path | None, typer.Option(help="save the JSON report here")] = None,
-    topology: TopologyOpt = None,
-    config: ConfigOpt = None,
-) -> None:
-    """Score the router on a labelled set (accuracy, mean confidence, wrong-but-clear, confusions)."""
-    import asyncio
-
-    from airlie.bench.route_eval import evaluate, load_cases, load_criteria, render, save
-    from airlie.router import build_router
-    from airlie.skills import routable_roles
-
-    cfg = _load(config, topology)
-    if cfg.router.kind != "jev":
-        err.print(
-            "[red]router.kind must be jev to evaluate routing (chief routing has nothing to score)[/red]"
-        )
-        raise typer.Exit(2)
-    if roles is not None:
-        criteria = load_criteria(roles)
-    else:
-        criteria = routable_roles(cfg, exclude={cfg.studio.chief_role, cfg.studio.review.role})
-        if not criteria:
-            err.print("[red]no routable roles in the config (prompts need a summary:); pass --roles[/red]")
-            raise typer.Exit(2)
-    rep = asyncio.run(evaluate(build_router(cfg), load_cases(cases), criteria))
-    console.print(render(rep), markup=False, highlight=False)
-    if out is not None:
-        console.print(f"saved {save(rep, out)}")
-    if rep.accuracy < min_accuracy:
-        raise typer.Exit(1)
 
 
 @workflows_app.command("catalog")

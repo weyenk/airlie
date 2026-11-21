@@ -17,3 +17,4 @@ src/airlie/serve/web_next/
 .task/
 .continue
 **/node_modules/*
+.worktrees/

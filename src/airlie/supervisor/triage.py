@@ -179,7 +179,4 @@ def triage_for(cfg: AirlieConfig, engine: Engine, checks: OneTestRunner | None) 
         return registry
 
     role = cfg.roles[spec.role]
-    weights = cfg.models.get(role.model)
-    return Triage(
-        engine, spec.role, role, tools, spec.timeout_s, model=weights.repo if weights is not None else None
-    )
+    return Triage(engine, spec.role, role, tools, spec.timeout_s)

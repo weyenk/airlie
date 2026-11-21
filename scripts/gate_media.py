@@ -69,7 +69,7 @@ def main(
     extra: dict[str, Any] = {"chat_template_kwargs": {"enable_thinking": False}}
     if engine is not None:
         e = cfg.engines[engine]
-        url, model, key = e.base_url, e.served_name(e.models[0]), e.api_key
+        url, model, key = e.base_url, e.passthru_name(e.models[0]), e.api_key
         extra = {"enable_thinking": False}
     assert url and model
     scratch.mkdir(parents=True, exist_ok=True)

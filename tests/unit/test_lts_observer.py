@@ -96,8 +96,8 @@ async def test_orchestrator_wires_lts(tmp_path: Path) -> None:
         (cfg_dir / f"{r}.md").write_text(f"you are {r}")
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
-        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "engines": {"main": {"kind": "http", "base_url": "http://x/v1", "models": ["base"]}},
+        "models": {"base": {}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
             for r in ("architect", "summarizer", "judge", "aggregator")
@@ -148,8 +148,8 @@ def blueprint_cfg(tmp_path: Path) -> AirlieConfig:
         (cfg_dir / f"{r}.md").write_text("x")
     data = {
         "version": 1,
-        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
-        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "engines": {"main": {"kind": "http", "base_url": "http://x/v1", "models": ["base"]}},
+        "models": {"base": {}},
         "roles": {
             r: {"prompt": f"{r}.md", "model": "base"}
             for r in ("architect", "summarizer", "judge", "aggregator")

@@ -32,7 +32,6 @@ from typing import Any, Literal
 
 from airlie.board import Item
 from airlie.config import AirlieConfig
-from airlie.doctor import RealProbe, SystemProbe, engine_matches_profile, start_command
 from airlie.story import jobs as factory
 
 # [engine-swap: retired] from airlie.story import factory
@@ -134,12 +133,9 @@ class Line:
         gh: GhRun | None = None,
         now: Callable[[], float] = time.time,
         serve_commit: str | None = None,
-        probe: SystemProbe | None = None,
     ) -> None:
-        self.probe = probe
-        """What the engine gate reads the running engine with (the host's `ps`); tests pass a fake."""
         self.gates: dict[str, str] = {}
-        """The latest beat's gates: engine, profile_match, github (ok, down, mismatch or unknown)."""
+        """The latest beat's gates: engine, github (ok, down or unknown)."""
         self.cfg = cfg
         self.board = board
         self.state_dir = state_dir
@@ -164,7 +160,7 @@ class Line:
         board = self.board
         if isinstance(board, NullBoard):
             return "no board configured (ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY): nothing to pick up"
-        self.gates = dict.fromkeys(("engine", "profile_match", "github"), "unknown")
+        self.gates = dict.fromkeys(("engine", "github"), "unknown")
         line = await self._beat(spawn)
         self._record(line)
         return line
@@ -216,29 +212,12 @@ class Line:
         self.gates["engine"] = "ok" if healthy else "down"
         if not healthy:
             name = self.cfg.engine_for_role(self.cfg.story.build_role)
-            return f"engine down: start it with `{start_command(self.cfg.engines[name], name)}`"
+            return f"engine down: nothing answers at {self.cfg.engines[name].base_url}"
         down = await factory.github_down(self.cfg)
         self.gates["github"] = "ok" if down is None else "down"
         if down is not None:
             return " ".join(f"github down: {down}".split())  # GitHub's own message may hold a line break
-        return await self._profile_gate()
-
-    async def _profile_gate(self) -> str | None:
-        """The engine must be running the story profile (D10): a KV smaller than the profile's rotates a long
-        prompt and wastes a layer, so a mismatch starts nothing this beat (the bookkeeping has run). The
-        line never restarts the engine: the log line names the command for a person."""
-        profile = self.cfg.story.topology
-        try:
-            probe = self.probe or RealProbe()
-            found = await asyncio.to_thread(engine_matches_profile, self.cfg, probe, profile)
-        except Exception as e:  # noqa: BLE001 - a check that cannot run is no mismatch
-            factory.log.warning("engine profile check failed: %s", e)
-            return None
-        self.gates["profile_match"] = {"ok": "ok", "fail": "mismatch"}.get(found.status, "unknown")
-        if found.status != "fail":
-            return None
-        line_event(self.state_dir, "engine_mismatch", profile=profile, detail=found.detail)
-        return " ".join(f"engine mismatch: {found.detail}".split())
+        return None
 
     # ---- the lanes ----
 

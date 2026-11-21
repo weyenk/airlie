@@ -37,51 +37,13 @@ def test_a_consistent_config_has_no_problems(tmp_path: Path) -> None:
 
 def test_engine_naming_an_unknown_model(tmp_path: Path) -> None:
     data = valid(tmp_path)
-    data["models"]["spare"] = {"repo": "o/spare", "revision": "r"}
+    data["models"]["spare"] = {}
     data["engines"]["ext"] = {
-        "kind": "openai_http",
+        "kind": "http",
         "base_url": "http://x/v1",
         "models": ["spare", "ghost"],
     }
     assert problems(data) == ["engines.ext.models names 'ghost', which is not in models (['spare', 'team'])"]
-
-
-def test_managed_engines_may_not_share_a_port_but_unmanaged_ones_may(tmp_path: Path) -> None:
-    data = valid(tmp_path)
-    data["models"]["kev"] = {"repo": "o/kev", "revision": "r"}
-    data["engines"]["dec"] = {"kind": "mlx_vlm", "port": 8080, "models": ["kev"], "decision": True}
-    assert problems(data) == ["port 8080 is used by more than one managed engine: main, dec"]
-    data["engines"]["dec"]["port"] = 8081
-    data["models"]["spare"] = {"repo": "o/spare", "revision": "r"}
-    data["engines"]["ext"] = {
-        "kind": "openai_http",
-        "port": 8080,
-        "base_url": "http://x/v1",
-        "models": ["spare"],
-    }
-    assert problems(data) == []
-
-
-def test_an_mlx_vlm_engine_serves_exactly_one_model(tmp_path: Path) -> None:
-    data = valid(tmp_path)  # the first engine is fine: a skipped engine must not end the checks
-    data["models"]["kev"] = {"repo": "o/kev", "revision": "r"}
-    data["models"]["kev2"] = {"repo": "o/kev2", "revision": "r"}
-    data["engines"]["dec"] = {"kind": "mlx_vlm", "port": 8081, "models": ["kev", "kev2"]}
-    assert problems(data) == ["engines.dec: an mlx_vlm engine serves exactly one model"]
-    data["engines"]["dec"]["models"] = ["kev2"]
-    assert problems(data) == []
-
-
-def test_jev_router_needs_a_catalog_model_served_by_a_decision_engine(tmp_path: Path) -> None:
-    data = valid(tmp_path)
-    data["router"] = {"kind": "jev"}
-    assert problems(data) == ["router.model must name a catalog model when router.kind is jev (got None)"]
-    data["router"] = {"kind": "jev", "model": "ghost"}
-    assert problems(data) == ["router.model must name a catalog model when router.kind is jev (got 'ghost')"]
-    data["router"] = {"kind": "jev", "model": "team"}
-    assert problems(data) == ["router.model 'team' must be served by an mlx_vlm engine with decision: true"]
-    data["router"] = {"kind": "chief", "model": "ghost"}
-    assert problems(data) == []  # only the jev router needs a decision model
 
 
 def test_role_problems_do_not_stop_the_checks_of_later_roles(tmp_path: Path) -> None:
@@ -96,13 +58,13 @@ def test_role_problems_do_not_stop_the_checks_of_later_roles(tmp_path: Path) -> 
 
 def test_a_role_model_served_by_no_engine_or_by_two(tmp_path: Path) -> None:
     data = valid(tmp_path)
-    data["models"]["loose"] = {"repo": "o/l", "revision": "r"}
+    data["models"]["loose"] = {}
     data["roles"]["architect"]["model"] = "loose"
     assert problems(data) == [
         "models.loose (used by roles.architect) is served by no engine; add it to an engine's models list"
     ]
     data = valid(tmp_path)
-    data["engines"]["other"] = {"kind": "mlx_vlm", "port": 8090, "models": ["team"]}
+    data["engines"]["other"] = {"kind": "http", "base_url": "http://y/v1", "models": ["team"]}
     assert problems(data) == ["models.team is served by more than one engine (main, other); pick one"] * 4
 
 
@@ -203,8 +165,8 @@ def test_a_missing_config_file_is_named(tmp_path: Path) -> None:
 
 def test_problems_are_reported_together_under_one_heading(tmp_path: Path) -> None:
     data = copy.deepcopy(MINIMAL)
-    data["models"]["spare"] = {"repo": "o/spare", "revision": "r"}
-    data["engines"]["ext"] = {"kind": "openai_http", "base_url": "http://x/v1", "models": ["spare", "ghost"]}
+    data["models"]["spare"] = {}
+    data["engines"]["ext"] = {"kind": "http", "base_url": "http://x/v1", "models": ["spare", "ghost"]}
     data["roles"]["summarizer"]["model"] = "ghost"
     with pytest.raises(ConfigError) as ei:
         load_config(write(tmp_path, data))
@@ -334,15 +296,3 @@ def test_a_chat_task_problem_is_added_to_the_workflow_problems_not_in_place_of_t
     found = problems(data)
     assert "story.composer is on but workflows.story is missing" in found
     assert any(p.startswith("chat.task names role 'ghost'") for p in found)
-
-
-def test_an_engine_that_is_not_mlx_vlm_does_not_end_the_one_model_check_of_later_engines(
-    tmp_path: Path,
-) -> None:
-    data = valid(tmp_path)
-    data["models"]["spare"] = {"repo": "o/spare", "revision": "r"}
-    data["models"]["kev"] = {"repo": "o/kev", "revision": "r"}
-    data["models"]["kev2"] = {"repo": "o/kev2", "revision": "r"}
-    data["engines"]["ext"] = {"kind": "openai_http", "base_url": "http://x/v1", "models": ["spare"]}
-    data["engines"]["dec"] = {"kind": "mlx_vlm", "port": 8081, "models": ["kev", "kev2"]}
-    assert problems(data) == ["engines.dec: an mlx_vlm engine serves exactly one model"]

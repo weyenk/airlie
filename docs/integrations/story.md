@@ -824,12 +824,12 @@ against its estimate, the amigos' objections by role and part and how many a lat
 budgets' warnings and overruns by stage. Several stories at once wait until the unattended rate says single stories
 go through on their own.
 
-**What you see.** `GET /v1/airlie/line` is the row the app draws: `paused`, the gates (`engine`, `profile_match`,
+**What you see.** `GET /v1/airlie/line` is the row the app draws: `paused`, the gates (`engine`,
 `github`), what each lane is doing (`card`, `title`, `stage`, and for the build `layer`, `step`, `tps`,
 `elapsed_s`, `estimate_h`), `queue_hours`, the blocked stories with their class, kind and fix card, and when it last
 ticked; `GET /v1/airlie/line/events?limit=` is the tail of `line/events.jsonl` (`tick`, `gate_failed`,
 `lane_start`, `lane_done`, `lane_yield`, `lane_wait`, `lane_resume`, `paused`, `fix_filed`, `fix_linked`,
-`resumed_after_fix`, `transient_retry`, `engine_mismatch`); `/health` carries the same `line` summary. A story's
+`resumed_after_fix`, `transient_retry`); `/health` carries the same `line` summary. A story's
 flow row gains its latest `diagnosis` and its `budgets`.
 
 | setting | default | what |

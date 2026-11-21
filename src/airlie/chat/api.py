@@ -539,7 +539,7 @@ def chat_router(
             return error(str(e), 400)
         from airlie.cli import _http_engine  # imported here: the cli imports serve
 
-        engine = _http_engine(cfg, engine_name, transport=transport, manager=manager)
+        engine = _http_engine(cfg, engine_name, transport=transport)
         engines.append(engine)
         await engine.start()
         answers = {a.id: a.approved for a in answered}
@@ -765,7 +765,7 @@ def chat_router(
             "engine": {
                 "name": engine_name,
                 "model": cfg.roles["chat"].model,
-                "label": model.label or model.repo.rsplit("/", 1)[-1],
+                "label": model.label or cfg.roles["chat"].model,
                 "state": engine.state if engine is not None else "stopped",
                 "footprint_gb": manager.footprint_gb(engine_name) if engine is not None else 0.0,
             },
