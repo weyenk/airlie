@@ -1,5 +1,5 @@
-"""`task serve` wires the run dispatcher: the board routes tell it of an approval, chat takes a slot from it,
-and the retired story line no longer ticks. Fakes only: no engine, agent, network or real clock."""
+"""`task serve` wires the run dispatcher: the board routes tell it of an approval, chat takes a slot from it.
+Fakes only: no engine, agent, network or real clock."""
 
 from __future__ import annotations
 
@@ -16,11 +16,8 @@ from fastapi import FastAPI
 
 from airlie.board import BoardStore
 from airlie.board.api import board_router
-from airlie.serve import ticker as ticker_mod
 from airlie.serve.app import create_app
 from airlie.serve.board_runs import BoardRuns, GatedEngine, card_workdir, lock_is_free
-from airlie.serve.jobs import Jobs
-from airlie.serve.ticker import QUIET, LineTicker
 from airlie.story.model import RepositoryError
 from airlie.workflow.worktree import acquire_lock, lock_path
 from tests.support.serve import cfg
@@ -111,41 +108,6 @@ async def test_approving_a_card_with_no_workflow_over_http_blocks_it(tmp_path: P
 
     assert card["status"] == "blocked"
     run_start.assert_not_awaited()
-
-
-# ---- the retired story line ----
-
-
-async def test_the_default_beat_does_not_tick_the_retired_story_line(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def retired(*_: Any, **__: Any) -> None:
-        raise AssertionError("the story line's tick is retired")
-
-    for name in ("tick", "story_config", "story_problems"):
-        monkeypatch.setattr(ticker_mod.factory, name, retired, raising=False)
-    pumped = AsyncMock()
-    t = LineTicker(cfg(tmp_path), Jobs(lambda *_: None), commit=None, pump=pumped, now=lambda: 5.0)
-
-    assert await t.tick() == QUIET
-    assert (t.last_tick, t.last_line) == (5.0, QUIET)
-    pumped.assert_awaited_once()
-
-
-async def test_a_beat_with_no_dispatcher_is_quiet_and_an_injected_beat_still_runs(tmp_path: Path) -> None:
-    quiet = LineTicker(cfg(tmp_path), Jobs(lambda *_: None), commit=None)
-    assert await quiet.beat() == QUIET
-
-    async def mine() -> str:
-        return "mine"
-
-    assert await LineTicker(cfg(tmp_path), Jobs(lambda *_: None), commit=None, beat=mine).beat() == "mine"
-
-
-async def test_a_failing_pump_is_a_beat_that_failed_not_a_dead_ticker(tmp_path: Path) -> None:
-    pump = AsyncMock(side_effect=RuntimeError("boom"))
-    t = LineTicker(cfg(tmp_path), Jobs(lambda *_: None), commit=None, pump=pump)
-    assert await t.beat() == "beat failed (RuntimeError: boom)"
 
 
 # ---- the real start's pieces ----

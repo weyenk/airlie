@@ -68,7 +68,6 @@ from airlie.serve.line_rows import line_events_tail, line_row
 from airlie.serve.listing import epics, initiatives, recent_runs, repo_names, repos, stories, story_page
 from airlie.serve.run_flow import run_flow, run_job_detail
 from airlie.serve.running import running as in_progress
-from airlie.serve.ticker import LineFor, LineTicker
 from airlie.serve.tree import RunNotFound, run_tree
 from airlie.serve.uploads import (
     MEDIA,
@@ -93,7 +92,7 @@ from airlie.story.fixes import home_checkout
 from airlie.story.jobs import publish_workflow
 from airlie.story.mockups import OPTION_FILE, mockup_dir, record_pick
 from airlie.story.model import StoryBusy, StoryError, StoryRunning, StorySetupError
-from airlie.story.phase import set_paused
+from airlie.story.phase import paused, set_paused
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restart import FRESH, RestartError, RestartIncomplete
 from airlie.story.state import STAGES
@@ -643,8 +642,6 @@ def create_app(
     auth_store: AuthStore | None = None,
     now: Callable[[], float] = time.time,
     next_dir: Path | None = None,
-    tick_s: float | None = None,
-    line_beat: LineFor | None = None,
     manager: Manager | None = None,
     repo_sessions: Callable[..., RepoSessions] | None = None,
     pinnable: Callable[[], Awaitable[list[str]]] | None = None,
@@ -660,8 +657,7 @@ def create_app(
     airlie.story.factory.restart_one); `story_adopt` what `POST /v1/airlie/stories/{key}/adopt-workflow` runs
     (default: airlie.story.factory.adopt_one).
     `auth_store` (default: observability.state_dir/auth.sqlite), `now` and `next_dir` (the Vue app's build,
-    default NEXT_DIR), `tick_s` (the line's beat interval, default line.tick_s) and `line_beat` (replaces the
-    line's beat, given the function that starts a lane's job) are for tests.
+    default NEXT_DIR) are for tests.
     `manager` starts, holds and stops the repository chats' VMs (default: one with no resources at first,
     inside the memory budget `memory.wired_limit_mb` less the OS reserve and `manager.margin_gb`).
     `repo_sessions` builds what runs repository chats in VMs, given `(cfg, manager, threads, confirmations,
@@ -701,9 +697,6 @@ def create_app(
         transport=transport,
     )
     app.state.dispatcher = dispatcher
-    ticker = LineTicker(
-        cfg, jobs, commit=started_commit, tick_s=tick_s, beat=line_beat, pump=dispatcher.pump, now=now
-    )
     # imported here: the manager's clock lives under airlie.serve, whose package imports this module (and the
     # chat routes import the manager)
     from airlie.chat.api import Busy, chat_router
@@ -882,7 +875,18 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        return {"status": "ok", "roles": list(cfg.roles), "commit": started_commit, "line": ticker.row()}
+        # `line` kept for clients that still read it; the timer ticker is gone — no last_tick / lanes.
+        return {
+            "status": "ok",
+            "roles": list(cfg.roles),
+            "commit": started_commit,
+            "line": {
+                "last_tick": None,
+                "line": None,
+                "paused": paused(cfg.observability.state_dir.expanduser()),
+                "lanes": {"build": None, "plan": None},
+            },
+        }
 
     def engine_row(s: Any) -> dict[str, Any]:
         p = s.progress
@@ -1617,15 +1621,15 @@ def create_app(
 
     @app.post("/v1/airlie/line")
     async def line_switch(req: LineRequest) -> dict[str, Any]:
-        """Pause or resume the line (`<state_dir>/line.paused`, read at each beat's top): the line row."""
+        """Pause or resume the line (`<state_dir>/line.paused`): the line row (no timer tick)."""
         set_paused(cfg.observability.state_dir.expanduser(), req.paused)
-        return ticker.row()
+        return await asyncio.to_thread(line_row, cfg, board, last_tick=None, now=now())
 
     @app.get("/v1/airlie/line")
     async def line_get() -> dict[str, Any]:
         """The line as one row (planning-line P5b, D11): paused, the gates, what each lane is doing, the hours
-        queued, the blocked stories with their diagnosis and fix card, and when it last ticked."""
-        return await asyncio.to_thread(line_row, cfg, board, last_tick=ticker.last_tick, now=now())
+        queued, the blocked stories with their diagnosis and fix card."""
+        return await asyncio.to_thread(line_row, cfg, board, last_tick=None, now=now())
 
     @app.get("/v1/airlie/line/events")
     async def line_events_get(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
@@ -1825,7 +1829,6 @@ def create_app(
         if story_notes is not None:
             story_notes.prime()  # stories as they stand now are history; later events push
             watcher.ensure_running()  # story pushes need the poll with no page connected
-        ticker.start()  # the line's beat, every line.tick_s while serve is up (line.serve_ticks)
 
         # the HTTP server is up at once; engines already running are adopted, the pinned ones start, idle
         # on-demand ones are reaped
@@ -1846,7 +1849,6 @@ def create_app(
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
-        await ticker.stop()
         await dispatcher.shutdown()  # in-flight board runs end (their cards Blocked) before the board closes
         for t in engine_tasks:
             t.cancel()
