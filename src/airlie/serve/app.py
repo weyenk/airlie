@@ -1025,7 +1025,10 @@ def create_app(
             msgs, uploads, can_see=lambda u: may_see(principal, u), vision=cfg.roles["chat"].vision
         )
 
-    chat_threads = ThreadStore(cfg.observability.state_dir.expanduser() / "chat" / "threads.sqlite")
+    chat_threads = ThreadStore(
+        cfg.observability.state_dir.expanduser() / "chat" / "threads.sqlite",
+        default_model=cfg.roles["chat"].model if "chat" in cfg.roles else "",
+    )
     superpowers = SuperpowersLibrary(cfg.chat.superpowers.path) if cfg.chat.superpowers.enabled else None
     library_error = check_library(cfg.chat.superpowers.path) if superpowers is not None else None
     if library_error is not None:
@@ -1109,6 +1112,8 @@ def create_app(
             access=repo_access,
             background=chat_prewarms,
             start_story=lambda text, repo: begin_story(None, text, repo),
+            allowlist=model_allowlist,
+            live_ids=model_live_ids or _live_model_ids(cfg, client),
         )
     )
     app.include_router(

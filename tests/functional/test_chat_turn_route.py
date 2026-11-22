@@ -694,6 +694,7 @@ def test_thread_get_returns_the_thread_and_404s_for_none(tmp_path: Path) -> None
     t = c.get("/v1/airlie/chat/threads/t1").json()
     assert t["todos"] == [{"id": "1", "text": "x", "status": "pending"}]
     keys = {"id", "title", "kind", "repo", "base_ref", "branch", "running", "created", "updated", "todos"}
+    keys |= {"model", "persona"}
     keys.add("messages")
     assert set(t) == keys and t["repo"] is None and t["branch"] is None
     r = c.get("/v1/airlie/chat/threads/ghost")

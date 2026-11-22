@@ -62,6 +62,10 @@ class Thread:
     base_ref: str | None = None
     base_sha: str | None = None
     """The commit `base_ref` named when the session opened: the base of the session branch."""
+    model: str = ""
+    """The upstream model id the thread's turns run on."""
+    persona: str = "chat"
+    """The role whose prompt and sampling the thread's turns use."""
 
 
 @dataclass(frozen=True)
@@ -73,6 +77,8 @@ class ThreadSummary:
     created: float
     repo: str | None
     base_ref: str | None
+    model: str = ""
+    persona: str = "chat"
 
 
 def _title_of(message: StoredMessage) -> str:
@@ -113,15 +119,23 @@ def mark_answered(parts: list[dict[str, Any]], answers: Mapping[str, bool]) -> b
 
 
 class ThreadStore:
-    def __init__(self, path: Path, *, now: Callable[[], float] = time.time) -> None:
+    def __init__(self, path: Path, *, now: Callable[[], float] = time.time, default_model: str = "") -> None:
+        """`default_model` is what a thread made before models were chosen per chat reads as."""
         path.parent.mkdir(parents=True, exist_ok=True)
         self._now = now
+        self._default_model = default_model
         self.conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self.conn.execute("pragma journal_mode=wal")
         self.conn.execute("pragma foreign_keys=on")
         self.conn.executescript(SCHEMA)
         have = {r[1] for r in self.conn.execute("pragma table_info(threads)")}
-        for column in ("repo", "base_ref", "base_sha"):  # a store made before repository chats
+        for column in (
+            "repo",
+            "base_ref",
+            "base_sha",
+            "model",
+            "persona",
+        ):  # a store made before repository chats
             if column not in have:
                 self.conn.execute(f"alter table threads add column {column} text")
         self._on_delete: list[Callable[[Thread], Awaitable[None]]] = []
@@ -131,8 +145,8 @@ class ThreadStore:
 
     def _load(self, thread_id: str, owner: str, kind: ChatKind | None = None) -> Thread:
         row = self.conn.execute(
-            "select id, owner, kind, title, todos, created, updated, repo, base_ref, base_sha "
-            "from threads where id = ?",
+            "select id, owner, kind, title, todos, created, updated, repo, base_ref, base_sha, "
+            "model, persona from threads where id = ?",
             (thread_id,),
         ).fetchone()
         if row is None or row[1] != owner or (kind is not None and row[2] != kind):
@@ -166,6 +180,8 @@ class ThreadStore:
             row[7],
             row[8],
             row[9],
+            row[10] or self._default_model,
+            row[11] or "chat",
         )
 
     def exists(self, thread_id: str) -> bool:
@@ -179,23 +195,47 @@ class ThreadStore:
         *,
         repo: str | None = None,
         base_ref: str | None = None,
+        model: str | None = None,
+        persona: str | None = None,
     ) -> Thread:
-        """The thread, created on its first open; `repo` and `base_ref` (a repository chat's) are kept from
-        that first open and ignored after it."""
+        """The thread, created on its first open; `repo` and `base_ref` (a repository chat's) and the
+        `model` and `persona` it starts with are kept from that first open and ignored after it."""
         if not self.exists(thread_id):
             t = self._now()
             self.conn.execute(
-                "insert into threads (id, owner, kind, title, todos, created, updated, repo, base_ref) "
-                "values (?, ?, ?, '', '[]', ?, ?, ?, ?)",
-                (thread_id, owner, kind, t, t, repo, base_ref),
+                "insert into threads (id, owner, kind, title, todos, created, updated, repo, base_ref, "
+                "model, persona) values (?, ?, ?, '', '[]', ?, ?, ?, ?, ?, ?)",
+                (thread_id, owner, kind, t, t, repo, base_ref, model, persona),
             )
         return self._load(thread_id, owner, kind)
 
     def create(
-        self, owner: str, kind: ChatKind, *, repo: str | None = None, base_ref: str | None = None
+        self,
+        owner: str,
+        kind: ChatKind,
+        *,
+        repo: str | None = None,
+        base_ref: str | None = None,
+        model: str | None = None,
+        persona: str | None = None,
     ) -> Thread:
         """A new empty thread with an id the server chose (the chat panel's "New")."""
-        return self.open(f"chat-{uuid.uuid4().hex}", owner, kind, repo=repo, base_ref=base_ref)
+        return self.open(
+            f"chat-{uuid.uuid4().hex}",
+            owner,
+            kind,
+            repo=repo,
+            base_ref=base_ref,
+            model=model,
+            persona=persona,
+        )
+
+    def set_settings(self, thread_id: str, *, model: str | None = None, persona: str | None = None) -> None:
+        """Change the thread's model and/or persona (None leaves one as it is)."""
+        if model is not None:
+            self.conn.execute("update threads set model = ? where id = ?", (model, thread_id))
+        if persona is not None:
+            self.conn.execute("update threads set persona = ? where id = ?", (persona, thread_id))
 
     def set_base(self, thread_id: str, base_sha: str) -> None:
         self.conn.execute("update threads set base_sha = ? where id = ?", (base_sha, thread_id))
@@ -327,11 +367,25 @@ class ThreadStore:
     def list(self, owner: str, kind: ChatKind | None = None) -> list[ThreadSummary]:
         where, args = ("owner = ?", (owner,)) if kind is None else ("owner = ? and kind = ?", (owner, kind))
         rows = self.conn.execute(
-            f"select id, title, kind, updated, created, repo, base_ref from threads where {where} "
+            f"select id, title, kind, updated, created, repo, base_ref, model, persona "
+            f"from threads where {where} "
             "order by updated desc, rowid desc",
             args,
         ).fetchall()
-        return [ThreadSummary(r[0], r[1], cast(ChatKind, r[2]), r[3], r[4], r[5], r[6]) for r in rows]
+        return [
+            ThreadSummary(
+                r[0],
+                r[1],
+                cast(ChatKind, r[2]),
+                r[3],
+                r[4],
+                r[5],
+                r[6],
+                r[7] or self._default_model,
+                r[8] or "chat",
+            )
+            for r in rows
+        ]
 
     def count_empty(self, owner: str) -> int:
         """How many of `owner`'s chats have no message yet."""
