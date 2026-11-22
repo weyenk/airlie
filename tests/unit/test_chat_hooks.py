@@ -178,14 +178,51 @@ def role_prompt(cfg: AirlieConfig) -> str:
     return cfg.roles["chat"].prompt.read_text().split("\n---\n", 1)[-1].strip()
 
 
-def test_the_system_prompt_starts_with_the_role_prompt_then_the_bootstrap(
+def test_the_system_prompt_starts_with_the_bootstrap_then_the_kind_note_then_the_persona(
     cfg: AirlieConfig, library: SuperpowersLibrary
 ) -> None:
-    prompt = build_system_prompt(cfg, "plain", library, {})
+    prompt = build_system_prompt(cfg, "plain", library, {}, persona="chat")
     body = role_prompt(cfg)
 
-    assert prompt.startswith(body)
-    assert prompt.index(body) < prompt.index(library.bootstrap().rstrip())
+    assert prompt.startswith(library.bootstrap().rstrip())
+    assert prompt.index(library.bootstrap().rstrip()) < prompt.index(PLAIN_NOTE) < prompt.index(body)
+
+
+def test_system_prompt_order_platform_kind_persona_skill(
+    cfg: AirlieConfig, library: SuperpowersLibrary, chat_skills: dict[str, Skill]
+) -> None:
+    text = build_system_prompt(cfg, "plain", library, chat_skills, persona="chat", skill="story")
+
+    assert (
+        text.index("## Skills")
+        < text.index(PLAIN_NOTE)
+        < text.index(role_prompt(cfg))
+        < text.index("## Skill: /story")
+    )
+
+
+def test_the_kind_note_precedes_the_persona_when_superpowers_is_off(
+    cfg: AirlieConfig, library: SuperpowersLibrary
+) -> None:
+    off = cfg.model_copy(deep=True)
+    off.chat.superpowers.enabled = False
+    text = build_system_prompt(off, "plain", library, {}, persona="chat")
+
+    assert text.startswith(PLAIN_NOTE)
+    assert text.index(PLAIN_NOTE) < text.index(role_prompt(cfg))
+
+
+def test_the_persona_names_whose_role_prompt_is_used(
+    cfg: AirlieConfig, library: SuperpowersLibrary, tmp_path: Path
+) -> None:
+    other = cfg.model_copy(deep=True)
+    f = tmp_path / "other.md"
+    f.write_text("I AM THE OTHER PERSONA\n")
+    other.roles["reviewer"].prompt = f
+    text = build_system_prompt(other, "plain", library, {}, persona="reviewer")
+
+    assert "I AM THE OTHER PERSONA" in text
+    assert role_prompt(cfg) not in text
 
 
 def test_the_bootstrap_is_in_the_session_prompt_exactly_once(
@@ -444,12 +481,12 @@ def test_the_prompt_is_its_parts_joined_by_blank_lines_and_ends_with_one_newline
         prompt
         == "\n\n".join(
             [
-                "\n\n  Role body.",
                 library.bootstrap().rstrip(),
                 f"## Skills\n\n{library.listing()}",
+                PLAIN_NOTE,
+                "\n\n  Role body.",
                 "## Slash commands\n\n- /story: Draft a story\n- /plan: Plan it\n\n"
                 "## Skill: /plan\n\nPLAN BODY",
-                PLAIN_NOTE,
             ]
         )
         + "\n"

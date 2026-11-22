@@ -350,6 +350,35 @@ def test_a_store_made_before_repository_chats_gains_the_columns_once_and_keeps_i
     assert (t.title, t.repo, t.base_ref, t.base_sha) == ("old", None, None, None)
 
 
+def test_an_old_store_reads_with_the_chat_persona_and_the_default_model(tmp_path: Path, clock: Clock) -> None:
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.executescript(
+        "create table threads (id text primary key, owner text not null, kind text not null, "
+        "title text not null, todos text not null, created real not null, updated real not null);"
+        "insert into threads values ('t1', 'noah', 'plain', 'old', '[]', 1.0, 2.0);"
+    )
+    conn.close()
+
+    s = ThreadStore(path, now=clock, default_model="base")
+    t = s.get("t1", "noah")
+    listed = s.list("noah")
+    s.close()
+
+    assert (t.model, t.persona) == ("base", "chat")
+    assert (listed[0].model, listed[0].persona) == ("base", "chat")
+
+
+def test_set_settings_changes_what_is_given_and_open_keeps_the_first_pick(store: ThreadStore) -> None:
+    store.open("t1", "noah", "plain", model="m1", persona="judge")
+    store.set_settings("t1", model="m2")
+    store.open("t1", "noah", "plain", model="m3", persona="chief")  # a later open does not reseed
+
+    t = store.get("t1", "noah")
+
+    assert (t.model, t.persona) == ("m2", "judge")
+
+
 def test_repository_threads_lists_only_opened_sessions_of_any_owner_without_messages(
     store: ThreadStore,
 ) -> None:

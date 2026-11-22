@@ -2,7 +2,7 @@
 roles:
   summarizer:                      # LTS summary keys (15–20 words), stateless
     prompt: prompts/roles/summarizer.md
-    model: small
+    model: Qwen3.5-0.8B-oQ8e-mtp
     max_context: 8192
     max_tokens: 64
     thinking: false
@@ -14,7 +14,7 @@ roles:
       presence_penalty: 0.0
   judge:                           # YES/NO admission judge and aggregator tie-breaker
     prompt: prompts/roles/judge.md
-    model: small
+    model: Qwen3.5-0.8B-oQ8e-mtp
     max_context: 16384
     max_tokens: 256
     thinking: false
@@ -26,7 +26,7 @@ roles:
       presence_penalty: 0.0
   hypothesizer:                    # fork-when-stuck: lists distinct root-cause hypotheses at a fork point
     prompt: prompts/roles/hypothesizer.md
-    model: small
+    model: Qwen3.5-0.8B-oQ8e-mtp
     max_context: 16384
     max_tokens: 400
     thinking: false
@@ -41,7 +41,7 @@ roles:
   # (HDS-3, 2026-10-15). These roles use 16384 over a budget of 8192, which leaves up to 8192 tokens for the answer.
   chief:
     prompt: prompts/roles/chief.md
-    model: fast
+    model: Qwen3.8-Flash-Next-oQ4e-mtp
     tools: [web_search, web_fetch]
     max_steps: 4
     max_context: 131072
@@ -57,7 +57,7 @@ roles:
   chat:                            # the web app's Chat (AIR-36): prose, no tools (the passthrough runs none); skills/chat are its slash commands
     prompt: prompts/roles/chat.md
     skills: skills/chat
-    model: fast
+    model: Qwen3.8-Flash-Next-oQ4e-mtp
     tools: []
     vision: true
     max_context: 131072
@@ -72,7 +72,7 @@ roles:
       presence_penalty: 0.0
   lhr:                             # LHR authoring via lhr-office (Chat /lhr-publish only; not a chat model name)
     prompt: prompts/roles/lhr.md
-    model: fast
+    model: Qwen3.8-Flash-Next-oQ4e-mtp
     tools:
       - lhr_create_draft
       - lhr_update_section
@@ -94,7 +94,7 @@ roles:
       presence_penalty: 0.0
   architect:
     prompt: prompts/roles/architect.md
-    model: smart
+    model: mlx-community--Qwen3.8-27B-4bit
     skills: skills/qa
     tools: [read_file, write_file, edit_file, list_dir, grep, shell, run_tests, git, compute]
     max_context: 131072
@@ -119,7 +119,7 @@ roles:
       repetition_penalty: 1.05
   product:
     prompt: prompts/roles/product.md
-    model: fast
+    model: Qwen3.8-Flash-Next-oQ4e-mtp
     tools: [read_file, list_dir, compute]
     max_tokens: 8192                # an epic set is longer than a story (the specs phase, 2026-10-25)
     max_context: 131072             # the imagining conversation holds the consultations
@@ -133,7 +133,7 @@ roles:
       presence_penalty: 0.0
   ux:
     prompt: prompts/roles/ux.md
-    model: fast
+    model: Qwen3.8-Flash-Next-oQ4e-mtp
     tools: [web_search, web_fetch]
     max_steps: 6
     vision: true
@@ -147,7 +147,7 @@ roles:
       presence_penalty: 0.0
   design:
     prompt: prompts/roles/design.md
-    model: fast
+    model: Qwen3.8-Flash-Next-oQ4e-mtp
     tools: [web_search, web_fetch]
     max_steps: 6
     vision: true
@@ -161,7 +161,7 @@ roles:
       presence_penalty: 0.0
   docs:
     prompt: prompts/roles/docs.md
-    model: fast
+    model: Qwen3.8-Flash-Next-oQ4e-mtp
     tools: [read_file, list_dir, grep]
     max_tokens: 4096
     thinking: false
@@ -174,7 +174,7 @@ roles:
       presence_penalty: 0.0
   research:
     prompt: prompts/roles/research.md
-    model: smart
+    model: mlx-community--Qwen3.8-27B-4bit
     tools: [read_file, list_dir, grep, search_knowledge, web_search, web_fetch]
     knowledge: knowledge/research
     max_tokens: 16384
@@ -189,7 +189,7 @@ roles:
       presence_penalty: 0.0
   security:
     prompt: prompts/roles/security.md
-    model: smart
+    model: mlx-community--Qwen3.8-27B-4bit
     tools: [read_file, list_dir, grep]
     max_tokens: 4096
     thinking: false
@@ -203,7 +203,7 @@ roles:
       repetition_penalty: 1.05
   reviewer:                        # on Gemma since 2026-11-12 (Noah): a different lab than the coder's Qwen, already resident, so no second model in memory
     prompt: prompts/roles/reviewer.md
-    model: fast
+    model: Qwen3.8-Flash-Next-oQ4e-mtp
     tools: [web_search, web_fetch]
     max_steps: 4
     max_context: 131072
@@ -217,7 +217,7 @@ roles:
       presence_penalty: 0.0
   supervisor:                      # layer 1 of the supervisor (spec 2026-10-22): advisory triage on the reviewer's model (Gemma since 2026-11-12); run_test is added by the triage, not listed
     prompt: prompts/roles/supervisor.md
-    model: fast
+    model: Qwen3.8-Flash-Next-oQ4e-mtp
     tools: [read_file, list_dir, grep]
     max_steps: 6
     max_context: 131072
@@ -231,7 +231,7 @@ roles:
       presence_penalty: 0.0
   aggregator:                      # spec 01 §4 step 9: combines team outputs into the final verified answer
     prompt: prompts/roles/aggregator.md
-    model: smart
+    model: mlx-community--Qwen3.8-27B-4bit
     max_context: 65536
     max_tokens: 4096
     thinking: false

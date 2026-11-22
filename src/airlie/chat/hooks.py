@@ -57,9 +57,7 @@ class TurnContext:
     prompt_error: str | None = None  # why session_start could not build the system prompt
     attachments: int = 0
     skill: str | None = None
-    persona: str | None = (
-        None  # a role (chat.personas) whose prompt answers this turn instead of the chat role's
-    )
+    persona: str = "chat"  # the role whose prompt the chat runs with
 
 
 @dataclass(frozen=True)
@@ -159,24 +157,25 @@ def build_system_prompt(
     library: SuperpowersLibrary | None,
     chat_skills: Mapping[str, Skill],
     *,
+    persona: str = "chat",
     subagent: bool = False,
     skill: str | None = None,
-    persona: str | None = None,
 ) -> str:
-    """The chat role's prompt (or the `persona` role's, one of `chat.personas`), the superpowers bootstrap and
-    skills listing, the slash commands, and the slash skill being run. Rebuilt every turn and never stored;
-    the same inputs give the same bytes."""
-    chosen = persona if persona in cfg.chat.personas else "chat"
-    parts = [prompt_text(cfg.roles[chosen].prompt).rstrip()]
+    """The superpowers bootstrap and skills listing (platform), the kind's note, the persona's role prompt,
+    then the slash commands and the slash skill being run: what changes least comes first, so a prefix cache
+    keeps the most across personas and skills. Rebuilt every turn and never stored; the same inputs give the
+    same bytes."""
+    parts: list[str] = []
     if library is not None and cfg.chat.superpowers.enabled and not subagent:
         parts.append(library.bootstrap().rstrip())
         parts.append(f"## Skills\n\n{library.listing()}")
+    if kind == "plain":
+        parts.append(PLAIN_NOTE)
+    parts.append(prompt_text(cfg.roles[persona].prompt).rstrip())
     known = skill if skill in chat_skills else None
     slash = slash_section(chat_skills, known)
     if slash:
         parts.append(slash.rstrip())
-    if kind == "plain":
-        parts.append(PLAIN_NOTE)
     return "\n\n".join(parts) + "\n"
 
 
@@ -193,7 +192,7 @@ def default_hooks(
     async def session_start(ctx: TurnContext) -> None:
         try:
             ctx.system_prompt = build_system_prompt(
-                cfg, ctx.kind, library, chat_skills, skill=ctx.skill, persona=ctx.persona
+                cfg, ctx.kind, library, chat_skills, persona=ctx.persona, skill=ctx.skill
             )
         except Exception as e:
             ctx.prompt_error = f"{type(e).__name__}: {e}"

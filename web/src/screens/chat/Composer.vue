@@ -3,8 +3,8 @@ import { ArrowUp, Plus, Square } from "lucide-vue-next";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ApiError } from "@/api";
-import { chatOptions, chatSkills } from "@/api/chat";
-import type { ChatOptions, Skill } from "@/api/chat";
+import { chatSkills } from "@/api/chat";
+import type { Skill } from "@/api/chat";
 import type { ThreadRow } from "@/api/sessions";
 import { useChatStore } from "@/stores/chat";
 import { useSessionInfo } from "@/stores/sessionInfo";
@@ -31,7 +31,6 @@ const active = ref(0);
 const dismissed = ref(false);
 const dropping = ref(false);
 const failed = ref("");
-const chipSelect = "max-w-44 rounded-md border-0 bg-chip px-1.5 py-0.5 text-xs text-chip-foreground outline-none focus:ring-1 focus:ring-ring disabled:opacity-50";
 
 watch(
   () => props.session,
@@ -41,26 +40,29 @@ watch(
   },
   { immediate: true },
 );
-const options = ref<ChatOptions | null>(null);
-const picked = computed(() => turns.choice(props.session.id));
-const modelKey = computed(() => picked.value.model ?? options.value?.default_model ?? "");
-const personaKey = computed(() => picked.value.persona ?? options.value?.default_persona ?? "");
-// a dropdown is worth showing when there is something to choose between
-const modelChoices = computed(() => (options.value && options.value.models.length > 1 ? options.value.models : []));
-const personaChoices = computed(() => (options.value && options.value.personas.length > 1 ? options.value.personas : []));
-
-/** The default is the server's own: choosing it again sends nothing, so a changed default reaches the chat. */
-function chooseModel(ev: Event): void {
-  const key = (ev.target as HTMLSelectElement).value;
-  turns.choose(props.session.id, { model: key === options.value?.default_model ? undefined : key });
-}
-function choosePersona(ev: Event): void {
-  const key = (ev.target as HTMLSelectElement).value;
-  turns.choose(props.session.id, { persona: key === options.value?.default_persona ? undefined : key });
-}
 const model = computed(() => info.label(props.session.id));
+const modelId = computed(() => info.model(props.session.id));
+const personaId = computed(() => info.persona(props.session.id));
+/** The options with the chat's current pick among them, even when it is no longer offered (switched off since). */
+const withCurrent = (list: { id: string; label: string }[], id: string | null, label?: string | null) =>
+  id && !list.some((o) => o.id === id) ? [{ id, label: label || id }, ...list] : list;
+const models = computed(() => withCurrent(info.options.models, modelId.value, model.value));
+const personas = computed(() => withCurrent(info.options.personas, personaId.value));
 const askFirst = computed(() => info.askFirst(props.session.id) ?? []);
 const busy = computed(() => ["submitted", "streaming"].includes(turns.status(props.session.id)));
+
+/** A pick in one of the footer's selects: the chat is PATCHed with it; when the server refuses (a turn runs, not allowed
+ * now) the select goes back to what the chat has and the reason shows. */
+async function pick(ev: Event, field: "model" | "persona"): Promise<void> {
+  const el = ev.target as HTMLSelectElement;
+  failed.value = "";
+  try {
+    await info.choose(props.session.id, { [field]: el.value });
+  } catch (e) {
+    el.value = (field === "model" ? modelId.value : personaId.value) ?? "";
+    failed.value = e instanceof Error ? e.message : String(e);
+  }
+}
 
 /** "/name rest" for a skill airlie has; null when the text is not a skill command. */
 function skillOf(text: string): { skill: Skill; rest: string } | null {
@@ -216,10 +218,6 @@ onMounted(async () => {
   autosize();
   if (matchMedia?.("(min-width: 768px)").matches) box.value?.focus();
   void att.loadLimits();
-  chatOptions().then(
-    (o) => (options.value = o),
-    () => (options.value = null), // no dropdowns; the turn runs on the defaults
-  );
   try {
     skills.value = await chatSkills();
   } catch {
@@ -283,32 +281,29 @@ onMounted(async () => {
         </button>
       </div>
       <p v-if="failed" role="alert" class="m-0 text-[13px] text-danger-foreground">{{ failed }}</p>
-      <div v-if="model || askFirst.length || modelChoices.length || personaChoices.length" data-test="composer-footer" class="flex flex-wrap items-center gap-1.5 text-xs">
+      <div v-if="models.length || personas.length || askFirst.length" data-test="composer-footer" class="flex flex-wrap items-center gap-1.5 text-xs">
         <select
-          v-if="personaChoices.length"
-          data-persona-select
-          aria-label="Persona"
-          title="Who answers the next message"
-          :value="personaKey"
-          :disabled="busy"
-          :class="chipSelect"
-          @change="choosePersona"
-        >
-          <option v-for="p in personaChoices" :key="p.key" :value="p.key">{{ p.label }}</option>
-        </select>
-        <select
-          v-if="modelChoices.length"
+          v-if="models.length"
           data-model-select
           aria-label="Model"
-          title="The model the next message runs on"
-          :value="modelKey"
+          title="The model this chat runs on"
           :disabled="busy"
-          :class="chipSelect"
-          @change="chooseModel"
+          class="max-w-[14rem] truncate rounded-md border-0 bg-chip px-1.5 py-0.5 text-chip-foreground disabled:opacity-60"
+          @change="pick($event, 'model')"
         >
-          <option v-for="m in modelChoices" :key="m.key" :value="m.key">{{ m.label }}</option>
+          <option v-for="m in models" :key="m.id" :value="m.id" :selected="m.id === modelId">{{ m.label }}</option>
         </select>
-        <span v-if="model && !modelChoices.length" data-model class="rounded-md bg-chip px-1.5 py-0.5 text-chip-foreground">{{ model }}</span>
+        <select
+          v-if="personas.length"
+          data-persona-select
+          aria-label="Persona"
+          title="The persona this chat answers as"
+          :disabled="busy"
+          class="max-w-[14rem] truncate rounded-md border-0 bg-chip px-1.5 py-0.5 text-chip-foreground disabled:opacity-60"
+          @change="pick($event, 'persona')"
+        >
+          <option v-for="p in personas" :key="p.id" :value="p.id" :selected="p.id === personaId">{{ p.label }}</option>
+        </select>
         <span
           v-if="askFirst.length"
           data-ask-first

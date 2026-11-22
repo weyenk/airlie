@@ -50,6 +50,10 @@ from airlie.engine.dialect import Dialect, dialect_for, thinking_fields
 from airlie.engine.types import EngineError
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
+from airlie.models.allowed import allowed_ids
+from airlie.models.allowlist import ModelAllowlist
+from airlie.models.api import models_router
+from airlie.models.live import LiveModelsError, fetch_live_model_ids
 from airlie.notify.api import notifications_router
 from airlie.notify.notifier import Notifier
 from airlie.notify.push import PushSender
@@ -600,6 +604,18 @@ def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = No
     return _orchestrator(cfg)
 
 
+def _live_model_ids(cfg: AirlieConfig, http: httpx.AsyncClient) -> Callable[[], Awaitable[list[str]]]:
+    """Ask the `workflow` engine (else the first engine with a base url) which models it serves now."""
+
+    async def live_ids() -> list[str]:
+        engine = cfg.engines.get("workflow") or next((e for e in cfg.engines.values() if e.base_url), None)
+        if engine is None or not engine.base_url:
+            raise LiveModelsError("no engine has a base_url")
+        return await fetch_live_model_ids(engine.base_url, engine.api_key, http=http)
+
+    return live_ids
+
+
 def _workflow_publisher(cfg: AirlieConfig) -> Callable[[WorkflowDraft], Awaitable[tuple[int, str]]]:
     """What publishes a draft as a PR: publish_workflow from airlie's own checkout (found when a publish
     starts), through the story's Publisher as one PR on one branch (the bot when story.github_app is set)."""
@@ -646,6 +662,7 @@ def create_app(
     repo_sessions: Callable[..., RepoSessions] | None = None,
     pinnable: Callable[[], Awaitable[list[str]]] | None = None,
     repo_sources: Mapping[str, RepoSource] | None = None,
+    model_live_ids: Callable[[], Awaitable[list[str]]] | None = None,
     run_start: Callable[..., Awaitable[Any]] | None = None,
     run_engine: Callable[[], Any] | None = None,
 ) -> FastAPI:
@@ -668,6 +685,8 @@ def create_app(
     may use, else the ones no source reaches may be pinned as extras.
     `repo_sources` are the accounts a person may link to list their repositories from (default: GitHub, for
     each of `chat.sources` the config gives a client id; tests give one over a mock transport).
+    `model_live_ids` asks the engine for its model ids for the Admin models list (default: GET
+    `/models` of the `workflow` engine, else the first engine with a base url; tests give a fake).
     `run_start` replaces what the board run dispatcher calls to run an approved card's workflow (default:
     airlie.workflow.trigger.start_workflow, in the card's checkout, over `run_engine`'s engine: default an
     HTTP engine; tests give a fake). The dispatcher is `app.state.dispatcher`."""
@@ -855,6 +874,16 @@ def create_app(
     if "chat" in cfg.roles and cfg.roles["chat"].skills is not None:  # a bad skill file stops the server here
         chat_skills = {s.name: s for s in load_chat_skills(cfg.roles["chat"].skills)}
 
+    model_allowlist = ModelAllowlist(cfg.observability.state_dir.expanduser() / "models.sqlite")
+
+    def served_name(model: str) -> str:
+        return cfg.engines[cfg.engine_for_model(model)].passthru_name(model)
+
+    def catalog_allowed(model: str) -> bool:
+        """A catalog model is allowed unless it, or the name the engine knows it by, is switched off."""
+        names = list(dict.fromkeys([model, served_name(model)]))
+        return allowed_ids(model_allowlist, names) == names
+
     def upstream(name: str) -> tuple[str, str, dict[str, str], str | None]:
         """(engine base url, served model name, headers, prompt-or-None) for a role or a raw catalog model."""
         if name in cfg.roles:
@@ -864,6 +893,8 @@ def create_app(
         else:
             known = ", ".join([*cfg.roles, *cfg.models])
             raise HTTPException(404, f"unknown model '{name}'; roles and catalog models: {known}")
+        if not catalog_allowed(model):
+            raise HTTPException(400, f"model '{model}' is not allowed in airlie")
         e = cfg.engines[cfg.engine_for_model(model)]
         if e.format == "anthropic":
             headers = anthropic_headers(e.api_key)
@@ -961,7 +992,7 @@ def create_app(
 
     @app.get("/v1/models")
     async def models() -> dict[str, Any]:
-        served = [m for m in cfg.models if m not in cfg.roles]
+        served = [m for m in cfg.models if m not in cfg.roles and catalog_allowed(m)]
         return {
             "object": "list",
             "data": [{"id": r, "object": "model", "owned_by": "airlie"} for r in [*cfg.roles, *served]],
@@ -1019,12 +1050,16 @@ def create_app(
             raise HTTPException(400, str(e)) from e
         return {**body, "messages": msgs}
 
-    async def attach_for(principal: Principal, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return await attach_uploads(
-            msgs, uploads, can_see=lambda u: may_see(principal, u), vision=cfg.roles["chat"].vision
-        )
+    async def attach_for(
+        principal: Principal, msgs: list[dict[str, Any]], vision: bool
+    ) -> list[dict[str, Any]]:
+        """`vision` is the chat's persona's: whether its model takes pictures."""
+        return await attach_uploads(msgs, uploads, can_see=lambda u: may_see(principal, u), vision=vision)
 
-    chat_threads = ThreadStore(cfg.observability.state_dir.expanduser() / "chat" / "threads.sqlite")
+    chat_threads = ThreadStore(
+        cfg.observability.state_dir.expanduser() / "chat" / "threads.sqlite",
+        default_model=cfg.roles["chat"].model if "chat" in cfg.roles else "",
+    )
     superpowers = SuperpowersLibrary(cfg.chat.superpowers.path) if cfg.chat.superpowers.enabled else None
     library_error = check_library(cfg.chat.superpowers.path) if superpowers is not None else None
     if library_error is not None:
@@ -1108,7 +1143,16 @@ def create_app(
             access=repo_access,
             background=chat_prewarms,
             start_story=lambda text, repo, workflow: begin_story(None, text, repo, workflow),
+            allowlist=model_allowlist,
+            live_ids=model_live_ids or _live_model_ids(cfg, client),
             chat_slot=dispatcher.request_chat_slot,
+        )
+    )
+    app.include_router(
+        models_router(
+            model_allowlist,
+            model_live_ids or _live_model_ids(cfg, client),
+            {name: spec.label for name, spec in cfg.models.items()},
         )
     )
     app.include_router(
@@ -1863,6 +1907,7 @@ def create_app(
         watcher.stop()
         await client.aclose()
         board.close()
+        model_allowlist.close()
         store.close()
 
     api_prefixes = ("v1", "health", "docs", "redoc", "openapi.json")

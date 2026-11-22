@@ -160,18 +160,64 @@ test("while a reply streams the Send button is a Stop that stops the turn", asyn
   expect(server.calls.some((c) => c.method === "POST" && c.url.endsWith("/chat-1/stop"))).toBe(true);
 });
 
-test("the footer names the model, and a repository chat says it asks before pushing", async () => {
+const chosen = (el: { element: Element }): string => {
+  const s = el.element as HTMLSelectElement;
+  return s.options[s.selectedIndex].text;
+};
+const patches = (): unknown[] => server.calls.filter((c) => c.method === "PATCH").map((c) => c.body);
+
+test("the footer names the model and persona, and a repository chat says it asks before pushing", async () => {
   const { w } = await open();
-  expect(w.get("[data-model]").text()).toBe("Gemma 4");
+  expect(chosen(w.get("[data-model-select]"))).toBe("Gemma 4");
+  expect(chosen(w.get("[data-persona-select]"))).toBe("chat");
   const ask = w.get("[data-ask-first]");
   expect(ask.text()).toBe("Ask before pushing");
   expect(ask.attributes("title")).toBe("Asks you first: push_branch, open_pr, build_image");
 });
 
+test("the person can choose a model and persona; each choice PATCHes the chat with what changed", async () => {
+  const { w } = await open();
+  expect(w.findAll("[data-model-select] option").map((o) => o.text())).toEqual(["Gemma 4", "Qwen 3.8 27B"]);
+  expect(w.findAll("[data-persona-select] option").map((o) => o.attributes("value"))).toEqual(["chat", "architect"]);
+  await w.get("[data-model-select]").setValue("mlx-community--Qwen3.8-27B-4bit");
+  await flushPromises();
+  await w.get("[data-persona-select]").setValue("architect");
+  await flushPromises();
+  expect(patches()).toEqual([{ model: "mlx-community--Qwen3.8-27B-4bit" }, { persona: "architect" }]);
+  expect(server.calls.filter((c) => c.method === "PATCH").every((c) => c.url === "/v1/airlie/chat/threads/chat-1")).toBe(true);
+  expect(chosen(w.get("[data-model-select]"))).toBe("Qwen 3.8 27B");
+  expect(chosen(w.get("[data-persona-select]"))).toBe("architect");
+});
+
+test("a refused choice goes back to what the chat has and says why", async () => {
+  server.patch = () => Response.json({ error: "this thread has a turn running; wait for it to finish" }, { status: 409 });
+  const { w } = await open();
+  await w.get("[data-persona-select]").setValue("architect");
+  await flushPromises();
+  expect((w.get("[data-persona-select]").element as HTMLSelectElement).value).toBe("chat");
+  expect(w.get("[role=alert]").text()).toContain("a turn running");
+});
+
+test("the selects wait while a reply streams", async () => {
+  server.turn = () => new Promise<Response>(() => {});
+  const { w } = await open();
+  await box(w).setValue("hello");
+  await w.get("form").trigger("submit");
+  await flushPromises();
+  expect(w.get("[data-model-select]").attributes("disabled")).toBeDefined();
+  expect(w.get("[data-persona-select]").attributes("disabled")).toBeDefined();
+});
+
+test("a model no longer offered still shows as the chat's pick", async () => {
+  server.status = { ...server.status, model: "retired", engine: { ...server.status.engine, label: "Retired" } };
+  const { w } = await open();
+  expect(chosen(w.get("[data-model-select]"))).toBe("Retired");
+});
+
 test("a plain chat's footer has the model and no ask-before-pushing chip", async () => {
   server.status = { ...server.status, ask_first: [], branch: null, vm: null };
   const { w } = await open({ ...ROW, kind: "plain", repo: null, branch: null, base_ref: null });
-  expect(w.get("[data-model]").text()).toBe("Gemma 4");
+  expect(chosen(w.get("[data-model-select]"))).toBe("Gemma 4");
   expect(w.find("[data-ask-first]").exists()).toBe(false);
 });
 
@@ -333,83 +379,4 @@ test("focusing, typing and sending a message never magnifies the page: the texta
   await flushPromises();
   expect(turnBodies()).toHaveLength(1); // the send went through
   expect(declaredFontSize(el)).toBe(16); // the property that keeps the visual-viewport scale unchanged after the send
-});
-
-const OPTIONS = {
-  models: [
-    { key: "gemma4", label: "Gemma 4" },
-    { key: "smart", label: "Smart" },
-  ],
-  personas: [
-    { key: "chat", label: "Chat" },
-    { key: "architect", label: "Architect" },
-  ],
-  default_model: "gemma4",
-  default_persona: "chat",
-};
-const modelSelect = (w: Awaited<ReturnType<typeof open>>["w"]) => w.get("select[aria-label='Model']");
-const personaSelect = (w: Awaited<ReturnType<typeof open>>["w"]) => w.get("select[aria-label='Persona']");
-
-test("the footer lists the models and personas with the defaults chosen, and a turn names neither until one is chosen", async () => {
-  server.options = OPTIONS;
-  const { w } = await open();
-  expect((modelSelect(w).element as HTMLSelectElement).value).toBe("gemma4");
-  expect((personaSelect(w).element as HTMLSelectElement).value).toBe("chat");
-  expect(modelSelect(w).findAll("option").map((o) => o.text())).toEqual(["Gemma 4", "Smart"]);
-  expect(personaSelect(w).findAll("option").map((o) => o.text())).toEqual(["Chat", "Architect"]);
-  await box(w).setValue("hello");
-  await w.get("form").trigger("submit");
-  await flushPromises();
-  const [body] = turnBodies();
-  expect(body.model_key).toBeUndefined();
-  expect(body.persona).toBeUndefined();
-});
-
-test("a chosen model and persona are shown and sent on the next turn, and kept for the turns after", async () => {
-  server.options = OPTIONS;
-  const { w } = await open();
-  await modelSelect(w).setValue("smart");
-  await personaSelect(w).setValue("architect");
-  expect((modelSelect(w).element as HTMLSelectElement).value).toBe("smart");
-  expect((personaSelect(w).element as HTMLSelectElement).value).toBe("architect");
-  await box(w).setValue("first");
-  await w.get("form").trigger("submit");
-  await flushPromises();
-  await box(w).setValue("second");
-  await w.get("form").trigger("submit");
-  await flushPromises();
-  const bodies = turnBodies();
-  expect(bodies).toHaveLength(2);
-  for (const b of bodies) expect(b).toMatchObject({ model_key: "smart", persona: "architect" });
-});
-
-test("choosing the default again sends nothing, and a chat's choice is its own", async () => {
-  server.options = OPTIONS;
-  const { w } = await open();
-  await modelSelect(w).setValue("smart");
-  await modelSelect(w).setValue("gemma4");
-  await box(w).setValue("hello");
-  await w.get("form").trigger("submit");
-  await flushPromises();
-  expect(turnBodies()[0].model_key).toBeUndefined();
-  await w.setProps({ session: { ...ROW, id: "chat-2" } });
-  await flushPromises();
-  expect((modelSelect(w).element as HTMLSelectElement).value).toBe("gemma4");
-});
-
-test("the dropdowns are off while a reply streams, and without options the footer only names the model", async () => {
-  server.options = OPTIONS;
-  server.turn = () => new Promise<Response>(() => {});
-  const { w } = await open();
-  await box(w).setValue("hello");
-  await w.get("form").trigger("submit");
-  await flushPromises();
-  expect((modelSelect(w).element as HTMLSelectElement).disabled).toBe(true);
-  expect((personaSelect(w).element as HTMLSelectElement).disabled).toBe(true);
-});
-
-test("a server that offers no options leaves the model chip and no dropdown", async () => {
-  const { w } = await open();
-  expect(w.find("select").exists()).toBe(false);
-  expect(w.get("[data-model]").text()).toBe("Gemma 4");
 });

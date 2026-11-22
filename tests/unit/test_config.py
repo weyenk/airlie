@@ -1577,3 +1577,16 @@ def test_client_id_is_optional_and_oauth_url_defaults_to_github(tmp_path: Path) 
 
 def test_the_committed_config_lists_github_app_as_the_chat_source() -> None:
     assert load_config(ROOT / "airlie.yaml", NO_LOCAL).chat.sources == ["github_app"]
+
+
+def test_committed_catalog_uses_upstream_ids() -> None:
+    cfg = load_config()
+    assert set(cfg.models) >= {
+        "Qwen3.8-Flash-Next-oQ4e-mtp",
+        "mlx-community--Qwen3.8-27B-4bit",
+        "Qwen3.5-0.8B-oQ8e-mtp",
+    }
+    assert "fast" not in cfg.models
+    assert cfg.roles["chat"].model == "Qwen3.8-Flash-Next-oQ4e-mtp"
+    assert cfg.roles["architect"].model == "mlx-community--Qwen3.8-27B-4bit"
+    assert cfg.engines["workflow"].passthru == {}

@@ -19,7 +19,10 @@ engines:
     format: openai
     base_url: ${AIRLIE_WORKFLOW_BASE_URL}
     api_key: ${AIRLIE_WORKFLOW_API_KEY}
-    models: [smart, small, fast]
+    models:
+      - mlx-community--Qwen3.8-27B-4bit
+      - Qwen3.5-0.8B-oQ8e-mtp
+      - Qwen3.8-Flash-Next-oQ4e-mtp
     passthru: {}
 
 

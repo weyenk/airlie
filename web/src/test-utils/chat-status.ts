@@ -20,6 +20,8 @@ export const vmRow = (over: Partial<EngineStatus> = {}): EngineStatus =>
   engine({ name: "vm:chat-1", kind: "vm", lifecycle: "on_demand", roles: [], ...over });
 
 export const STATUS: SessionStatusData = {
+  model: "gemma4",
+  persona: "chat",
   vm: { name: "vm:chat-1", state: "ready", detail: "", since: 0, memory_gb: 8 },
   engine: { name: "gemma", model: "gemma4", label: "Gemma 4", state: "ready", footprint_gb: 21.1 },
   memory: { used_gb: 41, budget_gb: 64, waiting: null },

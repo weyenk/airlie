@@ -105,7 +105,10 @@ def test_the_system_prompt_carries_the_bootstrap_and_the_skills_listing(tmp_path
     post(c)
     system = up.bodies[0]["messages"][0]
     assert system["role"] == "system"
-    assert system["content"].startswith("CHAT PROMPT")
+    assert system["content"].startswith(
+        "# using-superpowers"
+    )  # platform first, then the kind note, then the role
+    assert system["content"].index("BOOTSTRAP BODY") < system["content"].index("CHAT PROMPT")
     assert "BOOTSTRAP BODY" in system["content"] and "TOOLS MAPPING" in system["content"]
     assert "- brainstorming: Use before any creative work" in system["content"]
     assert "- /story: Make a story" in system["content"]  # the chat role's slash commands too
@@ -150,7 +153,7 @@ def test_a_chat_skill_named_like_a_superpowers_skill_returns_the_librarys(tmp_pa
 def test_a_client_supplied_tool_list_is_ignored(tmp_path: Path) -> None:
     c, up = client_for(tmp_path)
     shell = {"type": "function", "function": {"name": "shell", "description": "x", "parameters": {}}}
-    post(c, turn_body(tools=[shell], tool_choice="required", model="coder"))
+    post(c, turn_body(tools=[shell], tool_choice="required", temperature=2))  # `model` is now the chat's pick
     sent = up.bodies[0]
     assert "shell" not in tool_names(sent) and "read_file" not in tool_names(sent)
     assert "shell" not in json.dumps(sent["tools"])
@@ -694,6 +697,7 @@ def test_thread_get_returns_the_thread_and_404s_for_none(tmp_path: Path) -> None
     t = c.get("/v1/airlie/chat/threads/t1").json()
     assert t["todos"] == [{"id": "1", "text": "x", "status": "pending"}]
     keys = {"id", "title", "kind", "repo", "base_ref", "branch", "running", "created", "updated", "todos"}
+    keys |= {"model", "persona"}
     keys.add("messages")
     assert set(t) == keys and t["repo"] is None and t["branch"] is None
     r = c.get("/v1/airlie/chat/threads/ghost")
@@ -987,69 +991,3 @@ def test_a_start_for_a_story_that_is_not_there_or_not_yours_is_404(tmp_path: Pat
         assert c.post(start_url("story-nope"), json=body, headers=as_pat).status_code == 404
         assert c.post(start_url(story["id"]), json=body).status_code == 401
         assert board.started == []
-
-
-# --- the person's pick of model and persona -----------------------------------------------------------------
-
-
-def picking_client(tmp_path: Path) -> tuple[TestClient, ScriptedUpstream]:
-    up = ScriptedUpstream()
-    cfg = chat_cfg(tmp_path, personas=["chief"])
-    return TestClient(create_app(cfg, transport=httpx.MockTransport(up))), up
-
-
-def test_the_options_list_the_served_models_and_personas_with_the_defaults(tmp_path: Path) -> None:
-    c, _ = picking_client(tmp_path)
-    assert c.get("/v1/airlie/chat/options").json() == {
-        "models": [{"key": "base", "label": "base"}, {"key": "alt", "label": "Alt"}],
-        "personas": [{"key": "chat", "label": "Chat"}, {"key": "chief", "label": "Chief"}],
-        "default_model": "base",
-        "default_persona": "chat",
-    }
-
-
-def test_a_turn_runs_on_the_chosen_model(tmp_path: Path) -> None:
-    c, up = picking_client(tmp_path)
-    assert post(c, turn_body(model_key="alt")).status_code == 200
-    assert up.bodies[0]["model"] == "alt"
-
-
-def test_a_turn_naming_no_model_runs_on_the_chat_roles(tmp_path: Path) -> None:
-    c, up = picking_client(tmp_path)
-    post(c)
-    assert up.bodies[0]["model"] == "base"
-
-
-def test_a_turn_answers_with_the_chosen_personas_prompt(tmp_path: Path) -> None:
-    c, up = picking_client(tmp_path)
-    assert post(c, turn_body(persona="chief")).status_code == 200
-    assert up.bodies[0]["messages"][0]["content"].startswith("CHIEF PROMPT")
-    post(c, turn_body("again", persona="chat") | {"id": "t2"})
-    assert up.bodies[1]["messages"][0]["content"].startswith("CHAT PROMPT")
-
-
-@pytest.mark.parametrize(
-    ("pick", "named"),
-    [({"model_key": "nope"}, "unknown model 'nope'"), ({"persona": "judge"}, "unknown persona 'judge'")],
-)
-def test_an_unknown_model_or_persona_is_422_before_any_byte_streams(
-    tmp_path: Path, pick: dict[str, str], named: str
-) -> None:
-    c, up = picking_client(tmp_path)
-    r = post(c, turn_body(**pick))
-    assert r.status_code == 422 and named in r.json()["error"]
-    assert up.calls == 0
-    assert c.get("/v1/airlie/chat/threads").json() == []
-
-
-def test_a_persona_that_is_not_a_role_fails_the_config_load(tmp_path: Path) -> None:
-    with pytest.raises(Exception, match="chat.personas names role 'ghost'"):
-        chat_cfg(tmp_path, personas=["ghost"])
-
-
-def test_the_options_need_a_session(tmp_path: Path) -> None:
-    app = create_app(
-        chat_cfg(tmp_path, personas=[]), transport=httpx.MockTransport(ScriptedUpstream()), api_key="k"
-    )
-    r = TestClient(app, client=ELSEWHERE).get("/v1/airlie/chat/options")
-    assert r.status_code == 401
