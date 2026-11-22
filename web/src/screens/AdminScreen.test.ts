@@ -13,6 +13,9 @@ vi.mock("@/api/auth", async (importOriginal) => ({ ...(await importOriginal<type
 const engineApi = vi.hoisted(() => ({ listEngines: vi.fn() }));
 vi.mock("@/api/engines", () => engineApi);
 
+const modelApi = vi.hoisted(() => ({ listModels: vi.fn(), setModelAllowed: vi.fn() }));
+vi.mock("@/api/models", () => modelApi);
+
 const NOW = 1_800_000_000;
 const NOAH: User = { id: "u1", name: "Noah", login: "noah@github", role: "admin", created_at: NOW - 30 * 86400, credentials: 2 };
 const JESS: User = { id: "u2", name: "Jess", login: null, role: "member", created_at: NOW - 20 * 86400, credentials: 1 };
@@ -40,6 +43,8 @@ beforeEach(() => {
   setActivePinia(createPinia());
   for (const f of Object.values(api)) f.mockReset();
   engineApi.listEngines.mockReset().mockResolvedValue([]);
+  modelApi.listModels.mockReset().mockResolvedValue([]);
+  modelApi.setModelAllowed.mockReset().mockResolvedValue(undefined);
   api.createInvite.mockResolvedValue({ url: "/join/tok123", expires_at: NOW + 86400, user: { ...MARCUS, credentials: undefined } });
   api.inviteAgain.mockResolvedValue({ url: "/join/again", expires_at: NOW + 86400, user: JESS });
   api.deleteUser.mockResolvedValue(undefined);
@@ -354,4 +359,55 @@ test("a failed engines fetch is said, and Retry asks again", async () => {
 
   expect(w.text()).not.toContain("Can't reach the engines");
   expect(w.find('[data-engine="gemma"]').exists()).toBe(true);
+});
+
+const GEMMA = { id: "google/gemma", label: "Gemma", allowed: true, live: true };
+const OLD = { id: "old-model", label: "Old model", allowed: false, live: false };
+
+test("the Models section lists each model with its id, label, live badge and an Allowed in airlie switch", async () => {
+  modelApi.listModels.mockResolvedValue([GEMMA, OLD]);
+  const w = await open();
+  const gemma = w.get('[data-model="google/gemma"]');
+  expect(gemma.text()).toContain("Gemma");
+  expect(gemma.text()).toContain("google/gemma");
+  expect(gemma.text()).toContain("live");
+  expect(gemma.get("[role=switch]").attributes("aria-checked")).toBe("true");
+  expect(gemma.get("[role=switch]").attributes("aria-label")).toBe("Allowed in airlie");
+  const old = w.get('[data-model="old-model"]');
+  expect(old.text()).toContain("not live");
+  expect(old.get("[role=switch]").attributes("aria-checked")).toBe("false");
+});
+
+test("switching Allowed in airlie PATCHes the model and shows the new state", async () => {
+  modelApi.listModels.mockResolvedValue([GEMMA]);
+  const w = await open();
+  await w.get('[data-model="google/gemma"] [role=switch]').trigger("click");
+  await flushPromises();
+  expect(modelApi.setModelAllowed).toHaveBeenCalledWith("google/gemma", false);
+  expect(w.get('[data-model="google/gemma"] [role=switch]').attributes("aria-checked")).toBe("false");
+});
+
+test("a refused switch keeps the old state and says why", async () => {
+  modelApi.listModels.mockResolvedValue([GEMMA]);
+  modelApi.setModelAllowed.mockRejectedValue(new Error("disk full"));
+  const w = await open();
+  await w.get('[data-model="google/gemma"] [role=switch]').trigger("click");
+  await flushPromises();
+  expect(w.get('[data-model="google/gemma"] [role=switch]').attributes("aria-checked")).toBe("true");
+  expect(w.get("[data-models-error]").text()).toContain("disk full");
+});
+
+test("with no models the Models section says so, and a member sees no Models section", async () => {
+  const w = await open();
+  expect(w.text()).toContain("No models yet.");
+  w.unmount();
+  document.body.innerHTML = "";
+  setActivePinia(createPinia());
+  api.listUsers.mockRejectedValue(new ApiError(403, "admins only"));
+  modelApi.listModels.mockResolvedValue([GEMMA]);
+  useSessionStore().me = { name: "Jess", role: "member", via: "session" };
+  const m = mount(AdminScreen, { attachTo: document.body });
+  await flushPromises();
+  expect(m.find("[data-model]").exists()).toBe(false);
+  expect(m.text()).not.toContain("Models");
 });
