@@ -195,3 +195,39 @@ def test_patch_hints_the_live_feed(tmp_path: Path) -> None:
     c.patch(f"/v1/airlie/chat/threads/{t['id']}", json={"persona": "judge"})
 
     assert ("chat", None) in seen
+
+
+def turn(thread_id: str, **extra: object) -> dict:
+    msg = {"id": "u1", "role": "user", "parts": [{"type": "text", "text": "hello"}]}
+    return {"id": thread_id, "kind": "plain", "messages": [msg], **extra}
+
+
+def test_turn_refuses_a_saved_model_that_was_switched_off_since(tmp_path: Path) -> None:
+    c = make(tmp_path, ["base", "other"])
+    t = new_thread(c)
+    assert c.patch(f"/v1/airlie/chat/threads/{t['id']}", json={"model": "other"}).status_code == 200
+    allow = ModelAllowlist(tmp_path / "state" / "models.sqlite")
+    allow.set_allowed("other", False)
+    allow.close()
+
+    r = c.post("/v1/airlie/chat/turn", json=turn(t["id"]))
+
+    assert r.status_code == 400
+    assert "other" in r.json()["error"]
+    assert c.get(f"/v1/airlie/chat/threads/{t['id']}").json()["model"] == "other"  # kept until a new pick
+    assert c.get(f"/v1/airlie/chat/threads/{t['id']}").json()["messages"] == []
+    assert c.patch(f"/v1/airlie/chat/threads/{t['id']}", json={"model": "base"}).status_code == 200
+    assert c.post("/v1/airlie/chat/turn", json=turn(t["id"])).status_code == 200
+
+
+def test_turn_with_a_new_allowed_pick_runs_though_the_saved_model_was_switched_off(tmp_path: Path) -> None:
+    c = make(tmp_path, ["base", "other"])
+    t = new_thread(c)
+    c.patch(f"/v1/airlie/chat/threads/{t['id']}", json={"model": "other"})
+    allow = ModelAllowlist(tmp_path / "state" / "models.sqlite")
+    allow.set_allowed("other", False)
+    allow.close()
+
+    r = c.post("/v1/airlie/chat/turn", json=turn(t["id"], model="base"))
+
+    assert r.status_code == 200

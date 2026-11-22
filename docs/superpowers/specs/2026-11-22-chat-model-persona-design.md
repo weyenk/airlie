@@ -193,4 +193,6 @@ Coverage this feature needs (still under those standards):
 - Filtering by modality in Admin (TTS/video badges are fine later; v1 is a flat toggle).
 - Changing board/workflow concurrency or chat preemption (those stay in the
   board-run-dispatcher work).
+- A `task doctor` row for role defaults (workflow dispatch) that the allowlist has switched off: deferred. The
+  gate itself holds (a switched-off role model is refused 400 at dispatch); only the early warning is missing.
 - Moving slash-skill body out of the system prompt (optional follow-on for cache).

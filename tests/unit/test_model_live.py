@@ -32,3 +32,11 @@ async def test_fetch_live_model_ids_raises_on_transport_error() -> None:
     async with httpx.AsyncClient(transport=transport) as http:
         with pytest.raises(LiveModelsError, match="refused"):
             await fetch_live_model_ids("http://engine/v1", None, http=http)
+
+
+@pytest.mark.parametrize("content", [b"<html>not json</html>", b'["a"]', b'{"data": [1]}'])
+async def test_fetch_live_model_ids_raises_on_a_body_that_is_not_a_model_list(content: bytes) -> None:
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, content=content))
+    async with httpx.AsyncClient(transport=transport) as http:
+        with pytest.raises(LiveModelsError, match="not a model list"):
+            await fetch_live_model_ids("http://engine/v1", None, http=http)

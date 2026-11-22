@@ -24,5 +24,8 @@ async def fetch_live_model_ids(
         raise LiveModelsError(f"GET {url} failed with {e.response.status_code}") from e
     except httpx.HTTPError as e:
         raise LiveModelsError(f"GET {url} failed: {e}") from e
-    body = response.json()
-    return [str(item["id"]) for item in body.get("data") or [] if "id" in item]
+    try:
+        body = response.json()
+        return [str(item["id"]) for item in body.get("data") or [] if "id" in item]
+    except (ValueError, AttributeError, TypeError) as e:
+        raise LiveModelsError(f"GET {url} returned a body that is not a model list: {e}") from e

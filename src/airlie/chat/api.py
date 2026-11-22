@@ -550,6 +550,10 @@ def chat_router(
     ) -> Response:
         persona = thread.persona if thread.persona in cfg.roles else "chat"  # its role may be gone since
         model = thread.model or cfg.roles["chat"].model
+        if allowlist is not None and not allowlist.is_allowed(model):
+            # a saved pick switched off since keeps its id (until another is picked), not its turns; the
+            # allowlist alone says so, so a turn costs the engine no model-list request
+            return error(f"model '{model}' is not allowed in airlie", 400)
         engine_name = engine_of(model, engine_name)
         stored: StoredMessage | None = None
         retries: str | None = None
