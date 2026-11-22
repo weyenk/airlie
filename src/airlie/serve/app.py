@@ -1020,10 +1020,11 @@ def create_app(
             raise HTTPException(400, str(e)) from e
         return {**body, "messages": msgs}
 
-    async def attach_for(principal: Principal, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return await attach_uploads(
-            msgs, uploads, can_see=lambda u: may_see(principal, u), vision=cfg.roles["chat"].vision
-        )
+    async def attach_for(
+        principal: Principal, msgs: list[dict[str, Any]], vision: bool
+    ) -> list[dict[str, Any]]:
+        """`vision` is the chat's persona's: whether its model takes pictures."""
+        return await attach_uploads(msgs, uploads, can_see=lambda u: may_see(principal, u), vision=vision)
 
     chat_threads = ThreadStore(
         cfg.observability.state_dir.expanduser() / "chat" / "threads.sqlite",

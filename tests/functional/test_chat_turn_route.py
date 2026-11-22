@@ -105,7 +105,10 @@ def test_the_system_prompt_carries_the_bootstrap_and_the_skills_listing(tmp_path
     post(c)
     system = up.bodies[0]["messages"][0]
     assert system["role"] == "system"
-    assert system["content"].startswith("CHAT PROMPT")
+    assert system["content"].startswith(
+        "# using-superpowers"
+    )  # platform first, then the kind note, then the role
+    assert system["content"].index("BOOTSTRAP BODY") < system["content"].index("CHAT PROMPT")
     assert "BOOTSTRAP BODY" in system["content"] and "TOOLS MAPPING" in system["content"]
     assert "- brainstorming: Use before any creative work" in system["content"]
     assert "- /story: Make a story" in system["content"]  # the chat role's slash commands too
@@ -150,7 +153,7 @@ def test_a_chat_skill_named_like_a_superpowers_skill_returns_the_librarys(tmp_pa
 def test_a_client_supplied_tool_list_is_ignored(tmp_path: Path) -> None:
     c, up = client_for(tmp_path)
     shell = {"type": "function", "function": {"name": "shell", "description": "x", "parameters": {}}}
-    post(c, turn_body(tools=[shell], tool_choice="required", model="coder"))
+    post(c, turn_body(tools=[shell], tool_choice="required", temperature=2))  # `model` is now the chat's pick
     sent = up.bodies[0]
     assert "shell" not in tool_names(sent) and "read_file" not in tool_names(sent)
     assert "shell" not in json.dumps(sent["tools"])

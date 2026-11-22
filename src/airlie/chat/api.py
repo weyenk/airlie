@@ -66,7 +66,7 @@ EMPTY_CHATS_MAX = 20
 NO_ENGINE = "the chat role has no engine; see the server log or run airlie doctor"
 STORED_PART_TYPES = ("text", "airlie_upload")
 """The parts of a user message the server keeps and the model can take; any other part is dropped."""
-Attach = Callable[[Principal, list[dict[str, Any]]], Awaitable[list[dict[str, Any]]]]
+Attach = Callable[[Principal, list[dict[str, Any]], bool], Awaitable[list[dict[str, Any]]]]
 """Wire messages (`content` lists with `airlie_upload` parts) resolved for the chat model, in order."""
 
 
@@ -133,7 +133,8 @@ BaseRef = Annotated[str, Field(max_length=200), AfterValidator(_a_ref)]
 class TurnBody(BaseModel):
     """The AI SDK's request body plus `kind`, `skill` and, for a repository chat, `repo` (owner/name, named
     when the chat is first opened), `base_ref` (a branch or commit; default main) and `approvals` (the
-    person's answers to the permission requests the stream carried); unknown fields (a `tools` list among
+    person's answers to the permission requests the stream carried); `model` and `persona` change the chat's
+    pick before the turn runs, as PATCH does; unknown fields (a `tools` list among
     them) are ignored."""
 
     model_config = ConfigDict(extra="ignore")
@@ -144,6 +145,8 @@ class TurnBody(BaseModel):
     repo: RepoName | None = None
     base_ref: BaseRef | None = None
     approvals: list[Approval] = Field(default_factory=list, max_length=50)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    persona: str | None = Field(default=None, min_length=1, max_length=200)
 
     @property
     def resumes(self) -> bool:
@@ -237,7 +240,7 @@ def content_parts(resolved: list[dict[str, Any]]) -> tuple[ContentPart, ...]:
 
 
 async def attachment_parts(
-    attach: Attach, principal: Principal, thread: Thread, new: StoredMessage | None
+    attach: Attach, principal: Principal, thread: Thread, new: StoredMessage | None, vision: bool
 ) -> dict[str, tuple[ContentPart, ...]]:
     """What the model gets for each user message that carries attachments, the thread's and the new one,
     resolved together so the history caps (the newest pictures go as pixels) hold as in the old route."""
@@ -246,7 +249,7 @@ async def attachment_parts(
     if not any(p.get("type") == "airlie_upload" for m in users for p in m.parts):
         return {}
     wire = [{"role": "user", "content": list(m.parts)} for m in users]
-    resolved = await attach(principal, wire)
+    resolved = await attach(principal, wire, vision)
     return {m.id: content_parts(r["content"]) for m, r in zip(users, resolved, strict=True)}
 
 
@@ -383,6 +386,23 @@ def chat_router(
         live = live or list(cfg.models)
         return live if allowlist is None else allowed_ids(allowlist, live)
 
+    async def refuse_settings(model: str | None, persona: str | None) -> JSONResponse | None:
+        """The 400 for a persona that is not a configured role or a model that is not allowed now (PATCH and a
+        turn that names its own pick share it), else None."""
+        if persona is not None and persona not in cfg.roles:
+            return error(f"unknown persona '{persona}'; roles: {', '.join(cfg.roles)}", 400)
+        if model is not None and model not in await allowed_models():
+            return error(f"model '{model}' is not allowed in airlie", 400)
+        return None
+
+    def engine_of(model: str, default: str) -> str:
+        """The engine that serves `model`; `default` (the chat role's) for a live id the catalog does not
+        list."""
+        try:
+            return cfg.engine_for_model(model)
+        except KeyError:
+            return default
+
     async def seed() -> tuple[str, str]:
         """(model, persona) of a new chat: the chat role, on its model unless that is switched off (then the
         first allowed one). The engine is asked only in that case, so making a chat costs no request."""
@@ -441,6 +461,9 @@ def chat_router(
             return error(NO_ENGINE, 503)
         if body.resumes and not threads.exists(body.id):  # an answer is for a chat that asked
             return error("no such thread", 404)
+        refused_pick = await refuse_settings(body.model, body.persona)  # before a thread is made for it
+        if refused_pick is not None:
+            return refused_pick
         if body.kind == "repository":
             if repo_sessions is None:
                 return error("repository chats are not configured on this server", 503)
@@ -469,6 +492,10 @@ def chat_router(
         turn = busy.take(thread.id)
         if turn is None:
             return error("this thread has a turn running; wait for it to finish", 409)
+        if body.model is not None or body.persona is not None:  # the turn's own pick becomes the chat's
+            threads.set_settings(thread.id, model=body.model, persona=body.persona)
+            thread.model = body.model or thread.model
+            thread.persona = body.persona or thread.persona
         answered = confirmations.approve(thread.id, body.approvals)  # the person's own, never the model's
         engines: list[Engine] = []
         released = False
@@ -521,6 +548,9 @@ def chat_router(
         started: list[bool],
         used: list[bool],
     ) -> Response:
+        persona = thread.persona if thread.persona in cfg.roles else "chat"  # its role may be gone since
+        model = thread.model or cfg.roles["chat"].model
+        engine_name = engine_of(model, engine_name)
         stored: StoredMessage | None = None
         retries: str | None = None
         parts: list[dict[str, Any]] = []
@@ -551,6 +581,7 @@ def chat_router(
             principal,
             attachments=sum(p.get("type") == "airlie_upload" for p in parts),
             skill=body.skill,
+            persona=persona,
         )
         try:
             await hooks.run("session_start", ctx)
@@ -600,12 +631,12 @@ def chat_router(
         if chat is not None and repo_sessions is not None:  # the VM is held for the turn, inside the stream
             around = partial(repo_sessions.turn, chat, f"chat:{thread.id}")  # (a boot failure is a chunk)
         try:
-            user_parts = await attachment_parts(attach, principal, thread, stored)
+            user_parts = await attachment_parts(attach, principal, thread, stored, cfg.roles[persona].vision)
         except TooManyAttachments as e:
             return error(str(e), 400)
         from airlie.cli import _http_engine  # imported here: the cli imports serve
 
-        engine = _http_engine(cfg, engine_name, transport=transport)
+        engine = _http_engine(cfg, engine_name, model, transport=transport)
         engines.append(engine)
         await engine.start()
         answers = {a.id: a.approved for a in answered}
@@ -647,7 +678,8 @@ def chat_router(
                     todos=todos,
                     store=threads,
                     hooks=hooks,
-                    role=cfg.roles["chat"],
+                    role=cfg.roles[persona],  # sampling, thinking, vision: the persona's; tools: the kind's
+                    role_name=persona,
                     max_steps=cfg.chat.max_steps,
                     clock=clock,
                     status=manager.status,
@@ -789,10 +821,9 @@ def chat_router(
             return error("no such thread", 404)
         if thread_id in busy:
             return error("this thread has a turn running; wait for it to finish", 409)
-        if body.persona is not None and body.persona not in cfg.roles:
-            return error(f"unknown persona '{body.persona}'; roles: {', '.join(cfg.roles)}", 400)
-        if body.model is not None and body.model not in await allowed_models():
-            return error(f"model '{body.model}' is not allowed in airlie", 400)
+        refused = await refuse_settings(body.model, body.persona)
+        if refused is not None:
+            return refused
         threads.set_settings(thread_id, model=body.model, persona=body.persona)
         publish("chat", None)
         return thread_json(threads.get(thread_id, principal.user_id))
@@ -851,16 +882,17 @@ def chat_router(
                 "ahead": ahead,
                 "pushed": pushed,
             }
+        engine_name = engine_of(t.model, engine_name)
         engine = rows.get(engine_name)
-        model = cfg.models[cfg.roles["chat"].model]
+        spec = cfg.models.get(t.model)
         return {
             "model": t.model,
             "persona": t.persona,
             "vm": vm,
             "engine": {
                 "name": engine_name,
-                "model": cfg.roles["chat"].model,
-                "label": model.label or cfg.roles["chat"].model,
+                "model": t.model,
+                "label": (spec.label if spec is not None else None) or t.model,
                 "state": engine.state if engine is not None else "stopped",
                 "footprint_gb": manager.footprint_gb(engine_name) if engine is not None else 0.0,
             },
