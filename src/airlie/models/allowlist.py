@@ -44,6 +44,13 @@ class ModelAllowlist:
             (model_id, int(allowed)),
         )
 
+    def stored_ids(self) -> list[str]:
+        """Every id with a saved choice, sorted."""
+        return [r[0] for r in self._db.execute("SELECT id FROM allowlist ORDER BY id")]
+
+    def close(self) -> None:
+        self._db.close()
+
     def merge(
         self,
         live_ids: list[str],

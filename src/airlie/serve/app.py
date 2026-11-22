@@ -49,6 +49,9 @@ from airlie.engine.dialect import Dialect, dialect_for, thinking_fields
 from airlie.engine.types import EngineError
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
+from airlie.models.allowlist import ModelAllowlist
+from airlie.models.api import models_router
+from airlie.models.live import LiveModelsError, fetch_live_model_ids
 from airlie.notify.api import notifications_router
 from airlie.notify.notifier import Notifier
 from airlie.notify.push import PushSender
@@ -593,6 +596,18 @@ def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = No
     return _orchestrator(cfg)
 
 
+def _live_model_ids(cfg: AirlieConfig, http: httpx.AsyncClient) -> Callable[[], Awaitable[list[str]]]:
+    """Ask the `workflow` engine (else the first engine with a base url) which models it serves now."""
+
+    async def live_ids() -> list[str]:
+        engine = cfg.engines.get("workflow") or next((e for e in cfg.engines.values() if e.base_url), None)
+        if engine is None or not engine.base_url:
+            raise LiveModelsError("no engine has a base_url")
+        return await fetch_live_model_ids(engine.base_url, engine.api_key, http=http)
+
+    return live_ids
+
+
 def _workflow_publisher(cfg: AirlieConfig) -> Callable[[WorkflowDraft], Awaitable[tuple[int, str]]]:
     """What publishes a draft as a PR: publish_workflow from airlie's own checkout (found when a publish
     starts), through the story's Publisher as one PR on one branch (the bot when story.github_app is set)."""
@@ -641,6 +656,7 @@ def create_app(
     repo_sessions: Callable[..., RepoSessions] | None = None,
     pinnable: Callable[[], Awaitable[list[str]]] | None = None,
     repo_sources: Mapping[str, RepoSource] | None = None,
+    model_live_ids: Callable[[], Awaitable[list[str]]] | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
@@ -661,7 +677,9 @@ def create_app(
     read from the checkouts and the board's labels): with no source linked they are the repositories a person
     may use, else the ones no source reaches may be pinned as extras.
     `repo_sources` are the accounts a person may link to list their repositories from (default: GitHub, for
-    each of `chat.sources` the config gives a client id; tests give one over a mock transport)."""
+    each of `chat.sources` the config gives a client id; tests give one over a mock transport).
+    `model_live_ids` asks the engine for its model ids for the Admin models list (default: GET
+    `/models` of the `workflow` engine, else the first engine with a base url; tests give a fake)."""
     app = FastAPI(title="airlie", version="0.1.0")
     started_commit = (
         build_commit()
@@ -1078,6 +1096,14 @@ def create_app(
             access=repo_access,
             background=chat_prewarms,
             start_story=lambda text, repo: begin_story(None, text, repo),
+        )
+    )
+    model_allowlist = ModelAllowlist(cfg.observability.state_dir.expanduser() / "models.sqlite")
+    app.include_router(
+        models_router(
+            model_allowlist,
+            model_live_ids or _live_model_ids(cfg, client),
+            {name: spec.label for name, spec in cfg.models.items()},
         )
     )
     app.include_router(
@@ -1825,6 +1851,7 @@ def create_app(
         watcher.stop()
         await client.aclose()
         board.close()
+        model_allowlist.close()
         store.close()
 
     api_prefixes = ("v1", "health", "docs", "redoc", "openapi.json")

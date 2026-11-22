@@ -22,3 +22,11 @@ def test_merge_lists_live_ids_with_flags(tmp_path: Path) -> None:
         ("chat-model", True, "Chat"),
         ("video", False, None),
     ]
+
+
+def test_stored_ids_lists_every_toggled_id_and_close_releases_the_db(tmp_path: Path) -> None:
+    store = ModelAllowlist(tmp_path / "models.sqlite")
+    store.set_allowed("b", False)
+    store.set_allowed("a", True)
+    assert store.stored_ids() == ["a", "b"]
+    store.close()
