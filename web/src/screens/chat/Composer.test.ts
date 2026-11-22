@@ -160,18 +160,64 @@ test("while a reply streams the Send button is a Stop that stops the turn", asyn
   expect(server.calls.some((c) => c.method === "POST" && c.url.endsWith("/chat-1/stop"))).toBe(true);
 });
 
-test("the footer names the model, and a repository chat says it asks before pushing", async () => {
+const chosen = (el: { element: Element }): string => {
+  const s = el.element as HTMLSelectElement;
+  return s.options[s.selectedIndex].text;
+};
+const patches = (): unknown[] => server.calls.filter((c) => c.method === "PATCH").map((c) => c.body);
+
+test("the footer names the model and persona, and a repository chat says it asks before pushing", async () => {
   const { w } = await open();
-  expect(w.get("[data-model]").text()).toBe("Gemma 4");
+  expect(chosen(w.get("[data-model-select]"))).toBe("Gemma 4");
+  expect(chosen(w.get("[data-persona-select]"))).toBe("chat");
   const ask = w.get("[data-ask-first]");
   expect(ask.text()).toBe("Ask before pushing");
   expect(ask.attributes("title")).toBe("Asks you first: push_branch, open_pr, build_image");
 });
 
+test("the person can choose a model and persona; each choice PATCHes the chat with what changed", async () => {
+  const { w } = await open();
+  expect(w.findAll("[data-model-select] option").map((o) => o.text())).toEqual(["Gemma 4", "Qwen 3.8 27B"]);
+  expect(w.findAll("[data-persona-select] option").map((o) => o.attributes("value"))).toEqual(["chat", "architect"]);
+  await w.get("[data-model-select]").setValue("mlx-community--Qwen3.8-27B-4bit");
+  await flushPromises();
+  await w.get("[data-persona-select]").setValue("architect");
+  await flushPromises();
+  expect(patches()).toEqual([{ model: "mlx-community--Qwen3.8-27B-4bit" }, { persona: "architect" }]);
+  expect(server.calls.filter((c) => c.method === "PATCH").every((c) => c.url === "/v1/airlie/chat/threads/chat-1")).toBe(true);
+  expect(chosen(w.get("[data-model-select]"))).toBe("Qwen 3.8 27B");
+  expect(chosen(w.get("[data-persona-select]"))).toBe("architect");
+});
+
+test("a refused choice goes back to what the chat has and says why", async () => {
+  server.patch = () => Response.json({ error: "this thread has a turn running; wait for it to finish" }, { status: 409 });
+  const { w } = await open();
+  await w.get("[data-persona-select]").setValue("architect");
+  await flushPromises();
+  expect((w.get("[data-persona-select]").element as HTMLSelectElement).value).toBe("chat");
+  expect(w.get("[role=alert]").text()).toContain("a turn running");
+});
+
+test("the selects wait while a reply streams", async () => {
+  server.turn = () => new Promise<Response>(() => {});
+  const { w } = await open();
+  await box(w).setValue("hello");
+  await w.get("form").trigger("submit");
+  await flushPromises();
+  expect(w.get("[data-model-select]").attributes("disabled")).toBeDefined();
+  expect(w.get("[data-persona-select]").attributes("disabled")).toBeDefined();
+});
+
+test("a model no longer offered still shows as the chat's pick", async () => {
+  server.status = { ...server.status, model: "retired", engine: { ...server.status.engine, label: "Retired" } };
+  const { w } = await open();
+  expect(chosen(w.get("[data-model-select]"))).toBe("Retired");
+});
+
 test("a plain chat's footer has the model and no ask-before-pushing chip", async () => {
   server.status = { ...server.status, ask_first: [], branch: null, vm: null };
   const { w } = await open({ ...ROW, kind: "plain", repo: null, branch: null, base_ref: null });
-  expect(w.get("[data-model]").text()).toBe("Gemma 4");
+  expect(chosen(w.get("[data-model-select]"))).toBe("Gemma 4");
   expect(w.find("[data-ask-first]").exists()).toBe(false);
 });
 

@@ -1,7 +1,7 @@
 // Test helper: the server the whole chat screen talks to (sign-in, the chat list, a chat's saved thread and status, pins,
 // the repositories, the turn route, the attachment limits and commands), in one fetch stub. Rebuilt per test.
 
-import type { SessionStatusData, StoredMessage, ThreadRow } from "@/api/sessions";
+import type { ChatOptions, SessionStatusData, StoredMessage, ThreadRow } from "@/api/sessions";
 import { thread } from "./chat-panel";
 import { STATUS } from "./chat-status";
 
@@ -12,12 +12,26 @@ export type ScreenServer = {
   /** A chat's saved messages, by chat id. */
   messages: Record<string, StoredMessage[]>;
   status: SessionStatusData;
+  /** What `GET /v1/airlie/chat/options` answers. */
+  options: ChatOptions;
+  /** What `PATCH` on a chat answers with when set: a refusal. */
+  patch?: (body: Record<string, unknown>) => Response | Promise<Response>;
   /** What `POST /v1/airlie/chat/turn` answers with, given its JSON body. */
   turn: (body: Record<string, unknown>) => Response | Promise<Response>;
   calls: { method: string; url: string; body: unknown }[];
 };
 
 const LIMITS = { max_per_message: 10, max_image_mb: 20, max_video_mb: 100, max_file_mb: 25 };
+export const OPTIONS: ChatOptions = {
+  models: [
+    { id: "gemma4", label: "Gemma 4" },
+    { id: "mlx-community--Qwen3.8-27B-4bit", label: "Qwen 3.8 27B" },
+  ],
+  personas: [
+    { id: "chat", label: "chat" },
+    { id: "architect", label: "architect" },
+  ],
+};
 const SKILLS = [
   { name: "story", summary: "Turn a request into a story", action: "story" },
   { name: "clear", summary: "Start a fresh session", action: "clear" },
@@ -30,6 +44,7 @@ export function screenServer(init: Partial<ScreenServer> = {}): ScreenServer {
     repos: [],
     messages: {},
     status: STATUS,
+    options: OPTIONS,
     turn: () => new Response(null, { status: 500 }),
     calls: [],
     ...init,
@@ -58,6 +73,7 @@ export function screenServer(init: Partial<ScreenServer> = {}): ScreenServer {
         server.threads.push(row);
         return Response.json(row, { status: 201 });
       }
+      if (url === "/v1/airlie/chat/options") return Response.json(server.options);
       if (url === "/v1/airlie/chat/pins") return Response.json({ pins: server.pins });
       if (url === "/v1/airlie/repos/names") return Response.json({ repos: server.repos });
       if (url.startsWith(`${prefix}/`)) {
@@ -76,6 +92,11 @@ export function screenServer(init: Partial<ScreenServer> = {}): ScreenServer {
           if (!held) return Response.json({ error: "no such story in this chat" }, { status: 404 });
           held.parts.push(part);
           return Response.json(part, { status: 201 });
+        }
+        if (method === "PATCH") {
+          if (server.patch) return server.patch(raw);
+          server.status = { ...server.status, ...raw };
+          return Response.json({ ...row, model: server.status.model, persona: server.status.persona });
         }
         if (method === "DELETE") {
           server.threads = server.threads.filter((t) => t.id !== row.id);

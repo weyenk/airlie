@@ -1,5 +1,6 @@
 import { callOf, stubJson } from "@/test-utils/fetch-stub";
 import {
+  chatOptions,
   createSession,
   deleteSession,
   getSession,
@@ -11,6 +12,7 @@ import {
   stopSession,
   toUIMessage,
   unpinRepository,
+  updateSession,
 } from "./sessions";
 import type { StoredMessage } from "./sessions";
 
@@ -24,6 +26,15 @@ test("listSessions reads the chats, narrowed to a kind when asked", async () => 
   await listSessions("repository");
   expect(callOf(fetchMock, 0)).toMatchObject({ url: "/v1/airlie/chat/threads", method: "GET" });
   expect(callOf(fetchMock, 1).url).toBe("/v1/airlie/chat/threads?kind=repository");
+});
+
+test("chatOptions reads the models and personas; updateSession PATCHes only what it is given", async () => {
+  const options = { models: [{ id: "m", label: "M" }], personas: [{ id: "chat", label: "chat" }] };
+  const fetchMock = stubJson(options);
+  expect(await chatOptions()).toEqual(options);
+  await updateSession("chat-1", { persona: "architect" });
+  expect(callOf(fetchMock, 0)).toMatchObject({ url: "/v1/airlie/chat/options", method: "GET" });
+  expect(callOf(fetchMock, 1)).toMatchObject({ url: "/v1/airlie/chat/threads/chat-1", method: "PATCH", body: { persona: "architect" } });
 });
 
 test("createSession posts the kind, repository and base", async () => {
