@@ -17,8 +17,6 @@ Ask what's running, how airlie works, or type `/` for commands such as `/story`.
   <img src="docs/readme/chat.png" alt="Chat: ask airlie or type / for commands" width="720" />
 </p>
 
-The Chat screen still talks to `/v1/chat/completions`; it moves to the turn route below with the chat redesign.
-
 #### The chat turn route
 
 `POST /v1/airlie/chat/turn` runs one chat turn on the `chat` role and streams it as an AI SDK UI message stream
@@ -35,12 +33,28 @@ standard chunks (`start`, `start-step`, `text-*`, `reasoning-*`, `tool-input-*`,
 | `POST /v1/airlie/chat/turn` | one turn; 401 not signed in, 400 a refused body (an unknown kind, no user message) or too many attachments, 404 a thread that is not yours, 409 the thread already has a turn running, 503 no `chat` role or engine; a `before_turn` guardrail may refuse with its own status |
 | `GET /v1/airlie/chat/threads[?kind=]` | your threads, newest first |
 | `GET /v1/airlie/chat/threads/{id}` | one thread with its messages and todos; 404 |
+| `PATCH /v1/airlie/chat/threads/{id}` | sets the thread's `model` and/or `persona`; 400 an unknown persona or a model that is not allowed in airlie; 404 |
+| `GET /v1/airlie/chat/options` | the models you can pick (`{id, label}`: live upstream ids that are allowed in airlie) and the personas (`{id, label}`: every role) |
 | `DELETE /v1/airlie/chat/threads/{id}` | 204; 409 while a turn is running; 404 |
 | `POST /v1/airlie/chat/threads/{id}/stop` | cancels the running turn and saves the partial reply as `interrupted`; 204 (also when nothing is running); 404 |
 
 A client that disconnects does not stop the turn: it finishes, is saved to the thread and notifies `on_finish`.
 Stop is the explicit call above. Threads live on the server (sqlite, per signed-in person), so a reload or another
 device reads the same conversation.
+
+**Model and persona.** The Composer has a model dropdown and a persona dropdown, both saved on the thread. A
+persona is a role (default `chat`): it supplies the system prompt, sampling, thinking and vision settings, and
+its default model. A model is a real upstream model id, so a switch only changes which allowed model answers; the
+tools still come from the chat kind, never the persona. Prompt order is platform, kind, persona, then the loaded
+skill, so a persona switch keeps the platform and kind prefix cache warm (a model switch starts a new cache). The
+turn body may also carry `model` / `persona` to apply before that turn.
+
+**Model catalog and the allowlist.** Catalog names in `config/models.yaml` are the upstream ids themselves
+(`passthru` stays empty when the names match). The models airlie can use are the live upstream `GET /v1/models`
+list intersected with the allowlist. In Admin, the Models table has an **Allowed in airlie** toggle per upstream
+id (sqlite, on by default; admins only). A model that is allowed shows up in Chat, in the workflow model pickers
+and in the `task serve` model catalog; one that is not is hidden from all three and refused with a 400 even if
+the upstream still serves it.
 
 Only the `plain` kind exists (`repository` answers 400 until plan 4). A plain chat has no repository: its tools are
 `web_search` and `web_fetch` (when the web tools are configured), `skill` and `todo`; there is no file or shell
