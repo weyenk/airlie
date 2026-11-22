@@ -49,6 +49,7 @@ from airlie.engine.dialect import Dialect, dialect_for, thinking_fields
 from airlie.engine.types import EngineError
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
+from airlie.models.allowed import allowed_ids
 from airlie.models.allowlist import ModelAllowlist
 from airlie.models.api import models_router
 from airlie.models.live import LiveModelsError, fetch_live_model_ids
@@ -854,6 +855,16 @@ def create_app(
     if "chat" in cfg.roles and cfg.roles["chat"].skills is not None:  # a bad skill file stops the server here
         chat_skills = {s.name: s for s in load_chat_skills(cfg.roles["chat"].skills)}
 
+    model_allowlist = ModelAllowlist(cfg.observability.state_dir.expanduser() / "models.sqlite")
+
+    def served_name(model: str) -> str:
+        return cfg.engines[cfg.engine_for_model(model)].passthru_name(model)
+
+    def catalog_allowed(model: str) -> bool:
+        """A catalog model is allowed unless it, or the name the engine knows it by, is switched off."""
+        names = list(dict.fromkeys([model, served_name(model)]))
+        return allowed_ids(model_allowlist, names) == names
+
     def upstream(name: str) -> tuple[str, str, dict[str, str], str | None]:
         """(engine base url, served model name, headers, prompt-or-None) for a role or a raw catalog model."""
         if name in cfg.roles:
@@ -863,6 +874,8 @@ def create_app(
         else:
             known = ", ".join([*cfg.roles, *cfg.models])
             raise HTTPException(404, f"unknown model '{name}'; roles and catalog models: {known}")
+        if not catalog_allowed(model):
+            raise HTTPException(400, f"model '{model}' is not allowed in airlie")
         e = cfg.engines[cfg.engine_for_model(model)]
         if e.format == "anthropic":
             headers = anthropic_headers(e.api_key)
@@ -949,7 +962,7 @@ def create_app(
 
     @app.get("/v1/models")
     async def models() -> dict[str, Any]:
-        served = [m for m in cfg.models if m not in cfg.roles]
+        served = [m for m in cfg.models if m not in cfg.roles and catalog_allowed(m)]
         return {
             "object": "list",
             "data": [{"id": r, "object": "model", "owned_by": "airlie"} for r in [*cfg.roles, *served]],
@@ -1098,7 +1111,6 @@ def create_app(
             start_story=lambda text, repo: begin_story(None, text, repo),
         )
     )
-    model_allowlist = ModelAllowlist(cfg.observability.state_dir.expanduser() / "models.sqlite")
     app.include_router(
         models_router(
             model_allowlist,
