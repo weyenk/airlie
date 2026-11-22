@@ -32,9 +32,7 @@ class ModelAllowlist:
         self._db.executescript(_SCHEMA)
 
     def is_allowed(self, model_id: str) -> bool:
-        row = self._db.execute(
-            "SELECT allowed FROM allowlist WHERE id = ?", (model_id,)
-        ).fetchone()
+        row = self._db.execute("SELECT allowed FROM allowlist WHERE id = ?", (model_id,)).fetchone()
         if row is None:
             return True
         return bool(row[0])
