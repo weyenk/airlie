@@ -16,6 +16,18 @@ export function workflowOf(labels: string[]): string {
   return found ? found.slice(WORKFLOW_PREFIX.length) : DEFAULT_WORKFLOW;
 }
 
+/** The workflow a card's labels name, or "" when none (a card that names none runs the story workflow, but the
+ * picker shows it as not chosen). */
+export function chosenWorkflow(labels: string[]): string {
+  const found = labels.find((l) => l.startsWith(WORKFLOW_PREFIX));
+  return found ? found.slice(WORKFLOW_PREFIX.length) : "";
+}
+
+/** The labels with every workflow label taken off; the others keep their order. */
+export function withoutWorkflow(labels: string[]): string[] {
+  return labels.filter((l) => !l.startsWith(WORKFLOW_PREFIX));
+}
+
 /** The labels with the workflow set to `name` (story too, written out); the others keep their order. */
 export function withWorkflow(labels: string[], name: string): string[] {
   return [...labels.filter((l) => !l.startsWith(WORKFLOW_PREFIX)), `${WORKFLOW_PREFIX}${name}`];

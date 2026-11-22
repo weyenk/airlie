@@ -9,6 +9,80 @@
     "reviewer",
     "summarizer"
   ],
+  "node_kinds": [
+    {
+      "kind": "WORK",
+      "fields": [
+        "role",
+        "prompt",
+        "prompt_id",
+        "run",
+        "inputs",
+        "outputs",
+        "steps",
+        "on_fail",
+        "gate",
+        "events"
+      ],
+      "required": []
+    },
+    {
+      "kind": "ROUND_ROBIN",
+      "fields": [
+        "roles",
+        "prompt",
+        "agreement_when",
+        "outputs",
+        "inputs",
+        "steps",
+        "on_fail",
+        "events"
+      ],
+      "required": [
+        "roles",
+        "prompt",
+        "agreement_when"
+      ]
+    },
+    {
+      "kind": "SUPERVISOR_WORKERS",
+      "fields": [
+        "supervisor",
+        "worker",
+        "workers",
+        "prompt",
+        "outputs",
+        "inputs",
+        "steps",
+        "on_fail",
+        "events"
+      ],
+      "required": [
+        "supervisor",
+        "worker",
+        "prompt"
+      ]
+    },
+    {
+      "kind": "K_INDEPENDENT_TEAMS",
+      "fields": [
+        "teams",
+        "roles",
+        "prompt",
+        "outputs",
+        "inputs",
+        "steps",
+        "aggregate",
+        "test_cmd",
+        "on_fail",
+        "events"
+      ],
+      "required": [
+        "roles",
+        "prompt"
+      ]
+    }
+  ],
   "types": [
     "model",
     "ask",

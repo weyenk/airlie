@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import CatalogPicker from "./CatalogPicker.vue";
 import { formatSentence, outputSpecs, specValue } from "./fields";
-import { PROTOCOLS, inputsOf, protocolOf, readable, renameNode, renameOutput } from "./graph";
+import { NODE_KINDS, inputsOf, readable, renameNode, renameOutput } from "./graph";
 import type { GNode, Graph, NodeSpec, OutputSpec } from "./graph";
 import OutputsEditor from "./OutputsEditor.vue";
 import { promptFieldsOf } from "./promptFile";
@@ -35,11 +35,17 @@ const emit = defineEmits<{
 }>();
 
 const spec = computed(() => props.node.spec);
-const type = computed(() => props.node.type);
-const proto = computed(() => protocolOf(type.value, spec.value));
-const isModel = computed(() => proto.value !== null || type.value === "team");
-const isMeeting = computed(() => type.value === "meeting" || proto.value === "meeting");
-const isCode = computed(() => type.value === "check" || type.value === "gate");
+const kind = computed(() => props.node.kind);
+const isMeeting = computed(() => kind.value === "ROUND_ROBIN");
+const isSupervisor = computed(() => kind.value === "SUPERVISOR_WORKERS");
+const isKin = computed(() => kind.value === "K_INDEPENDENT_TEAMS");
+const isBundleBox = computed(() => kind.value === "WORK" && text(spec.value.workflow) !== "");
+const isRunBox = computed(
+  () => kind.value === "WORK" && !isBundleBox.value && (typeof spec.value.run === "string" || (!text(spec.value.prompt) && !text(spec.value.prompt_id))),
+);
+const isPromptBox = computed(() => kind.value === "WORK" && !isBundleBox.value && !isRunBox.value);
+const hasTurn = computed(() => typeof spec.value.turn === "string");
+const type = kind;
 const text = (v: unknown): string => (typeof v === "string" ? v : typeof v === "number" ? String(v) : "");
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const valueOf = (e: Event) => (e.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement).value;
@@ -119,13 +125,25 @@ const written = computed(() => {
 
 // role: one for a model box; a supervisor and a worker for a team; a meeting's are the protocol's
 const role = computed(() => (typeof spec.value.role === "string" ? spec.value.role : ""));
-const teamRole = computed(() => (isRecord(spec.value.role) ? spec.value.role : {}));
+const teamRole = computed(() =>
+  isRecord(spec.value.role)
+    ? (spec.value.role as Record<string, string>)
+    : { supervisor: text(spec.value.supervisor), worker: text(spec.value.worker) },
+);
 function setTeamRole(seat: "supervisor" | "worker", value: string) {
-  set("role", { supervisor: text(teamRole.value.supervisor), worker: text(teamRole.value.worker), [seat]: value });
+  if (isRecord(spec.value.role)) {
+    set("role", { ...teamRole.value, [seat]: value });
+    return;
+  }
+  set(seat, value);
 }
 // a meeting: the protocol's seats and inputs are fixed (listed, never taken off); the box may read more
 const meeting = computed(() => props.catalog.meetings[0] ?? null);
-const meetingRoles = computed(() => (Array.isArray(spec.value.role) ? spec.value.role.filter((r): r is string => typeof r === "string") : []));
+const meetingRoles = computed(() => {
+  if (Array.isArray(spec.value.roles)) return spec.value.roles.filter((r): r is string => typeof r === "string");
+  if (Array.isArray(spec.value.role)) return spec.value.role.filter((r): r is string => typeof r === "string");
+  return [];
+});
 const roleChoices = computed(() => [...new Set([...(meeting.value?.roles ?? []), ...meetingRoles.value])]);
 const fixedRole = (r: string) => (meeting.value?.roles ?? []).includes(r);
 /** The protocol's roles and inputs the box does not list. */
@@ -138,14 +156,13 @@ const unseated = computed(() => {
 function seat() {
   const m = meeting.value;
   if (!m) return;
-  emitUpdate({
-    ...spec.value,
-    role: [...meetingRoles.value, ...m.roles.filter((r) => !meetingRoles.value.includes(r))],
-    inputs: [...inputs.value, ...m.inputs.filter((i) => !inputs.value.includes(i))],
-  });
+  const roles = [...meetingRoles.value, ...m.roles.filter((r) => !meetingRoles.value.includes(r))];
+  emitUpdate({ ...spec.value, roles, inputs: [...inputs.value, ...m.inputs.filter((i) => !inputs.value.includes(i))] });
 }
 function toggleRole(r: string, on: boolean) {
-  set("role", on ? [...meetingRoles.value.filter((x) => x !== r), r] : meetingRoles.value.filter((x) => x !== r));
+  const next = on ? [...meetingRoles.value.filter((x) => x !== r), r] : meetingRoles.value.filter((x) => x !== r);
+  if (Array.isArray(spec.value.roles) || !Array.isArray(spec.value.role)) set("roles", next);
+  else set("role", next);
 }
 
 // session: a session output upstream that a box of this box's role wrote
@@ -159,18 +176,23 @@ const sessionReason = computed(() => {
   if (!sessions.value.length) return "No box upstream writes a session.";
   return `No session here was written by a ${role.value} box: a session continues only between boxes of the same role.`;
 });
+const showSession = computed(
+  () => isMeeting.value || (isPromptBox.value && (hasTurn.value || text(spec.value.session) || role.value !== "")),
+);
 
 // prompt: the text itself, or a prompt file (prompt:<id>) of the hub's or the draft's
 const PROMPT_FILE = "prompt:";
 const NEW = "__new__";
-const prompt = computed(() => text(spec.value.prompt));
+const prompt = computed(() =>
+  typeof spec.value.prompt_id === "string" && spec.value.prompt_id ? `prompt:${text(spec.value.prompt_id)}` : text(spec.value.prompt),
+);
 const fileMode = ref(false);
 const refusal = ref<string | null>(null);
 // another box: its prompt's own mode, and no refusal said of the last one
 watch(
-  () => props.node.id,
+  () => [props.node.id, spec.value.prompt_id, spec.value.prompt],
   () => {
-    fileMode.value = prompt.value.startsWith(PROMPT_FILE);
+    fileMode.value = text(spec.value.prompt_id) !== "" || prompt.value.startsWith(PROMPT_FILE);
     refusal.value = null;
     nameRefusal.value = null;
   },
@@ -185,7 +207,16 @@ function pickPromptFile(e: Event) {
     dialog.value = true;
     return;
   }
-  set("prompt", select.value || undefined);
+  if (select.value.startsWith(PROMPT_FILE)) {
+    const id = select.value.slice(PROMPT_FILE.length);
+    const next: NodeSpec = { ...spec.value, prompt_id: id };
+    delete next.prompt;
+    emitUpdate(next);
+    return;
+  }
+  const next: NodeSpec = { ...spec.value, prompt: select.value || undefined };
+  delete next.prompt_id;
+  emitUpdate(next);
 }
 /** Back to a text: the file stays named until the text is written (an empty area changes nothing). */
 function writeHere() {
@@ -193,7 +224,9 @@ function writeHere() {
 }
 function created(id: string, body: string) {
   emit("createPrompt", id, body);
-  set("prompt", `${PROMPT_FILE}${id}`);
+  const next: NodeSpec = { ...spec.value, prompt_id: id };
+  delete next.prompt;
+  emitUpdate(next);
 }
 const promptText = computed(() => (prompt.value.startsWith(PROMPT_FILE) ? "" : prompt.value));
 const promptFields = computed(() => [...new Set([...inputs.value, "feedback"])]);
@@ -229,13 +262,15 @@ function renameOut(old: string, to: string) {
   emit("renameOutput", old, to, props.node.id);
 }
 
+const runMatchesCheck = (run: string, checkName: string) =>
+  run === checkName || run.replaceAll(" ", ".") === checkName || checkName.replaceAll(".", " ") === run;
 // check and gate: the catalog's check, its args, and the inputs it declares that the box lacks
-const check = computed(() => props.catalog.checks.find((c) => c.name === text(spec.value.run)) ?? null);
+const check = computed(() => props.catalog.checks.find((c) => runMatchesCheck(text(spec.value.run), c.name)) ?? null);
 /** A check picked: the one set already changes nothing. Another keeps the outputs it still offers as the box
  * declares them (fields and all), adds the ones it offers that the box lacks, and drops the rest; every arg stays
  * (one the check does not declare is marked so by its field). */
 function pick(c: CheckDef) {
-  if (c.name === text(spec.value.run)) return;
+  if (runMatchesCheck(text(spec.value.run), c.name)) return;
   const next: NodeSpec = { ...spec.value, run: c.name };
   const had = isRecord(spec.value.outputs) ? spec.value.outputs : {};
   next.outputs = Object.fromEntries(
@@ -266,7 +301,7 @@ function setArg(name: string, e: Event) {
 
 // bundle: the workflow it runs, the list input it runs once per item of, and the bundle's own ports
 const listInputs = computed(() => inputs.value.filter((i) => (written.value.get(i) ?? []).some((w) => w.format === "list")));
-const ports = computed(() => props.graph.bundles[text(spec.value.workflow)] ?? null);
+const ports = computed(() => (props.graph.bundles ?? {})[text(spec.value.workflow)] ?? null);
 
 // the rest
 function setSteps(e: Event) {
@@ -320,7 +355,7 @@ const label = "text-muted-foreground";
         <div class="flex items-center gap-2 pr-8">
           <DialogTitle class="sr-only">Edit the box {{ node.id }}</DialogTitle>
           <input :value="node.id" data-input="id" aria-label="Box name" :class="[control, 'max-w-xs font-mono font-semibold']" @change="rename" />
-          <span data-node-type class="flex-none rounded-full bg-chip px-2 py-px text-xs font-semibold text-chip-foreground">{{ node.type }}</span>
+          <span data-node-kind class="flex-none rounded-full bg-chip px-2 py-px text-xs font-semibold text-chip-foreground">{{ node.kind }}</span>
           <DialogDescription class="truncate text-xs text-muted-foreground max-sm:sr-only">Changes apply as you make them.</DialogDescription>
         </div>
         <p v-if="nameRefusal" data-rename-refused="box" role="alert" class="-mt-1 text-xs text-danger-foreground">{{ nameRefusal }}</p>
@@ -328,7 +363,7 @@ const label = "text-muted-foreground";
         <div class="grid min-h-0 flex-1 gap-4 overflow-y-auto sm:grid-cols-[minmax(0,1fr)_320px] sm:overflow-hidden">
           <!-- the main column: the prompt (model boxes), the catalog (checks and gates), the bundle -->
           <section class="flex min-h-0 flex-col gap-3">
-            <template v-if="isModel">
+            <template v-if="isPromptBox || isMeeting || isSupervisor || isKin">
               <div v-if="fileMode" data-form-field="prompt" class="flex flex-col gap-1">
                 <span :class="label">prompt (a prompt file)</span>
                 <select data-input="prompt-file" :value="prompt.startsWith('prompt:') ? prompt : ''" :class="control" @change="pickPromptFile">
@@ -353,15 +388,33 @@ const label = "text-muted-foreground";
                   <Button type="button" size="xs" variant="ghost" data-prompt-use-file @click="fileMode = true">Use a prompt file…</Button>
                 </template>
               </PromptText>
-              <PromptText v-if="proto === 'conversation' || isMeeting" field="turn" :label="isMeeting ? 'turn (optional)' : 'turn'" :value="text(spec.turn)" :names="inputs" @commit="(t) => setTextValue('turn', t)" />
-              <PromptText v-if="type === 'team'" field="worker" label="worker (each worker's brief)" :value="text(spec.worker)" :names="[...inputs, 'assignment']" @commit="(t) => setTextValue('worker', t)" />
+              <PromptText
+                v-if="hasTurn || (isPromptBox && sessionChoices.length)"
+                field="turn"
+                label="turn (optional)"
+                :value="text(spec.turn)"
+                :names="inputs"
+                @commit="(t) => setTextValue('turn', t)"
+              />
+              <PromptText v-if="isSupervisor || isKin" field="worker" label="worker (each worker's brief)" :value="text(spec.worker)" :names="[...inputs, 'assignment']" @commit="(t) => setTextValue('worker', t)" />
             </template>
 
-            <template v-else-if="isCode">
+            <template v-else-if="isRunBox">
               <div data-form-field="run" class="flex min-h-0 flex-1 flex-col gap-1">
-                <span :class="label">run (a check from the catalog)</span>
-                <p v-if="text(spec.run) && !check" data-run-unknown class="text-xs text-danger-foreground">{{ text(spec.run) }} is not in the catalog.</p>
-                <CatalogPicker :checks="catalog.checks" :value="text(spec.run)" @pick="pick" />
+                <span :class="label">{{ catalog.checks.length ? "run (a check from the catalog)" : "run (shell command)" }}</span>
+                <template v-if="catalog.checks.length">
+                  <p v-if="text(spec.run) && !check" data-run-unknown class="text-xs text-danger-foreground">{{ text(spec.run) }} is not in the catalog.</p>
+                  <CatalogPicker :checks="catalog.checks" :value="text(spec.run)" @pick="pick" />
+                </template>
+                <input
+                  v-else
+                  data-input="run"
+                  type="text"
+                  :value="text(spec.run)"
+                  :class="control"
+                  placeholder="true"
+                  @change="set('run', valueOf($event) || undefined)"
+                />
               </div>
             </template>
 
@@ -404,20 +457,20 @@ const label = "text-muted-foreground";
 
           <!-- the side column: everything else the type reads -->
           <section class="flex min-h-0 flex-col gap-3 sm:overflow-y-auto sm:pr-1">
-            <label v-if="type === 'model'" data-form-field="protocol" class="flex flex-col gap-1">
+            <label v-if="false" data-form-field="protocol" class="flex flex-col gap-1">
               <span :class="label">protocol</span>
-              <select data-input="protocol" :value="text(spec.protocol) || 'ask'" :class="control" @change="set('protocol', valueOf($event))">
-                <option v-for="p in PROTOCOLS" :key="p" :value="p">{{ p }}</option>
+              <select data-input="protocol" :value="text(spec.protocol) || 'WORK'" :class="control" @change="set('protocol', valueOf($event))">
+                <option v-for="p in NODE_KINDS" :key="p" :value="p">{{ p }}</option>
               </select>
             </label>
-            <label v-if="proto === 'ask' || proto === 'conversation' || proto === 'write'" data-form-field="role" class="flex flex-col gap-1">
+            <label v-if="type === 'WORK' || type === 'SUPERVISOR_WORKERS' || type === 'K_INDEPENDENT_TEAMS'" data-form-field="role" class="flex flex-col gap-1">
               <span :class="label">role</span>
               <select data-input="role" :value="role" :class="control" @change="set('role', valueOf($event))">
                 <option value="">pick a role</option>
                 <option v-for="r in options(catalog.roles, role)" :key="r" :value="r">{{ r }}</option>
               </select>
             </label>
-            <div v-if="type === 'team'" data-form-field="role" class="grid grid-cols-2 gap-2">
+            <div v-if="type === 'SUPERVISOR_WORKERS'" data-form-field="role" class="grid grid-cols-2 gap-2">
               <label v-for="s in ['supervisor', 'worker'] as const" :key="s" class="flex flex-col gap-1">
                 <span :class="label">{{ s }} role</span>
                 <select :data-input="`role.${s}`" :value="text(teamRole[s])" :class="control" @change="setTeamRole(s, valueOf($event))">
@@ -445,7 +498,7 @@ const label = "text-muted-foreground";
               <Button v-if="unseated.length" type="button" size="xs" variant="outline" data-meeting-seat class="self-start" @click="seat">Add the protocol's {{ unseated.join(", ") }}</Button>
             </fieldset>
 
-            <label v-if="proto === 'conversation' || proto === 'write'" data-form-field="session" class="flex flex-col gap-1">
+            <label v-if="showSession" data-form-field="session" class="flex flex-col gap-1">
               <span :class="label">session (continue a conversation)</span>
               <select data-input="session" :value="text(spec.session)" :disabled="!sessionChoices.length && !text(spec.session)" :class="control" @change="set('session', valueOf($event) || undefined)">
                 <option value="">a new one</option>
@@ -453,7 +506,7 @@ const label = "text-muted-foreground";
               </select>
               <span v-if="sessionReason" data-session-reason class="text-xs text-muted-foreground">{{ sessionReason }}</span>
             </label>
-            <label v-if="proto === 'write'" data-form-field="advisor" class="flex flex-col gap-1">
+            <label v-if="isMeeting" data-form-field="advisor" class="flex flex-col gap-1">
               <span :class="label">advisor</span>
               <input data-input="advisor" :value="text(spec.advisor)" :class="[control, 'font-mono']" @change="setText('advisor', $event)" />
             </label>
@@ -481,7 +534,7 @@ const label = "text-muted-foreground";
               </div>
             </div>
 
-            <div v-if="isCode && argNames.length" data-form-field="args" class="flex flex-col gap-1.5">
+            <div v-if="isRunBox && argNames.length" data-form-field="args" class="flex flex-col gap-1.5">
               <span :class="label">args</span>
               <label v-for="a in argNames" :key="a" class="flex flex-col gap-0.5">
                 <span class="font-mono text-xs">
@@ -498,26 +551,26 @@ const label = "text-muted-foreground";
               <OutputsEditor ref="outputsEditor" :key="node.id" :outputs="outputs" :kinds="catalog.kinds" :formats="catalog.formats" @update="setOutputs" @rename="renameOut" />
             </div>
 
-            <label v-if="isModel" data-form-field="steps" class="flex flex-col gap-1">
+            <label v-if="isPromptBox || isMeeting || isSupervisor || isKin" data-form-field="steps" class="flex flex-col gap-1">
               <span :class="label">steps (a count or a config path)</span>
               <input data-input="steps" :value="text(spec.steps)" :class="[control, 'font-mono']" @change="setSteps" />
             </label>
-            <label v-if="isModel" data-form-field="tools" class="flex flex-col gap-1">
+            <label v-if="isPromptBox" data-form-field="tools" class="flex flex-col gap-1">
               <span :class="label">tools (comma separated)</span>
               <input data-input="tools" :value="(Array.isArray(spec.tools) ? spec.tools : []).join(', ')" :class="[control, 'font-mono']" @change="setTools" />
             </label>
-            <label v-if="type === 'team'" data-form-field="workers" class="flex flex-col gap-1">
+            <label v-if="type === 'SUPERVISOR_WORKERS'" data-form-field="workers" class="flex flex-col gap-1">
               <span :class="label">workers (at most this many at once)</span>
               <input data-input="workers" type="number" min="1" :value="text(spec.workers)" :class="control" @change="setWorkers" />
             </label>
-            <label v-if="type !== 'bundle'" data-form-field="on_fail" class="flex flex-col gap-1">
+            <label v-if="type !== 'WORK'" data-form-field="on_fail" class="flex flex-col gap-1">
               <span :class="label">on_fail</span>
               <select data-input="on_fail" :value="text(spec.on_fail) || 'block'" :class="control" @change="set('on_fail', valueOf($event) === 'block' ? undefined : valueOf($event))">
                 <option value="block">block (the card stops)</option>
                 <option value="continue">continue</option>
               </select>
             </label>
-            <fieldset v-if="type !== 'bundle'" data-form-field="events" class="grid grid-cols-2 gap-2">
+            <fieldset v-if="type !== 'WORK'" data-form-field="events" class="grid grid-cols-2 gap-2">
               <legend :class="[label, 'mb-1']">events (the kinds its outcomes emit)</legend>
               <label v-for="o in ['done', 'failed'] as const" :key="o" class="flex flex-col gap-0.5">
                 <span class="text-xs">{{ o }}</span>

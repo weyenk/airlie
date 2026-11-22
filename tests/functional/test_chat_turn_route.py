@@ -788,7 +788,9 @@ class Board:
         self.gate: asyncio.Event | None = None
         self.entered = asyncio.Event()
 
-    async def __call__(self, cfg: Any, *, card: Any, text: Any, repo: Any, running: Any) -> Any:
+    async def __call__(
+        self, cfg: Any, *, card: Any, text: Any, repo: Any, running: Any, workflow: Any = None
+    ) -> Any:
         from airlie.story.model import StorySetupError
 
         self.entered.set()
@@ -797,7 +799,7 @@ class Board:
         if self.refuse is not None:
             reason, self.refuse = self.refuse, None
             raise StorySetupError(reason)
-        self.started.append({"card": card, "text": text, "repo": repo})
+        self.started.append({"card": card, "text": text, "repo": repo, "workflow": workflow})
 
         async def work() -> dict[str, Any]:
             return {}
@@ -865,12 +867,54 @@ def test_start_story_starts_the_board_story_and_keeps_its_job_on_the_message(tmp
         r = c.post(start_url(story["id"]), json={"text": f"{STORY}\nEdited.", "repo": "weyenk/airlie"})
 
         assert r.status_code == 201
-        assert board.started == [{"card": None, "text": f"{STORY}\nEdited.", "repo": "weyenk/airlie"}]
+        assert board.started == [
+            {"card": None, "text": f"{STORY}\nEdited.", "repo": "weyenk/airlie", "workflow": None}
+        ]
         data = {"story": story["id"], "job_id": "story-AIR-1", "kind": "story", "label": "airlie · story"}
         part = {"type": "data-job", "id": f"{story['id']}-job", "data": data}
         assert r.json() == part
         reply = c.get("/v1/airlie/chat/threads/t1").json()["messages"][-1]
         assert reply["id"] == message_id and reply["parts"][-1] == part  # a reload shows it started
+
+
+@pytest.mark.parametrize(
+    ("sent", "made"), [("bug-fix", "bug-fix"), ("  bug-fix ", "bug-fix"), ("", None), (None, None)]
+)
+def test_start_story_hands_the_chosen_workflow_to_the_story_job(
+    tmp_path: Path, sent: str | None, made: str | None
+) -> None:
+    board = Board(tmp_path)
+    with story_client(tmp_path, board) as c:
+        post(c, turn_body(skill="story"))
+        _, story = story_part(c)
+        body = {"text": STORY, "repo": "o/r", **({} if sent is None else {"workflow": sent})}
+
+        r = c.post(start_url(story["id"]), json=body)
+
+        assert r.status_code == 201
+        assert [b["workflow"] for b in board.started] == [made]
+
+
+def test_a_start_with_a_workflow_name_that_has_spaces_is_422(tmp_path: Path) -> None:
+    board = Board(tmp_path)
+    with story_client(tmp_path, board) as c:
+        post(c, turn_body(skill="story"))
+        _, story = story_part(c)
+
+        r = c.post(start_url(story["id"]), json={"text": STORY, "repo": "o/r", "workflow": "two words"})
+
+        assert r.status_code == 422 and board.started == []
+
+
+def test_the_stories_route_hands_a_requests_workflow_on_and_refuses_one_for_a_card(tmp_path: Path) -> None:
+    board = Board(tmp_path)
+    with story_client(tmp_path, board, api_key="k") as c:
+        auth = {"Authorization": "Bearer k"}
+        ok = c.post("/v1/airlie/stories", json={"text": STORY, "workflow": "bug-fix"}, headers=auth)
+        no = c.post("/v1/airlie/stories", json={"card": "AIR-1", "workflow": "bug-fix"}, headers=auth)
+
+        assert ok.status_code == 202 and board.started[0]["workflow"] == "bug-fix"
+        assert no.status_code == 422 and len(board.started) == 1
 
 
 def test_a_story_is_started_once(tmp_path: Path) -> None:

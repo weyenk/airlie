@@ -19,7 +19,14 @@ from pathlib import Path
 from typing import Any
 
 from airlie.story.diagnosis import step_files
-from airlie.story.pipeline import _redact_urls
+
+_URL_USERINFO = re.compile(r"(?<=://)[^\s]*@")
+
+
+def _redact_urls(text: str) -> str:
+    """`text` with the user and password of any URL masked."""
+    return _URL_USERINFO.sub("***@", text)
+
 
 _TOKEN = re.compile(
     r"(?:gh[pousr]_|github_pat_|sk-|xox[bap]-)[A-Za-z0-9_\-]{16,}|Bearer\s+[A-Za-z0-9._\-]{20,}"

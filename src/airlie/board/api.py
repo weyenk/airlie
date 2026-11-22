@@ -4,7 +4,8 @@ export. v1 has one person: every comment and item is noah's; a later per-person 
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+import logging
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -13,6 +14,8 @@ from pydantic import BaseModel, ConfigDict
 from airlie.board.model import Level, Status
 from airlie.board.store import BoardStore, BoardStoreError
 from airlie.story.workflows import workflow_label
+
+log = logging.getLogger("airlie.board.api")
 
 PERSON = "noah"
 STARTED = "the workflow of a started card cannot be changed; make a new card for the other workflow"
@@ -58,6 +61,7 @@ def board_router(
     *,
     workflow_check: Callable[[str], str | None] | None = None,
     started: Callable[[str], bool] | None = None,
+    notify: Callable[[str, str], Awaitable[None]] | None = None,
 ) -> APIRouter:
     """`publish`, when given, is told `("board", key)` right after each write that succeeded (a refused one
     publishes nothing): task serve passes its feed's, so an open page refetches that one item at once.
@@ -67,7 +71,11 @@ def board_router(
     nothing saves what the composer refuses). A card with no such label runs the story's: never refused.
     `started`, when given, says whether the card `key` has a saved state (it has started, and runs the
     workflow it snapshotted, D21): its `workflow:` label is then never added, removed or changed (a 422),
-    and `GET /items/{key}` says `started`."""
+    and `GET /items/{key}` says `started`.
+    `notify`, when given, is awaited as `notify(key, status)` after a write that moved a card into a new
+    status succeeded (a change or a move; never for a refused one): task serve passes the run dispatcher's
+    `notify_status`, which starts the workflow of a card that has just been approved. The write's own answer
+    is what the move did; the dispatcher's follow-up moves reach a page through the feed."""
     router = APIRouter(prefix="/v1/board", tags=["board"])
 
     def check_workflow(labels: Sequence[str]) -> None:
@@ -78,6 +86,14 @@ def board_router(
     def changed(key: str) -> None:
         if publish is not None:
             publish("board", key)
+
+    async def moved_to(key: str, before: str, after: str) -> None:
+        """Tell the dispatcher; its failure is logged, never the write's: the card has already moved."""
+        if notify is not None and after != before:
+            try:
+                await notify(key, after)
+            except Exception:
+                log.exception("the run dispatcher failed on %s moving to %s", key, after)
 
     def mover(request: Request) -> str:
         """Who a status change is recorded as made by: the request's principal, else the one person (v1)."""
@@ -144,6 +160,7 @@ def board_router(
         except BoardStoreError as e:
             raise HTTPException(422, str(e)) from None
         changed(key)
+        await moved_to(key, found["status"], updated.status)
         return updated.to_dict()
 
     @router.post("/items/{key}/move")
@@ -156,6 +173,7 @@ def board_router(
         except BoardStoreError as e:
             raise HTTPException(422, str(e)) from None
         changed(key)
+        await moved_to(key, found["status"], moved.status)
         return moved.to_dict()
 
     @router.post("/items/{key}/comments")

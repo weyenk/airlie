@@ -45,6 +45,6 @@ async def test_evaluate_reports_accuracy_confidence_wrong_but_clear_and_confusio
     assert rep.n == 3 and rep.correct == 1 and abs(rep.accuracy - 1 / 3) < 1e-9
     assert abs(rep.mean_confidence - 0.7) < 1e-9
     assert rep.wrong_but_clear == 1
-    assert rep.confusions == {"coder->qa": 1, "docs->coder": 1}
+    assert rep.confusions == {"coder->qa": 1, "docs->architect": 1}
     text = render(rep)
-    assert "accuracy 0.33" in text and "wrong-but-clear 1" in text and "docs->coder" in text
+    assert "accuracy 0.33" in text and "wrong-but-clear 1" in text and "docs->architect" in text

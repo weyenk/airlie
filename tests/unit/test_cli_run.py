@@ -1,4 +1,4 @@
-"""`airlie run` and `airlie eval run` wire the orchestrator; the engine and team are stubbed."""
+"""`airlie run` calls `start_workflow`; eval still uses the topology orchestrator."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from airlie import cli
 from airlie.obs import RunDir
 from airlie.orchestrator import RunReport
 from airlie.teams import TeamResult
+from airlie.workflow.runner import WorkflowResult
 
 runner = CliRunner()
 
@@ -27,11 +28,56 @@ def write_cfg(tmp_path: Path) -> Path:
             for r in ("architect", "summarizer", "judge", "aggregator")
         },
         "teams": {"k": 1, "orchestrator": "native"},
+        "story": {"build_role": "architect"},
+        "workflows": {
+            "story": {
+                "title": "t",
+                "inputs": [],
+                "nodes": {"a": {"kind": "WORK", "prompt": "x", "outputs": {"r": {"format": "text"}}}},
+                "edges": {"a": []},
+                "outputs": ["r"],
+            }
+        },
         "observability": {"state_dir": str(tmp_path / "state")},
     }
     p = tmp_path / "airlie.yaml"
     p.write_text(yaml.safe_dump(data))
     return p
+
+
+def test_run_defaults_to_story_workflow(tmp_path: Path, monkeypatch) -> None:
+    calls: list[tuple[str, Path]] = []
+
+    async def fake_start_workflow(name: str, *, cfg, engine, workdir, card=None, **kw):
+        calls.append((name, workdir))
+        return WorkflowResult(outputs={"r": "ok"}, events=[])
+
+    monkeypatch.setattr("airlie.workflow.trigger.start_workflow", fake_start_workflow)
+
+    class StopEngine:
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(cli, "_http_engine", lambda cfg, eng: StopEngine())
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    r = runner.invoke(cli.app, ["run", "--repo", str(repo), "--config", str(write_cfg(tmp_path))])
+    assert r.exit_code == 0, r.output
+    assert calls == [("story", repo.resolve())]
+    assert "workflow story finished" in r.output
+
+
+def test_run_unknown_workflow_exits_1(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    r = runner.invoke(
+        cli.app,
+        ["run", "nope", "--repo", str(repo), "--config", str(write_cfg(tmp_path))],
+    )
+    assert r.exit_code == 1 and "unknown workflow" in r.output
 
 
 class StubOrchestrator:
@@ -51,32 +97,6 @@ class StubOrchestrator:
         )
 
 
-def test_run_command_passes_goal_repo_and_k(tmp_path: Path, monkeypatch) -> None:
-    StubOrchestrator.calls = []
-    monkeypatch.setattr(cli, "_orchestrator", lambda cfg, run_id=None: StubOrchestrator(cfg, None, run_id))
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()  # the command only checks for a git checkout; the stub never touches it
-    r = runner.invoke(
-        cli.app,
-        [
-            "run",
-            "fix the bug",
-            "--repo",
-            str(repo),
-            "--k",
-            "2",
-            "--test-cmd",
-            "pytest -q",
-            "--config",
-            str(write_cfg(tmp_path)),
-        ],
-    )
-    assert r.exit_code == 0, r.output
-    assert StubOrchestrator.calls == [("fix the bug", str(repo.resolve()), "pytest -q")]
-    assert "team-1" in r.output and "did it" in r.output
-
-
 def test_eval_run_materializes_task_and_grades(tmp_path: Path, monkeypatch) -> None:
     StubOrchestrator.calls = []
     monkeypatch.setattr(cli, "_orchestrator", lambda cfg, run_id=None: StubOrchestrator(cfg, None, run_id))
@@ -93,103 +113,8 @@ def test_eval_run_materializes_task_and_grades(tmp_path: Path, monkeypatch) -> N
             str(write_cfg(tmp_path)),
         ],
     )
-    assert r.exit_code == 1, r.output  # stub team wrote nothing, so hidden tests fail
+    assert r.exit_code == 1, r.output
     goal, repo, test_cmd = StubOrchestrator.calls[0]
     assert "detect_language" in goal and test_cmd == "python -m pytest -q"
     assert Path(repo).joinpath("pyproject.toml").is_file()
     assert "FAIL" in r.output
-
-
-def test_run_topology_option_sets_config(tmp_path: Path, monkeypatch) -> None:
-    seen: list[str] = []
-
-    def fake(cfg, run_id=None):  # type: ignore[no-untyped-def]
-        seen.append(cfg.topology.kind)
-        return StubOrchestrator(cfg, None, run_id)
-
-    monkeypatch.setattr(cli, "_orchestrator", fake)
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    r = runner.invoke(
-        cli.app,
-        ["run", "g", "--repo", str(repo), "--topology", "fork", "--config", str(write_cfg(tmp_path))],
-    )
-    assert r.exit_code == 0, r.output
-    assert seen == ["fork"]
-    r = runner.invoke(
-        cli.app, ["run", "g", "--repo", str(repo), "--topology", "ring", "--config", str(write_cfg(tmp_path))]
-    )
-    assert r.exit_code == 2 and "unknown topology" in r.output
-
-
-def test_run_with_topology_single_selects_the_profile(tmp_path: Path, monkeypatch) -> None:
-    seen: list = []
-
-    def fake_orch(cfg, run_id=None):  # type: ignore[no-untyped-def]
-        seen.append(cfg)
-        return StubOrchestrator(cfg, None, run_id)
-
-    monkeypatch.setattr(cli, "_orchestrator", fake_orch)
-    p = write_cfg(tmp_path)
-    data = yaml.safe_load(p.read_text())
-    data["topology"] = {"kind": "teams", "profiles": {"single": {"teams": {"max_steps": 7}}}}
-    p.write_text(yaml.safe_dump(data))
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    r = runner.invoke(cli.app, ["run", "go", "--repo", str(repo), "--topology", "single", "-c", str(p)])
-    assert r.exit_code == 0, r.output
-    assert seen[0].topology.kind == "single" and seen[0].teams.k == 1 and seen[0].teams.max_steps == 7
-
-
-def test_run_with_unknown_topology_exits_2(tmp_path: Path) -> None:
-    p = write_cfg(tmp_path)
-    r = runner.invoke(cli.app, ["run", "go", "--repo", str(tmp_path), "--topology", "ring", "-c", str(p)])
-    assert r.exit_code == 2 and "single, teams, fork, studio" in r.output
-
-
-def test_k_above_one_under_the_single_kind_selects_teams(tmp_path: Path, monkeypatch) -> None:
-    seen: list = []
-
-    def fake_orch(cfg, run_id=None):  # type: ignore[no-untyped-def]
-        seen.append(cfg)
-        return StubOrchestrator(cfg, None, run_id)
-
-    monkeypatch.setattr(cli, "_orchestrator", fake_orch)
-    p = write_cfg(tmp_path)
-    data = yaml.safe_load(p.read_text())
-    data["topology"] = {"kind": "single", "profiles": {"teams": {"teams": {"max_steps": 9}}}}
-    p.write_text(yaml.safe_dump(data))
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    r = runner.invoke(cli.app, ["run", "go", "--repo", str(repo), "--k", "3", "-c", str(p)])
-    assert r.exit_code == 0, r.output
-    assert seen[0].topology.kind == "teams" and seen[0].teams.k == 3 and seen[0].teams.max_steps == 9
-
-
-def test_studio_command_passes_images(tmp_path: Path, monkeypatch) -> None:
-    seen: list = []
-
-    class Stub(StubOrchestrator):
-        async def execute_task(self, goal, *, repo, test_cmd=None, images=()):  # type: ignore[no-untyped-def]
-            seen.append(list(images))
-            return await super().execute_task(goal, repo=repo, test_cmd=test_cmd)
-
-    monkeypatch.setattr(cli, "_orchestrator", lambda cfg, run_id=None: Stub(cfg, None, run_id))
-    png = tmp_path / "s.png"
-    png.write_bytes(b"\x89PNG")
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    p = write_cfg(tmp_path)
-    data = yaml.safe_load(p.read_text())
-    data["topology"] = {"kind": "teams", "profiles": {"studio": {"teams": {"max_steps": 5}}}}
-    for r in ("chief", "reviewer", "qa", "security"):
-        (tmp_path / f"{r}.md").write_text("x")
-        data["roles"][r] = {"prompt": f"{r}.md", "model": "base"}
-    p.write_text(yaml.safe_dump(data))
-    r = runner.invoke(cli.app, ["studio", "critique", "--repo", str(repo), "--image", str(png), "-c", str(p)])
-    assert r.exit_code == 0, r.output
-    assert seen == [[png.resolve()]]

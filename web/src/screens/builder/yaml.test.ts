@@ -1,131 +1,144 @@
 import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
-import { connect, emptyGraph, fromWorkflow, normalizeTopologyTypes } from "./graph";
-import { autoLayout } from "./layout";
+import { fromWorkflow } from "./graph";
 import { parseWorkflow, toYaml } from "./yaml";
 
-test("parseWorkflow reads the one workflow in a file: its name, type, inputs, nodes and (absent) layout", () => {
+/** One workflow's file: a flow mapping is still YAML, and JSON is a flow mapping. */
+const workflowText = (name: string, body: Record<string, unknown>): string =>
+  `workflows:\n  ${name}: ${JSON.stringify(body)}\n`;
+
+const twoNodes = { a: { kind: "WORK" }, b: { kind: "WORK" } };
+
+test("parseWorkflow reads one workflow's file: its name, title, inputs, nodes and edges", () => {
   const { name, spec, layout } = parseWorkflow(STORY_YAML);
   expect(name).toBe("story");
-  expect(spec).toMatchObject({ type: "story", inputs: ["card", "repo"], outputs: [] });
-  expect(Object.keys(spec.nodes)).toHaveLength(22);
-  expect(spec.nodes.to_build.to).toEqual([{ node: "gate", when: "to_build" }, { node: "request", when: "config.story.survey" }, "story_card"]);
-  expect(spec).not.toHaveProperty("layout");
+  expect(spec.title).toBe("story");
+  expect(spec.inputs).toEqual(["card", "repo"]);
+  expect(spec.nodes.intake).toMatchObject({ kind: "WORK", run: "story intake" });
+  expect(spec.nodes.base).toMatchObject({ kind: "WORK", outputs: { base: "json" } });
+  expect((spec.edges?.base[0] as Record<string, unknown>).target).toBe("to_build");
+  expect((spec.edges?.layers[1] as Record<string, unknown>).when).toBe("config.story.amigos.enabled");
   expect(layout).toEqual({});
-  expect(parseWorkflow(LAYER_YAML).spec).toMatchObject({ inputs: ["card", "repo", "story", "layers", "base", "gate", "agreement"], outputs: ["drafted", "built.{item}", "satisfied.{item}"] });
 });
 
-test("parseWorkflow reads a layout", () => {
-  const text = "workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a}\n    layout:\n      a: {x: 10, y: 20}\n";
-  expect(parseWorkflow(text).layout).toEqual({ a: { x: 10, y: 20 } });
+test("parseWorkflow reads a layout: the saved point, and no entry where one is missing", () => {
+  const { spec, layout } = parseWorkflow(
+    workflowText("l", { nodes: twoNodes, layout: { a: { x: 10, y: 20 }, b: { x: "wide", y: 3 } } }),
+  );
+  expect(spec.nodes.b).toBeDefined();
+  expect(layout).toEqual({ a: { x: 10, y: 20 } });
 });
 
-test("parseWorkflow refuses text that is not exactly one workflow", () => {
-  const two = "workflows:\n  a: {nodes: {x: {type: check, run: r}}}\n  b: {nodes: {x: {type: check, run: r}}}\n";
-  expect(() => parseWorkflow(two)).toThrow(/one workflow/);
-  expect(() => parseWorkflow("workflows: {}\n")).toThrow(/one workflow/);
-  expect(() => parseWorkflow("nodes: []\n")).toThrow(/workflows/);
-  expect(() => parseWorkflow("workflows:\n  w: {nodes: {a: {run: r}}}\n")).toThrow(/node a/);
-  expect(() => parseWorkflow("workflows: [\n")).toThrow();
+test("parseWorkflow refuses a file that does not hold exactly one workflow", () => {
+  expect(() => parseWorkflow("workflows:\n  a: {nodes: {}}\n  b: {nodes: {}}\n")).toThrow(
+    /must hold one workflow, not 2/,
+  );
+  expect(() => parseWorkflow("workflows: {}\n")).toThrow(/must hold one workflow, not 0/);
 });
 
-test("parseWorkflow refuses a node of an unknown type, naming it", () => {
-  expect(() => parseWorkflow("workflows:\n  w: {nodes: {a: {type: shout, run: r}}}\n")).toThrow(/node a has unknown type 'shout'/);
+test("parseWorkflow refuses a field the server does not know, naming it", () => {
+  expect(() => parseWorkflow(workflowText("w", { start: "a", nodes: {} }))).toThrow(
+    /unknown field 'start'/,
+  );
+  expect(() => parseWorkflow(workflowText("w", { parallel: true, nodes: {} }))).toThrow(
+    /unknown field 'parallel'/,
+  );
 });
 
-test("parseWorkflow refuses the old schema as the server does: start, loose, next, branch, loop, parallel, each", () => {
-  expect(() => parseWorkflow("workflows:\n  w: {start: a, nodes: {a: {type: check, run: r}}}\n")).toThrow(/field 'start' is the old schema/);
-  expect(() => parseWorkflow("workflows:\n  w: {loose: [card], nodes: {a: {type: check, run: r}}}\n")).toThrow(/field 'loose' is the old schema/);
-  expect(() => parseWorkflow("workflows:\n  w: {nodes: {a: {type: check, run: r, next: b}}}\n")).toThrow(/node a: field 'next' is the old schema/);
-  expect(() => parseWorkflow("workflows:\n  w: {nodes: {a: {type: check, run: r, on_fail: {to: a, max: 2}}}}\n")).toThrow(/node a: field 'on_fail' is the old schema/);
-  expect(() => parseWorkflow("workflows:\n  w: {nodes: {a: {type: parallel, nodes: []}}}\n")).toThrow(/node a: type 'parallel' is the old schema/);
-  expect(() => parseWorkflow("workflows:\n  w: {nodes: {a: {type: each, over: x, workflow: l}}}\n")).toThrow(/node a: type 'each' is the old schema/);
+test("parseWorkflow refuses a node with no kind or one it does not know, naming it", () => {
+  expect(() => parseWorkflow(workflowText("r", { nodes: { a: {} } }))).toThrow(/node a has no kind/);
+  expect(() =>
+    parseWorkflow(workflowText("r", { nodes: { a: { kind: "shout" } } })),
+  ).toThrow(/node a has unknown kind 'shout'/);
 });
 
-test("parseWorkflow refuses a line without a node", () => {
-  expect(() => parseWorkflow("workflows:\n  w: {nodes: {a: {type: check, run: r, to: [{when: x}]}}}\n")).toThrow(/node a: a to line needs a node/);
-  expect(() => parseWorkflow("workflows:\n  w: {nodes: {a: {type: check, run: r, to: b}}}\n")).toThrow(/node a: to must be a list/);
+test("parseWorkflow refuses an edge with no target, a loop with no max and edges that are not a list", () => {
+  expect(() =>
+    parseWorkflow(workflowText("e", { nodes: twoNodes, edges: { a: [{ when: "x" }] } })),
+  ).toThrow(/edge from a needs a target/);
+  expect(() =>
+    parseWorkflow(workflowText("e", { nodes: twoNodes, edges: { a: [{ target: "b", loop: {} }] } })),
+  ).toThrow(/edge from a: loop needs max/);
+  expect(() => parseWorkflow(workflowText("e", { nodes: twoNodes, edges: { a: "b" } }))).toThrow(
+    /edges\.a must be a list/,
+  );
 });
 
-test("parseWorkflow refuses a loop line without its max, naming the node and the line", () => {
-  const bad = (loop: string) => `workflows:\n  w: {nodes: {a: {type: check, run: r}, b: {type: check, run: r, to: [{node: a, loop: ${loop}}]}}}\n`;
-  expect(() => parseWorkflow(bad("{carry: x}"))).toThrow(/workflow w: node b: the line to a: loop needs max/);
-  expect(() => parseWorkflow(bad("{max: ''}"))).toThrow(/loop needs max/);
-  expect(() => parseWorkflow(bad("3"))).toThrow(/loop needs max/);
-  expect(parseWorkflow(bad("{max: 2}")).spec.nodes.b.to).toEqual([{ node: "a", loop: { max: 2 } }]);
+test("parseWorkflow keeps what it does not model: node fields and edge line keys", () => {
+  const { spec } = parseWorkflow(
+    workflowText("k", {
+      nodes: { a: { kind: "WORK", run: "r", inputs: ["x"], outputs: ["y"], max: 3 } },
+      edges: {},
+    }),
+  );
+  expect(spec.nodes.a).toEqual({ kind: "WORK", run: "r", inputs: ["x"], outputs: ["y"], max: 3 });
 });
 
-test("a loop without its max is never written as an empty max", () => {
-  const { name, spec, layout } = parseWorkflow("workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a}\n");
-  const g = fromWorkflow(name, spec, layout);
-  const text = toYaml({ ...g, edges: [{ from: "a", to: "a", artifacts: [], loop: { max: "" } }] });
-  expect(text).toContain("        to: [a]\n");
-  expect(text).not.toContain("max");
-});
+/** A line with nothing but a target is the same wire however it is spelled. */
+const normEdges = (edges: Record<string, unknown[]> | undefined): Record<string, unknown[]> =>
+  Object.fromEntries(
+    Object.entries(edges ?? {}).map(([from, lines]) => [
+      from,
+      (lines as Record<string, unknown>[]).map((line) =>
+        typeof line === "object" && line !== null && Object.keys(line).length === 1
+          ? line.target
+          : line,
+      ),
+    ]),
+  );
 
 test.each([
   ["story", STORY_YAML],
   ["layer", LAYER_YAML],
-])("the shipped %s workflow round trips: the same nodes, in the same order, with the same fields and lines", (_name, text) => {
+])("the shipped %s workflow round trips: parse, redraw and save gives back the same nodes, lines and points", (_name, text) => {
   const before = parseWorkflow(text);
-  const graph = autoLayout(fromWorkflow(before.name, before.spec, before.layout));
-  const after = parseWorkflow(toYaml(graph));
+  const graph = fromWorkflow(before.name, before.spec, before.layout);
+  const saved = toYaml(graph);
+  const after = parseWorkflow(saved);
   expect(after.name).toBe(before.name);
-  expect(Object.keys(after.spec.nodes)).toEqual(Object.keys(before.spec.nodes));
-  expect(after.spec.nodes).toEqual(normalizeTopologyTypes(before.spec).nodes);
-  expect(after.spec.type ?? null).toBe(before.spec.type ?? null);
-  expect(after.spec.inputs).toEqual(before.spec.inputs);
-  expect(after.spec.outputs).toEqual(before.spec.outputs);
-  expect(Object.keys(after.layout)).toEqual(Object.keys(before.spec.nodes));
+  expect(after.spec.nodes).toEqual(before.spec.nodes);
+  expect(normEdges(after.spec.edges)).toEqual(normEdges(before.spec.edges));
+  // saving again is stable: the canvas's output is a fixed point
+  expect(toYaml(fromWorkflow(after.name, after.spec, after.layout))).toBe(saved);
 });
 
-test("the text looks like the shipped files: type and inputs first, flow lists and maps, a line per row, the layout last", () => {
-  const { name, spec, layout } = parseWorkflow(STORY_YAML);
-  const text = toYaml(autoLayout(fromWorkflow(name, spec, layout)));
-  const lines = text.split("\n");
-  expect(lines.slice(0, 5)).toEqual(["workflows:", "  story:", "    type: story", "    inputs: [card, repo]", "    nodes:"]);
-  expect(text).toContain("        outputs: {base: json}\n");
-  expect(text).toContain("        outputs: {to_build: {format: bool, transient: true}}\n");
-  expect(text).toContain("        to: [base]\n");
-  expect(text).toContain("        to:\n          - {node: gate, when: to_build}\n          - {node: request, when: config.story.survey}\n          - story_card\n");
-  expect(text).toContain("        args: {stages: [survey, refine]}\n");
-  expect(text).toContain("        events: {done: survey_done, failed: survey_failed}\n");
-  expect(text).toContain("        role: [product, architect]\n");
-  expect(text).toContain("      intake: {x: 0, y: 0}\n");
-  expect(text.indexOf("    layout:")).toBeGreaterThan(text.indexOf("      review:"));
-  expect(text).not.toContain("start");
-});
-
-test("the layer's text: outputs declared on the workflow, item-scoped names quoted, a loop line with its bound", () => {
-  const { name, spec, layout } = parseWorkflow(LAYER_YAML);
+test("toYaml keeps the node order and writes title, nodes, edges and layout in order", () => {
+  const { name, spec, layout } = parseWorkflow(
+    workflowText("w", {
+      title: "order test",
+      nodes: { b: { kind: "ROUND_ROBIN", run: "go" }, a: { kind: "WORK" } },
+      edges: { b: [{ target: "a", when: "done" }] },
+      layout: { a: { x: 1, y: 2 } },
+    }),
+  );
+  expect(Object.keys(spec.nodes)).toEqual(["b", "a"]);
   const text = toYaml(fromWorkflow(name, spec, layout));
-  expect(text).toContain('    outputs: [drafted, "built.{item}", "satisfied.{item}"]\n');
-  expect(text).toContain("          - {node: package, loop: {max: story.layer_attempts, carry: feedback}}\n");
+  expect(text.indexOf("title:")).toBeLessThan(text.indexOf("nodes:"));
+  expect(text.indexOf("nodes:")).toBeLessThan(text.indexOf("edges:"));
+  expect(text.indexOf("edges:")).toBeLessThan(text.indexOf("layout:"));
 });
 
-test("node keys keep the file's order wherever the boxes sit", () => {
-  const { name, spec } = parseWorkflow("workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a}\n      b: {type: check, run: x.b}\n      c: {type: check, run: x.c}\n");
-  const graph = fromWorkflow(name, spec, { a: { x: 320, y: 0 }, b: { x: 0, y: 90 }, c: { x: 0, y: 0 } });
-  const back = parseWorkflow(toYaml(graph));
-  expect(Object.keys(back.spec.nodes)).toEqual(["a", "b", "c"]);
-  expect(back.layout).toEqual({ a: { x: 320, y: 0 }, b: { x: 0, y: 90 }, c: { x: 0, y: 0 } });
+test("toYaml writes no empty inputs/outputs; title and edges always (engine requires them)", () => {
+  const text = toYaml(
+    fromWorkflow("e", { inputs: [], outputs: [], nodes: twoNodes, edges: {} }, {}),
+  );
+  expect(text).toContain("title: e");
+  expect(text).toContain("nodes:\n      a:\n        kind: WORK");
+  expect(text).toContain("edges: {}");
+  expect(text).not.toContain("inputs: []");
+  expect(text).not.toContain("outputs: {}");
 });
 
-test("a workflow without a type, inputs or outputs writes none of them", () => {
-  const { name, spec } = parseWorkflow("workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a}\n");
-  const text = toYaml(fromWorkflow(name, spec, { a: { x: 0, y: 0 } }));
-  expect(text).toBe("workflows:\n  w:\n    nodes:\n      a:\n        type: check\n        run: x.a\n    layout:\n      a: {x: 0, y: 0}\n");
+test("a line with a condition but no bound writes no empty loop", () => {
+  const { name, spec, layout } = parseWorkflow(
+    workflowText("w", { nodes: twoNodes, edges: { a: [{ target: "a", when: "done" }] } }),
+  );
+  const text = toYaml(fromWorkflow(name, spec, layout));
+  expect(text).toContain("when: done");
+  expect(text).not.toContain("loop");
 });
 
-test("a line drawn on the canvas reparses as a to entry", () => {
-  const text = "workflows:\n  w:\n    nodes:\n      a: {type: check, run: x.a}\n      b: {type: check, run: x.b, outputs: {notes: text}}\n";
+test("a field the builder does not model survives the round trip", () => {
+  const text = workflowText("w", { nodes: { a: { kind: "WORK", cost: 4 } }, edges: {} });
   const { name, spec, layout } = parseWorkflow(text);
-  let g = connect(fromWorkflow(name, spec, layout), "b", "a", { loop: { max: 3, carry: "notes" } });
-  g = connect(g, "a", "b", {});
-  const back = parseWorkflow(toYaml(g)).spec.nodes;
-  expect(back.b.to).toEqual([{ node: "a", loop: { max: 3, carry: "notes" } }]);
-  expect(back.a.to).toEqual(["b"]);
-});
-
-test("an empty canvas writes the new canvas's inputs and no nodes", () => {
-  expect(toYaml(emptyGraph("w"))).toBe("workflows:\n  w:\n    inputs: [card, repo]\n    nodes: {}\n    layout: {}\n");
+  expect(toYaml(fromWorkflow(name, spec, layout))).toContain("cost: 4");
 });

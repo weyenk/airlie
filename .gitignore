@@ -15,8 +15,9 @@ scripts/studio-gen/gen.env.local
 mutants/
 test-results/
 src/airlie/serve/web_next/
-web/node_modules/
-hub/node_modules/
 .task/
 .continue
+**/node_modules/*
 .worktrees/
+.qwen/QWEN.local.md
+.qwen/worktrees/

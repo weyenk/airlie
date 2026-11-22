@@ -1,17 +1,17 @@
-// Palette tiles vs every type the backend accepts (including deprecated legacy model types on load).
-import { NODE_TYPES, type NodeType } from "./graph";
+// Palette tiles vs every kind the backend accepts (the four kinds on the four-node-kind model).
+import { NODE_KINDS, type NodeKind } from "./graph";
 
-/** Types shown on the builder palette (bundles are listed separately). */
-export const PALETTE_TYPES = ["model", "team", "check", "gate"] as const satisfies readonly NodeType[];
+/** Kinds shown on the builder palette. */
+export const PALETTE_TYPES = ["WORK", "ROUND_ROBIN", "SUPERVISOR_WORKERS", "K_INDEPENDENT_TEAMS"] as const satisfies readonly NodeKind[];
 
 const LABELS: Record<(typeof PALETTE_TYPES)[number], string> = {
-  model: "Model",
-  team: "Team (supervisor)",
-  check: "check",
-  gate: "gate",
+  WORK: "Work",
+  ROUND_ROBIN: "Round-robin",
+  SUPERVISOR_WORKERS: "Supervisor",
+  K_INDEPENDENT_TEAMS: "K teams",
 };
 
 export const paletteLabel = (type: (typeof PALETTE_TYPES)[number]): string => LABELS[type];
 
-/** Legacy `type` values rewritten to `model` + `protocol` on save (airlie.flow.upgrade.upgrade_topology_types). */
-export const LEGACY_PROTOCOL_TYPES = NODE_TYPES.filter((t) => ["ask", "conversation", "write", "meeting"].includes(t));
+/** All kinds the backend accepts. */
+export const ALL_KINDS = NODE_KINDS;

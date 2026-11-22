@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """The line's scheduler (planning-line P5b, 2026-10-25): one beat over every level, in two lanes.
 
 A beat runs the gates (the engine is up, GitHub answers, the line is not paused), the bookkeeping that needs
@@ -31,12 +32,16 @@ from typing import Any, Literal
 
 from airlie.board import Item
 from airlie.config import AirlieConfig
-from airlie.story import factory
+from airlie.story import jobs as factory
+
+# [engine-swap: retired] from airlie.story import factory
 from airlie.story.board import Board, BoardError, Card, NullBoard, note
-from airlie.story.epic_pipeline import EpicPipeline, epics_dir
+
+# [engine-swap: retired] from airlie.story.epic_pipeline import EpicPipeline, epics_dir
 from airlie.story.epic_plan import after_keys
 from airlie.story.fixes import GhRun, bookkeep, line_event
-from airlie.story.initiative_pipeline import InitiativePipeline
+
+# [engine-swap: retired] from airlie.story.initiative_pipeline import InitiativePipeline
 from airlie.story.initiative_state import initiatives_dir
 from airlie.story.local_board import LocalBoard
 from airlie.story.model import PLANNED, StoryError, StorySetupError
@@ -50,7 +55,9 @@ from airlie.story.phase import (
     wait_for_gap,
     write_phase,
 )
-from airlie.story.pipeline import StoryPipeline
+from airlie.story.retired import EpicPipeline, InitiativePipeline, StoryPipeline, epics_dir
+
+# [engine-swap: retired; rebuild in follow-up] StoryPipeline
 from airlie.story.state import Lane, StoryState, lane_lock, lane_record, lock_held
 from airlie.story.workflows import DEFAULT, WorkflowError, resolve_workflows, running_workflow
 

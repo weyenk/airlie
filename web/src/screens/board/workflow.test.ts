@@ -1,5 +1,5 @@
 import type { WorkflowDef } from "@/api/workflow_defs";
-import { WORKFLOW_PREFIX, workflowGroups, workflowOf, withWorkflow } from "./workflow";
+import { chosenWorkflow, WORKFLOW_PREFIX, withoutWorkflow, workflowGroups, workflowOf, withWorkflow } from "./workflow";
 
 const def = (name: string, extra: Partial<WorkflowDef> = {}): WorkflowDef => ({ name, type: "story", source: "file", problems: [], pr: null, used_by: [], ...extra });
 
@@ -39,4 +39,13 @@ test("workflowGroups: a group per type for files, then the drafts; bundles are n
       ],
     },
   ]);
+});
+
+test("chosenWorkflow is the named workflow, or empty when the card names none", () => {
+  expect(chosenWorkflow(["repo:a/b", "workflow:bug-fix"])).toBe("bug-fix");
+  expect(chosenWorkflow(["repo:a/b"])).toBe("");
+});
+
+test("withoutWorkflow drops every workflow label and keeps the others in order", () => {
+  expect(withoutWorkflow(["repo:a/b", "workflow:a", "web", "workflow:b"])).toEqual(["repo:a/b", "web"]);
 });

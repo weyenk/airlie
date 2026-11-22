@@ -1,7 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
-import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
+import { LAYER_YAML } from "@/test-utils/workflow-yaml";
 import { fromWorkflow } from "./graph";
-import type { Graph, NodeSpec, NodeType } from "./graph";
+import type { Graph, NodeSpec, NodeKind } from "./graph";
 import WireModal from "./WireModal.vue";
 import { parseWorkflow } from "./yaml";
 
@@ -10,10 +10,14 @@ const graph: Graph = fromWorkflow("t", {
   inputs: ["card"],
   outputs: [],
   nodes: {
-    a: { type: "check", run: "x.a", inputs: ["card"], outputs: { verdict: "text", notes: "markdown" }, to: [{ node: "b", when: "verdict == pass" }] },
-    b: { type: "ask", role: "coder", prompt: "Fix {notes}.", inputs: ["notes"], outputs: { fixed: "text" }, to: [{ node: "a", loop: { max: 2, carry: "fixed" } }] },
-    c: { type: "check", run: "x.c" },
-  } as Record<string, NodeSpec & { type: NodeType }>,
+    a: { kind: "WORK", run: "x.a", inputs: ["card"], outputs: { verdict: "text", notes: "markdown" } },
+    b: { kind: "WORK", role: "coder", prompt: "Fix {notes}.", inputs: ["notes"], outputs: { fixed: "text" } },
+    c: { kind: "WORK", run: "x.c" },
+  } as Record<string, NodeSpec & { kind: NodeKind }>,
+  edges: {
+    a: [{ target: "b", when: "verdict == pass" }],
+    b: [{ target: "a", loop: { max: 2, carry: "fixed" } }],
+  },
 });
 const node = (id: string) => graph.nodes.find((n) => n.id === id)!;
 const line = (from: string, to: string) => graph.edges.find((e) => e.from === from && e.to === to) ?? null;
@@ -133,11 +137,11 @@ const shared: Graph = fromWorkflow("s", {
   inputs: ["card"],
   outputs: [],
   nodes: {
-    a: { type: "check", run: "x.a", outputs: { verdict: "text", notes: "markdown" }, to: ["b", "e"] },
-    d: { type: "check", run: "x.d", outputs: { notes: "markdown" }, to: ["b"] },
-    b: { type: "ask", role: "coder", prompt: "Fix {notes} per {verdict.why}.", inputs: ["notes", "verdict"] },
-    e: { type: "ask", role: "coder", prompt: "Go.", inputs: ["verdict"] },
-  } as Record<string, NodeSpec & { type: NodeType }>,
+    a: { kind: "WORK", run: "x.a", outputs: { verdict: "text", notes: "markdown" }, to: ["b", "e"] },
+    d: { kind: "WORK", run: "x.d", outputs: { notes: "markdown" }, to: ["b"] },
+    b: { kind: "WORK", role: "coder", prompt: "Fix {notes} per {verdict.why}.", inputs: ["notes", "verdict"] },
+    e: { kind: "WORK", role: "coder", prompt: "Go.", inputs: ["verdict"] },
+  } as Record<string, NodeSpec & { kind: NodeKind }>,
 });
 const mountShared = (from: string, to: string) =>
   mount(WireModal, {
@@ -259,7 +263,7 @@ test("a carry that is not a declared output shows as the YAML has it (layer's ou
   const w = mountShipped(layer, "outcome", "package");
   await flushPromises();
   expect($<HTMLInputElement>("[data-wire-loop]")!.checked).toBe(true);
-  expect($<HTMLInputElement>("[data-wire-max]")!.value).toBe("story.layer_attempts");
+  expect($<HTMLInputElement>("[data-wire-max]")!.value).toBe("3");
   expect($<HTMLInputElement>("[data-wire-carry]")!.value).toBe("feedback");
   // closing untouched changes nothing
   $<HTMLButtonElement>("[data-wire-done]")!.click();
@@ -271,20 +275,36 @@ test("a carry that is not a declared output shows as the YAML has it (layer's ou
   type($("[data-wire-carry]"), "report");
   await flushPromises();
   $<HTMLButtonElement>("[data-wire-apply]")!.click();
-  expect(applied(again)!.loop).toEqual({ max: "story.layer_attempts", carry: "report" });
+  expect(applied(again)!.loop).toEqual({ max: 3, carry: "report" });
   type($("[data-wire-carry]"), "  ");
   await flushPromises();
   $<HTMLButtonElement>("[data-wire-apply]")!.click();
-  expect(applied(again)!.loop).toEqual({ max: "story.layer_attempts" }); // empty: no carry
+  expect(applied(again)!.loop).toEqual({ max: 3 }); // empty: no carry
 });
 
-test("an artifact another box writes as well is kept, disabled and says who (story's amigos -> build_layers)", async () => {
-  mountShipped(shipped(STORY_YAML), "amigos", "build_layers");
+test("an artifact another box writes as well is kept, disabled and says who (two writers into layers)", async () => {
+  const g = fromWorkflow("s", {
+    inputs: ["card"],
+    outputs: [],
+    nodes: {
+      refine: { kind: "WORK", run: "story refine", outputs: { story: "json" }, to: ["layers"] },
+      draft: { kind: "WORK", run: "story draft", outputs: { story: "json" }, to: ["layers"] },
+      layers: { kind: "WORK", run: "story plan_layers", inputs: ["story", "survey"], outputs: { layers: "list" } },
+    } as Record<string, NodeSpec & { kind: NodeKind }>,
+  });
+  mount(WireModal, {
+    props: {
+      open: true,
+      edge: g.edges.find((e) => e.from === "refine" && e.to === "layers") ?? null,
+      from: g.nodes.find((n) => n.id === "refine")!,
+      to: g.nodes.find((n) => n.id === "layers")!,
+      graph: g,
+    },
+    attachTo: document.body,
+  });
   await flushPromises();
   const story = $<HTMLInputElement>("[data-wire-artifact=story]")!;
   expect(story.checked).toBe(true);
   expect(story.disabled).toBe(true);
-  // no line from refine or take_card_as_story reaches build_layers directly: they are producers all the same
-  expect($("[data-wire-artifact-shared=story]")!.textContent).toBe("also from take_card_as_story, refine");
-  expect($("[data-wire-artifact-shared=layers]")!.textContent).toBe("also from layers");
+  expect($("[data-wire-artifact-shared=story]")!.textContent).toBe("also from draft");
 });

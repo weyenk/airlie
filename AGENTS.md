@@ -1,34 +1,32 @@
 # airlie
 
-Python 3.12 with uv; every action is a Taskfile task (`task --list`). Read `README.md` first.
+Python 3.12 with uv; every action is a Taskfile task (`task --list`). Product overview: [`README.md`](README.md).
+
+This file is already in session context for Qwen Code and VS Code chat. Do not re-read it with tools, and do not explore the tree looking for project rules — use the map below, then open only the files the task needs.
+
+## Layout
+
+| Path | What it is |
+| --- | --- |
+| `src/airlie/` | Python package (serve, workflows, chat, board, …) |
+| `web/` | Vue Studio UI (built into `src/airlie/serve/web_next`) |
+| `hub/` | Job Bus API (Vercel); Mac bridge claims work for `task serve` |
+| `config/` | `models.yaml`, `roles.yaml`, `profiles.yaml`; optional `workflows/*.yaml` |
+| `airlie.yaml` | Root config (`includes:`); overrides in gitignored `airlie.local.yaml` |
+| `tests/` | Pyramid under `tests/<layer>/`; quarantine in `tests/unit/quarantine.toml` |
+| `docs/` | Deep dives — open only when the task needs them |
+| `vendor/` | Pinned third-party trees (byte-for-byte; never edit in place) |
 
 ## Configuration
 
-Committed config is split for readability:
+Merge order: `includes` → root keys → `airlie.local.yaml` → topology profile. Paths resolve against the root file's directory. Edit the fragment that owns a section.
 
-- [`airlie.yaml`](airlie.yaml) — root index (`includes:`, engines, tools, story, …)
-- [`config/models.yaml`](config/models.yaml), [`config/roles.yaml`](config/roles.yaml), [`config/profiles.yaml`](config/profiles.yaml) — included fragments
-- [`config/workflows/*.yaml`](config/workflows/) — included by that glob (sorted; a glob that matches nothing is an error): the story workflow ([`story.yaml`](config/workflows/story.yaml)), its layer bundle ([`layer.yaml`](config/workflows/layer.yaml)) and any workflow the builder published. The composer runs the story's when `story.composer` is on; a card's `workflow:<name>` label runs any of them through the composer regardless of `story.composer`
-
-A workflow is nodes and lines: a node's `to` lists the nodes its outputs go to (each line may carry a `when`
-condition or a `loop` bound), and a `bundle` node runs another workflow, once per item with `each`. A model
-node's `prompt` is the text itself or `prompt:<id>` for a prompt file; a `check` or `gate` node's `run` names
-an operation from the catalog, and `airlie workflows catalog` prints it (name, title, inputs, outputs,
-transient, every_run).
-
-The web builder (`/workflows/build/<name>`) edits a workflow as the engine reads it: one box per node, a port per
-output, a line per `to` entry (its condition and loop live on the line; a line that only orders carries no
-artifact). Drag a port to another box to connect; double-click a box (or Edit on its card) for its fields in a
-modal, a line for its wire modal, and the Workflow button for the workflow's type, inputs and outputs. A bundle
-box opens its workflow in place on a double-click, with a breadcrumb back that restores the parent's unsaved
-edits. Save draft writes a draft the board can choose; a draft in the old schema is read upgraded and says so
-until saved. A story's screen and card offer "Use the current workflow" to adopt the published one.
-
-The `workflow` engine is remote HTTP (`AIRLIE_WORKFLOW_BASE_URL`, optional `AIRLIE_WORKFLOW_API_KEY`); airlie never starts it—`task doctor` probes `GET <base_url>/models`. `task serve`'s manager still owns on-demand resources it registers (repository-chat VMs under `boxes`: `lifecycle` `on_demand`, stopped after `idle_stop_s` when idle). SearXNG for `web_search` is outside the manager (`task searxng:up`).
-
-Chat config lives in the root's `chat:` block: `chat.kinds.<plain|repository>.tools` / `ask_first` (validated against the chat tool names; a plain chat cannot hold repository tools), `chat.superpowers.enabled` / `path` (default `vendor/superpowers`) and `chat.max_steps`. `vendor/superpowers/` is a pinned, unedited copy of upstream (`PIN.md`, `MANIFEST.sha256`; `task superpowers:verify` checks it): never edit it, update it by re-copying a release.
-
-Merge order: `includes` → root keys → `airlie.local.yaml` → topology profile. Role prompts, model paths, and similar data paths resolve against the root file's directory, not the fragment's. Prefer editing the fragment that owns a section rather than inlining it back into the root.
+- Engines are remote HTTP only (`kind: http`). The committed `workflow` engine takes `AIRLIE_WORKFLOW_BASE_URL` / optional `AIRLIE_WORKFLOW_API_KEY` (or the same keys in `airlie.local.yaml`). Airlie never starts an inference server; `task doctor` probes `GET <base_url>/models`. Point at omlx, llama.cpp, or any OpenAI/Anthropic-compatible API — real URLs stay out of git.
+- Catalog models are names/labels in [`config/models.yaml`](config/models.yaml); roles pick a model and the engine is derived.
+- Workflows (when you have them) live under [`config/workflows/`](config/workflows/) and are pulled in by an `includes:` glob (empty match is an error — omit the include until a file exists). Production ships none; test copies of story/layer are under `tests/fixtures/workflows/`. Four node kinds: `WORK`, `ROUND_ROBIN`, `SUPERVISOR_WORKERS`, `K_INDEPENDENT_TEAMS`, wired by `edges` (`when` / `loop` on the wire). A `WORK` node has exactly one of `prompt` / `prompt_id` / `run`. `GET /v1/workflows/catalog` (and `airlie workflows catalog`) lists them under `node_kinds` (each kind's `fields` / `required`); the catalog's separate `kinds` key is output-field value kinds (`text`, `number`, …), not node kinds.
+- Board runs: approving a card on `/v1/board` notifies `RunDispatcher` (`src/airlie/serve/dispatcher.py`, wired in `serve/app.py` via `build_dispatcher` and `board_router(notify=…)`). No timer ticker — the dispatcher pumps on board status changes, run finish, and chat lease release. A card needs a `workflow:<name>` label or the dispatcher moves it to Blocked with comment `missing workflow`; otherwise it runs `start_workflow` locally (not hub-by-default), Doing while in flight, Review on success, Blocked with the error on failure. System-wide cap `runs.max_concurrent` (default 2, `ge=1` in `RunsSpec`); extra Approved cards FIFO-wait; a busy workdir keeps the card Approved without blocking the queue (retried on the next pump). Chat turns claim a slot through `request_chat_slot` (may cooperatively pause a Doing run until the turn ends).
+- Chat: `chat.kinds.<plain|repository>.tools` / `ask_first`, `chat.max_steps`, `chat.personas` (extra roles validated against `roles`); repository tools only on repository kind. `GET /v1/airlie/chat/options` lists engine-served models and personas (`chat` plus `chat.personas`); a turn's `model_key` and `persona` pick model and system prompt (omitted = defaults).
+- `task serve`'s manager still owns on-demand resources it registers (repository-chat VMs under `boxes`). SearXNG for `web_search` is outside the manager (`task searxng:up`).
 
 ## Test gate
 

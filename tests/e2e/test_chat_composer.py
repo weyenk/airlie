@@ -232,9 +232,10 @@ def test_typing_a_slash_shows_the_menu_and_a_story_command_sends_its_skill(
     evidence.expect(app_page.locator("[data-msg=user]"), "my bubble holds the request alone").to_have_text(
         "the chat gets a New chat button"
     )
-    evidence.expect(reply(app_page), "the reply is the story request, as text").to_contain_text(
-        "Add a New chat button"
-    )
+    # /story replies as a story card (workflow picker + Start story), not plain model text.
+    card = app_page.locator("[data-message=assistant]").last
+    evidence.expect(card, "the reply is a story card").to_contain_text("Start story")
+    evidence.expect(card, "with the request ready to edit").to_contain_text("story request")
     sent = json.dumps(server.upstream.requests[-1])
     assert "story pipeline will build" in sent  # the story skill's prompt went with the turn
 

@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from functools import partial
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import anyio
 import httpx
@@ -55,6 +55,9 @@ from airlie.sources.access import RepoAccess
 from airlie.story.publish import PublishError
 from airlie.tools.protocol import Tool, ToolContext
 
+if TYPE_CHECKING:
+    from airlie.serve.dispatcher import ChatLease
+
 log = logging.getLogger("airlie.chat.api")
 MISCONFIGURED = "chat is misconfigured; see the server log or run airlie doctor"
 """What a client is told when chat cannot serve: the reason names server paths, so it goes to the log only."""
@@ -66,6 +69,8 @@ EMPTY_CHATS_MAX = 20
 NO_ENGINE = "the chat role has no engine; see the server log or run airlie doctor"
 STORED_PART_TYPES = ("text", "airlie_upload")
 """The parts of a user message the server keeps and the model can take; any other part is dropped."""
+ChatSlot = Callable[[str], "Awaitable[ChatLease]"]
+"""Claims a run slot for a chat turn (the dispatcher's `request_chat_slot`)."""
 Attach = Callable[[Principal, list[dict[str, Any]], bool], Awaitable[list[dict[str, Any]]]]
 """Wire messages (`content` lists with `airlie_upload` parts) resolved for the chat model, in order."""
 
@@ -191,13 +196,24 @@ def _said(text: str) -> str:
     return text
 
 
+def _workflow_name(value: str | None) -> str | None:
+    """A workflow name as the card's `workflow:<name>` label holds it: blank is none (no label), and a name
+    with whitespace in it could not be one."""
+    name = (value or "").strip()
+    if any(c.isspace() for c in name):
+        raise ValueError("a workflow name has no spaces")
+    return name or None
+
+
 class StartStory(BaseModel):
-    """`POST .../stories/{story}/start`: the story card's request as the person edited it, and the
-    repository it is for (owner/name, or the path of a checkout)."""
+    """`POST .../stories/{story}/start`: the story card's request as the person edited it, the repository it
+    is for (owner/name, or the path of a checkout) and, when one was chosen, the workflow the card runs (its
+    `workflow:<name>` label; blank or left out: no label)."""
 
     model_config = ConfigDict(extra="forbid")
     text: Annotated[str, Field(max_length=20_000), AfterValidator(_said)]
     repo: str = Field(min_length=1, max_length=500)
+    workflow: Annotated[str | None, Field(max_length=200), AfterValidator(_workflow_name)] = None
 
 
 class ChatSettings(BaseModel):
@@ -214,9 +230,10 @@ class ChatSettings(BaseModel):
         return self
 
 
-StartStoryJob = Callable[[str, str], Awaitable[dict[str, Any]]]
-"""Start a story from a written request on a repository: `{job_id, kind}`, or an HTTPException saying why
-not (serve's `POST /v1/airlie/stories`)."""
+StartStoryJob = Callable[[str, str, str | None], Awaitable[dict[str, Any]]]
+"""Start a story from a written request on a repository, with the workflow its card is to run (None: no
+`workflow:` label): `{job_id, kind}`, or an HTTPException saying why not (serve's
+`POST /v1/airlie/stories`)."""
 
 
 def branch_of(thread_id: str, kind: ChatKind) -> str | None:
@@ -346,6 +363,7 @@ def chat_router(
     start_story: StartStoryJob | None = None,
     allowlist: ModelAllowlist | None = None,
     live_ids: Callable[[], Awaitable[list[str]]] | None = None,
+    chat_slot: ChatSlot | None = None,
 ) -> APIRouter:
     """`publish` is the live feed's: each change to a thread (made, a turn's end, an answer, deleted) sends
     the `chat` hint with no key (the feed reaches every signed-in client: it names no one's chat; each
@@ -354,7 +372,9 @@ def chat_router(
     allowed and none is pre-warmed. `background` keeps those starts (serve's shutdown and tests wait on
     them). `start_story` starts a story card's story on the board. A chat's model is one of the engine's
     live model ids (`live_ids`; the catalog's names when it cannot be asked) that `allowlist` has not
-    switched off."""
+    switched off. `chat_slot`, when given, is what a turn awaits (with its thread's id) for one of the
+    system's run slots before it streams: it may pause a board run to make room or wait for one, and the
+    slot is released when the turn ends."""
     router = APIRouter()
     background = background if background is not None else set()
     prewarmed: dict[str, list[str]] = {}  # per person: the chats whose VM was started before a message
@@ -660,7 +680,10 @@ def chat_router(
 
         async def stream() -> AsyncIterator[str]:
             started[0] = True
+            lease: ChatLease | None = None
             try:
+                if chat_slot is not None:
+                    lease = await chat_slot(thread.id)  # may pause a board run, or wait for a slot
                 async for chunk in run_turn(
                     TurnRequest(
                         thread,
@@ -700,6 +723,8 @@ def chat_router(
                 with anyio.CancelScope(
                     shield=True
                 ):  # also when the response was cancelled as the client left
+                    if lease is not None:
+                        await lease.release()
                     await cleanup()
 
         return TurnStream(stream(), cleanup, started, media_type="text/event-stream", headers=STREAM_HEADERS)
@@ -994,7 +1019,7 @@ def chat_router(
         starting.add(claim)  # no await since the check: the claim and the check are one step
         try:
             try:
-                job = await start_story(body.text.strip(), body.repo.strip())
+                job = await start_story(body.text.strip(), body.repo.strip(), body.workflow)
             except HTTPException as e:  # the board's reason: the card is free to try again
                 return error(str(e.detail), e.status_code)
             label = f"{body.repo.strip().rstrip('/').rsplit('/', 1)[-1]} · story"
