@@ -26,6 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from airlie import __version__
 from airlie.auth.api import PUBLIC_PATHS, auth_router, set_session_cookie
 from airlie.auth.principal import SESSION_COOKIE, NotInvited, Principal, Resolver
 from airlie.auth.store import AuthStore
@@ -106,6 +107,7 @@ from airlie.teams.worktree import rev_parse
 from airlie.tools.web import SearXNGProvider, UrllibClient, WebFetch, WebSearch
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
+from airlie.update.identity import running_release
 
 _STORY_DIR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 """A story key as a directory name under stories/: a route that serves a path under the state directory
@@ -690,10 +692,11 @@ def create_app(
     `run_start` replaces what the board run dispatcher calls to run an approved card's workflow (default:
     airlie.workflow.trigger.start_workflow, in the card's checkout, over `run_engine`'s engine: default an
     HTTP engine; tests give a fake). The dispatcher is `app.state.dispatcher`."""
-    app = FastAPI(title="airlie", version="0.1.0")
+    app = FastAPI(title="airlie", version=__version__)
     started_commit = (
         build_commit()
     )  # the code this process runs: a pull after it changes the checkout, not this
+    started_release = running_release(started_commit)  # read once: an image does not change under us
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
     factory = orchestrator_factory or _default_factory
     feed = Feed()
@@ -911,6 +914,9 @@ def create_app(
             "status": "ok",
             "roles": list(cfg.roles),
             "commit": started_commit,
+            "version": started_release.version,
+            "image_digest": started_release.image_digest,
+            "schema_epoch": started_release.schema_epoch,
             "line": {
                 "last_tick": None,
                 "line": None,
