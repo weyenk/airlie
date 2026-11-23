@@ -6,7 +6,7 @@ governs:
   tests.assert: always
   tests.scope: one-behaviour
 why: |
-  How a layer's tests are written: the useful part of skills/qa.
+  How a layer's tests are written: the useful part of docs/wiki/qa.
 
   Added when one coder began to write a layer's tests and code (28107dd, 2026-10-16: the qa subtask kept
   blocking HDS-5 and HDS-11 at layer 01 with assertion-free tests); the tester's brief carried it too since

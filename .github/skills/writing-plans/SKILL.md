@@ -20,6 +20,46 @@ Write implementation plans for an engineer who has not seen this codebase or thi
 
 If the spec covers multiple independent subsystems, it should have been broken into sub-project specs during brainstorming. If it wasn't, suggest breaking this into separate plans — one per subsystem. Each plan should produce working, testable software on its own.
 
+## Locked Vocabulary (before any task)
+
+**YOU MUST write this section before Task 1.** Copy exact strings from the
+spec's Locked names (or equivalent). This table is the only public surface
+later tasks may use. A mid-document "shared vocabulary" that *renames*
+earlier tasks is a bug — fix the tasks; do not add a competing table.
+
+| Kind | Exact names (from the spec) |
+|------|-----------------------------|
+| Routes / CLI / config keys | … |
+| State / drift / error enums | … (closed set) |
+| Core types & store methods | … |
+| Forbidden strings / behaviors | … (grep targets: names the plan must not introduce) |
+
+If the spec has no Locked names block, build this table from the spec
+first and keep it short. Do not invent synonyms "for clarity."
+
+**Generation drift (Qwen-flash and peers):** long uninterrupted plan
+drafts stay faithful for early tasks, then silently redesign the system
+(new route prefix, extra deploy target, new drift states, apply-path UI
+copy on a no-apply feature). Smaller/faster models do this more often;
+the fix is structure, not hoping the model remembers.
+
+**Write the plan in chunks — never one shot when there are more than
+three tasks:**
+
+1. Header + Global Constraints + Review Focus + Locked Vocabulary + File
+   Structure. Save. Stop.
+2. Re-read Locked Vocabulary. Write the next 2–3 tasks only. Each task's
+   Interfaces may only use names from the table or prior Interfaces.
+3. After each chunk: grep the new tasks for every Forbidden string and
+   for any route/type/method not in Locked Vocabulary. Fix before the
+   next chunk.
+4. Repeat until done, then run Self-Review (including the Drift check).
+
+Rationalization to reject: "I'll write it all then reconcile names" —
+reconciliation *is* the drift. "A shared vocabulary section at the end
+will align Tasks 1 and 8" — that section is evidence of failure; delete
+it and make Task 8 match Task 1.
+
 ## File Structure
 
 Before defining tasks, map out which files will be created or modified and what each one is responsible for. This is where decomposition decisions get locked in.
@@ -28,6 +68,7 @@ Before defining tasks, map out which files will be created or modified and what 
 - You reason best about code you can hold in context at once, and your edits are more reliable when files are focused. Prefer smaller, focused files over large ones that do too much.
 - Files that change together should live together. Split by responsibility, not by technical layer.
 - In existing codebases, follow established patterns. If the codebase uses large files, don't unilaterally restructure - but if a file you're modifying has grown unwieldy, including a split in the plan is reasonable.
+- File map names must match Locked Vocabulary (same route files, same module names).
 
 This structure informs the task decomposition. Each task should produce self-contained changes that make sense independently.
 
@@ -85,6 +126,11 @@ meet, and its silence on an input is not permission for that input to
 break the program. Write the list here, once, with the spec in front of
 you. Then, for each line, add the test that pins it to the task that
 owns the code, in that task's own step style.]
+
+## Locked Vocabulary
+
+[The table from "Locked Vocabulary (before any task)" above — exact
+spec strings. Tasks below may only use these public names.]
 
 ---
 ```
@@ -173,6 +219,12 @@ After writing the complete plan, look at the spec with fresh eyes and check the 
 **4. Review Focus:** For each input class or failure mode the spec implies, is there a task whose tests exercise it? The five uncovered ones most likely to bite a person go in the Review Focus section, and each line there gets its test added to the owning task. An empty section means you checked and found none, not that you skipped the check.
 
 **5. Proportion:** Compare the plan's length to the spec's. A plan several times longer than the spec it implements is a transcript of the program, not a plan. If code blocks are most of the document, replace bodies with signatures, test names and assertions, and check that each step is still unambiguous.
+
+**6. Drift check (mandatory — do not skip after a long draft):**
+- Grep the plan for every Forbidden string in Locked Vocabulary; any hit is a defect — remove or rewrite.
+- List every route, CLI verb, config key, enum value, and store/API method mentioned in Tasks 2+. Each must appear in Locked Vocabulary or in an earlier task's **Produces** line. Anything else is unauthorized invention — delete it or add it to the lock *and* the spec first.
+- If Task 1–2 describe one architecture and a later task describes another (different route prefix, extra target, new drift states, apply UI on a no-apply feature), the later task is wrong. Fix the later task to match the lock; do not add a "shared vocabulary wins" appendix.
+- Prefer a second, stronger model (or a fresh subagent) for this pass when the drafting model was flash/small: ask only "where does this plan disagree with the spec and Locked Vocabulary?" and apply fixes.
 
 If you find issues, fix them inline. No need to re-review — just fix and move on. If you find a spec requirement with no task, add the task.
 

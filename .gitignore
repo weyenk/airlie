@@ -21,3 +21,5 @@ src/airlie/serve/web_next/
 .worktrees/
 .qwen/QWEN.local.md
 .qwen/worktrees/
+.cline
+.tmp

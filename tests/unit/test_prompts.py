@@ -27,7 +27,7 @@ def test_studio_prompts_have_summaries_and_the_right_routability() -> None:
 
 
 def test_qa_skill_library_has_nine_guides_with_summaries() -> None:
-    skills = load_skills(ROOT / "skills/qa")
+    skills = load_skills(ROOT / "docs/wiki/qa")
     assert {s.name for s in skills} == {
         "unit", "functional", "integration", "component", "contract", "e2e", "visual-regression",
         "mutation", "ai-skill",

@@ -283,7 +283,7 @@ open draft PRs:** run `task serve -- --api-key SECRET` (or set `AIRLIE_SERVE_API
 `docs/superpowers/specs/2026-10-13-studio-topology-design.md`). One generalist (`chief`, Qwen3.8-27B, also the
 vision model) scopes the request into a JSON plan of subtasks; the router (`router.kind`: the chief's
 own hint, or a catalog model) assigns each subtask a specialist role from the roles whose prompts carry a
-`summary:` line, and for roles with a skill library (`skills/qa/*.md`, folded into the coder's test brief) picks
+`summary:` line, and for roles with a skill library (`docs/wiki/qa/*.md`, folded into the coder's test brief) picks
 the guideline to inject; specialists are prompts over the catalog (generalist for most seats, Gemma for
 the `reviewer`) and run as single agents on one worktree, writers one at a time, readers in parallel; after a
 code subtask the reviewer (Gemma, a different lab than the coder's Qwen, on purpose: judges favour their own family's text) returns
