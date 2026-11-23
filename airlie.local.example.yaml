@@ -2,9 +2,15 @@
 # Example: point the workflow engine at an Anthropic-format endpoint of your own.
 # engines:
 #   workflow:
-#     format: anthropic              # openai (default) | anthropic
-#     base_url: https://your-endpoint.example/v1
-#     api_key: ...                   # or export AIRLIE_WORKFLOW_API_KEY
+#     format: openai                   # openai (default) | anthropic
+#     # omlx on Mac Studio (Tailscale MagicDNS); OpenAI-compatible /v1
+#     base_url: http://mac-studio:8000/v1
+#     api_key: ...                     # same Bearer as omlx / rapid-mlx; or AIRLIE_WORKFLOW_API_KEY
+#     models: [smart, small, fast]
+#     passthru:
+#       fast: Qwen3.8-Flash-Next-oQ4e-mtp
+#       smart: mlx-community--Qwen3.8-27B-4bit
+#       small: Qwen3.8-Flash-Next-oQ4e-mtp
 
 # Push notifications to the installed phone app (README, Phone): who a push service may reach about this server,
 # mailto:... (a dotted domain) or https://... ; without it push is off and `task doctor` warns.

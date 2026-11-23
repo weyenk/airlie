@@ -157,6 +157,40 @@ could plan from without going back to your human partner. Cover:
 `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`, committed.
 Otherwise, ask. Your human partner's preferences override both.
 
+### Lock names before prose (generation drift)
+
+Long free-generation of a design is where smaller or faster models
+(Qwen-flash and peers) invent a second system mid-document: new routes,
+extra targets, a parallel state enum, UI copy that contradicts a
+non-goal. The conversation can be solid and the written design still
+forks itself.
+
+**Before** the narrative sections of the design document, write a
+**Locked names** block and treat it as the only public surface. Put in
+it, with the exact strings the builder must use:
+
+- user-visible surfaces (routes, CLI verbs, config keys, panel copy
+  that the product fixes)
+- state / drift / error vocabularies (closed enums — no invented §
+  letters or synonym states later)
+- durable records (what is stored vs derived)
+- **forbidden** names and behaviors (the non-goals as grep-able
+  strings: e.g. no in-app apply, no second deploy target)
+
+Write the rest of the design **against that block**. If a later section
+needs a new public name, edit the Locked names block first, then use
+it — never introduce a parallel name in prose alone.
+
+**Chunk the write.** Prefer: Locked names → one major section → stop and
+re-read Locked names → next section. Do not draft the entire design as
+one uninterrupted generation when it spans multiple subsystems. A design
+that is longer than it needs to be is already drifting.
+
+**Playback includes the locked strings.** When you play a chunk back,
+quote the route / state / record names you intend to put in Locked
+names, so your human partner can reject a fork before it lands in the
+doc.
+
 **Builder check:** dispatch a fresh subagent with
 `builder-check-prompt.md` in this directory. When you tell your human
 partner you're writing it up, say a reviewer will read it first and you
@@ -201,6 +235,9 @@ software, invoke superpowers:writing-plans and no other skill.
 | "I should explain the process first" | Ask your question. The process shows itself. |
 | "They said 'sounds good' to the idea" | Approval covers what you showed them. A description you haven't written isn't approved. |
 | "The spike works, I'll keep building on it" | Keeping it is a new request. Back through the gate. |
+| "I'll write the whole design in one go" | Late sections invent a second design. Lock names first; chunk the write. |
+| "This other route/state name is clearer" | Clarity after Locked names is an edit to the lock, not a silent rename mid-doc. |
+| "The plan can reconcile naming later" | writing-plans must copy Locked names verbatim. Reconciliation mid-plan is drift. |
 
 ## Visual Companion
 
