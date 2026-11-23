@@ -518,7 +518,7 @@ STUDIO_ROLES = {
     "qa": {
         "prompt": "prompts/roles/qa.md",
         "model": "team",
-        "skills": "skills/qa",
+        "skills": "docs/wiki/qa",
         "tools": ["read_file", "run_tests"],
     },
 }
@@ -526,12 +526,12 @@ STUDIO_ROLES = {
 
 def test_studio_kind_loads_with_defaults_and_role_fields(tmp_path: Path) -> None:
     data = {**MINIMAL, "roles": {**MINIMAL["roles"], **STUDIO_ROLES}, "topology": {"kind": "studio"}}
-    (tmp_path / "skills" / "qa").mkdir(parents=True)
+    (tmp_path / "docs" / "wiki" / "qa").mkdir(parents=True)
     cfg = load_config(write(tmp_path, data))
     assert cfg.topology.kind == "studio"
     assert cfg.studio.chief_role == "chief" and cfg.studio.review.roles == ["architect", "security"]
     assert cfg.studio.parallel == 3 and cfg.studio.review.rounds == 1
-    assert cfg.roles["qa"].skills == (tmp_path / "skills" / "qa").resolve()
+    assert cfg.roles["qa"].skills == (tmp_path / "docs" / "wiki" / "qa").resolve()
     assert cfg.roles["qa"].tools == ["read_file", "run_tests"] and cfg.roles["architect"].tools == []
     assert cfg.roles["chief"].vision is False and cfg.roles["chief"].max_steps is None
 
