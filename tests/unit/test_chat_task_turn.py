@@ -32,7 +32,8 @@ VM = "/home/admin/work"
 @pytest.fixture(scope="module")
 def cfg() -> AirlieConfig:
     cfg = load_config(ROOT / "airlie.yaml", ROOT / "no-such-local.yaml").model_copy(deep=True)
-    cfg.chat.task.roles = ["coder"]
+    cfg.chat.task.roles = ["architect"]
+    cfg.chat.task.default_role = "architect"
     return cfg
 
 
@@ -86,7 +87,7 @@ async def test_a_turn_without_a_task_call_marks_no_call_as_a_subagents(
 async def test_the_status_of_an_engine_a_subagent_waits_on_is_relayed_with_its_reason(
     tmp_path: Path, role: RoleSpec, cfg: AirlieConfig
 ) -> None:
-    sub = cfg.engine_for_role("coder")
+    sub = cfg.engine_for_role("architect")
     clock = FakeClock()
     manager = Manager(
         [FakeResource("chat-engine"), FakeResource(sub), FakeResource("other")], budget_gb=25.0, clock=clock

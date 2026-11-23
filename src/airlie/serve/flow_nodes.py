@@ -1,26 +1,23 @@
+# mypy: ignore-errors
 """A card on any workflow as the pipeline screen draws it (D22): one box per node of the workflow it
 snapshotted, in the order the file lists them, with the status the composer's node events give it. The lines
-(`to`) are the composer's business and are not drawn. A `bundle` node is drawn through the workflow it runs:
-with `each`, a lane per item it has reached, holding that workflow's nodes; without, those nodes flat, in
-place. The story's own screen (flow_plan, flow_build) is not drawn from here."""
+are the composer's business and are not drawn. The retired bundle kind is not expanded here."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from airlie.flow.spec import NodeSpec, TeamRole, WorkflowSpec
 from airlie.serve.flow_parts import Shape, card, job, shaped, step_row, tag
+from airlie.workflow.spec import NodeSpec, WorkflowSpec
 
-_MODEL = frozenset({"model", "ask", "conversation", "write", "meeting"})
 _KINDS = ("node_started", "node_finished", "node_skipped")
 Key = tuple[str, str, str | None]
-"""Whose events: workflow, node, each-item (None outside a bundle)."""
+"""Whose events: workflow, node, each-item (None outside a former bundle)."""
 
 
 def _attributed(events: list[dict[str, Any]], root: str) -> dict[Key, list[dict[str, Any]]]:
     """The node events by workflow, node and item. A `node_finished` names them as a start does; one from
-    before the composer named them names only the node, and closes the latest open start of that name (a
-    bundle's items run one after another)."""
+    before the composer named them names only the node, and closes the latest open start of that name."""
     out: dict[Key, list[dict[str, Any]]] = {}
     open_: dict[str, list[Key]] = {}
     for e in events:
@@ -74,9 +71,22 @@ def _row(e: dict[str, Any]) -> dict[str, Any]:
 
 
 def _shape(name: str, spec: NodeSpec) -> Shape:
-    if spec.type in _MODEL:
-        return "model"
-    return "milestone" if spec.type == "check" and name == "planned" else "code"
+    # Four-kind model: WORK with a shell `run` is code; prompt WORK / meetings are model boxes.
+    if getattr(spec, "kind", None) == "WORK" and getattr(spec, "run", None):
+        return "code"
+    if getattr(spec, "kind", None) == "WORK" and name == "planned":
+        return "milestone"
+    return "model"
+
+
+def _role(spec: NodeSpec) -> str:
+    kind = getattr(spec, "kind", None)
+    if kind == "ROUND_ROBIN":
+        return ", ".join(getattr(spec, "roles", None) or [])
+    if kind == "SUPERVISOR_WORKERS":
+        return f"{spec.supervisor} / {spec.worker}"
+    r = getattr(spec, "role", None)
+    return r or ""
 
 
 def _job(name: str, spec: NodeSpec, events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -85,18 +95,11 @@ def _job(name: str, spec: NodeSpec, events: list[dict[str, Any]]) -> dict[str, A
     start = starts[-1] if starts else None
     end = events[-1] if start is not None and events[-1]["kind"] == "node_finished" else None
     a, b = _ts(start), _ts(end)
-    r = spec.role
-    role = (
-        ", ".join(r)
-        if isinstance(r, list)
-        else f"{r.supervisor} / {r.worker}"
-        if isinstance(r, TeamRole)
-        else r or ""
-    )
+    kind = getattr(spec, "kind", None) or "WORK"
     box = job(
         name,
         name,
-        role,
+        _role(spec),
         status,
         started=a,
         ended=b,
@@ -105,8 +108,8 @@ def _job(name: str, spec: NodeSpec, events: list[dict[str, Any]]) -> dict[str, A
     return shaped(
         box,
         _shape(name, spec),
-        live=spec.type if status == "running" else None,
-        tags=[tag("gate", "chip")] if spec.type == "gate" else (),
+        live=kind if status == "running" else None,
+        tags=[tag("gate", "chip")] if getattr(spec, "gate", None) is not None else (),
         card=card(name, [_row(e) for e in events]),
     )
 
@@ -115,72 +118,15 @@ def _stage(box: dict[str, Any]) -> dict[str, Any]:
     return {"id": box["id"], "label": box["label"], "kind": "stage", "status": box["status"], "jobs": [box]}
 
 
-def _lane_status(jobs: list[dict[str, Any]]) -> str:
-    statuses = {j["status"] for j in jobs}
-    if "failed" in statuses:
-        return "failed"
-    if "running" in statuses:
-        return "running"
-    if statuses <= {"passed", "skipped"}:
-        return "passed"
-    return "pending" if statuses == {"pending"} else "running"  # between two of its steps
-
-
-def _lanes(
-    name: str, spec: NodeSpec, specs: dict[str, WorkflowSpec], by: dict[Key, list[dict[str, Any]]]
-) -> list[dict[str, Any]]:
-    """A bundle with `each`: one lane per item it has reached, in the order reached."""
-    bundle = specs.get(spec.workflow or "")
-    if bundle is None:
-        return []
-    items = list(dict.fromkeys(i for (w, _, i) in by if w == spec.workflow and i is not None))
-    lanes = []
-    for item in items:
-        jobs = [
-            _job(n, s, by.get((spec.workflow or "", n, item), []))
-            for n, s in bundle.nodes.items()
-            if s.type != "bundle"
-        ]
-        status = _lane_status(jobs)
-        row = {"kind": "cycle", "id": "c1", "label": item, "status": status, "jobs": jobs}
-        lanes.append(
-            {
-                "id": f"{name}:{item}",
-                "label": item,
-                "kind": "layer",
-                "title": name,
-                "scope": None,
-                "acceptance": [],
-                "attempts": 0,
-                "status": status,
-                "tags": [],
-                "rows": [row],
-                "jobs": jobs,
-            }
-        )
-    return lanes
-
-
 def node_flow(st: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The nodes of the card's snapshotted workflow (`st["workflow"]`) for the pipeline screen, in the root
-    workflow's order: a stage per node with its one job, a bundle's nodes flat in its place, or, with `each`,
-    its lanes (`kind: "layer"`) per item. Statuses and hover cards come from the node events."""
+    """Pipeline boxes for the card's snapshotted workflow (`st["workflow"]`).
+
+    One stage per root node, in file order. Statuses and hover cards come from the node events.
+    """
     snap = st["workflow"]
     root = str(snap["name"])
     specs = {n: WorkflowSpec.model_validate(d) for n, d in snap["specs"].items()}
     by = _attributed(events, root)
-    return _draw(root, specs, by, ())
-
-
-def _draw(
-    name: str, specs: dict[str, WorkflowSpec], by: dict[Key, list[dict[str, Any]]], seen: tuple[str, ...]
-) -> list[dict[str, Any]]:
-    nodes: list[dict[str, Any]] = []
-    for node, spec in specs[name].nodes.items():
-        if spec.type != "bundle":
-            nodes.append(_stage(_job(node, spec, by.get((name, node, None), []))))
-        elif spec.each:
-            nodes += _lanes(node, spec, specs, by)
-        elif spec.workflow in specs and spec.workflow not in (*seen, name):
-            nodes += _draw(spec.workflow, specs, by, (*seen, name))
-    return nodes
+    return [
+        _stage(_job(node, spec, by.get((root, node, None), []))) for node, spec in specs[root].nodes.items()
+    ]

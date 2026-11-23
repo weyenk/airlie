@@ -1,9 +1,9 @@
 """The workflow builder in Chromium: a story card's Workflow field opens the builder (`＋ Build new…`), a
-box placed from the palette and given its run validates, Save draft names it and returns to the card with the
-draft chosen and the typed title kept; and the shipped story workflow drawn as a box per node. Each check
+WORK box from the palette with a freeform run validates, Save draft names it and returns to the card with the
+draft chosen and the typed title kept; and the fixture story workflow drawn as a box per node. Each check
 leaves its screenshot in test-results/e2e/evidence/ (conftest.Evidence).
 
-The server is `workflows_server`: its own board (the test saves a draft), its config with the shipped workflow
+The server is `workflows_server`: its own board (the test saves a draft), its config with the fixture workflow
 files (story, layer) as airlie.yaml includes them."""
 
 from __future__ import annotations
@@ -20,11 +20,11 @@ pytestmark = pytest.mark.e2e
 
 DESKTOP = {"width": 1280, "height": 900}
 TITLE = "Fix the login loop"
-STORY = yaml.safe_load((WORKFLOWS / "story.yaml").read_text())["workflows"]["story"]["nodes"]
-STORY_NODES = list(STORY)
-"""The story workflow's nodes, as the shipped file names them."""
-STORY_LINES = sum(len(node.get("to", [])) for node in STORY.values())
-"""The story workflow's lines: a `to` entry each."""
+STORY_RAW = yaml.safe_load((WORKFLOWS / "story.yaml").read_text())["workflows"]["story"]
+STORY_NODES = list(STORY_RAW["nodes"])
+"""The story workflow's nodes, as the fixture file names them."""
+STORY_LINES = sum(len(wires) for wires in STORY_RAW.get("edges", {}).values())
+"""The story workflow's lines: one per edges entry."""
 
 
 def test_build_new_from_a_card_saves_a_draft_and_returns_with_it_chosen(
@@ -43,9 +43,9 @@ def test_build_new_from_a_card_saves_a_draft_and_returns_with_it_chosen(
         re.compile(r"/workflows/build/new\?card=")
     )
 
-    app_page.locator("[data-palette-type=check]").click()
-    box = app_page.locator("[data-box][data-type=check]")
-    evidence.expect(box, "a click on the palette's check adds a check box").to_have_count(1)
+    app_page.locator("[data-palette-type=WORK]").click()
+    box = app_page.locator("[data-box][data-kind=WORK]")
+    evidence.expect(box, "a click on the palette's WORK adds a work box").to_have_count(1)
     evidence.expect(
         app_page.locator("[data-box-card]"), "the new box is selected, a small card shows"
     ).to_be_visible()
@@ -55,21 +55,17 @@ def test_build_new_from_a_card_saves_a_draft_and_returns_with_it_chosen(
     settings.locator("[data-workflow-add=inputs]").fill("card")
     settings.locator("[data-workflow-add=inputs]").press("Enter")
     evidence.expect(
-        settings.locator("[data-chip=card]"), "the card is an input the intake check reads"
+        settings.locator("[data-chip=card]"), "the card is an input the work node may read"
     ).to_be_visible()
     settings.locator("[data-workflow-done]").click()
     box.dblclick()
     modal = app_page.locator("[data-node-modal]")
     evidence.expect(modal, "a double-click opens the node's fields").to_be_visible()
-    modal.locator("[data-catalog-pick] [data-check='story.intake']").click()
-    evidence.expect(
-        modal.locator("[data-catalog-pick] [data-check='story.intake']"),
-        "the intake check is picked from the catalog",
-    ).to_have_attribute("aria-pressed", "true")
-    missing = modal.locator("[data-input-missing=card]")
-    evidence.expect(missing, "the check reads the card, which the box does not list yet").to_be_visible()
-    missing.click()
-    evidence.expect(modal.locator("[data-input-name=card]"), "the box now reads the card").to_be_checked()
+    # Empty prompt on a new WORK box is treated as a run node (freeform when checks are empty).
+    run = modal.locator("[data-input=run]")
+    evidence.expect(run, "a new WORK box starts ready for a shell run").to_be_visible()
+    run.fill("true")
+    modal.locator("[data-input-name=card]").check()
     modal.locator("[data-node-done]").click()
     evidence.expect(modal, "Done closes the modal").to_have_count(0)
     evidence.expect(app_page.locator("[data-dirty]"), "the edit is unsaved").to_be_visible()
@@ -102,37 +98,22 @@ def test_the_story_workflow_is_drawn_a_box_per_node(
     evidence.expect(canvas.locator("[data-box]"), f"a box per story node ({len(STORY_NODES)})").to_have_count(
         len(STORY_NODES)
     )
-    for node in ("intake", "amigos", "review"):
+    for node in ("intake", "amigos", "skip_build"):
         evidence.expect(canvas.locator(f"[data-box][data-node={node}]"), f"{node} is a box").to_be_visible()
     kind = app_page.locator("[data-workflow-type]")
     evidence.expect(kind, "the workflow's type shows").to_have_text("story")
     evidence.expect(
         canvas.locator("[data-port=out][data-node=base]"), "base shows its output port"
     ).to_be_visible()
-    evidence.expect(canvas.locator("[data-edge]"), f"a line per to entry ({STORY_LINES})").to_have_count(
+    evidence.expect(canvas.locator("[data-edge]"), f"a line per edge ({STORY_LINES})").to_have_count(
         STORY_LINES
     )
     evidence.expect(
         canvas.locator("[data-edge-label][data-label-fits=true]").first,
         "a label the room takes is drawn above its line",
     ).to_be_visible()
-    line = "[data-edge-hit][data-from=story_card][data-to=survey]"
-    hidden = canvas.locator(f"g:has(> {line}) > [data-edge-label]")
-    evidence.expect(hidden, "a label too long for the room between its boxes is hidden").to_be_hidden()
-    # the line is far to the right in the wider layout: bring it into the pane before hovering
-    canvas.locator(line).scroll_into_view_if_needed()
-    # a point three quarters along the line, past where it leaves story_card beside its other lines
-    point = canvas.locator(line).evaluate(
-        "p => { const at = p.getPointAtLength(p.getTotalLength() * 0.75); const m = p.getScreenCTM();"
-        " return { x: at.x * m.a + m.e, y: at.y * m.d + m.f }; }"
-    )
-    app_page.mouse.move(point["x"], point["y"])
-    evidence.expect(hidden, "and shows while its line is hovered").to_be_visible()
-    evidence.expect(
-        canvas.locator("[data-edge-label-pop][data-from=story_card][data-to=survey]"),
-        "over the boxes, on a card",
-    ).to_have_text(re.compile(r"^\s*if not is_story_card and .+ · order\s*$"))
-    app_page.mouse.move(0, 0)
+    line = "[data-edge-hit][data-from=to_build][data-to=skip_build]"
+    evidence.expect(canvas.locator(line), "the complementary not-to_build line is drawn").to_be_visible()
     pane = app_page.locator("[data-canvas-pane]")
     wide = pane.evaluate("el => el.scrollWidth > el.clientWidth")
     assert wide, "the story is wider than the pane"
@@ -140,44 +121,6 @@ def test_the_story_workflow_is_drawn_a_box_per_node(
     evidence.expect(
         app_page.locator("[data-canvas-more]"), "the pane fades at its right edge: more is off-screen"
     ).to_be_visible()
-    last = canvas.locator("[data-box][data-node=review]")
+    last = canvas.locator("[data-box][data-node=amigos]")
     last.scroll_into_view_if_needed()
-    evidence.expect(last, "the last column's box is reached by scrolling").to_be_in_viewport()
-
-
-def test_a_bundle_box_opens_its_workflow_in_place_with_a_breadcrumb_back(
-    app_page: Page, workflows_server: Server, evidence: Evidence
-) -> None:
-    app_page.set_viewport_size(DESKTOP)
-    app_page.goto(workflows_server.url + "/workflows/build/story")
-    bundle = app_page.locator("[data-box][data-shape=bundle][data-node=build_layers]")
-    evidence.expect(bundle, "build_layers is a bundle box").to_be_visible()
-    # an unsaved edit first: a box moved, which the breadcrumb back must keep
-    intake = app_page.locator("[data-box][data-node=intake]")
-    before = intake.get_attribute("style")
-    at = intake.bounding_box()
-    assert at is not None
-    app_page.mouse.move(at["x"] + at["width"] / 2, at["y"] + at["height"] / 2)
-    app_page.mouse.down()
-    app_page.mouse.move(at["x"] + at["width"] / 2 + 8, at["y"] + at["height"] / 2 + 160, steps=8)
-    app_page.mouse.up()
-    evidence.expect(app_page.locator("[data-dirty]"), "moving intake is an unsaved edit").to_be_visible()
-    moved = intake.get_attribute("style")
-    assert moved != before, "intake moved"
-    evidence.shot("intake moved", intake)
-    bundle.dblclick()
-    evidence.expect(app_page, "a double-click opens the bundled workflow").to_have_url(
-        re.compile(r"/workflows/build/layer")
-    )
-    crumb = app_page.locator("[data-breadcrumb]")
-    evidence.expect(crumb, "a breadcrumb leads back").to_have_text(re.compile("story"))
-    evidence.expect(app_page.locator("[data-workflow-type]"), "layer is a bundle").to_have_text("bundle")
-    crumb.click()
-    evidence.expect(app_page, "the breadcrumb returns to story").to_have_url(
-        re.compile(r"/workflows/build/story")
-    )
-    evidence.expect(app_page.locator("[data-canvas] [data-box]"), "with its boxes").to_have_count(
-        len(STORY_NODES)
-    )
-    evidence.expect(app_page.locator("[data-dirty]"), "and the unsaved edit kept").to_be_visible()
-    evidence.expect(intake, "intake where it was moved").to_have_attribute("style", moved or "")
+    evidence.expect(last, "the amigos box is reached by scrolling").to_be_in_viewport()

@@ -224,7 +224,8 @@ test("opening another chat keeps the first one's stream running", async () => {
 
 test("the composer footer shows the model and, in a repository chat, Ask before pushing", async () => {
   const { w } = await open("/chat/r1");
-  expect(w.get("[data-test=composer-footer] [data-model]").text()).toBe("Gemma 4");
+  const select = w.get("[data-test=composer-footer] [data-model-select]").element as HTMLSelectElement;
+  expect(select.options[select.selectedIndex].text).toBe("Gemma 4");
   expect(w.get("[data-test=composer-footer] [data-ask-first]").text()).toBe("Ask before pushing");
   expect(w.get("[data-test=chat-header]").text()).toContain("Gemma 4");
 });

@@ -1,0 +1,68 @@
+# Test fixture only (production ships no workflows). Runnable WORK nodes use `true` — there is no
+# `story` CLI. Graph edges always declare a complementary path when conditioned.
+# Design: docs/superpowers/specs/2026-11-19-legacy-story-removal-design.md
+workflows:
+  story:
+    title: story
+    inputs: [card, repo]
+    outputs: [story, layers, agreement]
+    nodes:
+      intake:
+        kind: WORK
+        run: "true"
+        inputs: [card]
+      base:
+        kind: WORK
+        run: "true"
+        inputs: [card, repo]
+        outputs: {base: json}
+      to_build:
+        kind: WORK
+        run: "true"
+        inputs: [layers, built, satisfied]
+        outputs: {to_build: {format: bool, transient: true}}
+      survey:
+        kind: WORK
+        prompt_id: story-survey
+        role: architect
+        inputs: [card]
+        outputs: {survey: markdown}
+      refine:
+        kind: WORK
+        run: "true"
+        inputs: [card]
+        outputs: {story: json}
+      layers:
+        kind: WORK
+        run: "true"
+        inputs: [card, story, base, survey]
+        outputs: {layers: list}
+      agree_plain:
+        kind: WORK
+        run: "true"
+        inputs: [story, layers]
+        outputs: {agreement: json}
+      amigos:
+        kind: ROUND_ROBIN
+        roles: [product, architect]
+        prompt: "align on {story} and {layers}"
+        agreement_when: "agreement"
+        inputs: [story, layers, base]
+        outputs: {agreement: json}
+        steps: 12
+      skip_build:
+        kind: WORK
+        run: "true"
+        outputs: {agreement: json}
+    edges:
+      intake: [{target: base}]
+      base: [{target: to_build}]
+      to_build:
+        - {target: refine, when: "to_build"}
+        - {target: survey, when: "to_build"}
+        - {target: skip_build, when: "not to_build"}
+      refine: [{target: layers}]
+      survey: [{target: layers}]
+      layers:
+        - {target: agree_plain, when: "not config.story.amigos.enabled"}
+        - {target: amigos, when: "config.story.amigos.enabled"}

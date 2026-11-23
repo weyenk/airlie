@@ -1,0 +1,12 @@
+{
+  "context": {
+    "fileName": ["AGENTS.md"]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(qwen *)",
+      "Bash(ls *)"
+    ]
+  },
+  "$version": 4
+}

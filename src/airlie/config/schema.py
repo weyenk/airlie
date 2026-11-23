@@ -19,8 +19,8 @@ from pydantic import (
     model_validator,
 )
 
-from airlie.flow.spec import WorkflowSpec, check_workflows
 from airlie.notify.kinds import KINDS, NotificationKind
+from airlie.workflow.spec import WorkflowSpec, validate_workflow
 
 
 class Strict(BaseModel):
@@ -317,6 +317,11 @@ class ChatSpec(Strict):
     kinds: ChatKindsSpec = Field(default_factory=ChatKindsSpec)
     task: ChatTaskSpec = Field(default_factory=ChatTaskSpec)
     max_steps: int = Field(default=12, ge=1, description="model turns a chat message may take (tool rounds)")
+    personas: list[str] = Field(
+        default_factory=list,
+        description="roles a person may pick in the composer to answer a chat turn with that role's prompt "
+        "(besides `chat`, the default); each must be in roles",
+    )
     sources: list[Literal["github_app"]] = Field(
         default_factory=list,
         description="where a person's repositories come from; github_app needs story.github_app.app_id",
@@ -1101,6 +1106,10 @@ class ForkSpec(Strict):
     temperatures: list[float] = Field(default=[0.3, 0.7], min_length=1)
 
 
+class RunsSpec(Strict):
+    max_concurrent: int = Field(default=2, ge=1, description="system-wide in-flight start_workflow runs")
+
+
 class RepoMapSpec(Strict):
     enabled: bool = Field(default=True, description="inject a deterministic repository map before the goal")
     max_chars: int = Field(default=6000, ge=0)
@@ -1134,6 +1143,7 @@ class AirlieConfig(Strict):
     topology: TopologySpec = Field(default_factory=TopologySpec)
     fork: ForkSpec = Field(default_factory=ForkSpec)
     router: RouterSpec = Field(default_factory=RouterSpec)
+    runs: RunsSpec = Field(default_factory=RunsSpec)
     studio: StudioSpec = Field(default_factory=StudioSpec)
     story: StorySpec = Field(default_factory=StorySpec)
     workflows: dict[str, WorkflowSpec] = Field(default_factory=dict)
@@ -1150,11 +1160,9 @@ class AirlieConfig(Strict):
     # ---- cross-reference checks (run by load_config after path resolution) ----
     def validate_references(self) -> list[str]:
         """Return human-readable problems; empty means consistent."""
-        # the story's checks (rule 9), imported here: the story package imports this module
-        from airlie.story.flow import STORY_CATALOG
-
         problems: list[str] = []
-        problems.extend(check_workflows(self.workflows, catalog=STORY_CATALOG, deprecations=False))
+        for name, w in self.workflows.items():
+            problems.extend(f"{name}: {p}" for p in validate_workflow(w.model_dump()))
         if self.story.composer:  # fail at load, not when the first story reaches the composer
             problems += [
                 f"story.composer is on but workflows.{name} is missing"
@@ -1170,6 +1178,11 @@ class AirlieConfig(Strict):
             ]
             if task.default_role not in task.roles:
                 problems.append(f"chat.task.default_role '{task.default_role}' is not in chat.task.roles")
+        problems += [
+            f"chat.personas names role '{r}', which is not in roles ({sorted(self.roles)})"
+            for r in dict.fromkeys(self.chat.personas)
+            if r not in self.roles
+        ]
         if "github_app" in self.chat.sources and self.story.github_app.app_id is None:
             problems.append("chat.sources lists github_app, which needs story.github_app.app_id")
         served_by: dict[str, list[str]] = {m: [] for m in self.models}

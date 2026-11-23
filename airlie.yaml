@@ -6,7 +6,6 @@ includes:
   - config/models.yaml
   - config/roles.yaml
   - config/profiles.yaml
-  - config/workflows/*.yaml
 
 # ---- Inference engines ------------------------------------------------------------------------------------------
 # airlie never runs a model: one HTTP endpoint serves every catalog model the roles name. `format` is the wire
@@ -20,7 +19,10 @@ engines:
     format: openai
     base_url: ${AIRLIE_WORKFLOW_BASE_URL}
     api_key: ${AIRLIE_WORKFLOW_API_KEY}
-    models: [smart, small, fast]
+    models:
+      - mlx-community--Qwen3.8-27B-4bit
+      - Qwen3.5-0.8B-oQ8e-mtp
+      - Qwen3.8-Flash-Next-oQ4e-mtp
     passthru: {}
 
 
@@ -62,6 +64,7 @@ lhr:
   timeout_s: 60
 
 chat:
+  personas: [architect, reviewer, product]   # roles the composer's persona dropdown offers besides chat
   attachments:
     max_image_mb: 20
     max_video_mb: 100
@@ -275,6 +278,11 @@ line:
 #       path: /Users/you/git/lhr-office
 #       default: true
 #   test_cmds: []                    # optional allowlist; first entry is the default test_cmd sent to serve
+
+# ---- In-flight workflow runs (board dispatcher) ------------------------------------------------------------------
+# System-wide cap on concurrent start_workflow runs; default 2.
+# runs:
+#   max_concurrent: 2
 
 # ---- The local board (task serve: /v1/board; task board:export) ---------------------------------------------------
 # airlie's own board: initiative → epic → story → subtask, in observability.state_dir/board.sqlite. The story pipeline

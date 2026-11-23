@@ -42,74 +42,9 @@ tasks:
       - '{{.RUN}} airlie models list {{.CLI_ARGS}}'
 
   run:
-    desc: "Run the configured topology on a goal in a repo (task run -- \"goal\" --repo PATH --topology fork --test-cmd \"pytest -q\")"
+    desc: "Run a workflow from config/workflows (task run -- story --repo PATH; default workflow is story)"
     cmds:
       - '{{.RUN}} airlie run {{.CLI_ARGS}}'
-
-  studio:
-    desc: "Run the studio topology (task studio -- \"goal\" --repo PATH [--image shot.png] [--test-cmd \"pytest -q\"])"
-    cmds:
-      - '{{.RUN}} airlie studio {{.CLI_ARGS}}'
-
-  story:
-    desc: "A Jira issue or --text \"request\" → story → layers → a package per layer, then the build → stacked draft PRs (task story -- ISSUE [--repo PATH] [--test-cmd CMD]; ISSUE is AIR-7 or its link)"
-    cmds:
-      - '{{.RUN}} airlie story run {{.CLI_ARGS}}'
-
-  line:tick:
-    desc: "One beat of the line by hand: the gates, the bookkeeping, then a job in the planning lane and one in the build lane unless a lane is in use (task serve runs the same beat every minute, the launchd agent every 15; docs/integrations/story.md)"
-    cmds:
-      - '{{.RUN}} airlie line tick {{.CLI_ARGS}}'
-
-  story:tick:
-    desc: "The old name of line:tick, kept for a release (it says so and runs the same beat)"
-    cmds:
-      - '{{.RUN}} airlie story tick {{.CLI_ARGS}}'
-
-  story:restack:
-    desc: "Move a stopped story onto the trunk as it is now: its built layers replayed and gated there, then the next task story builds on today's trunk (task story:restack -- ISSUE)"
-    cmds:
-      - '{{.RUN}} airlie story restack {{.CLI_ARGS}}'
-
-  story:restart:
-    desc: "Start a story over from a step on the trunk as it is now: its PRs closed, the branches of what goes deleted, its run archived, the layers it keeps replayed and gated on the trunk, the card back in approved (task story:restart -- AIR-54 [--from refine|layers|amigos|packages|layer-NN])"
-    cmds:
-      - '{{.RUN}} airlie story restart {{.CLI_ARGS}}'
-
-  story:pr-body:
-    desc: "Print the PR body a built layer would get now: the chain, the layer's package, its tests as the contract, the checks, the cost and the stack; no network, nothing published (task story:pr-body -- AIR-9 2)"
-    cmds:
-      - '{{.RUN}} airlie story pr-body {{.CLI_ARGS}}'
-
-  story:describe:
-    desc: "Rebuild and edit (gh pr edit) the title and body of every PR a published story has, so an older stack carries the provenance too; changes PRs on GitHub, so only by hand (task story:describe -- AIR-9)"
-    cmds:
-      - '{{.RUN}} airlie story describe {{.CLI_ARGS}}'
-
-  line:stats:
-    desc: "The numbers that judge whether stories go through unattended: the unattended rate, blocks by class and kind with the fix cards filed, hours against estimates, the amigos' objections and how many were borne out, the budgets' overruns (task line:stats -- [--since 2026-10-18])"
-    cmds:
-      - '{{.RUN}} airlie line stats {{.CLI_ARGS}}'
-
-  line:pause:
-    desc: "Hold the line: every beat does the gates and the bookkeeping and starts no job; a running job finishes (task line:resume lets it go; a card moved to blocked or todo holds itself and everything under it)"
-    cmds:
-      - '{{.RUN}} airlie line pause {{.CLI_ARGS}}'
-
-  line:resume:
-    desc: "Let the line go again after task line:pause"
-    cmds:
-      - '{{.RUN}} airlie line resume {{.CLI_ARGS}}'
-
-  line:why:
-    desc: "Why a story blocked: its class by rules, Muse's reading, what happens next and the evidence (task line:why -- AIR-9 [--n 2] [--paths])"
-    cmds:
-      - '{{.RUN}} airlie line why {{.CLI_ARGS}}'
-
-  line:deploy:
-    desc: "After a fix card merged: pull the home checkout's trunk (fast-forward), then say whether task serve must be restarted; the line never does either itself"
-    cmds:
-      - '{{.RUN}} airlie line deploy {{.CLI_ARGS}}'
 
   supervisor:log:
     desc: "The newest supervisor interventions: id, time, story/layer, trigger, category, outcome (task supervisor:log -- --limit 50)"
@@ -131,11 +66,6 @@ tasks:
     cmds:
       - '{{.RUN}} airlie supervisor try {{.CLI_ARGS}}'
 
-  story:steps:
-    desc: "Steps each story role spent before its first write: reads, pages, repeats, brief-file re-reads (task story:steps -- AIR-9 AIR-31)"
-    cmds:
-      - '{{.RUN}} airlie story steps {{.CLI_ARGS}}'
-
   prompts:audit:
     desc: "Advisory: Muse reads each role's full instructions (role prompt, rules, steering) and lists the ones that contradict; writes a report under the state dir's runs/ (task prompts:audit -- [--role NAME]...)"
     cmds:
@@ -145,11 +75,6 @@ tasks:
     desc: "Every governs subject in use, with the hub texts and role prompts that tag it, so a near-duplicate subject shows (no engine needed)"
     cmds:
       - '{{.RUN}} airlie prompts subjects {{.CLI_ARGS}}'
-
-  story:check:
-    desc: "Check what task story needs: roles, gh + gh-stack, who publishes (your gh login or story.github_app's bot), the Jira project and its statuses; task story:check -- ISSUE also its repo: label, checkout, remote, trunk and test gate"
-    cmds:
-      - '{{.RUN}} airlie story check {{.CLI_ARGS}}'
 
   gpu:limit:
     desc: "Set iogpu.wired_limit_mb to memory.wired_limit_mb now and at every boot (a LaunchDaemon in /Library/LaunchDaemons; asks for your password)"
@@ -164,23 +89,6 @@ tasks:
         sudo launchctl bootout system/dev.airlie.gpu-limit 2>/dev/null || true
         sudo launchctl bootstrap system /Library/LaunchDaemons/dev.airlie.gpu-limit.plist
         echo "iogpu.wired_limit_mb=$MB now and at every boot"
-
-  line:launchd:install:
-    desc: "Load the launchd agent that runs a beat of the line (airlie line tick) every 15 minutes from this checkout, the belt beside task serve's own minute-by-minute beat; it also removes the older dev.airlie.story-tick agent (docs/integrations/story.md)"
-    cmds:
-      - mkdir -p ~/Library/LaunchAgents ~/.local/state/airlie
-      - test ! -f ~/Library/LaunchAgents/dev.airlie.story-tick.plist || { launchctl bootout gui/$(id -u)/dev.airlie.story-tick 2>/dev/null; rm -f ~/Library/LaunchAgents/dev.airlie.story-tick.plist; echo "removed the old dev.airlie.story-tick agent"; }
-      - sed -e 's|__AIRLIE_DIR__|{{.ROOT_DIR}}|g' -e "s|__HOME__|$HOME|g" docs/integrations/line-tick.plist > ~/Library/LaunchAgents/dev.airlie.line-tick.plist
-      - plutil -lint ~/Library/LaunchAgents/dev.airlie.line-tick.plist
-      - launchctl bootout gui/$(id -u)/dev.airlie.line-tick 2>/dev/null || true
-      - launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.airlie.line-tick.plist
-      - echo "loaded; the log is ~/.local/state/airlie/line-tick.log"
-
-  line:launchd:uninstall:
-    desc: "Unload the line's launchd agent and remove its plist"
-    cmds:
-      - launchctl bootout gui/$(id -u)/dev.airlie.line-tick 2>/dev/null || true
-      - rm -f ~/Library/LaunchAgents/dev.airlie.line-tick.plist
 
   eval:
     desc: "Run a graded coding task end to end (task eval -- lang_detect --k 1 | --topology fork)"
@@ -365,7 +273,7 @@ tasks:
     sources:
       - web/**/*
       - exclude: web/node_modules/**/*
-      - config/workflows/*.yaml  # the builder's tests read the shipped workflows
+      - tests/fixtures/workflows/*.yaml  # builder/e2e fixtures (production ships no workflows)
       - src/airlie/prompts/rules/output-format.md  # fields.test.ts holds the format sentence to it
     # Task stores the checksum of `sources` before the commands run and drops it only when one fails, so a run killed
     # partway (a tool's timeout, a closed terminal) would count as passed next time. The task is up to date only while

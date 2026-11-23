@@ -394,6 +394,8 @@ def test_a_plain_chats_status_has_no_vm_and_no_branch_but_the_engine_and_memory(
 
     assert r.status_code == 200
     assert r.json() == {
+        "model": "base",
+        "persona": "chat",
         "vm": None,
         "engine": {
             "name": "main",

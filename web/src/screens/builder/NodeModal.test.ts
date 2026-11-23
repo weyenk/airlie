@@ -2,7 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { CATALOG } from "@/test-utils/catalog";
 import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
 import { fromWorkflow, withBundle } from "./graph";
-import type { Graph, NodeSpec, NodeType } from "./graph";
+import type { Graph, NodeSpec, NodeKind } from "./graph";
 import NodeModal from "./NodeModal.vue";
 import OutputsEditor from "./OutputsEditor.vue";
 import { parseWorkflow } from "./yaml";
@@ -12,18 +12,18 @@ const graph: Graph = fromWorkflow("t", {
   inputs: ["card", "repo"],
   outputs: [],
   nodes: {
-    survey: { type: "ask", role: "architect", prompt: "Survey {card}.", inputs: ["card"], outputs: { survey: "markdown" }, to: ["plan"] },
-    plan: { type: "ask", role: "architect", prompt: "prompt:plan-brief", inputs: ["survey"], outputs: { plan: { format: "json", fields: { verdict: "pass | fail", notes: "list of text?" } } } },
-    talk: { type: "conversation", role: "architect", prompt: "Talk.", turn: "Go on.", inputs: [], outputs: { chat: "session", layers: "list" }, to: ["more", "other"] },
-    other: { type: "conversation", role: "coder", prompt: "x", outputs: { coder_chat: "session" } },
-    more: { type: "conversation", role: "architect", prompt: "More.", inputs: ["chat"], outputs: {}, to: ["later"] },
-    later: { type: "conversation", role: "architect", prompt: "Later.", outputs: { later_chat: "session" } },
-    loner: { type: "conversation", role: "qa", prompt: "y", outputs: {} },
-    crew: { type: "team", role: { supervisor: "chief", worker: "coder" }, prompt: "Split it.", worker: "Do {assignment}.", inputs: ["plan"], outputs: {} },
-    amigos: { type: "meeting", role: ["product", "architect", "tester"], inputs: ["story", "layers"], outputs: { agreement: "json" } },
-    base: { type: "check", run: "", inputs: ["card"], outputs: {} },
-    each: { type: "bundle", workflow: "layer", inputs: ["layers", "card"], each: "layers", outputs: {} },
-  } as Record<string, NodeSpec & { type: NodeType }>,
+    survey: { kind: "WORK", role: "architect", prompt: "Survey {card}.", inputs: ["card"], outputs: { survey: "markdown" }, to: ["plan"] },
+    plan: { kind: "WORK", role: "architect", prompt: "prompt:plan-brief", inputs: ["survey"], outputs: { plan: { format: "json", fields: { verdict: "pass | fail", notes: "list of text?" } } } },
+    talk: { kind: "WORK", role: "architect", prompt: "Talk.", turn: "Go on.", inputs: [], outputs: { chat: "session", layers: "list" }, to: ["more", "other"] },
+    other: { kind: "WORK", role: "coder", prompt: "x", outputs: { coder_chat: "session" } },
+    more: { kind: "WORK", role: "architect", prompt: "More.", inputs: ["chat"], outputs: {}, to: ["later"] },
+    later: { kind: "WORK", role: "architect", prompt: "Later.", outputs: { later_chat: "session" } },
+    loner: { kind: "WORK", role: "qa", prompt: "y", outputs: {} },
+    crew: { kind: "SUPERVISOR_WORKERS", role: { supervisor: "chief", worker: "coder" }, prompt: "Split it.", worker: "Do {assignment}.", inputs: ["plan"], outputs: {} },
+    amigos: { kind: "ROUND_ROBIN", role: ["product", "architect", "tester"], inputs: ["story", "layers"], outputs: { agreement: "json" } },
+    base: { kind: "WORK", run: "", inputs: ["card"], outputs: {} },
+    each: { kind: "WORK", workflow: "layer", inputs: ["layers", "card"], each: "layers", outputs: {} },
+  } as Record<string, NodeSpec & { kind: NodeKind }>,
 });
 const prompts = { "plan-brief": "---\nkind: rule\nroles: [architect]\nfields: [survey]\nwhy: |\n  w\n---\nRead {survey}.\n" };
 
@@ -140,7 +140,11 @@ test("picking the check already set changes nothing; another merges: offered out
   expect(w.emitted("update")).toBeUndefined();
   const before = layer.nodes.find((n) => n.id === "package")!.spec;
   // the box's own satisfied.{item} has fields: a check that still offers it keeps them
-  const fielded = { ...before, outputs: { "package.{item}": "json", "satisfied.{item}": { format: "json", fields: { why: "text" } } } };
+  const fielded = {
+    ...before,
+    args: { session: "drafts_session" },
+    outputs: { "package.{item}": "json", "satisfied.{item}": { format: "json", fields: { why: "text" } } },
+  };
   await w.setProps({ node: { ...layer.nodes.find((n) => n.id === "package")!, spec: fielded } });
   $<HTMLButtonElement>("[data-check='story.covered']")!.click();
   await flushPromises();
@@ -204,7 +208,7 @@ test("a meeting shows the node's own seats and inputs: the protocol's fixed, an 
   expect(box("[data-input-name=base]").dataset.fixed).toBeUndefined();
   // nothing of the protocol is missing: no button to seat it
   expect($("[data-meeting-seat]")).toBeNull();
-  expect($("[data-input=prompt]")).toBeNull(); // amigos's prompt is a prompt file
+  expect($("[data-input=prompt]")).not.toBeNull();
   box("[data-input-name=base]").click();
   await flushPromises();
   expect(lastUpdate(w)!.inputs).toEqual(["story", "layers"]);
@@ -213,7 +217,7 @@ test("a meeting shows the node's own seats and inputs: the protocol's fixed, an 
 test("a meeting missing a protocol input or seat offers to add it, after what it lists, never replacing the list", async () => {
   const story = shipped(STORY_YAML);
   const amigos = story.nodes.find((n) => n.id === "amigos")!;
-  const g: Graph = { ...story, nodes: story.nodes.map((n) => (n.id === "amigos" ? { ...n, spec: { ...amigos.spec, role: ["architect"], inputs: ["base", "story"] } } : n)) };
+  const g: Graph = { ...story, nodes: story.nodes.map((n) => (n.id === "amigos" ? { ...n, spec: { ...amigos.spec, roles: ["architect"], inputs: ["base", "story"] } } : n)) };
   const w = mountIn(g, "amigos");
   await flushPromises();
   // a missing one is listed unchecked and may be checked
@@ -223,7 +227,7 @@ test("a meeting missing a protocol input or seat offers to add it, after what it
   expect($("[data-meeting-seat]")!.textContent).toContain("product, layers");
   $<HTMLButtonElement>("[data-meeting-seat]")!.click();
   await flushPromises();
-  expect(lastUpdate(w)).toMatchObject({ role: ["architect", "product"], inputs: ["base", "story", "layers"] });
+  expect(lastUpdate(w)).toMatchObject({ roles: ["architect", "product"], inputs: ["base", "story", "layers"] });
 });
 
 test("a bundle picks its workflow, runs once per item of a list input, and shows the bundle's ports once they are known", async () => {

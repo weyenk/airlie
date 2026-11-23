@@ -1,0 +1,274 @@
+"""The four-node-kind model and wire-edge types.
+
+Node kinds are WORK, ROUND_ROBIN, SUPERVISOR_WORKERS, and K_INDEPENDENT_TEAMS.
+Wire conditions live on the connectors (WireSpec) not on node bodies.
+Gates are evidence on WORK nodes, not their own kind."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Annotated, Any, Literal
+
+import yaml
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+
+
+class Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+NodeKind = Literal["WORK", "ROUND_ROBIN", "SUPERVISOR_WORKERS", "K_INDEPENDENT_TEAMS"]
+FormatKind = Literal["text", "json", "markdown", "bool", "list"]
+
+
+class FormatSpec(Strict):
+    """Output format: text/json/markdown/bool/list."""
+
+    format: FormatKind
+    transient: bool = False
+
+
+def _format_value(value: Any) -> Any:
+    """The shorthand `name: json` and the full `name: {format, transient}` both give a FormatSpec."""
+    return {"format": value} if isinstance(value, str) else value
+
+
+FormatValue = Annotated[FormatSpec, BeforeValidator(_format_value)]
+
+
+class ScriptEvidence(Strict):
+    """Evidence a step is finished: run this shell command; non-zero = not done."""
+
+    type: Literal["script"]
+    cmd: str
+
+
+class PromptJudgment(Strict):
+    """Evidence a step is finished: ask the judge role whether done."""
+
+    type: Literal["prompt"]
+    prompt: str
+
+
+class StepCount(Strict):
+    """Evidence a step is finished: stop the run after N steps."""
+
+    type: Literal["steps"]
+    steps: int
+
+
+GateEvidence = ScriptEvidence | PromptJudgment | StepCount
+
+
+class LoopBound(Strict):
+    """Wire bound on a loop; max may be an int or a dotted config path."""
+
+    max: int | str
+    carry: str | None = None
+
+
+class WireSpec(Strict):
+    """Connector between nodes; carries condition and artifacts."""
+
+    target: str
+    when: str | None = None
+    loop: LoopBound | None = None
+    carries: list[str] = []
+
+
+def _wire(value: Any) -> Any:
+    """A bare target name (`b`) and the full `{target, when, loop}` both give a WireSpec."""
+    return {"target": value} if isinstance(value, str) else value
+
+
+WireValue = Annotated[WireSpec, BeforeValidator(_wire)]
+
+
+class WorkNode(Strict):
+    """One agent task, or one shell command."""
+
+    kind: Literal["WORK"]
+    role: str | None = None  # the seat a prompt/prompt_id WORK node calls; a run node ignores it
+    prompt: str | None = None
+    prompt_id: str | None = None
+    run: str | None = None
+    inputs: list[str] = []
+    outputs: dict[str, FormatValue] = {}
+    steps: int | str | None = None
+    on_fail: Literal["block", "continue"] = "block"
+    gate: GateEvidence | None = None
+    events: dict[str, str] = {}
+
+    @model_validator(mode="after")
+    def _check_sources(self) -> WorkNode:
+        n = sum(bool(v) for v in (self.prompt, self.prompt_id, self.run))
+        if n != 1:
+            raise ValueError("WORK node needs exactly one of prompt/prompt_id/run")
+        return self
+
+
+class RoundRobinNode(Strict):
+    """Agents take turns until agreement or steps exhausted."""
+
+    kind: Literal["ROUND_ROBIN"]
+    roles: list[str]
+    prompt: str
+    agreement_when: str
+    outputs: dict[str, FormatValue] = {}
+    inputs: list[str] = []
+    steps: int | str = 12
+    on_fail: Literal["block", "continue"] = "block"
+    events: dict[str, str] = {}
+
+    @model_validator(mode="after")
+    def _check_roles(self) -> RoundRobinNode:
+        if len(self.roles) < 2:
+            raise ValueError("ROUND_ROBIN needs >=2 roles")
+        return self
+
+
+class SupervisorWorkersNode(Strict):
+    """Supervisor splits, workers run, supervisor assembles."""
+
+    kind: Literal["SUPERVISOR_WORKERS"]
+    supervisor: str
+    worker: str
+    workers: int = 5
+    prompt: str
+    outputs: dict[str, FormatValue] = {}
+    inputs: list[str] = []
+    steps: int | str = 12
+    on_fail: Literal["block", "continue"] = "block"
+    events: dict[str, str] = {}
+
+    @model_validator(mode="after")
+    def _check_workers(self) -> SupervisorWorkersNode:
+        if self.workers < 1:
+            raise ValueError("SUPERVISOR_WORKERS needs workers >= 1")
+        return self
+
+
+class KIndependentTeamsNode(Strict):
+    """K teams run same task; aggregate picks winner."""
+
+    kind: Literal["K_INDEPENDENT_TEAMS"]
+    teams: int = 2
+    roles: list[str]
+    prompt: str
+    outputs: dict[str, FormatValue] = {}
+    inputs: list[str] = []
+    steps: int | str = 12
+    aggregate: Literal["test-score", "llm"] = "test-score"
+    test_cmd: str | None = None
+    on_fail: Literal["block", "continue"] = "block"
+    events: dict[str, str] = {}
+
+    @model_validator(mode="after")
+    def _check_teams(self) -> KIndependentTeamsNode:
+        if self.teams < 1:
+            raise ValueError("K_INDEPENDENT_TEAMS needs teams >= 1")
+        return self
+
+
+NodeSpec = Annotated[
+    WorkNode | RoundRobinNode | SupervisorWorkersNode | KIndependentTeamsNode,
+    Field(discriminator="kind"),
+]
+
+
+NODE_MODELS: dict[str, type[Strict]] = {
+    "WORK": WorkNode,
+    "ROUND_ROBIN": RoundRobinNode,
+    "SUPERVISOR_WORKERS": SupervisorWorkersNode,
+    "K_INDEPENDENT_TEAMS": KIndependentTeamsNode,
+}
+"""Each node kind's spec model, in `NodeKind` order: what the catalog describes."""
+
+
+def node_kind_catalog() -> list[dict[str, Any]]:
+    """The four kinds: the fields each takes (its spec model, less the `kind` tag) and those it requires."""
+    out: list[dict[str, Any]] = []
+    for kind, model in NODE_MODELS.items():
+        fields = [(n, f) for n, f in model.model_fields.items() if n != "kind"]
+        required = [n for n, f in fields if f.is_required()]
+        out.append({"kind": kind, "fields": [n for n, _ in fields], "required": required})
+    return out
+
+
+class WorkflowSpec(Strict):
+    """A workflow as nodes joined by wires."""
+
+    title: str
+    inputs: list[str]
+    nodes: dict[str, NodeSpec]
+    edges: dict[str, list[WireValue]] = Field(default_factory=dict)
+    outputs: list[str] = []
+    # Builder-only: where boxes sit on the canvas. The engine ignores it.
+    layout: dict[str, dict[str, float]] | None = None
+    # Card/picker label when set; otherwise callers fall back to `title`.
+    type: str | None = None
+
+
+def _unreachable_nodes(spec: WorkflowSpec) -> set[str]:
+    """Nodes not reachable from the start of the graph."""
+    adj: dict[str, set[str]] = {n: set() for n in spec.nodes}
+    for s, wires in spec.edges.items():
+        for w in wires:
+            if w.target in spec.nodes:
+                adj[s].add(w.target)
+    # Start = nodes with NO inbound wires. If none, first node.
+    targets = {w.target for wires in spec.edges.values() for w in wires}
+    starts = [n for n in spec.nodes if n not in targets]
+    if not starts:
+        starts = [list(spec.nodes)[0]]
+    # Only start from the FIRST start node — others are orphans
+    reached: set[str] = set()
+    frontier = [starts[0]]
+    while frontier:
+        cur = frontier.pop()
+        if cur in reached:
+            continue
+        reached.add(cur)
+        frontier.extend(adj.get(cur, []))
+    # But also if any other start-node isn't in adj[starts[0]], mark unreachable
+    unreachable = set(spec.nodes) - reached
+    # If graph is cyclic and starts[0] can reach itself, all may be reached.
+    return unreachable if unreachable else set()
+
+
+def validate_workflow(raw: dict[str, Any]) -> list[str]:
+    if not raw.get("nodes"):
+        return ["no nodes"]
+    try:
+        spec = WorkflowSpec.model_validate(raw)
+    except Exception as e:
+        return [f"Invalid node/edge: {e}"]
+    problems: list[str] = []
+    for src, wires in spec.edges.items():
+        for w in wires:
+            if w.target not in spec.nodes:
+                problems.append(f"edge {src}->{w.target}: target not a node")
+    for src, wires in spec.edges.items():
+        if not wires:
+            continue
+        # Every outgoing edge conditioned with the same expression and no complementary path:
+        # silent dead end. A single edge that carries `loop` may stop when its when is unmet.
+        whens = [w.when.strip() if w.when is not None else None for w in wires]
+        if None in whens or len(set(whens)) != 1:
+            continue
+        only = whens[0]
+        looping = any(w.loop is not None for w in wires)
+        if only == "false" or len(wires) > 1 or not looping:
+            problems.append(f"{src}: every edge has the same when {only!r} -- silent dead end")
+    unreachable = _unreachable_nodes(spec)
+    if unreachable:
+        problems.append(f"unreachable nodes: {sorted(unreachable)}")
+    return problems
+
+
+def load_workflow(path: Path) -> WorkflowSpec:
+    raw = yaml.safe_load(path.read_text())
+    errs = validate_workflow(raw)
+    if errs:
+        raise ValueError(f"invalid workflow {path}: {errs}")
+    return WorkflowSpec.model_validate(raw)

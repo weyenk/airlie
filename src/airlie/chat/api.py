@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from functools import partial
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import anyio
 import httpx
@@ -45,12 +45,18 @@ from airlie.engine.protocol import Engine
 from airlie.engine.types import ContentPart, EngineError
 from airlie.manager.client import InProcessHolder
 from airlie.manager.core import Manager
+from airlie.models.allowed import allowed_ids
+from airlie.models.allowlist import ModelAllowlist
+from airlie.models.live import LiveModelsError
 from airlie.serve.bridge.clock import Clock, RealClock
 from airlie.serve.uploads import TooManyAttachments
 from airlie.skills.library import Skill
 from airlie.sources.access import RepoAccess
 from airlie.story.publish import PublishError
 from airlie.tools.protocol import Tool, ToolContext
+
+if TYPE_CHECKING:
+    from airlie.serve.dispatcher import ChatLease
 
 log = logging.getLogger("airlie.chat.api")
 MISCONFIGURED = "chat is misconfigured; see the server log or run airlie doctor"
@@ -63,7 +69,9 @@ EMPTY_CHATS_MAX = 20
 NO_ENGINE = "the chat role has no engine; see the server log or run airlie doctor"
 STORED_PART_TYPES = ("text", "airlie_upload")
 """The parts of a user message the server keeps and the model can take; any other part is dropped."""
-Attach = Callable[[Principal, list[dict[str, Any]]], Awaitable[list[dict[str, Any]]]]
+ChatSlot = Callable[[str], "Awaitable[ChatLease]"]
+"""Claims a run slot for a chat turn (the dispatcher's `request_chat_slot`)."""
+Attach = Callable[[Principal, list[dict[str, Any]], bool], Awaitable[list[dict[str, Any]]]]
 """Wire messages (`content` lists with `airlie_upload` parts) resolved for the chat model, in order."""
 
 
@@ -130,7 +138,8 @@ BaseRef = Annotated[str, Field(max_length=200), AfterValidator(_a_ref)]
 class TurnBody(BaseModel):
     """The AI SDK's request body plus `kind`, `skill` and, for a repository chat, `repo` (owner/name, named
     when the chat is first opened), `base_ref` (a branch or commit; default main) and `approvals` (the
-    person's answers to the permission requests the stream carried); unknown fields (a `tools` list among
+    person's answers to the permission requests the stream carried); `model` and `persona` change the chat's
+    pick before the turn runs, as PATCH does; unknown fields (a `tools` list among
     them) are ignored."""
 
     model_config = ConfigDict(extra="ignore")
@@ -141,6 +150,8 @@ class TurnBody(BaseModel):
     repo: RepoName | None = None
     base_ref: BaseRef | None = None
     approvals: list[Approval] = Field(default_factory=list, max_length=50)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    persona: str | None = Field(default=None, min_length=1, max_length=200)
 
     @property
     def resumes(self) -> bool:
@@ -185,18 +196,44 @@ def _said(text: str) -> str:
     return text
 
 
+def _workflow_name(value: str | None) -> str | None:
+    """A workflow name as the card's `workflow:<name>` label holds it: blank is none (no label), and a name
+    with whitespace in it could not be one."""
+    name = (value or "").strip()
+    if any(c.isspace() for c in name):
+        raise ValueError("a workflow name has no spaces")
+    return name or None
+
+
 class StartStory(BaseModel):
-    """`POST .../stories/{story}/start`: the story card's request as the person edited it, and the
-    repository it is for (owner/name, or the path of a checkout)."""
+    """`POST .../stories/{story}/start`: the story card's request as the person edited it, the repository it
+    is for (owner/name, or the path of a checkout) and, when one was chosen, the workflow the card runs (its
+    `workflow:<name>` label; blank or left out: no label)."""
 
     model_config = ConfigDict(extra="forbid")
     text: Annotated[str, Field(max_length=20_000), AfterValidator(_said)]
     repo: str = Field(min_length=1, max_length=500)
+    workflow: Annotated[str | None, Field(max_length=200), AfterValidator(_workflow_name)] = None
 
 
-StartStoryJob = Callable[[str, str], Awaitable[dict[str, Any]]]
-"""Start a story from a written request on a repository: `{job_id, kind}`, or an HTTPException saying why
-not (serve's `POST /v1/airlie/stories`)."""
+class ChatSettings(BaseModel):
+    """`PATCH /v1/airlie/chat/threads/{id}`: the model and/or persona a chat runs with."""
+
+    model_config = ConfigDict(extra="forbid")
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    persona: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def _names_one(self) -> ChatSettings:
+        if self.model is None and self.persona is None:
+            raise ValueError("name a model or a persona to change")
+        return self
+
+
+StartStoryJob = Callable[[str, str, str | None], Awaitable[dict[str, Any]]]
+"""Start a story from a written request on a repository, with the workflow its card is to run (None: no
+`workflow:` label): `{job_id, kind}`, or an HTTPException saying why not (serve's
+`POST /v1/airlie/stories`)."""
 
 
 def branch_of(thread_id: str, kind: ChatKind) -> str | None:
@@ -220,7 +257,7 @@ def content_parts(resolved: list[dict[str, Any]]) -> tuple[ContentPart, ...]:
 
 
 async def attachment_parts(
-    attach: Attach, principal: Principal, thread: Thread, new: StoredMessage | None
+    attach: Attach, principal: Principal, thread: Thread, new: StoredMessage | None, vision: bool
 ) -> dict[str, tuple[ContentPart, ...]]:
     """What the model gets for each user message that carries attachments, the thread's and the new one,
     resolved together so the history caps (the newest pictures go as pixels) hold as in the old route."""
@@ -229,7 +266,7 @@ async def attachment_parts(
     if not any(p.get("type") == "airlie_upload" for m in users for p in m.parts):
         return {}
     wire = [{"role": "user", "content": list(m.parts)} for m in users]
-    resolved = await attach(principal, wire)
+    resolved = await attach(principal, wire, vision)
     return {m.id: content_parts(r["content"]) for m, r in zip(users, resolved, strict=True)}
 
 
@@ -324,13 +361,20 @@ def chat_router(
     access: RepoAccess | None = None,
     background: set[asyncio.Task[None]] | None = None,
     start_story: StartStoryJob | None = None,
+    allowlist: ModelAllowlist | None = None,
+    live_ids: Callable[[], Awaitable[list[str]]] | None = None,
+    chat_slot: ChatSlot | None = None,
 ) -> APIRouter:
     """`publish` is the live feed's: each change to a thread (made, a turn's end, an answer, deleted) sends
     the `chat` hint with no key (the feed reaches every signed-in client: it names no one's chat; each
     refetches its own). `access` is the server-side rule for repository chats: making one, each turn and the
     pre-warm ask it (a person's own repositories, nothing else: 403); without one every repository is
     allowed and none is pre-warmed. `background` keeps those starts (serve's shutdown and tests wait on
-    them). `start_story` starts a story card's story on the board."""
+    them). `start_story` starts a story card's story on the board. A chat's model is one of the engine's
+    live model ids (`live_ids`; the catalog's names when it cannot be asked) that `allowlist` has not
+    switched off. `chat_slot`, when given, is what a turn awaits (with its thread's id) for one of the
+    system's run slots before it streams: it may pause a board run to make room or wait for one, and the
+    slot is released when the turn ends."""
     router = APIRouter()
     background = background if background is not None else set()
     prewarmed: dict[str, list[str]] = {}  # per person: the chats whose VM was started before a message
@@ -349,6 +393,61 @@ def chat_router(
             await threads.remove(thread.id, principal.user_id)
         except Exception:
             log.exception("removing the empty thread %s failed", thread.id)
+
+    async def allowed_models() -> list[str]:
+        """The model ids a chat may pick now: the engine's live ones (the catalog's when it cannot be
+        asked) without the ones switched off."""
+        live: list[str] = []
+        if live_ids is not None:
+            try:
+                live = await live_ids()
+            except (LiveModelsError, httpx.HTTPError) as e:
+                log.warning("chat options: engine model list unavailable: %s", e)
+        live = live or list(cfg.models)
+        return live if allowlist is None else allowed_ids(allowlist, live)
+
+    async def refuse_settings(model: str | None, persona: str | None) -> JSONResponse | None:
+        """The 400 for a persona that is not a configured role or a model that is not allowed now (PATCH and a
+        turn that names its own pick share it), else None."""
+        if persona is not None and persona not in cfg.roles:
+            return error(f"unknown persona '{persona}'; roles: {', '.join(cfg.roles)}", 400)
+        if model is not None and model not in await allowed_models():
+            return error(f"model '{model}' is not allowed in airlie", 400)
+        return None
+
+    def engine_of(model: str, default: str) -> str:
+        """The engine that serves `model`; `default` (the chat role's) for a live id the catalog does not
+        list."""
+        try:
+            return cfg.engine_for_model(model)
+        except KeyError:
+            return default
+
+    async def seed() -> tuple[str, str]:
+        """(model, persona) of a new chat: the chat role, on its model unless that is switched off (then the
+        first allowed one). The engine is asked only in that case, so making a chat costs no request."""
+        default = cfg.roles["chat"].model if "chat" in cfg.roles else ""
+        if allowlist is None or allowlist.is_allowed(default):
+            return default, "chat"
+        allowed = await allowed_models()
+        return (allowed[0] if allowed else default), "chat"
+
+    def thread_json(t: Thread) -> dict[str, Any]:
+        return {
+            "id": t.id,
+            "title": t.title,
+            "kind": t.kind,
+            "repo": t.repo,
+            "base_ref": t.base_ref,
+            "branch": branch_of(t.id, t.kind),
+            "model": t.model,
+            "persona": t.persona,
+            "running": t.id in busy,
+            "created": t.created,
+            "updated": t.updated,
+            "todos": t.todos,
+            "messages": [shown_message(t.id, m) for m in t.messages],
+        }
 
     def principal_of(request: Request) -> Principal | None:
         return getattr(request.state, "principal", None)
@@ -382,15 +481,25 @@ def chat_router(
             return error(NO_ENGINE, 503)
         if body.resumes and not threads.exists(body.id):  # an answer is for a chat that asked
             return error("no such thread", 404)
+        refused_pick = await refuse_settings(body.model, body.persona)  # before a thread is made for it
+        if refused_pick is not None:
+            return refused_pick
         if body.kind == "repository":
             if repo_sessions is None:
                 return error("repository chats are not configured on this server", 503)
             if body.repo is None and not threads.exists(body.id):
                 return error("a repository chat names its repository: repo is owner/name", 422)
         fresh = not threads.exists(body.id)  # a thread this request makes leaves no empty row if refused
+        model, persona = await seed() if fresh else (None, None)
         try:
             thread = threads.open(
-                body.id, principal.user_id, body.kind, repo=body.repo, base_ref=body.base_ref
+                body.id,
+                principal.user_id,
+                body.kind,
+                repo=body.repo,
+                base_ref=body.base_ref,
+                model=model,
+                persona=persona,
             )
         except ThreadNotFound:
             return error("no such thread", 404)
@@ -403,6 +512,10 @@ def chat_router(
         turn = busy.take(thread.id)
         if turn is None:
             return error("this thread has a turn running; wait for it to finish", 409)
+        if body.model is not None or body.persona is not None:  # the turn's own pick becomes the chat's
+            threads.set_settings(thread.id, model=body.model, persona=body.persona)
+            thread.model = body.model or thread.model
+            thread.persona = body.persona or thread.persona
         answered = confirmations.approve(thread.id, body.approvals)  # the person's own, never the model's
         engines: list[Engine] = []
         released = False
@@ -455,6 +568,13 @@ def chat_router(
         started: list[bool],
         used: list[bool],
     ) -> Response:
+        persona = thread.persona if thread.persona in cfg.roles else "chat"  # its role may be gone since
+        model = thread.model or cfg.roles["chat"].model
+        if allowlist is not None and not allowlist.is_allowed(model):
+            # a saved pick switched off since keeps its id (until another is picked), not its turns; the
+            # allowlist alone says so, so a turn costs the engine no model-list request
+            return error(f"model '{model}' is not allowed in airlie", 400)
+        engine_name = engine_of(model, engine_name)
         stored: StoredMessage | None = None
         retries: str | None = None
         parts: list[dict[str, Any]] = []
@@ -485,6 +605,7 @@ def chat_router(
             principal,
             attachments=sum(p.get("type") == "airlie_upload" for p in parts),
             skill=body.skill,
+            persona=persona,
         )
         try:
             await hooks.run("session_start", ctx)
@@ -534,12 +655,12 @@ def chat_router(
         if chat is not None and repo_sessions is not None:  # the VM is held for the turn, inside the stream
             around = partial(repo_sessions.turn, chat, f"chat:{thread.id}")  # (a boot failure is a chunk)
         try:
-            user_parts = await attachment_parts(attach, principal, thread, stored)
+            user_parts = await attachment_parts(attach, principal, thread, stored, cfg.roles[persona].vision)
         except TooManyAttachments as e:
             return error(str(e), 400)
         from airlie.cli import _http_engine  # imported here: the cli imports serve
 
-        engine = _http_engine(cfg, engine_name, transport=transport)
+        engine = _http_engine(cfg, engine_name, model, transport=transport)
         engines.append(engine)
         await engine.start()
         answers = {a.id: a.approved for a in answered}
@@ -559,7 +680,10 @@ def chat_router(
 
         async def stream() -> AsyncIterator[str]:
             started[0] = True
+            lease: ChatLease | None = None
             try:
+                if chat_slot is not None:
+                    lease = await chat_slot(thread.id)  # may pause a board run, or wait for a slot
                 async for chunk in run_turn(
                     TurnRequest(
                         thread,
@@ -581,7 +705,8 @@ def chat_router(
                     todos=todos,
                     store=threads,
                     hooks=hooks,
-                    role=cfg.roles["chat"],
+                    role=cfg.roles[persona],  # sampling, thinking, vision: the persona's; tools: the kind's
+                    role_name=persona,
                     max_steps=cfg.chat.max_steps,
                     clock=clock,
                     status=manager.status,
@@ -598,6 +723,8 @@ def chat_router(
                 with anyio.CancelScope(
                     shield=True
                 ):  # also when the response was cancelled as the client left
+                    if lease is not None:
+                        await lease.release()
                     await cleanup()
 
         return TurnStream(stream(), cleanup, started, media_type="text/event-stream", headers=STREAM_HEADERS)
@@ -668,7 +795,10 @@ def chat_router(
                 return refused
         if threads.count_empty(principal.user_id) >= EMPTY_CHATS_MAX:
             return error(f"you have {EMPTY_CHATS_MAX} chats with no message yet; use one or delete some", 429)
-        t = threads.create(principal.user_id, body.kind, repo=body.repo, base_ref=body.base_ref)
+        model, persona = await seed()
+        t = threads.create(
+            principal.user_id, body.kind, repo=body.repo, base_ref=body.base_ref, model=model, persona=persona
+        )
         publish("chat", None)
         if t.repo is not None and await may_prewarm(principal.user_id, t.id, t.repo):
             task = asyncio.create_task(prewarm(t))
@@ -676,7 +806,9 @@ def chat_router(
             prewarms[t.id] = task
             task.add_done_callback(background.discard)
             task.add_done_callback(partial(forget_prewarm, t.id))
-        made = ThreadSummary(t.id, t.title, t.kind, t.updated, t.created, t.repo, t.base_ref)
+        made = ThreadSummary(
+            t.id, t.title, t.kind, t.updated, t.created, t.repo, t.base_ref, t.model, t.persona
+        )
         return JSONResponse(summary_json(made, False), status_code=201)
 
     def shown_message(thread_id: str, message: StoredMessage) -> dict[str, Any]:
@@ -703,18 +835,39 @@ def chat_router(
             t = threads.get(thread_id, principal.user_id)
         except ThreadNotFound:
             return error("no such thread", 404)
+        return thread_json(t)
+
+    @router.patch("/v1/airlie/chat/threads/{thread_id}")
+    async def patch_thread(thread_id: str, body: ChatSettings, request: Request) -> Any:
+        """Change the chat's model and/or persona: a model must be one of the allowed ones, a persona a
+        configured role (400 otherwise). Not while a turn runs (409): it holds the settings it began with."""
+        principal = principal_of(request)
+        if principal is None:
+            return error("not signed in", 401)
+        try:
+            threads.get(thread_id, principal.user_id)
+        except ThreadNotFound:
+            return error("no such thread", 404)
+        if thread_id in busy:
+            return error("this thread has a turn running; wait for it to finish", 409)
+        refused = await refuse_settings(body.model, body.persona)
+        if refused is not None:
+            return refused
+        threads.set_settings(thread_id, model=body.model, persona=body.persona)
+        publish("chat", None)
+        return thread_json(threads.get(thread_id, principal.user_id))
+
+    @router.get("/v1/airlie/chat/options")
+    async def chat_options(request: Request) -> Any:
+        """What a chat can be set to: the models allowed now and the personas (the configured roles)."""
+        if principal_of(request) is None:
+            return error("not signed in", 401)
         return {
-            "id": t.id,
-            "title": t.title,
-            "kind": t.kind,
-            "repo": t.repo,
-            "base_ref": t.base_ref,
-            "branch": branch_of(t.id, t.kind),
-            "running": t.id in busy,
-            "created": t.created,
-            "updated": t.updated,
-            "todos": t.todos,
-            "messages": [shown_message(t.id, m) for m in t.messages],
+            "models": [
+                {"id": m, "label": (cfg.models[m].label if m in cfg.models else None) or m}
+                for m in await allowed_models()
+            ],
+            "personas": [{"id": r, "label": r} for r in cfg.roles],
         }
 
     @router.get("/v1/airlie/chat/threads/{thread_id}/status")
@@ -758,14 +911,17 @@ def chat_router(
                 "ahead": ahead,
                 "pushed": pushed,
             }
+        engine_name = engine_of(t.model, engine_name)
         engine = rows.get(engine_name)
-        model = cfg.models[cfg.roles["chat"].model]
+        spec = cfg.models.get(t.model)
         return {
+            "model": t.model,
+            "persona": t.persona,
             "vm": vm,
             "engine": {
                 "name": engine_name,
-                "model": cfg.roles["chat"].model,
-                "label": model.label or cfg.roles["chat"].model,
+                "model": t.model,
+                "label": (spec.label if spec is not None else None) or t.model,
                 "state": engine.state if engine is not None else "stopped",
                 "footprint_gb": manager.footprint_gb(engine_name) if engine is not None else 0.0,
             },
@@ -863,7 +1019,7 @@ def chat_router(
         starting.add(claim)  # no await since the check: the claim and the check are one step
         try:
             try:
-                job = await start_story(body.text.strip(), body.repo.strip())
+                job = await start_story(body.text.strip(), body.repo.strip(), body.workflow)
             except HTTPException as e:  # the board's reason: the card is free to try again
                 return error(str(e.detail), e.status_code)
             label = f"{body.repo.strip().rstrip('/').rsplit('/', 1)[-1]} · story"

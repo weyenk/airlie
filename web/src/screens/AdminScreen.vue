@@ -1,10 +1,12 @@
 <script setup lang="ts">
 // Admin: People. Who can sign in, with their passkeys; Invite (a link to pass on) and Revoke. Admins only.
 import { Copy } from "lucide-vue-next";
-import { computed, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { ApiError } from "@/api";
 import { createInvite, deleteUser, inviteAgain } from "@/api/auth";
 import type { Invite, Role, User } from "@/api/auth";
+import { listModels, setModelAllowed } from "@/api/models";
+import type { ModelRow } from "@/api/models";
 import EmptyState from "@/components/EmptyState.vue";
 import EngineStatusLine from "@/components/EngineStatusLine.vue";
 import ErrorBanner from "@/components/ErrorBanner.vue";
@@ -35,6 +37,39 @@ const session = useSessionStore();
 const { confirm } = useConfirm();
 
 onUnmounted(() => people.closeWindow());
+
+// Models: which upstream models airlie may use. Admins only; a 403 here (a member) leaves the section out.
+const models = ref<ModelRow[] | undefined>(undefined);
+const modelsError = ref("");
+const modelsForbidden = ref(false);
+const switching = ref(new Set<string>()); // ids with a PATCH in flight
+
+async function loadModels(): Promise<void> {
+  try {
+    models.value = await listModels();
+    modelsError.value = "";
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 403) modelsForbidden.value = true;
+    else modelsError.value = `Can't reach the models: ${(e as Error).message}`;
+  }
+}
+
+async function toggleModel(m: ModelRow): Promise<void> {
+  if (switching.value.has(m.id)) return;
+  switching.value.add(m.id);
+  modelsError.value = "";
+  const next = !m.allowed;
+  try {
+    await setModelAllowed(m.id, next);
+    models.value = models.value?.map((r) => (r.id === m.id ? { ...r, allowed: next } : r));
+  } catch (e) {
+    modelsError.value = `Couldn't change ${m.id}: ${(e as Error).message}`;
+  } finally {
+    switching.value.delete(m.id);
+  }
+}
+
+onMounted(loadModels);
 
 const name = ref("");
 const role = ref<Role>("member");
@@ -212,6 +247,52 @@ async function copy(): Promise<void> {
               <td class="px-2 py-2.5">{{ e.lifecycle }}</td>
               <td class="px-2 py-2.5 font-mono text-xs">{{ e.holders.join(", ") || "—" }}</td>
               <td class="px-[18px] py-2.5"><EngineStatusLine :status="e" /></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section v-if="!forbidden && !modelsForbidden" aria-labelledby="models-heading" class="rounded-xl border border-border bg-card shadow-card">
+      <div class="flex items-center gap-2.5 border-b border-border px-[18px] py-3.5">
+        <h2 id="models-heading" class="text-[15px] font-semibold">Models</h2>
+      </div>
+      <div v-if="modelsError" class="flex items-center gap-2.5 p-[18px]">
+        <ErrorBanner data-models-error class="flex-1" :error="modelsError" />
+        <Button variant="outline" size="sm" class="h-[30px] px-2.5 text-xs font-medium" @click="loadModels()">Retry</Button>
+      </div>
+      <EmptyState v-if="!models && !modelsError" text="Loading models…" />
+      <EmptyState v-else-if="models && !models.length" text="No models yet." />
+      <div v-if="models?.length" class="overflow-x-auto">
+        <table class="w-full text-left text-[13px]">
+          <thead class="text-xs text-muted-foreground">
+            <tr class="border-b border-border">
+              <th scope="col" class="px-[18px] py-2.5 font-semibold">Model</th>
+              <th scope="col" class="px-2 py-2.5 font-semibold">Id</th>
+              <th scope="col" class="px-2 py-2.5 font-semibold">Status</th>
+              <th scope="col" class="px-[18px] py-2.5 font-semibold">Allowed in airlie</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="m in models" :key="m.id" :data-model="m.id" class="border-b border-border last:border-b-0">
+              <th scope="row" class="px-[18px] py-2.5 font-semibold">{{ m.label }}</th>
+              <td class="px-2 py-2.5 font-mono text-xs">{{ m.id }}</td>
+              <td class="px-2 py-2.5">
+                <span :class="['inline-flex rounded-md px-2 py-0.5 text-xs font-bold', m.live ? 'bg-ok text-ok-foreground' : 'bg-chip text-chip-foreground']">{{ m.live ? "live" : "not live" }}</span>
+              </td>
+              <td class="px-[18px] py-2.5">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label="Allowed in airlie"
+                  :aria-checked="m.allowed"
+                  :disabled="switching.has(m.id)"
+                  :class="['inline-flex h-5 w-9 items-center rounded-full p-0.5 transition-colors disabled:opacity-60', m.allowed ? 'bg-primary' : 'bg-track']"
+                  @click="toggleModel(m)"
+                >
+                  <span :class="['size-4 rounded-full bg-card shadow-card transition-transform', m.allowed ? 'translate-x-4' : 'translate-x-0']" />
+                </button>
+              </td>
             </tr>
           </tbody>
         </table>

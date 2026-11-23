@@ -2,7 +2,6 @@
 import { computed, onMounted, ref, shallowRef, watch } from "vue";
 import { RouterLink } from "vue-router";
 import { getItem } from "@/api/board";
-import type { Adopted } from "@/api/workflow_defs";
 import type { Item, ItemChange, Level, Status } from "@/api/board";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import ItemKey from "@/components/ItemKey.vue";
@@ -13,15 +12,15 @@ import { Button } from "@/components/ui/button";
 import { useRepoNames } from "@/composables/useRepoNames";
 import { useBoardStore } from "@/stores/board";
 import { useSessionStore } from "@/stores/session";
-import AdoptDialog from "../workflow/AdoptDialog.vue";
 import ClickToEdit from "./ClickToEdit.vue";
 import Comments from "./Comments.vue";
 import ModalShell from "./ModalShell.vue";
 import { repoOf, repoProblem, withRepo } from "./repo";
 import { STATUSES } from "./statuses";
 import StoryFlow from "./StoryFlow.vue";
-import { useWorkflowDefs, withWorkflow, workflowGroups, workflowOf } from "./workflow";
 import { ago, date } from "./time";
+import { chosenWorkflow, withoutWorkflow, withWorkflow } from "./workflow";
+import WorkflowPicker from "./WorkflowPicker.vue";
 
 defineOptions({ name: "AirlieCardModal" });
 
@@ -89,43 +88,19 @@ async function patch(body: ItemChange): Promise<void> {
 }
 const saveRepo = (value: string) => patch({ labels: withRepo(item.value?.labels ?? [], value) });
 
-// The workflow: a select of the same choices Create offers (less Build new…), saved on change. A refusal (422:
-// the workflow does not validate) shows the server's words and puts the select back.
-const { defs, failed: defsFailed, reload: reloadDefs } = useWorkflowDefs();
-const groups = computed(() => workflowGroups(defs.value));
-const workflow = computed(() => workflowOf(item.value?.labels ?? []));
-const workflowDef = computed(() => defs.value.find((d) => d.name === workflow.value));
-const listed = computed(() => groups.value.some((g) => g.options.some((o) => o.value === workflow.value)));
-const workflowError = ref("");
-async function saveWorkflow(name: string): Promise<void> {
-  if (name === workflow.value) return;
-  workflowError.value = "";
+// The workflow is the card's one `workflow:<name>` label. The select shows the choice at once and goes back to the
+// label if the write fails.
+const picked = ref("");
+watch(() => chosenWorkflow(item.value?.labels ?? []), (name) => (picked.value = name), { immediate: true });
+async function setWorkflow(name: string): Promise<void> {
+  problem.value = "";
+  const labels = item.value?.labels ?? [];
+  picked.value = name;
   try {
-    await patch({ labels: withWorkflow(item.value?.labels ?? [], name) });
+    await patch({ labels: name ? withWorkflow(labels, name) : withoutWorkflow(labels) });
   } catch (e) {
-    workflowError.value = (e as Error).message; // the re-render puts the select back on the card's workflow
-  }
-}
-// v-model, not :value: it selects the card's workflow again on every render, so a list that loads after the card
-// (or a refused change) still shows the right one
-const chosenWorkflow = computed({ get: () => workflow.value, set: (name: string) => void saveWorkflow(name) });
-/** The card has started on its workflow (its state snapshotted it), so the server refuses a change: the server's
- * word when the card was fetched, else a column past approved; and once the line takes it up (doing), always. */
-const STARTED_HELP = "the workflow of a started card cannot be changed; make a new card for the other workflow";
-const started = computed(() => {
-  const status = item.value?.status;
-  if (status === "doing") return true;
-  return fetched.value?.started ?? (status !== undefined && status !== "todo" && status !== "approved");
-});
-
-const adopting = ref(false);
-const adopted = ref("");
-async function onAdopted(result: Adopted): Promise<void> {
-  adopted.value = `now on ${result.name} (${result.from} → ${result.to})`;
-  try {
-    fetched.value = await getItem(props.itemKey);
-  } catch (e) {
-    problem.value = (e as Error).message;
+    picked.value = chosenWorkflow(item.value?.labels ?? []);
+    problem.value = `Can't set the workflow of ${props.itemKey}: ${(e as Error).message}`;
   }
 }
 
@@ -189,33 +164,12 @@ function giveFocusBack(e: Event): void {
           <!-- only a story runs a workflow this round (D17) -->
           <template v-if="item.level === 'story'">
             <span class="text-xs text-muted-foreground">· Workflow</span>
-            <div data-workflow-field class="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
-              <select
-                v-model="chosenWorkflow"
-                required
-                :disabled="defsFailed || started"
-                :title="started ? STARTED_HELP : undefined"
-                aria-label="Workflow"
-                class="h-7 rounded-md border border-input bg-transparent px-2 font-mono text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
-              >
-                <option v-if="!listed" :value="workflow">{{ workflow }}</option>
-                <optgroup v-for="g in groups" :key="g.label" :label="g.label">
-                  <option v-for="o in g.options" :key="o.value" :value="o.value" :disabled="o.disabled" :title="o.title">{{ o.label }}</option>
-                </optgroup>
-              </select>
-              <a v-if="workflowDef?.pr" data-workflow-pr :href="workflowDef.pr.url" target="_blank" rel="noopener" class="text-primary hover:underline">PR #{{ workflowDef.pr.number }}</a>
-              <span v-else-if="workflowDef?.source === 'draft'" data-workflow-draft class="rounded-full bg-muted px-2 font-semibold">draft</span>
-              <p v-if="defsFailed" role="status" class="flex items-center gap-1.5 text-muted-foreground">
-                Workflows did not load
-                <Button type="button" data-workflow-retry variant="outline" size="xs" @click="reloadDefs">Retry</Button>
-              </p>
-              <p v-if="started" data-workflow-started class="basis-full text-muted-foreground">Locked: {{ STARTED_HELP }}.
-                <a href="#" data-adopt-link class="text-primary hover:underline" @click.prevent="adopting = true">use the current workflow</a>
-              </p>
-              <p v-if="adopted" data-adopted role="status" class="basis-full text-muted-foreground">{{ adopted }}</p>
-              <AdoptDialog v-model:open="adopting" :story-key="itemKey" :running="false" @adopted="onAdopted" />
-              <p v-if="workflowError" role="alert" class="basis-full break-words text-danger-foreground">{{ workflowError }}</p>
-            </div>
+            <WorkflowPicker
+              data-workflow-field
+              :model-value="picked"
+              select-class="h-7 max-w-[200px] rounded-md border border-input bg-transparent px-2 text-xs outline-none focus-visible:border-ring dark:bg-input/30"
+              @update:model-value="setWorkflow"
+            />
           </template>
         </div>
       </div>

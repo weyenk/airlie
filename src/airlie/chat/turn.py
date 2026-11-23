@@ -208,6 +208,7 @@ class _Run:
     clock: Clock
     status: Callable[[], list[Status]]
     out: asyncio.Queue[str | None]
+    role_name: str = "chat"  # the persona: the role whose sampling, thinking and budget the model gets
     message_id: str = field(default_factory=lambda: f"msg-{uuid.uuid4().hex}")
     gone: bool = False  # the client closed the stream; keep going, stop writing
     parts: list[dict[str, Any]] = field(default_factory=list)
@@ -501,7 +502,7 @@ class _Run:
             await self.run_answered(approval_id, call)
         for _ in range(self.max_steps):
             gen_req = GenRequest(
-                role="chat",
+                role=self.role_name,
                 messages=list(self.messages),
                 sampling=role.sampling,
                 max_tokens=role.max_tokens,
@@ -520,7 +521,7 @@ class _Run:
             self.parts.append({"type": "step-start"})
         self.messages.append(Message(role="user", content=text("no-more-tools")))
         last = GenRequest(
-            role="chat",
+            role=self.role_name,
             messages=list(self.messages),
             sampling=role.sampling,
             max_tokens=role.max_tokens,
@@ -647,12 +648,26 @@ async def run_turn(
     handle: TurnHandle | None = None,
     around: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
     around_status: str | None = None,
+    role_name: str = "chat",
 ) -> AsyncIterator[str]:
     """The turn's SSE strings. `req.ctx` is already prepared (the route ran `session_start` and `before_turn`
     first, so a refusal is an HTTP error before the first byte)."""
     out: asyncio.Queue[str | None] = asyncio.Queue()
     run = _Run(
-        req, engine, engine_name, holder, registry, todos, store, hooks, role, max_steps, clock, status, out
+        req,
+        engine,
+        engine_name,
+        holder,
+        registry,
+        todos,
+        store,
+        hooks,
+        role,
+        max_steps,
+        clock,
+        status,
+        out,
+        role_name,
     )
     if req.resumes is not None:  # the client goes on with the message it has: the stream names it
         run.message_id = req.resumes

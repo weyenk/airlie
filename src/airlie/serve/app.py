@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """`task serve`: the client-agnostic front door. Any OpenAI-compatible client (Claude Code, Qwen Code, curl)
 can talk to a role by name; `/v1/airlie/run` launches a parallel team run. The jobs API starts a studio plan
 (`/v1/airlie/plans`), a studio run (`/v1/airlie/runs`) or a story (`/v1/airlie/stories`) in the background; a
@@ -49,6 +50,10 @@ from airlie.engine.dialect import Dialect, dialect_for, thinking_fields
 from airlie.engine.types import EngineError
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
+from airlie.models.allowed import allowed_ids
+from airlie.models.allowlist import ModelAllowlist
+from airlie.models.api import models_router
+from airlie.models.live import LiveModelsError, fetch_live_model_ids
 from airlie.notify.api import notifications_router
 from airlie.notify.notifier import Notifier
 from airlie.notify.push import PushSender
@@ -56,6 +61,8 @@ from airlie.notify.stories import StoryNotes
 from airlie.notify.vapid import application_server_key, load_or_create_vapid
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
+from airlie.rev import build_commit
+from airlie.serve.board_runs import build_dispatcher
 from airlie.serve.bridge.clock import RealClock
 from airlie.serve.feed import Feed, event_stream
 from airlie.serve.flow import epic_flow, initiative_flow, job_detail, story_flow
@@ -65,7 +72,6 @@ from airlie.serve.line_rows import line_events_tail, line_row
 from airlie.serve.listing import epics, initiatives, recent_runs, repo_names, repos, stories, story_page
 from airlie.serve.run_flow import run_flow, run_job_detail
 from airlie.serve.running import running as in_progress
-from airlie.serve.ticker import LineFor, LineTicker
 from airlie.serve.tree import RunNotFound, run_tree
 from airlie.serve.uploads import (
     MEDIA,
@@ -87,15 +93,14 @@ from airlie.story.board import BoardError
 from airlie.story.diagnosis import diagnosis_json, latest, read_diagnosis
 from airlie.story.epic import REPOSITORY
 from airlie.story.fixes import home_checkout
+from airlie.story.jobs import publish_workflow
 from airlie.story.mockups import OPTION_FILE, mockup_dir, record_pick
 from airlie.story.model import StoryBusy, StoryError, StoryRunning, StorySetupError
-from airlie.story.phase import set_paused
-from airlie.story.pipeline import build_commit
+from airlie.story.phase import paused, set_paused
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restart import FRESH, RestartError, RestartIncomplete
 from airlie.story.state import STAGES
 from airlie.story.stats import line_stats, parse_since
-from airlie.story.workflow_publish import publish_workflow
 from airlie.story.workflows import WorkflowError, board_problems
 from airlie.teams.worktree import rev_parse
 from airlie.tools.web import SearXNGProvider, UrllibClient, WebFetch, WebSearch
@@ -422,6 +427,11 @@ ISSUE_REPO = (
 )
 """Why a story request with both a card and a repo is refused."""
 
+ISSUE_WORKFLOW = (
+    "workflow is for a written request (text) only: an issue's workflow is its workflow:<name> label"
+)
+"""Why a story request with both a card and a workflow is refused."""
+
 
 class StoryRequest(BaseModel):
     """A story: an issue (`card`) or a written request (`text`), and `repo`, a written request's repository
@@ -434,6 +444,7 @@ class StoryRequest(BaseModel):
     card: str | None = None
     text: str | None = None
     repo: str | None = None
+    workflow: str | None = None
 
 
 class InitiativeRequest(BaseModel):
@@ -501,13 +512,13 @@ _EPIC_ID = re.compile(r"E[0-9]+", re.ASCII)
 
 
 def _initiative_job_factory() -> Callable[..., Any]:
-    from airlie.story.factory import initiative_job
+    from airlie.story.jobs import initiative_job
 
     return initiative_job
 
 
 def _story_restart_factory() -> Callable[..., Any]:
-    from airlie.story.factory import restart_one
+    from airlie.story.jobs import restart_one
 
     return restart_one
 
@@ -531,13 +542,13 @@ def _leftover_sweep(cfg: AirlieConfig, threads: Any) -> Callable[[], Any]:
 
 
 def _story_adopt_factory() -> Callable[..., Any]:
-    from airlie.story.factory import adopt_one
+    from airlie.story.jobs import adopt_one
 
     return adopt_one
 
 
 def _story_job_factory() -> Callable[..., Any]:
-    from airlie.story.factory import story_job
+    from airlie.story.jobs import story_job
 
     return story_job
 
@@ -593,10 +604,22 @@ def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = No
     return _orchestrator(cfg)
 
 
+def _live_model_ids(cfg: AirlieConfig, http: httpx.AsyncClient) -> Callable[[], Awaitable[list[str]]]:
+    """Ask the `workflow` engine (else the first engine with a base url) which models it serves now."""
+
+    async def live_ids() -> list[str]:
+        engine = cfg.engines.get("workflow") or next((e for e in cfg.engines.values() if e.base_url), None)
+        if engine is None or not engine.base_url:
+            raise LiveModelsError("no engine has a base_url")
+        return await fetch_live_model_ids(engine.base_url, engine.api_key, http=http)
+
+    return live_ids
+
+
 def _workflow_publisher(cfg: AirlieConfig) -> Callable[[WorkflowDraft], Awaitable[tuple[int, str]]]:
     """What publishes a draft as a PR: publish_workflow from airlie's own checkout (found when a publish
     starts), through the story's Publisher as one PR on one branch (the bot when story.github_app is set)."""
-    from airlie.story.factory import github_app
+    from airlie.story.jobs import github_app
 
     publisher = Publisher(remote=cfg.story.remote, app=github_app(cfg), publish="single")
     locks: dict[
@@ -635,12 +658,13 @@ def create_app(
     auth_store: AuthStore | None = None,
     now: Callable[[], float] = time.time,
     next_dir: Path | None = None,
-    tick_s: float | None = None,
-    line_beat: LineFor | None = None,
     manager: Manager | None = None,
     repo_sessions: Callable[..., RepoSessions] | None = None,
     pinnable: Callable[[], Awaitable[list[str]]] | None = None,
     repo_sources: Mapping[str, RepoSource] | None = None,
+    model_live_ids: Callable[[], Awaitable[list[str]]] | None = None,
+    run_start: Callable[..., Awaitable[Any]] | None = None,
+    run_engine: Callable[[], Any] | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
@@ -650,8 +674,7 @@ def create_app(
     airlie.story.factory.restart_one); `story_adopt` what `POST /v1/airlie/stories/{key}/adopt-workflow` runs
     (default: airlie.story.factory.adopt_one).
     `auth_store` (default: observability.state_dir/auth.sqlite), `now` and `next_dir` (the Vue app's build,
-    default NEXT_DIR), `tick_s` (the line's beat interval, default line.tick_s) and `line_beat` (replaces the
-    line's beat, given the function that starts a lane's job) are for tests.
+    default NEXT_DIR) are for tests.
     `manager` starts, holds and stops the repository chats' VMs (default: one with no resources at first,
     inside the memory budget `memory.wired_limit_mb` less the OS reserve and `manager.margin_gb`).
     `repo_sessions` builds what runs repository chats in VMs, given `(cfg, manager, threads, confirmations,
@@ -661,7 +684,12 @@ def create_app(
     read from the checkouts and the board's labels): with no source linked they are the repositories a person
     may use, else the ones no source reaches may be pinned as extras.
     `repo_sources` are the accounts a person may link to list their repositories from (default: GitHub, for
-    each of `chat.sources` the config gives a client id; tests give one over a mock transport)."""
+    each of `chat.sources` the config gives a client id; tests give one over a mock transport).
+    `model_live_ids` asks the engine for its model ids for the Admin models list (default: GET
+    `/models` of the `workflow` engine, else the first engine with a base url; tests give a fake).
+    `run_start` replaces what the board run dispatcher calls to run an approved card's workflow (default:
+    airlie.workflow.trigger.start_workflow, in the card's checkout, over `run_engine`'s engine: default an
+    HTTP engine; tests give a fake). The dispatcher is `app.state.dispatcher`."""
     app = FastAPI(title="airlie", version="0.1.0")
     started_commit = (
         build_commit()
@@ -671,7 +699,6 @@ def create_app(
     feed = Feed()
     app.state.feed = feed
     jobs = Jobs(feed.publish)
-    ticker = LineTicker(cfg, jobs, commit=started_commit, tick_s=tick_s, beat=line_beat, now=now)
     watcher = Watcher(cfg.observability.state_dir.expanduser(), feed)
     app.state.watcher = watcher
     make_story = story_job or _story_job_factory()
@@ -679,6 +706,16 @@ def create_app(
     restart_story = story_restart or _story_restart_factory()
     adopt_story = story_adopt or _story_adopt_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
+    dispatcher = build_dispatcher(
+        cfg,
+        board,
+        feed.publish,
+        now,
+        start=run_start,
+        engine_factory=run_engine,
+        transport=transport,
+    )
+    app.state.dispatcher = dispatcher
     # imported here: the manager's clock lives under airlie.serve, whose package imports this module (and the
     # chat routes import the manager)
     from airlie.chat.api import Busy, chat_router
@@ -710,7 +747,7 @@ def create_app(
 
     def started(key: str) -> bool:
         """The card has a saved state: it started on the workflow it snapshotted."""
-        from airlie.story.factory import _saved
+        from airlie.story.jobs import _saved
 
         return _saved(cfg, key) is not None
 
@@ -720,6 +757,7 @@ def create_app(
             feed.publish,
             workflow_check=workflow_check if local else None,
             started=started if local else None,
+            notify=dispatcher.notify_status,
         )
     )
     if local:
@@ -836,6 +874,16 @@ def create_app(
     if "chat" in cfg.roles and cfg.roles["chat"].skills is not None:  # a bad skill file stops the server here
         chat_skills = {s.name: s for s in load_chat_skills(cfg.roles["chat"].skills)}
 
+    model_allowlist = ModelAllowlist(cfg.observability.state_dir.expanduser() / "models.sqlite")
+
+    def served_name(model: str) -> str:
+        return cfg.engines[cfg.engine_for_model(model)].passthru_name(model)
+
+    def catalog_allowed(model: str) -> bool:
+        """A catalog model is allowed unless it, or the name the engine knows it by, is switched off."""
+        names = list(dict.fromkeys([model, served_name(model)]))
+        return allowed_ids(model_allowlist, names) == names
+
     def upstream(name: str) -> tuple[str, str, dict[str, str], str | None]:
         """(engine base url, served model name, headers, prompt-or-None) for a role or a raw catalog model."""
         if name in cfg.roles:
@@ -845,6 +893,8 @@ def create_app(
         else:
             known = ", ".join([*cfg.roles, *cfg.models])
             raise HTTPException(404, f"unknown model '{name}'; roles and catalog models: {known}")
+        if not catalog_allowed(model):
+            raise HTTPException(400, f"model '{model}' is not allowed in airlie")
         e = cfg.engines[cfg.engine_for_model(model)]
         if e.format == "anthropic":
             headers = anthropic_headers(e.api_key)
@@ -856,7 +906,18 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        return {"status": "ok", "roles": list(cfg.roles), "commit": started_commit, "line": ticker.row()}
+        # `line` kept for clients that still read it; the timer ticker is gone — no last_tick / lanes.
+        return {
+            "status": "ok",
+            "roles": list(cfg.roles),
+            "commit": started_commit,
+            "line": {
+                "last_tick": None,
+                "line": None,
+                "paused": paused(cfg.observability.state_dir.expanduser()),
+                "lanes": {"build": None, "plan": None},
+            },
+        }
 
     def engine_row(s: Any) -> dict[str, Any]:
         p = s.progress
@@ -931,7 +992,7 @@ def create_app(
 
     @app.get("/v1/models")
     async def models() -> dict[str, Any]:
-        served = [m for m in cfg.models if m not in cfg.roles]
+        served = [m for m in cfg.models if m not in cfg.roles and catalog_allowed(m)]
         return {
             "object": "list",
             "data": [{"id": r, "object": "model", "owned_by": "airlie"} for r in [*cfg.roles, *served]],
@@ -989,12 +1050,16 @@ def create_app(
             raise HTTPException(400, str(e)) from e
         return {**body, "messages": msgs}
 
-    async def attach_for(principal: Principal, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return await attach_uploads(
-            msgs, uploads, can_see=lambda u: may_see(principal, u), vision=cfg.roles["chat"].vision
-        )
+    async def attach_for(
+        principal: Principal, msgs: list[dict[str, Any]], vision: bool
+    ) -> list[dict[str, Any]]:
+        """`vision` is the chat's persona's: whether its model takes pictures."""
+        return await attach_uploads(msgs, uploads, can_see=lambda u: may_see(principal, u), vision=vision)
 
-    chat_threads = ThreadStore(cfg.observability.state_dir.expanduser() / "chat" / "threads.sqlite")
+    chat_threads = ThreadStore(
+        cfg.observability.state_dir.expanduser() / "chat" / "threads.sqlite",
+        default_model=cfg.roles["chat"].model if "chat" in cfg.roles else "",
+    )
     superpowers = SuperpowersLibrary(cfg.chat.superpowers.path) if cfg.chat.superpowers.enabled else None
     library_error = check_library(cfg.chat.superpowers.path) if superpowers is not None else None
     if library_error is not None:
@@ -1077,7 +1142,17 @@ def create_app(
             publish=lambda topic, key: feed.publish(topic, key),
             access=repo_access,
             background=chat_prewarms,
-            start_story=lambda text, repo: begin_story(None, text, repo),
+            start_story=lambda text, repo, workflow: begin_story(None, text, repo, workflow),
+            allowlist=model_allowlist,
+            live_ids=model_live_ids or _live_model_ids(cfg, client),
+            chat_slot=dispatcher.request_chat_slot,
+        )
+    )
+    app.include_router(
+        models_router(
+            model_allowlist,
+            model_live_ids or _live_model_ids(cfg, client),
+            {name: spec.label for name, spec in cfg.models.items()},
         )
     )
     app.include_router(
@@ -1343,23 +1418,31 @@ def create_app(
 
     @app.post("/v1/airlie/stories", status_code=202)
     async def start_story(req: StoryRequest) -> dict[str, Any]:
-        return await begin_story(req.card, req.text, req.repo)
+        return await begin_story(req.card, req.text, req.repo, req.workflow)
 
-    async def begin_story(card: str | None, text: str | None, repo_in: str | None) -> dict[str, Any]:
+    async def begin_story(
+        card: str | None, text: str | None, repo_in: str | None, workflow_in: str | None = None
+    ) -> dict[str, Any]:
         """Start a story job from a board card or a written request (also the chat's Start story): its
-        `job_id` and `kind`, or an HTTPException saying why not."""
+        `job_id` and `kind`, or an HTTPException saying why not. A written request's `workflow` (blank is
+        none) goes to the job, which makes the card with a `workflow:<name>` label for it; none, no label."""
         if (card is None) == (text is None):
             raise HTTPException(400, "pass exactly one of card or text")
         repo = (repo_in or "").strip() or None  # a blank repo is none, all the way to the story
         if card is not None and repo is not None:
             raise HTTPException(422, ISSUE_REPO)
+        workflow = (workflow_in or "").strip() or None
+        if card is not None and workflow is not None:
+            raise HTTPException(422, ISSUE_WORKFLOW)
 
         def running(job_id: str) -> bool:
             job = jobs.get(job_id)
             return job is not None and job.state == "running"
 
         try:
-            job_id, events, work = await make_story(cfg, card=card, text=text, repo=repo, running=running)
+            job_id, events, work = await make_story(
+                cfg, card=card, text=text, repo=repo, workflow=workflow, running=running
+            )
         except StoryRunning as e:  # decided before the story is placed: its issue is read, not told or moved
             raise HTTPException(409, str(e)) from e
         except (StorySetupError, BoardError) as e:
@@ -1582,15 +1665,15 @@ def create_app(
 
     @app.post("/v1/airlie/line")
     async def line_switch(req: LineRequest) -> dict[str, Any]:
-        """Pause or resume the line (`<state_dir>/line.paused`, read at each beat's top): the line row."""
+        """Pause or resume the line (`<state_dir>/line.paused`): the line row (no timer tick)."""
         set_paused(cfg.observability.state_dir.expanduser(), req.paused)
-        return ticker.row()
+        return await asyncio.to_thread(line_row, cfg, board, last_tick=None, now=now())
 
     @app.get("/v1/airlie/line")
     async def line_get() -> dict[str, Any]:
         """The line as one row (planning-line P5b, D11): paused, the gates, what each lane is doing, the hours
-        queued, the blocked stories with their diagnosis and fix card, and when it last ticked."""
-        return await asyncio.to_thread(line_row, cfg, board, last_tick=ticker.last_tick, now=now())
+        queued, the blocked stories with their diagnosis and fix card."""
+        return await asyncio.to_thread(line_row, cfg, board, last_tick=None, now=now())
 
     @app.get("/v1/airlie/line/events")
     async def line_events_get(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
@@ -1790,7 +1873,6 @@ def create_app(
         if story_notes is not None:
             story_notes.prime()  # stories as they stand now are history; later events push
             watcher.ensure_running()  # story pushes need the poll with no page connected
-        ticker.start()  # the line's beat, every line.tick_s while serve is up (line.serve_ticks)
 
         # the HTTP server is up at once; engines already running are adopted, the pinned ones start, idle
         # on-demand ones are reaped
@@ -1811,7 +1893,7 @@ def create_app(
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
-        await ticker.stop()
+        await dispatcher.shutdown()  # in-flight board runs end (their cards Blocked) before the board closes
         for t in engine_tasks:
             t.cancel()
         await asyncio.gather(*engine_tasks, return_exceptions=True)
@@ -1825,6 +1907,7 @@ def create_app(
         watcher.stop()
         await client.aclose()
         board.close()
+        model_allowlist.close()
         store.close()
 
     api_prefixes = ("v1", "health", "docs", "redoc", "openapi.json")

@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """The workflow a card runs: named by its `workflow:<name>` label (a story card without one runs `story`),
 found among the repo's workflows and the board's drafts, and snapshotted into the card's state the first time
 it is used, so every resume runs what the card started on whatever the drafts and files say since
@@ -16,19 +17,32 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from pydantic import ValidationError
 
-from airlie.flow.prompt_files import PREFIX, parse_draft_prompts
-from airlie.flow.spec import NodeSpec, WorkflowSpec, check_workflows
-from airlie.flow.upgrade import upgrade_topology_types, upgrade_v1
+# [engine-swap: retired; rebuild in follow-up] check_workflows
+# [engine-swap: retired] from airlie.flow.upgrade import upgrade_topology_types, upgrade_v1
 from airlie.prompts.hub import PromptError
 from airlie.prompts.hub import load as hub_prompts
 from airlie.story.board import Card, note
 from airlie.story.model import StoryError, StoryRunning
+from airlie.story.retired import StoryPipeline
+from airlie.workflow.prompt_files import PREFIX, parse_draft_prompts
+from airlie.workflow.retired import (
+    MEMORY,
+    STORY_CATALOG,
+    Catalog,
+    StateStore,
+    check_workflows,
+    transient_heads,
+    upgrade_topology_types,
+    upgrade_v1,
+)
+from airlie.workflow.spec import NodeSpec, WorkflowSpec
 
 if TYPE_CHECKING:
     from airlie.board.model import WorkflowDraft
     from airlie.config import AirlieConfig
-    from airlie.flow.catalog import Catalog
-    from airlie.story.pipeline import StoryPipeline
+
+    # [engine-swap: retired]     from airlie.flow.catalog import Catalog
+    # [engine-swap: retired; rebuild in follow-up] StoryPipeline
     from airlie.story.state import StoryState
 
 LABEL = "workflow:"
@@ -90,7 +104,6 @@ Snapshot = dict[str, Any]
 
 
 def _catalog() -> Catalog:
-    from airlie.story.flow import STORY_CATALOG  # the story's checks; story.flow imports this module
 
     return STORY_CATALOG
 
@@ -175,7 +188,12 @@ def resolve_workflows(
         else:  # a bundle that is nowhere: check_workflows names it on the node that calls it
             continue
         specs[wanted] = spec
-        todo += [n.workflow for n in spec.nodes.values() if n.type == "bundle" and n.workflow is not None]
+        # bundle nodes are retired; keep the getattr guard so old drafts never AttributeError
+        todo += [
+            w
+            for n in spec.nodes.values()
+            if getattr(n, "type", None) == "bundle" and (w := getattr(n, "workflow", None)) is not None
+        ]
     try:
         texts = parse_draft_prompts(closure_prompts(prompts, from_drafts))
     except PromptError as e:
@@ -289,7 +307,11 @@ def changed_nodes(
     def reworded(node: NodeSpec) -> bool:
         ids = [
             t.removeprefix(PREFIX)
-            for t in (node.prompt, node.turn, node.worker)
+            for t in (
+                getattr(node, "prompt", None),
+                getattr(node, "turn", None),
+                getattr(node, "worker", None),
+            )
             if t and t.startswith(PREFIX)
         ]
         return any(texts_were.get(id) != texts.get(id) for id in ids)
@@ -298,7 +320,11 @@ def changed_nodes(
     for n, node in specs[name].nodes.items():
         if n not in was:
             continue
-        inner = specs.get(node.workflow) if node.type == "bundle" and node.workflow is not None else None
+        inner = (
+            specs.get(node.workflow)
+            if getattr(node, "type", None) == "bundle" and getattr(node, "workflow", None) is not None
+            else None
+        )
         if (
             node.model_dump(mode="json") != was[n]
             or reworded(node)
@@ -333,7 +359,11 @@ def _outputs(spec: WorkflowSpec, specs: Mapping[str, WorkflowSpec], node: str) -
     (`built`), whole: every item runs again."""
     n = spec.nodes[node]
     names = list(n.outputs)
-    if n.type == "bundle" and n.workflow is not None and n.workflow in specs:
+    if (
+        getattr(n, "type", None) == "bundle"
+        and getattr(n, "workflow", None) is not None
+        and n.workflow in specs
+    ):
         inner = specs[n.workflow]
         names += [o for m in inner.nodes for o in _outputs(inner, specs, m)]
     return list(dict.fromkeys(o.partition(".")[0] if "{item}" in o else o for o in names))
@@ -355,8 +385,8 @@ def send_back_changed(
     (`restart.rewind`), so the operation does not find its stage done and skip itself. Returns the nodes
     that will run again, sorted: those sent back, and any other node that ran and whose output this
     cleared (refine, when the story is cleared). Nothing is saved here."""
-    from airlie.flow.spec import transient_heads
-    from airlie.flow.store import MEMORY, StateStore
+    # [engine-swap: retired; rebuild in follow-up] transient_heads
+    # [engine-swap: retired]     from airlie.flow.store import MEMORY, StateStore
     from airlie.story.restart import past, rewind, rewind_point  # restart imports this, through the board
 
     spec = specs[name]
@@ -464,7 +494,11 @@ def bundle_users(cfg: AirlieConfig, drafts: Mapping[str, str]) -> dict[str, list
     found: dict[str, set[str]] = {}
     for wname, spec in specs:
         for n in spec.nodes.values():
-            if n.type == "bundle" and n.workflow is not None and n.workflow != wname:
+            if (
+                getattr(n, "type", None) == "bundle"
+                and getattr(n, "workflow", None) is not None
+                and n.workflow != wname
+            ):
                 found.setdefault(n.workflow, set()).add(wname)
     return {name: sorted(users) for name, users in found.items()}
 

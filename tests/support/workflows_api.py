@@ -13,7 +13,7 @@ from tests.support.studio import cfg_for
 
 
 def cfg(tmp_path: Path):  # type: ignore[no-untyped-def]
-    """The shipped story and layer workflows, as airlie.yaml includes them."""
+    """Story and layer workflow fixtures (production ships none)."""
     workflows = {
         name: spec
         for part in ("story", "layer")

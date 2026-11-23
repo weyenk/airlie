@@ -41,8 +41,28 @@ watch(
   { immediate: true },
 );
 const model = computed(() => info.label(props.session.id));
+const modelId = computed(() => info.model(props.session.id));
+const personaId = computed(() => info.persona(props.session.id));
+/** The options with the chat's current pick among them, even when it is no longer offered (switched off since). */
+const withCurrent = (list: { id: string; label: string }[], id: string | null, label?: string | null) =>
+  id && !list.some((o) => o.id === id) ? [{ id, label: label || id }, ...list] : list;
+const models = computed(() => withCurrent(info.options.models, modelId.value, model.value));
+const personas = computed(() => withCurrent(info.options.personas, personaId.value));
 const askFirst = computed(() => info.askFirst(props.session.id) ?? []);
 const busy = computed(() => ["submitted", "streaming"].includes(turns.status(props.session.id)));
+
+/** A pick in one of the footer's selects: the chat is PATCHed with it; when the server refuses (a turn runs, not allowed
+ * now) the select goes back to what the chat has and the reason shows. */
+async function pick(ev: Event, field: "model" | "persona"): Promise<void> {
+  const el = ev.target as HTMLSelectElement;
+  failed.value = "";
+  try {
+    await info.choose(props.session.id, { [field]: el.value });
+  } catch (e) {
+    el.value = (field === "model" ? modelId.value : personaId.value) ?? "";
+    failed.value = e instanceof Error ? e.message : String(e);
+  }
+}
 
 /** "/name rest" for a skill airlie has; null when the text is not a skill command. */
 function skillOf(text: string): { skill: Skill; rest: string } | null {
@@ -261,8 +281,29 @@ onMounted(async () => {
         </button>
       </div>
       <p v-if="failed" role="alert" class="m-0 text-[13px] text-danger-foreground">{{ failed }}</p>
-      <div v-if="model || askFirst.length" data-test="composer-footer" class="flex flex-wrap items-center gap-1.5 text-xs">
-        <span v-if="model" data-model class="rounded-md bg-chip px-1.5 py-0.5 text-chip-foreground">{{ model }}</span>
+      <div v-if="models.length || personas.length || askFirst.length" data-test="composer-footer" class="flex flex-wrap items-center gap-1.5 text-xs">
+        <select
+          v-if="models.length"
+          data-model-select
+          aria-label="Model"
+          title="The model this chat runs on"
+          :disabled="busy"
+          class="max-w-[14rem] truncate rounded-md border-0 bg-chip px-1.5 py-0.5 text-chip-foreground disabled:opacity-60"
+          @change="pick($event, 'model')"
+        >
+          <option v-for="m in models" :key="m.id" :value="m.id" :selected="m.id === modelId">{{ m.label }}</option>
+        </select>
+        <select
+          v-if="personas.length"
+          data-persona-select
+          aria-label="Persona"
+          title="The persona this chat answers as"
+          :disabled="busy"
+          class="max-w-[14rem] truncate rounded-md border-0 bg-chip px-1.5 py-0.5 text-chip-foreground disabled:opacity-60"
+          @change="pick($event, 'persona')"
+        >
+          <option v-for="p in personas" :key="p.id" :value="p.id" :selected="p.id === personaId">{{ p.label }}</option>
+        </select>
         <span
           v-if="askFirst.length"
           data-ask-first

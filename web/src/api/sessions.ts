@@ -66,6 +66,9 @@ export type AirlieUIMessage = UIMessage<ChatMeta, ChatData>;
 /** What the chat row's status popover shows (`GET .../status`); `since` is epoch seconds, `ahead` and `pushed` are null
  * when the session has not opened or the host's mirror cannot say. */
 export type SessionStatusData = {
+  /** The model id and persona (role name) the chat runs with. */
+  model: string;
+  persona: string;
   vm: { name: string; state: EngineStatus["state"]; detail: string; since: number; memory_gb: number } | null;
   /** `model` is the role's model key; `label` the name people see ("Gemma 4"). */
   engine: { name: string; model: string; label: string; state: EngineStatus["state"]; footprint_gb: number };
@@ -95,6 +98,19 @@ export function sessionStatus(id: string): Promise<SessionStatusData> {
   return request<SessionStatusData>(`${THREADS}/${encodeURIComponent(id)}/status`);
 }
 
+/** What a chat can be set to (`GET /v1/airlie/chat/options`): the models allowed now and the personas. */
+export type ChatOption = { id: string; label: string };
+export type ChatOptions = { models: ChatOption[]; personas: ChatOption[] };
+
+export function chatOptions(): Promise<ChatOptions> {
+  return request<ChatOptions>("/v1/airlie/chat/options");
+}
+
+/** Change the model and/or persona a chat runs with (409 while a turn runs, 400 for one not allowed). */
+export function updateSession(id: string, settings: { model?: string; persona?: string }): Promise<ThreadRow & { model: string; persona: string }> {
+  return request(`${THREADS}/${encodeURIComponent(id)}`, { method: "PATCH", body: settings });
+}
+
 export function deleteSession(id: string): Promise<void> {
   return request<void>(`${THREADS}/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
@@ -105,7 +121,7 @@ export function stopSession(id: string): Promise<void> {
 
 /** Start the story of a story card on the board, once (the server claims the card first: a second start is 409); answers
  * the job part it kept on the card's message, so a reload shows it started. */
-export function startStoryCard(id: string, story: string, body: { text: string; repo: string }): Promise<JobPart> {
+export function startStoryCard(id: string, story: string, body: { text: string; repo: string; workflow?: string }): Promise<JobPart> {
   return request<JobPart>(`${THREADS}/${encodeURIComponent(id)}/stories/${encodeURIComponent(story)}/start`, { method: "POST", body });
 }
 

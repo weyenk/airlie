@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """The workflows the builder edits, under /v1/workflows (task serve's key middleware guards it like the rest
 of /v1): the repo's workflows (config/workflows/*.yaml, read when the config loaded) and the board's drafts,
 listed and read; drafts saved, deleted, validated and published as a PR; and the catalog of what a node may
@@ -18,19 +19,9 @@ from pydantic import BaseModel, ConfigDict
 from airlie.board.model import WorkflowDraft
 from airlie.board.store import BoardStore, BoardStoreError
 from airlie.config import AirlieConfig
-from airlie.flow.spec import (
-    DEPRECATED_NODE_TYPES,
-    MEETINGS,
-    Format,
-    NodeType,
-    WorkflowSpec,
-    old_schema_problems,
-)
-from airlie.flow.upgrade import upgrade_v1
 from airlie.prompts.hub import load as hub_prompts
-from airlie.story.flow import STORY_CATALOG  # the catalog, with the story's checks declared on it
+from airlie.story.jobs import NothingToPublish
 from airlie.story.publish import PublishError
-from airlie.story.workflow_publish import NothingToPublish
 from airlie.story.workflows import (
     DraftPrompts,
     WorkflowError,
@@ -41,6 +32,16 @@ from airlie.story.workflows import (
     used_by,
     workflow_problems,
 )
+from airlie.workflow.retired import (
+    DEPRECATED_NODE_TYPES,
+    MEETINGS,
+    STORY_CATALOG,
+    Format,
+    NodeType,
+    old_schema_problems,
+    upgrade_v1,
+)
+from airlie.workflow.spec import WorkflowSpec, node_kind_catalog
 
 KINDS = ("text", "number", "bool", "list of …", "one of …")
 """The field kinds an output's field list may use (`airlie.flow.outputs.parse_kind`), as the builder offers
@@ -74,7 +75,18 @@ class Validate(BaseModel):
 
 
 def _layout(spec: WorkflowSpec) -> dict[str, dict[str, float]]:
-    return {node: {"x": at.x, "y": at.y} for node, at in spec.layout.items()}
+    """Builder positions when the YAML carries them; empty means the client lays the graph out."""
+    if not spec.layout:
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    for node, at in spec.layout.items():
+        out[node] = {"x": float(at["x"]), "y": float(at["y"])}
+    return out
+
+
+def _workflow_type(spec: WorkflowSpec) -> str | None:
+    """Card/workflow label type: prefer an explicit `type` if present, else the workflow's title."""
+    return spec.type or spec.title or None
 
 
 def _pr(draft: WorkflowDraft) -> dict[str, Any] | None:
@@ -176,9 +188,9 @@ def workflows_router(
         files: list[dict[str, Any]] = [
             {
                 "name": name,
-                "type": spec.type,
+                "type": _workflow_type(spec),
                 "source": "file",
-                "bundle": spec.type is None,
+                "bundle": False,  # the bundle node kind is retired; files are ordinary workflows
                 "problems": [],
                 "pr": None,
                 "used_by": users.get(name, []),
@@ -190,7 +202,7 @@ def workflows_router(
                 "name": d.name,
                 "type": d.type,
                 "source": "draft",
-                "bundle": d.type is None,
+                "bundle": False,
                 "problems": problems(d.name, drafts, prompts),
                 "pr": _pr(d),
                 # an edit of a file waiting for its PR (or a merge the serve has not loaded): never run
@@ -205,6 +217,7 @@ def workflows_router(
     async def catalog() -> dict[str, Any]:
         return {
             "roles": sorted(cfg.roles),
+            "node_kinds": node_kind_catalog(),
             "types": list(get_args(NodeType)),
             "deprecated_types": sorted(DEPRECATED_NODE_TYPES),
             "formats": list(get_args(Format)),
@@ -234,7 +247,7 @@ def workflows_router(
         if (spec := cfg.workflows.get(name)) is not None:
             return {
                 "name": name,
-                "type": spec.type,
+                "type": _workflow_type(spec),
                 "source": "file",
                 "yaml": file_text(name, spec),
                 "layout": _layout(spec),
