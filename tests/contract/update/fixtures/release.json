@@ -1,0 +1,14 @@
+{
+  "version": "10.1.0",
+  "released_at": "2026-11-20T09:00:00Z",
+  "git_sha": "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d",
+  "image": {
+    "repo": "ghcr.io/example/airlie",
+    "tag": "10.1.0",
+    "digest": "sha256:0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9"
+  },
+  "notes": "Adds the board filter; see the changelog.",
+  "breaking": false,
+  "state_migration": false,
+  "schema_epoch": 1
+}
