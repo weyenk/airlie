@@ -294,6 +294,8 @@ def load_config(
         cfg.lts.controller.adapter_path = (base / cfg.lts.controller.adapter_path.expanduser()).resolve()
     for repo in cfg.bridge.allowed_repos:
         repo.path = (base / repo.path.expanduser()).resolve()  # an absolute path stays itself under `base /`
+    if cfg.update.feed.path is not None:
+        cfg.update.feed.path = str((base / Path(cfg.update.feed.path).expanduser()).resolve())
     problems = cfg.validate_references()
     if problems:
         raise ConfigError("config invalid:\n  " + "\n  ".join(problems))

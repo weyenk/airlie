@@ -56,3 +56,21 @@
 #   github_app:
 #     app_id: 1234567                     # your app's id (docs/integrations/story.md, Publishing as a bot)
 #     key_file: ~/.config/airlie/github-app.pem
+
+# Self-update (Studio → Updates). Off by default, and with enabled false nothing reads a feed and nothing runs. A
+# dogfood box sets channel: latest to take whatever is newest rather than only what stable points at. `task doctor`
+# warns while this is on, because an update then replaces the running install unattended. Nothing here is templated:
+# airlie expands ${VAR} in engine urls and keys only, so a value here containing ${ is refused at load.
+update:
+  enabled: false
+  feed:
+    kind: channel_pointer               # channel_pointer: read the channel document at base_url
+    base_url: https://updates.example.com   # https only; required for kind: channel_pointer
+    channel: stable                     # stable (the default) | latest
+    # A pinned feed ignores base_url and reads a frozen manifest instead, either from a file:
+    #   path: ~/.airlie/flashes/2026.11.3.json
+    # or by name, which must be a version and the digest that shipped with it:
+    #   pinned_version: "2026.11.3"
+    #   pinned_digest: "sha256:0f3a..."
+    # registry_token_env: AIRLIE_REGISTRY_TOKEN   # the NAME of the variable holding a private registry token,
+    # never the token itself — which is why this is a name and not a value

@@ -616,6 +616,84 @@ class ObservabilitySpec(Strict):
     retain_days: int = 14
 
 
+FeedKind = Literal["channel_pointer", "pinned"]
+
+
+class FeedSpec(Strict):
+    """How a build learns what the next release is.
+
+    ``base_url`` is required for ``kind: channel_pointer`` and is where the channel document is
+    fetched from. A pinned feed may carry it too, but it is only a label there: the pinned manifest
+    comes from ``path`` or ``pinned_version`` + ``pinned_digest``, never from ``base_url``.
+    """
+
+    kind: FeedKind = "channel_pointer"
+    base_url: str | None = None
+    channel: Literal["stable", "latest"] = "stable"
+    path: str | None = None
+    pinned_version: str | None = None
+    pinned_digest: str | None = None
+    registry_token_env: str | None = None
+
+
+class CheckSpec(Strict):
+    interval_s: int = Field(default=86_400, ge=3600)
+    timeout_s: int = Field(default=10, ge=1)
+
+
+class UpdateSpec(Strict):
+    """Self-update settings. Off unless you ask for them.
+
+    Nothing here is templated: the loader's ``${VAR}`` expansion covers engine blocks only, so a
+    value under this section that contains ``${`` is rejected rather than reaching the fetcher
+    verbatim, where it would become a confusing network error.
+    """
+
+    enabled: bool = False
+    # Lets the Studio Updates tab exist while the product stays off by default.
+    panel: bool = True
+    feed: FeedSpec = Field(default_factory=FeedSpec)
+    check: CheckSpec = Field(default_factory=CheckSpec)
+
+    @model_validator(mode="after")
+    def _validate_update(self) -> UpdateSpec:
+        # Off means off: a checkout may carry this section before deciding where builds come from.
+        if not self.enabled:
+            return self
+        feed = self.feed
+        if feed.kind == "channel_pointer":
+            if not feed.base_url or not feed.base_url.startswith("https://"):
+                raise ValueError("a channel_pointer update.feed needs an https:// update.feed.base_url")
+        elif feed.path is None and not (feed.pinned_version and feed.pinned_digest):
+            raise ValueError(
+                "a pinned update.feed needs update.feed.path or update.feed.pinned_version + pinned_digest",
+            )
+        fields = sorted(_dollar_brace_fields(self))
+        if fields:
+            joined = ", ".join(fields)
+            raise ValueError(f"{joined} must be literal: airlie does not expand ${{VAR}} under update:")
+        return self
+
+
+def _dollar_brace_fields(spec: UpdateSpec) -> list[str]:
+    """Paths of ``update:`` values that still contain a literal ``${``."""
+    found: list[str] = []
+
+    def walk(value: object, path: str) -> None:
+        if isinstance(value, str):
+            if "${" in value:
+                found.append(path)
+        elif isinstance(value, dict):
+            for key, nested in value.items():
+                walk(nested, f"{path}.{key}")
+        elif isinstance(value, (list, tuple)):
+            for index, nested in enumerate(value):
+                walk(nested, f"{path}[{index}]")
+
+    walk(spec.model_dump(mode="json"), "update")
+    return found
+
+
 PushHost = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9-]+)+$")]
 
 
@@ -1136,6 +1214,7 @@ class AirlieConfig(Strict):
     teams: TeamsSpec = Field(default_factory=TeamsSpec)
     aggregator: AggregatorSpec = Field(default_factory=AggregatorSpec)
     observability: ObservabilitySpec = Field(default_factory=ObservabilitySpec)
+    update: UpdateSpec = Field(default_factory=UpdateSpec)
     auth: AuthSpec = Field(default_factory=AuthSpec)
     notifications: NotificationsSpec = Field(default_factory=NotificationsSpec)
     memory: MemorySpec = Field(default_factory=MemorySpec)
