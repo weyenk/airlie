@@ -84,6 +84,8 @@ def test_me_is_the_principal_and_401_for_nobody(studio: Studio) -> None:
         "name": "Noah",
         "role": "admin",
         "via": "session",
+        # the nav gate (spec §C): this fixture carries no update section, so the tab is absent
+        "update_panel": False,
     }
     assert studio.phone.get("/v1/auth/me").status_code == 401
 

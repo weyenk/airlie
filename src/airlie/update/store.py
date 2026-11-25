@@ -36,6 +36,12 @@ _RETAIN = 500
 _BUSY_TIMEOUT_MS = 5_000
 
 
+def update_store_path(state_dir: Path) -> Path:
+    """The one ledger path. The server and ``airlie update`` must open the same file, or the CLI
+    reads an empty history next to a populated one."""
+    return state_dir.expanduser() / "update.sqlite"
+
+
 class UpdateStoreError(RuntimeError):
     """The ledger could not be opened, or a stored row could not be read back."""
 

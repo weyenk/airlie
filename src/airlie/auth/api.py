@@ -143,7 +143,12 @@ class Ceremonies:
 
 
 def auth_router(
-    store: AuthStore, resolver: Resolver, cfg: AuthSpec, *, now: Callable[[], float] = time.time
+    store: AuthStore,
+    resolver: Resolver,
+    cfg: AuthSpec,
+    *,
+    now: Callable[[], float] = time.time,
+    update_panel: bool = False,
 ) -> APIRouter:
     router = APIRouter(prefix=PREFIX)
     ceremonies = Ceremonies(now)
@@ -172,7 +177,13 @@ def auth_router(
     @router.get("/me")
     async def me(request: Request) -> dict[str, Any]:
         p = _principal(request)
-        return {"user_id": p.user_id, "name": p.name, "role": p.role, "via": p.via}
+        return {
+            "user_id": p.user_id,
+            "name": p.name,
+            "role": p.role,
+            "via": p.via,
+            "update_panel": update_panel,
+        }
 
     @router.post("/invites", status_code=201)
     async def invite(request: Request, req: InviteRequest) -> dict[str, Any]:

@@ -31,6 +31,11 @@ tasks:
     cmds:
       - '{{.RUN}} airlie doctor {{.CLI_ARGS}}'
 
+  update:
+    desc: Run one release-channel check now (exit 1 if the feed did not answer); airlie update status reads the ledger without the network
+    cmds:
+      - '{{.RUN}} airlie update check {{.CLI_ARGS}}'
+
   config:
     desc: Print the fully resolved configuration (airlie.yaml + airlie.local.yaml)
     cmds:
