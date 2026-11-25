@@ -1,0 +1,83 @@
+# The release image: what a deployment runs. One image per published version, built from the repository
+# root by the pipeline's release job:  docker buildx build -f ops/release/Containerfile .
+#
+# The test image (ops/test/Containerfile) carries the tools and a mounted checkout; this one carries
+# only the release: the wheel, its locked runtime dependencies (no dev group) and the built web bundle.
+# Nothing here is editable, nothing needs a checkout at run time, and the server runs as its own
+# uid 1000 user. The process is `airlie serve` and nothing else: it does not pull, restart or mutate
+# its own runtime (spec 2026-11-22-update-channel-design §A).
+#
+# The digest bake is two pushes (the release job, not this file): an image cannot state its own
+# manifest digest — a hash fixed point — so the pre-bake build is pushed first and its digest D1 read
+# from the registry, then this file is rebuilt with ARG IMAGE_DIGEST set to D1's full sha256:<hex> and
+# pushed to the official tag. The feed advertises D1: a deployment that runs the baked image
+# self-reports D1 and reads "current"; one pinned at @sha256:D1 runs the pre-bake build, which reports
+# no digest and reads "unknown" — honest. An empty ARG (the pre-bake build) writes an empty file,
+# which airlie.update.identity.read_image_digest reports as no digest.
+
+# The web bundle, built inside the image: src/airlie/serve/web_next is gitignored, so a wheel alone
+# could not serve the UI (app.py's NEXT_DIR is Path(__file__).parent / "web_next"). node at the major
+# web/package.json pins (`engines`), as in ops/test/Containerfile.
+FROM node:26-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+# vite.config.ts lands the build at ../src/airlie/serve/web_next, beside the source it replaces.
+RUN npm run build
+
+FROM python:3.12-slim-bookworm
+# uv is the release the lockfile was written with (as in ops/test/Containerfile).
+COPY --from=ghcr.io/astral-sh/uv:0.6.0 /uv /uvx /usr/local/bin/
+
+# ca-certificates for uv's PyPI fetch; nothing else — the image runs one server.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    PATH=/opt/venv/bin:$PATH
+
+WORKDIR /src
+
+# Exactly uv.lock, runtime dependencies only (no dev group): the same lock a developer installs from.
+# torch is a declared runtime dependency (the LTS controller's training) and stays in, unlike the
+# test image which skips it to keep its layers small.
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-install-project
+
+# airlie itself, as the release job built it: the wheel from dist/, not an editable checkout. Its
+# dependencies are already in /opt/venv from the lock, so --no-deps.
+COPY dist/airlie-*.whl /tmp/wheel/
+RUN uv pip install --python /opt/venv/bin/python --no-deps /tmp/wheel/*.whl && rm -rf /tmp/wheel
+
+# The web bundle, beside the installed package's serve module. The base image is pinned to 3.12, so
+# the site-packages path is stable inside this image family.
+COPY --from=web /src/airlie/serve/web_next /opt/venv/lib/python3.12/site-packages/airlie/serve/web_next
+
+# The digest the release job baked in (§A): empty for the pre-bake build, D1's full sha256:<hex> for
+# the final one. Written verbatim — read_image_digest strips and adds no prefix, so an empty file
+# reports no digest (drift "unknown"), never a guess. Root-owned and read-only for the server: the
+# process reads it once at boot (airlie.update.identity.running_release) and never writes.
+ARG IMAGE_DIGEST=""
+RUN mkdir -p /etc/airlie \
+    && printf '%s\n' "$IMAGE_DIGEST" > /etc/airlie/image-digest \
+    && chmod 0444 /etc/airlie/image-digest
+
+# OCI labels: what this image is, from the release that built it.
+ARG VERSION=""
+ARG REVISION=""
+ARG CREATED=""
+LABEL org.opencontainers.image.title="airlie" \
+    org.opencontainers.image.version="$VERSION" \
+    org.opencontainers.image.revision="$REVISION" \
+    org.opencontainers.image.created="$CREATED"
+
+# Not root: the server runs as airlie, uid 1000 (the deployment's own user), with its own home for
+# the state directory (~/.local/state/airlie).
+RUN useradd --create-home --uid 1000 airlie
+USER airlie
+
+CMD ["airlie", "serve"]

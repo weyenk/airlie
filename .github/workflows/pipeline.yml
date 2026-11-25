@@ -20,6 +20,13 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      promote_version:
+        # The version to promote (e.g. 0.1.0): the release job re-renders channels/stable.json from
+        # that version's published release.json and replaces the asset on the channel-pointers release.
+        description: "Promote this release's version to channels/stable.json (empty: no promotion)"
+        type: string
+        default: ""
 
 concurrency:
   group: pipeline-${{ github.ref }}
@@ -352,22 +359,48 @@ jobs:
       - run: task test:security
         if: hashFiles('tests/security/**/test_*.py') != ''
 
-  # ---- release: a green push to main publishes a GitHub Release of airlie ----
+  # ---- release: a green push to main publishes a GitHub Release of airlie (and, when the
+  # release_image repository variable is "true", its image and feed documents); a workflow_dispatch
+  # with promote_version promotes that named release to channels/stable.json ----
   release:
     needs: [static, unit, functional, contract, integration, e2e, journey, performance, security]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # A push to main releases; a dispatch with a version promotes. Nothing else (a pull request,
+    # another branch, a dispatch without one) may start this job: only it holds contents:write.
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.promote_version != '')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45 # the image build is the long pole: web bundle, then uv.lock's runtime deps (torch included)
     permissions:
       contents: write # this job alone: it creates the tag and the release
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      # Fail closed before anything is published: with release_image on, a missing registry or
+      # credentials would leave a GitHub Release of wheels alone — the worst outcome. The name is a
+      # repository variable (no real registry URLs in git); the credentials are secrets, never echoed.
+      - name: Validate the image release prerequisites
+        if: github.event_name == 'push' && vars.release_image == 'true'
+        env:
+          RELEASE_REGISTRY: ${{ vars.release_registry }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          if [ -z "$RELEASE_REGISTRY" ]; then
+            echo "::error::release_image is on but the release_registry repository variable is empty"
+            exit 1
+          fi
+          if [ -z "$REGISTRY_USERNAME" ] || [ -z "$REGISTRY_PASSWORD" ]; then
+            echo "::error::release_image is on but the REGISTRY_USERNAME / REGISTRY_PASSWORD secrets are missing"
+            exit 1
+          fi
       - name: Build the release package
+        if: github.event_name == 'push'
         run: uv build
       - name: Publish the GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
+        if: github.event_name == 'push'
         # one release per merged commit: the version from pyproject.toml, the commit as build metadata, so
         # the next merge does not collide with this one's tag
         run: |
@@ -375,3 +408,132 @@ jobs:
           TAG="v${VERSION}+${GITHUB_SHA::7}"
           gh release create "$TAG" dist/*.whl --target "$GITHUB_SHA" --title "airlie $TAG" \
             --notes "airlie $VERSION built from $GITHUB_SHA"
+      - name: Set up the image build
+        if: github.event_name == 'push' && vars.release_image == 'true'
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to the registry
+        if: github.event_name == 'push' && vars.release_image == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.release_registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - name: Check whether the image tag was already published
+        if: github.event_name == 'push' && vars.release_image == 'true'
+        id: image_tag
+        env:
+          RELEASE_REGISTRY: ${{ vars.release_registry }}
+        run: |
+          # The image tag is v<version> without the commit's build metadata (the wheel's tag carries it,
+          # and an OCI tag takes no '+'). Published by an earlier release of the same version, it is not
+          # republished: the wheels above still ship; the image and feed steps skip, with a message to
+          # bump pyproject.toml.
+          VERSION=$(python3 -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          echo "image_tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          if docker buildx imagetools inspect "${RELEASE_REGISTRY}:v${VERSION}" >/dev/null 2>&1; then
+            echo "Image ${RELEASE_REGISTRY}:v${VERSION} is already published."
+            echo "Bump [project].version in pyproject.toml to publish a new image; this release keeps its wheels."
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and publish the release image
+        if: github.event_name == 'push' && vars.release_image == 'true' && steps.image_tag.outputs.published == 'true'
+        id: image
+        env:
+          RELEASE_REGISTRY: ${{ vars.release_registry }}
+        run: |
+          VERSION=$(python3 -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          IMAGE_TAG="v${VERSION}"
+          # An image cannot state its own manifest digest (a hash fixed point), so the bake is two
+          # pushes: a pre-bake build pushed to a scratch tag, its digest D1 read from the registry,
+          # then a rebuild with D1 written into /etc/airlie/image-digest pushed to the official tag.
+          # The feed advertises D1: a deployment that runs the baked image self-reports D1 and reads
+          # "current"; one pinned at @sha256:D1 runs the pre-bake build, which reports no digest and
+          # reads "unknown" — honest. Advertising D2 (the baked build's own digest) would make every
+          # deployment that runs it read "behind" forever. The scratch tag keeps the official one a
+          # first use, so registries with immutability policies accept both pushes.
+          docker buildx build \
+            --file ops/release/Containerfile \
+            --build-arg VERSION="$VERSION" \
+            --build-arg REVISION="$GITHUB_SHA" \
+            --build-arg CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --build-arg IMAGE_DIGEST="" \
+            --tag "${RELEASE_REGISTRY}:${IMAGE_TAG}-prebake" \
+            --push .
+          PREBAKE_DIGEST=$(docker buildx imagetools inspect "${RELEASE_REGISTRY}:${IMAGE_TAG}-prebake" --format '{{.Manifest.Digest}}')
+          echo "Pre-bake digest: ${PREBAKE_DIGEST}"
+          docker buildx build \
+            --file ops/release/Containerfile \
+            --build-arg VERSION="$VERSION" \
+            --build-arg REVISION="$GITHUB_SHA" \
+            --build-arg CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --build-arg IMAGE_DIGEST="$PREBAKE_DIGEST" \
+            --tag "${RELEASE_REGISTRY}:${IMAGE_TAG}" \
+            --push .
+          echo "image_digest=${PREBAKE_DIGEST}" >> "$GITHUB_OUTPUT"
+      - name: Publish the feed documents
+        if: github.event_name == 'push' && vars.release_image == 'true' && steps.image_tag.outputs.published == 'true'
+        env:
+          RELEASE_REGISTRY: ${{ vars.release_registry }}
+          IMAGE_TAG: ${{ steps.image_tag.outputs.image_tag }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.image_digest }}
+        run: |
+          VERSION=$(python3 -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          TAG="v${VERSION}+${GITHUB_SHA::7}"
+          RELEASED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # release.json is the immutable per-version document: an asset of this release, addressed by URL.
+          uv run python scripts/release_feed.py render-release \
+            --version "$VERSION" \
+            --released-at "$RELEASED_AT" \
+            --git-sha "$GITHUB_SHA" \
+            --image-repo "$RELEASE_REGISTRY" \
+            --image-tag "$IMAGE_TAG" \
+            --image-digest "$IMAGE_DIGEST" \
+            --notes "airlie $VERSION built from $GITHUB_SHA" \
+            --out release.json
+          gh release upload "$TAG" release.json
+          # channels/latest.json is a rolling pointer on its own dedicated release: every release updates
+          # it in place (upload --clobber), so a mirror never races a branch push.
+          if ! gh release view channel-pointers >/dev/null 2>&1; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name=channel-pointers -F target_commit_sha="$GITHUB_SHA" \
+              -f name="Channel pointers" \
+              -f body="Rolling channel pointers (channels/*.json), updated in place by the release job."
+          fi
+          uv run python scripts/release_feed.py render-pointer \
+            --channel latest \
+            --version "$VERSION" \
+            --digest "$IMAGE_DIGEST" \
+            --released-at "$RELEASED_AT" \
+            --release-json "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/release.json" \
+            --out channels/latest.json
+          gh release upload channel-pointers channels/latest.json --clobber
+      - name: Promote the named release to stable
+        if: github.event_name == 'workflow_dispatch' && inputs.promote_version != ''
+        env:
+          PROMOTE_VERSION: ${{ inputs.promote_version }}
+        run: |
+          # The promotion re-renders channels/stable.json from the versioned release's own release.json,
+          # so stable can never drift from what was published. The renderer refuses a development build
+          # outright and a release that migrates state without saying how in its notes.
+          VERSION="${PROMOTE_VERSION#v}"
+          RELEASE_TAG=$(gh release list --limit 100 --json tagName | python3 -c '
+              import json, sys
+              want = "v" + sys.argv[1] + "+"
+              tags = [t["tagName"] for t in json.load(sys.stdin)]
+              matches = [t for t in tags if t.startswith(want) and "+" in t]
+              assert len(matches) == 1, f"expected exactly one release tagged {want}*, found: {matches}"
+              print(matches[0])' "$VERSION")
+          gh release download "$RELEASE_TAG" --pattern release.json --dir /tmp/promote
+          uv run python scripts/release_feed.py promote-stable \
+            --release-json /tmp/promote/release.json \
+            --release-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/release.json" \
+            --out channels/stable.json
+          if ! gh release view channel-pointers >/dev/null 2>&1; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name=channel-pointers -F target_commit_sha="$GITHUB_SHA" \
+              -f name="Channel pointers" \
+              -f body="Rolling channel pointers (channels/*.json), updated in place by the release job."
+          fi
+          gh release upload channel-pointers channels/stable.json --clobber
