@@ -4,7 +4,7 @@ import { useFeedStore } from "./stores/feed";
 import { useSessionStore } from "./stores/session";
 import { lastChat } from "./stores/sessions";
 
-export type Tab = "chat" | "workflows" | "board" | "metrics" | "admin";
+export type Tab = "chat" | "workflows" | "board" | "metrics" | "admin" | "update";
 
 declare module "vue-router" {
   interface RouteMeta {
@@ -45,6 +45,7 @@ export function createAppRouter(history: RouterHistory = createWebHistory("/")):
       { path: "/board/:key?", name: "board", component: () => import("./screens/BoardScreen.vue"), meta: { tab: "board" } },
       { path: "/metrics", name: "metrics", component: () => import("./screens/MetricsScreen.vue"), meta: { tab: "metrics" } },
       { path: "/admin", name: "admin", component: () => import("./screens/AdminScreen.vue"), meta: { tab: "admin" } },
+      { path: "/update", name: "update", component: () => import("./screens/UpdateScreen.vue"), meta: { tab: "update" } },
       { path: "/signin", name: "signin", component: () => import("./screens/SignInScreen.vue"), meta: { public: true, bare: true } },
       { path: "/join/:token", name: "join", component: () => import("./screens/JoinScreen.vue"), meta: { public: true, bare: true } },
       { path: "/start", redirect: "/" },

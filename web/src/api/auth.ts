@@ -6,7 +6,7 @@ import { request, setKey } from "./index";
 
 export type Role = "admin" | "member";
 
-export type Me = { user_id: string; name: string; role: Role; via: string };
+export type Me = { user_id: string; name: string; role: Role; via: string; update_panel?: boolean };
 
 /** A person. `credentials` (how many passkeys) comes with the admin's list only. */
 export type User = { id: string; name: string; login: string | null; role: Role; created_at: number; credentials?: number };
