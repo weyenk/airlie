@@ -17,7 +17,11 @@ CRITERIA = {
 
 
 def test_ranked_orders_by_probability_then_name() -> None:
-    assert ranked({"qa": 0.3, "coder": 0.6, "docs": 0.1}) == [("architect", 0.6), ("qa", 0.3), ("docs", 0.1)]
+    assert ranked({"qa": 0.3, "architect": 0.6, "docs": 0.1}) == [
+        ("architect", 0.6),
+        ("qa", 0.3),
+        ("docs", 0.1),
+    ]
     assert ranked({"b": 0.5, "a": 0.5}) == [("a", 0.5), ("b", 0.5)]
 
 

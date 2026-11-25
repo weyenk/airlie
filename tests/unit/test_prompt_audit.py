@@ -42,12 +42,12 @@ def _prompt(tmp_path: Path, role: str, body: str) -> Path:
 
 def test_instruction_sets_hold_every_text_that_reaches_a_role(tmp_path: Path) -> None:
     roles = {
-        "coder": _prompt(tmp_path, "architect", "# coder\nWrite code."),
+        "architect": _prompt(tmp_path, "architect", "# architect\nWrite code."),
         "qa": _prompt(tmp_path, "qa", "# qa"),
     }
     texts = [
         _text("write-now", "Write {path} now.", kind="steering"),
-        _text("coder-only", "Tests go in a new file."),
+        _text("architect-only", "Tests go in a new file."),
         _text("for-everyone", "Never guess.", roles=("any",)),
         _text("qa-only", "Run the suite.", roles=("qa",)),
         _text("slow-down", "Read first.", kind="steering", roles=("any",)),
@@ -55,22 +55,22 @@ def test_instruction_sets_hold_every_text_that_reaches_a_role(tmp_path: Path) ->
     sets = instruction_sets(texts, roles)
     assert list(sets) == ["architect", "qa"]
 
-    coder = sets["coder"]
+    arch = sets["architect"]
     # the role prompt first, without its front matter; then the rules, then the steering, each by source
-    assert coder.startswith("## role:architect\n\n# coder\nWrite code.")
-    assert "summary:" not in coder and "governs" not in coder
-    names = ("coder-only", "for-everyone", "slow-down", "write-now")  # rules by id, then steering by id
-    places = [coder.index(f"## {name}\n") for name in names]
+    assert arch.startswith("## role:architect\n\n# architect\nWrite code.")
+    assert "summary:" not in arch and "governs" not in arch
+    names = ("architect-only", "for-everyone", "slow-down", "write-now")  # rules by id, then steering by id
+    places = [arch.index(f"## {name}\n") for name in names]
     assert places[0] > 0 and places == sorted(places)
-    assert "## coder-only\n\nTests go in a new file." in coder
-    assert "## for-everyone\n\nNever guess." in coder  # an `any` text reaches every role
-    assert "## write-now\n\nWrite {path} now." in coder  # the placeholder is left as it is written
-    assert "qa-only" not in coder and "Run the suite." not in coder
+    assert "## architect-only\n\nTests go in a new file." in arch
+    assert "## for-everyone\n\nNever guess." in arch  # an `any` text reaches every role
+    assert "## write-now\n\nWrite {path} now." in arch  # the placeholder is left as it is written
+    assert "qa-only" not in arch and "Run the suite." not in arch
 
     qa = sets["qa"]
     assert qa.startswith("## role:qa\n\n# qa")
     assert "## qa-only\n\nRun the suite." in qa and "## for-everyone" in qa and "## slow-down" in qa
-    assert "coder-only" not in qa and "write-now" not in qa and "Write code." not in qa
+    assert "architect-only" not in qa and "write-now" not in qa and "Write code." not in qa
 
 
 def test_audit_asks_once_per_role_and_reports_each_reply(tmp_path: Path) -> None:
@@ -103,10 +103,10 @@ def test_audit_can_be_limited_to_some_roles_and_reports_a_role_the_engine_failed
     engine = FakeEngine({"reviewer": [FakeReply(text="  \n")]})  # one reply (empty); a second ask would fail
     seen: list[tuple[str, str]] = []
 
-    report = _run(audit(cfg, engine, ["coder"], lambda role, reply: seen.append((role, reply))))
+    report = _run(audit(cfg, engine, ["architect"], lambda role, reply: seen.append((role, reply))))
 
     assert len(engine.requests) == 1 and "## role:architect" in engine.requests[0].messages[1].content
-    assert re.findall(r"^## (\S+)$", report, flags=re.MULTILINE) == ["coder"]
+    assert re.findall(r"^## (\S+)$", report, flags=re.MULTILINE) == ["architect"]
     assert len(seen) == 1 and seen[0][0] == "architect" and seen[0][1].startswith("(no reply")
 
     failing = FakeEngine()  # no script for the reviewer: every ask is an EngineError
@@ -144,11 +144,13 @@ def test_cli_audit_writes_the_report(tmp_path: Path, monkeypatch) -> None:  # ty
 
 
 def test_cli_audit_with_role_reads_only_those_roles(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    engine = FakeEngine({"reviewer": [FakeReply(text="coder: the two tests rules differ\nmore")]})
-    _, res = _invoke(tmp_path, monkeypatch, engine, "--role", "coder")
+    engine = FakeEngine({"reviewer": [FakeReply(text="architect: the two tests rules differ\nmore")]})
+    _, res = _invoke(tmp_path, monkeypatch, engine, "--role", "architect")
     assert res.exit_code == 0, res.output
     assert len(engine.requests) == 1
-    assert "coder: coder: the two tests rules differ" in res.stdout and "more" not in res.stdout  # first line
+    assert (
+        "architect: architect: the two tests rules differ" in res.stdout and "more" not in res.stdout
+    )  # first line
 
     engine = FakeEngine()
     _, res = _invoke(tmp_path, monkeypatch, engine, "--role", "nobody")

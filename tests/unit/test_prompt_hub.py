@@ -53,7 +53,7 @@ def test_parse_reads_front_matter_and_body() -> None:
     assert p == PromptText(
         id="write-now",
         kind="steering",
-        roles=("architect", "architect"),
+        roles=("architect", "product"),
         fields=("n", "total"),
         when="two-fifths of the steps used and nothing written",
         governs={"reading": "stop", "tests.location": "new-file"},

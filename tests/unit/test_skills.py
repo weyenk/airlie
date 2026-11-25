@@ -39,7 +39,7 @@ def test_role_summary_prefers_frontmatter_over_config(tmp_path: Path) -> None:
 
 def test_routable_roles_need_a_summary(tmp_path: Path) -> None:
     for name, text in {
-        "coder": "---\nsummary: Implement code\n---\n# coder\n",
+        "architect": "---\nsummary: Implement code\n---\n# architect\n",
         "qa": "---\nsummary: Tests\n---\n# qa\n",
         "chief": "---\nsummary: The chief\n---\n# chief\n",
         "summarizer": "# summarizer\n",

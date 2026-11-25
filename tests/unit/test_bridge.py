@@ -422,7 +422,7 @@ def test_llm_happy_path_posts_chat_completions(tmp_path: Path) -> None:
     assert out.result == {"output": "chat.completions", "content": "weekly digest"}
     assert serve_t.chat_posts == [
         {
-            "model": "architect",
+            "model": "generalist",
             "messages": [
                 {"role": "system", "content": "# Writer\n\nYou write concise summaries."},
                 {"role": "user", "content": "summarise the week"},

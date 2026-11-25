@@ -37,8 +37,8 @@ def test_a_running_studio_job_shows_the_chief_its_specialists_and_who_is_working
     assert list(n) == ["chief", "fix", "note", "reviewer"]  # chief, the plan's subtasks in order, reviewer
     assert n["chief"]["state"] == "idle" and n["chief"]["model"] == "qwen-27b"  # its specialists work now
     fix = n["fix"]
-    assert fix["state"] == "active" and fix["label"] == "Coder" and fix["role"] == "architect"
-    assert fix["skill"] == "python" and fix["model"] == "qwen-coder"
+    assert fix["state"] == "active" and fix["label"] == "Architect" and fix["role"] == "architect"
+    assert fix["skill"] == "python" and fix["model"] == "qwen-architect"
     assert fix["steps"] == 2 and fix["tokens"] == {"prompt": 2000, "completion": 200}
     assert fix["current"] == {"step": 2, "tool": "write_file", "ok": True}
     assert fix["recent"][-1] == "step 2 · write_file"
