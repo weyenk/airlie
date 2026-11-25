@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { useRoute } from "vue-router";
 import { TABS } from "./tabs";
+import { filterUpdateTab } from "@/lib/updateGating";
+import { useSessionStore } from "@/stores/session";
 
 const route = useRoute();
+const session = useSessionStore();
+const visibleTabs = filterUpdateTab(TABS, session.me);
 </script>
 
 <template>
@@ -12,7 +16,7 @@ const route = useRoute();
     class="fixed inset-x-0 bottom-0 z-[3] hidden h-(--tabbar-h) items-center justify-around border-t border-border bg-bar pb-[calc(0.375rem+env(safe-area-inset-bottom,0px))] max-[640px]:flex"
   >
     <RouterLink
-      v-for="t in TABS"
+      v-for="t in visibleTabs"
       :key="t.tab"
       :to="t.to"
       :aria-current="route.meta.tab === t.tab ? 'page' : undefined"

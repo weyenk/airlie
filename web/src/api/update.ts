@@ -67,14 +67,4 @@ export function checkNow(): Promise<UpdateStatus> {
   return request<UpdateStatus>("/v1/admin/update/check", { method: "POST" });
 }
 
-/** Check whether a digest is on the last-good release and return its summary. */
-export async function releaseSummaryForDigest(digest: string): Promise<ReleaseSummary | null> {
-  try {
-    const s = await getUpdate();
-    return (s.available.find((r) => r.digest === digest)) ?? null;
-  } catch {
-    return null;
-  }
-}
-
 export type { ApiError };

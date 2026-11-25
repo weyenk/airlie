@@ -5,7 +5,7 @@
 import { WandSparkles } from "lucide-vue-next";
 import { onMounted, ref } from "vue";
 import { ApiError } from "@/api";
-import { clearDesired, getUpdate, setDesired } from "@/api/update";
+import { checkNow, clearDesired, getUpdate, setDesired } from "@/api/update";
 import type { UpdateStatus } from "@/api/update";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import { Button } from "@/components/ui/button";
@@ -83,6 +83,17 @@ async function setDigest(): Promise<void> {
 }
 
 onMounted(loadUpdate);
+
+async function doCheckNow(): Promise<void> {
+  busy.value = true;
+  try {
+    status.value = await checkNow();
+  } catch (e) {
+    errorText.value = e instanceof ApiError ? e.message : (e as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -162,6 +173,11 @@ onMounted(loadUpdate);
               </div>
               <div v-if="status.drift.state_migration" class="flex items-center gap-2 text-xs">
                 <span class="inline-flex rounded-md bg-warn/10 px-2 py-0.5 font-semibold text-warn">State Migration</span>
+              </div>
+              <!-- schema_epoch_feed when drift carries one (behind) -->
+              <div v-if="status.drift.schema_epoch_feed != null" class="flex items-center gap-2 text-xs">
+                <span class="text-muted-foreground">Schema epoch feed:</span>
+                <span>{{ status.drift.schema_epoch_feed }}</span>
               </div>
             </template>
 
@@ -254,7 +270,7 @@ onMounted(loadUpdate);
 
           <!-- Check now button -->
           <div class="flex justify-end">
-            <Button variant="outline" size="sm" class="text-xs font-medium" :disabled="busy" @click="loadUpdate">
+            <Button variant="outline" size="sm" class="text-xs font-medium" :disabled="busy" @click="doCheckNow">
               <WandSparkles /> Check now
             </Button>
           </div>

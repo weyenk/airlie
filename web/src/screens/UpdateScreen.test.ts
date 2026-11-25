@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   getUpdate: vi.fn(),
   setDesired: vi.fn(),
   clearDesired: vi.fn(),
+  checkNow: vi.fn(),
 }));
 
 vi.mock("@/api/update", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/update")>()), ...api }));
@@ -284,54 +285,89 @@ test("feed info (kind, channel) is available on the status", async () => {
   expect(w.text()).toContain("Updates");
 });
 
-// ---- update_panel: false → tab absent from nav (tabs filter) ----
+// ---- Nav gating via mounted component (no inline predicates) ----
 
-test("update_panel: false means the Update tab is filtered out of nav", async () => {
+test("panel: false → UpdateScreen shows 'not configured', tab absent from nav", async () => {
   const status = buildStatus({ panel: false });
 
-  await open(status);
-
-  // The TABS constant has the update entry; the filtering is done by a route
+  // The TABS constant has the update entry; simulated nav filter with panel=false and admin
   const { TABS } = await import("@/components/tabs");
 
-  // Simulate the nav filter: update_panel && role === "admin"
-  const hasUpdatePanel = (status as UpdateStatus).panel;
+  // Use filterUpdateTab (the real app gate) instead of inlining the predicate
+  const { filterUpdateTab } = await import("@/lib/updateGating");
+  const filteredResult = filterUpdateTab(TABS, { role: "admin" });
 
-  const filteredResult = TABS.filter((tab) => {
-    if (tab.tab === "update") return hasUpdatePanel && "admin" as const === "admin";
-    return true;
-  });
-
+  // With panel: false, filterUpdateTab filters out the update tab even for admin
   expect(filteredResult.map((tab) => tab.tab)).not.toContain("update");
+
+  // The screen itself should show "not configured"
+  const w = await open(status);
+  expect(w.text()).toContain("Updates are not configured on this deployment.");
 });
 
-test("update_panel: true and admin → Update tab is included", async () => {
+test("panel: true and admin → UpdateScreen mounts, tab included in nav", async () => {
   await open();
 
   const status = buildStatus({ panel: true });
 
+  // Use the real gating utility, not a hand-written predicate
+  const { filterUpdateTab } = await import("@/lib/updateGating");
   const { TABS } = await import("@/components/tabs");
-  const hasUpdatePanel = (status as UpdateStatus).panel;
 
-  const filteredResult = TABS.filter((tab) => {
-    if (tab.tab === "update") return hasUpdatePanel && "admin" as const === "admin";
-    return true;
-  });
-
+  // Admin + panel: true → Update tab is included
+  const filteredResult = filterUpdateTab(TABS, { role: "admin", update_panel: true });
   expect(filteredResult.map((tab) => tab.tab)).toContain("update");
+
+  // The mounted screen renders normally (panel: true)
+  const w = await open(status);
+  expect(w.text()).toContain("Updates");
 });
 
-test("member with update_panel: true still gets Update tab filtered out of nav", async () => {
-  const status = buildStatus({ panel: true });
-
+test("member with panel: true → Update tab is filtered out of nav, member sees 403 sentence", async () => {
+  // Use the real gating utility, not a hand-written predicate
+  const { filterUpdateTab } = await import("@/lib/updateGating");
   const { TABS } = await import("@/components/tabs");
-  const hasUpdatePanel = (status as UpdateStatus).panel;
 
-  // Simulate a member: role is "member", so update_panel && role === "admin" is false
-  const filteredResult = TABS.filter((tab) => {
-    if (tab.tab === "update") return hasUpdatePanel && false; // role is member
-    return true;
-  });
-
+  // Member (no update_panel) → Update tab is filtered out
+  const filteredResult = filterUpdateTab(TABS, { role: "member" });
   expect(filteredResult.map((tab) => tab.tab)).not.toContain("update");
+
+  // The mounted member renders the 403 sentence
+  useSessionStore().me = { user_id: "u1", name: "Jess", role: "member" as const, via: "session" };
+  api.getUpdate.mockRejectedValue(new ApiError(403, "admins only"));
+  const w = mount(UpdateScreen, { attachTo: document.body });
+  await flushPromises();
+  expect(w.text()).toContain("Only admins can see deployment updates.");
+});
+
+// ---- schema_epoch_feed in behind state ----
+
+test("behind with schema_epoch_feed: shows the epoch feed", async () => {
+  const status = buildStatus({ drift: buildDrift({ drift: "behind", feed_ok: true, schema_epoch_feed: 7 }) });
+  status.feed.kind = "channel_pointer";
+  const w = await open(status);
+  expect(w.text()).toContain("Schema epoch feed:");
+  expect(w.html()).toContain("7");
+});
+
+// ---- Check now button calls checkNow (not loadUpdate) ----
+
+test("Check now button triggers a feed check, not a refetch", async () => {
+  const status = buildStatus();
+  api.getUpdate.mockResolvedValue(status);
+  (api.checkNow as ReturnType<typeof vi.fn>).mockResolvedValue(buildStatus({ last_check: { at: "2026-11-25T19:00:00+00:00", ok: true, reason: null } }) as UpdateStatus);
+  useSessionStore().me = { user_id: "u1", name: "Noah", role: "admin" as const, via: "session" };
+  const w = mount(UpdateScreen, { attachTo: document.body });
+  await flushPromises();
+
+  // Click the Check now button (admin only)
+  const buttons = w.findAll("button");
+  // Find the visible Check now button (it's inside a template v-if="isAdmin()" that is shown when status?.enabled)
+  const checkBtn = buttons.find((b) => b.text().includes("Check now"));
+  expect(checkBtn).toBeDefined();
+  await checkBtn!.trigger("click");
+  await flushPromises();
+
+  // checkNow should have been called (not getUpdate again)
+  expect(api.checkNow).toHaveBeenCalled();
 });

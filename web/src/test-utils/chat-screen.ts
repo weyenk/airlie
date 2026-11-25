@@ -57,7 +57,7 @@ export function screenServer(init: Partial<ScreenServer> = {}): ScreenServer {
       const raw = typeof req?.body === "string" ? JSON.parse(req.body) : undefined;
       if (url === "/v1/events") return new Promise<Response>(() => {});
       server.calls.push({ method, url, body: raw });
-      if (url === "/v1/auth/me") return Response.json({ name: "Noah Kruswicki", role: "admin", via: "cookie" });
+      if (url === "/v1/auth/me") return Response.json({ name: "Noah Kruswicki", role: "admin", via: "cookie", update_panel: true });
       if (url === "/v1/airlie/chat/skills") return Response.json({ skills: SKILLS });
       if (url === "/v1/airlie/chat/attachments") return Response.json(LIMITS);
       if (url === "/v1/airlie/engines") return Response.json([]);
