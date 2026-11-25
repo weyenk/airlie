@@ -168,24 +168,12 @@ test("member (403): displays the 'only admins' message, no status card", async (
 
 // ---- update_panel: false (section off) ----
 
-test("update enabled but panel: false → shows 'not configured' empty state, tab absent from nav", async () => {
+test("panel: false → shows 'not configured' empty state on screen", async () => {
   const status = buildStatus({ panel: false });
-  await open(status);
-
-  // The TABS constant has the update entry; simulated nav filter with panel=false and admin
-  const { TABS } = await import("@/components/tabs");
-  const hasUpdatePanel = (status as UpdateStatus).panel;
-
-  const filteredResult = TABS.filter((tab) => {
-    if (tab.tab === "update") return hasUpdatePanel && "admin" as const === "admin";
-    return true;
-  });
-
-  // With panel: false, the update tab is filtered out regardless of role
-  expect(filteredResult.map((tab) => tab.tab)).not.toContain("update");
-
-  // But the screen itself should show "not configured"
   const w = await open(status);
+
+  // The screen should show "not configured" when panel is off (nav absence
+  // is covered by the AppShell integration test).
   expect(w.text()).toContain("Updates are not configured on this deployment.");
 });
 
