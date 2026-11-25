@@ -13,23 +13,43 @@ The ticker's ``_loop`` runs a checker that calls ``run_check``, which for a **pi
 a local file — no network.  No transport is needed when the section is pinned to a ``path`` on
 disk.
 
-The test is quick — no real sleeps, just state assertions (well under 500 ms).
+The enabled tests poll the ledger for the boot check's row with a bounded deadline: ``run_check``
+records an ``ok=False`` row (with the feed's reason) when a document fails to parse, and no row at
+all when it raises outside ``FeedError``, so a fixture that stops parsing is caught by the
+assertions on the row, not swallowed by the ticker.
 """
 
 from __future__ import annotations
 
 import copy
 import json
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient as _TestClient
 
 from airlie.config.schema import AirlieConfig
 from airlie.serve.app import create_app
+from airlie.update.identity import SCHEMA_EPOCH
+from airlie.update.store import CheckOutcome, UpdateStore, update_store_path
 from tests.support.config import MINIMAL
 
 #: 64-hex-char digest (matching DIGEST_RE: sha256:[0-9a-f]{64}).
 _PINNED_DIGEST = "sha256:" + "a" * 64
+
+#: Strict three-segment semver: ``is_dev_version`` must read it as a release, or the stable
+#: channel refuses the pointer before any document is read.
+_RELEASE_VERSION = "1.4.2"
+
+
+def _wait_for_check(store: UpdateStore, *, timeout_s: float = 2.0) -> CheckOutcome | None:
+    """The boot check's ledger row, or ``None`` when the deadline passes before one lands."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        row = store.last_check()
+        if row is not None or time.monotonic() >= deadline:
+            return row
+        time.sleep(0.01)
 
 
 def _make_pin_dir(pin_path: Path) -> None:
@@ -44,26 +64,26 @@ def _make_pin_dir(pin_path: Path) -> None:
     pin_path.mkdir(parents=True, exist_ok=True)  # create root + channels/ tree
     (pin_path / "channels").mkdir(parents=True, exist_ok=True)  # creates channels/ inside pin_path
     stable = pin_path / "channels" / "stable.json"
-    release_file = "v1.0.json"  # pointer names this; file lives at pin_path/v1.0.json
+    release_file = f"v{_RELEASE_VERSION}.json"  # pointer names this; file lives at pin_path/<name>
     stable.write_text(
         json.dumps(
             {
-                "version": "1.0",
+                "version": _RELEASE_VERSION,
                 "digest": _PINNED_DIGEST,
                 "release_json": release_file,
                 "released_at": "2026-01-01T00:00:00Z",
             }
         ),
     )
-    # Release document — version must match the pointer.
+    # Release document — version must match the pointer; schema_epoch is the code's declared epoch.
     (pin_path / release_file).write_text(
         json.dumps(
             {
-                "version": "1.0",
-                "image": {"repo": "ghcr.io/example/app", "tag": "1.0", "digest": _PINNED_DIGEST},
+                "version": _RELEASE_VERSION,
+                "image": {"repo": "ghcr.io/example/app", "tag": _RELEASE_VERSION, "digest": _PINNED_DIGEST},
                 "released_at": "",
                 "git_sha": "",
-                "schema_epoch": None,
+                "schema_epoch": SCHEMA_EPOCH,
                 "notes": "",
                 "breaking": False,
                 "state_migration": False,
@@ -147,8 +167,24 @@ class TestEnabledLifecycle:
 
         # ``__exit__`` ran shutdown → ``ticker.stop()`` + ``store.close()``.
 
+    def test_boot_check_records_the_pinned_release(self, tmp_path: Path) -> None:
+        """The boot check parses the pinned feed and records an ok row with its version and digest."""
+        store = UpdateStore(update_store_path(tmp_path / "state"))
+        app = create_app(_cfg(tmp_path, enabled=True), update_store=store)
+
+        with _TestClient(app):
+            row = _wait_for_check(store)  # the boot check fires immediately from ``_loop``
+
+        assert row is not None, "the boot check never reached the ledger"
+        # A fixture that fails to parse lands here as ok=False with its reason, so this only
+        # passes when the pinned read genuinely succeeds.
+        assert row.ok is True, f"the pinned feed failed the check: {row.reason}"
+        assert row.release is not None and row.pointer is not None
+        assert row.release.version == _RELEASE_VERSION
+        assert row.pointer.digest == _PINNED_DIGEST
+
     def test_ticker_stopped_after_shutdown(self, tmp_path: Path) -> None:
-        """After ``TestClient.__exit__``, the ticker is stopped and its store closed."""
+        """After ``TestClient.__exit__``, the ticker is stopped."""
         app = create_app(_cfg(tmp_path, enabled=True))
 
         # Use ASGI directly: enter the lifespan, verify state, exit (runs shutdown).
