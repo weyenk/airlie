@@ -28,17 +28,64 @@ from airlie.config.schema import AirlieConfig
 from airlie.serve.app import create_app
 from tests.support.config import MINIMAL
 
+#: 64-hex-char digest (matching DIGEST_RE: sha256:[0-9a-f]{64}).
+_PINNED_DIGEST = "sha256:" + "a" * 64
+
+
+def _make_pin_dir(pin_path: Path) -> None:
+    """Create a valid pinned-feed directory layout for ``_read_pinned_documents``.
+
+    Structure expected by the real code:
+      <pin_path>/channels/stable.json   — pointer (has version, digest, **release_json**)
+      <pin_path>/<pointer.release_json> — release (has version, image: {repo, tag, digest})
+
+    Both documents must agree on ``version``.
+    """
+    pin_path.mkdir(parents=True, exist_ok=True)  # create root + channels/ tree
+    (pin_path / "channels").mkdir(parents=True, exist_ok=True)  # creates channels/ inside pin_path
+    stable = pin_path / "channels" / "stable.json"
+    release_file = "v1.0.json"  # pointer names this; file lives at pin_path/v1.0.json
+    stable.write_text(
+        json.dumps(
+            {
+                "version": "1.0",
+                "digest": _PINNED_DIGEST,
+                "release_json": release_file,
+                "released_at": "2026-01-01T00:00:00Z",
+            }
+        ),
+    )
+    # Release document — version must match the pointer.
+    (pin_path / release_file).write_text(
+        json.dumps(
+            {
+                "version": "1.0",
+                "image": {"repo": "ghcr.io/example/app", "tag": "1.0", "digest": _PINNED_DIGEST},
+                "released_at": "",
+                "git_sha": "",
+                "schema_epoch": None,
+                "notes": "",
+                "breaking": False,
+                "state_migration": False,
+            }
+        ),
+    )
+
 
 def _cfg(tmp_path: Path, *, enabled: bool) -> AirlieConfig:
     """Build a config.  When enabled, pin the feed so checks don't touch the network."""
     base = copy.deepcopy(MINIMAL)
-    data = {**base, "update": {"enabled": enabled}}
+    # Pin observability state dir so nothing leaks into ~/.local/state/airlie (Finding 2).
+    base["observability"] = {"state_dir": str(tmp_path / "state")}
+    data: dict = {**base, "update": {"enabled": enabled}}
     if enabled:
+        # A path-based pinned feed — _read_pinned_documents reads the local directory (Finding 3).
+        pin_path = tmp_path / "pin_dir"
+        _make_pin_dir(pin_path)
         data["update"]["feed"] = {
             "kind": "pinned",
-            "path": str(tmp_path / "pin.json"),
+            "path": str(pin_path),  # directory root, not a single file (Finding 3).
         }
-        (tmp_path / "pin.json").write_text(json.dumps({"version": "1.0", "digest": "sha256:" + "a" * 63}))
     return AirlieConfig.model_validate(data)
 
 
@@ -93,7 +140,10 @@ class TestEnabledLifecycle:
         with _TestClient(app) as tc:
             # ``__enter__`` ran lifespan startup.  With enabled=True, a ticker was created and
             # started (the first check fires immediately from ``_loop``):
-            assert tc.app.state.update_ticker is not None
+            ticker = tc.app.state.update_ticker
+            assert ticker is not None
+            # (Finding 1: .running must be True; deleting the start() call would break this.)
+            assert ticker.running is True
 
         # ``__exit__`` ran shutdown → ``ticker.stop()`` + ``store.close()``.
 
@@ -106,5 +156,5 @@ class TestEnabledLifecycle:
             # Inside the context, ticker is started (one check already fired).
             assert tc.app.state.update_ticker is not None
 
-        # Reaching here without exception proves shutdown ran cleanly
-        # (ticker.stop() + store.close()).
+        # (Finding 1: prove the ticker's running flag is False post-shutdown.)
+        assert tc.app.state.update_ticker.running is False
