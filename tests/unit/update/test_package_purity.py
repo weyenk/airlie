@@ -162,6 +162,13 @@ def test_positive_kubernetes_import() -> None:
     assert "client" in issues
 
 
+def test_positive_post_method_call() -> None:
+    """.post( must be flagged."""
+    snippet = "session.post(url, json=payload)\n"
+    issues = _scan_update_package(snippet)
+    assert "method:.post(" in issues
+
+
 def test_positive_put_method_call() -> None:
     """.put( must be flagged."""
     snippet = "client.put(url, json=payload)\n"

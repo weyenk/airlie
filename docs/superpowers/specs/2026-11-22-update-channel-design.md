@@ -283,8 +283,6 @@ update:
     #   digest: "sha256:…"
   check:
     interval_s: 86400
-  check:
-    interval_s: 86400
 ```
 
 No `${VAR}` under `update:` unless `_expand_engine_env` is generalized (out of
@@ -337,12 +335,23 @@ Evaluate top-down; first match wins:
 leaves desired pointing at a newer digest stays `requested` until the operator
 clears or updates desired. Clearing desired is an admin action.
 
-**Evaluation order (implementation-authoritative):** conditions are evaluated
-top-down, first-match-wins: unknown → requested → current (behaviour-level —
-"still honouring what the cache last showed", not "up to date") → behind →
-fallback-unknown. For a stale unapplied desired pin, `manifest_digest = desired
-or channel` (the same expression drift.py uses when resolving the manifest for a
-behind or unknown state).
+**Evaluation order (implementation-authoritative — src/airlie/update/drift.py,
+first match wins):**
+
+1. feed down and no channel digest ever cached → `unknown`
+2. feed up and `running == channel` → `current` — checked **before** desired, so
+   a box running what the channel points at reports `current` even when a stale
+   unapplied pin exists
+3. desired set and `running == desired` → `requested`
+4. feed up and `running != channel` → `behind`
+5. feed down and `running` known → `current` — behaviour-level, "still honouring
+   what the cache last showed", not "up to date"
+6. otherwise → `unknown`
+
+This differs from the design table above (rows 2–5 predate the shipped order;
+the operator guide `docs/wiki/ops/update.md` follows the code). For a stale
+unapplied desired pin, `manifest_digest = desired or channel` — the response
+reports the pin, not the channel target.
 
 `/health` may expose `version` and `image_digest` publicly (ungated, like
 today's `commit`). That fingerprints the install — accepted for ops probes;
