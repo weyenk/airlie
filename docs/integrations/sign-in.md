@@ -28,24 +28,23 @@ The store is `observability.state_dir/auth.sqlite` (people, invites, passkeys, s
 tokens are hashed at rest). Nothing from it is logged; refusals are logged as `auth_refused <reason>` on the
 `airlie.auth` logger.
 
-## Dogfood on homenet (`airlie.home.arpa`)
+## Dogfood on homenet
 
-The personal dogfood runs as a digest-pinned container on the NAS, reached over LAN/tailnet as
-`http://airlie.home.arpa` (AdGuard rewrite → Caddy → host `:18090`). That edge is plain HTTP like the
-other `*.home.arpa` services: set `AIRLIE_SERVE_API_KEY`, list Caddy's docker network in
-`auth.trusted_proxies`, and create the first admin with the serve key. Passkeys and `auth.tailscale`
-need HTTPS — leave them off on this name until TLS is in front.
+The personal dogfood runs as a digest-pinned container on the NAS.
 
-Create the first admin inside the container (CLI writes `auth.sqlite` under the state volume):
+| URL | Use |
+| --- | --- |
+| `http://airlie.home.arpa` | LAN/tailnet HTTP (AdGuard → Caddy → `:18090`). API key / ops. **Not** for passkeys. |
+| `https://homenet.taila5f450.ts.net` | Tailscale serve → same container. **Use this for invites / passkeys.** |
+
+Mac Studio's MagicDNS name (`https://mac-studio.taila5f450.ts.net`) is **omlx**, not the Studio UI.
+
+Create the first admin inside the container, then invite with the HTTPS base URL:
 
 ```bash
 docker exec -u airlie airlie airlie auth admin --name Noah --login noah@github \
-  --base-url http://airlie.home.arpa
-```
-
-Mac Studio's MagicDNS name (`https://mac-studio.taila5f450.ts.net`) is **omlx**, not the Studio UI —
-`tailscale serve` proxies `/` to `http://127.0.0.1:8000`.
-## Behind `tailscale serve`
+  --base-url https://homenet.taila5f450.ts.net
+```## Behind `tailscale serve`
 
 For a Mac (or other host) that still fronts airlie with Tailscale HTTPS:
 
@@ -74,12 +73,12 @@ For a device that is not on the tailnet, or a person without Tailscale, invite t
 (HTTPS required, except `localhost`):
 
 ```bash
-task auth:admin -- --name Noah --login noah@github --base-url http://airlie.home.arpa
-task auth:invite -- --name Pat --base-url http://airlie.home.arpa
+task auth:admin -- --name Noah --login noah@github --base-url https://homenet.taila5f450.ts.net
+task auth:invite -- --name Pat --base-url https://homenet.taila5f450.ts.net
 ```
 
-On a Tailscale-HTTPS install, pass the MagicDNS `https://…` base URL instead.
-
+`http://airlie.home.arpa` is fine for the admin API key on `/signin`; browsers will not create
+passkeys on plain HTTP.
 Each prints a link `…/join/<token>`, good for `auth.invite_hours` (24) and once. The person opens it on the
 device whose passkey they want (a phone with Face ID, a Mac with Touch ID), the web app shows their name and
 "Create passkey", and they are signed in. iCloud Keychain syncs the passkey to their other Apple devices; on a
