@@ -84,6 +84,17 @@ record the release's `image.digest` instead — the one value this deployment ca
 confirm it is running. Both are accepted pins (step 2's PUT validates against
 the last-good release's two digests plus what is running).
 
+**This is a v1 decision, not a defect to route around.** A pull-digest
+`desired` is an audit breadcrumb: it records which build you meant to deploy,
+and nothing more. Do not expect `requested` from it. Row 3 is deliberately left
+as `desired == running` rather than widened to a condition it could never
+reach — the honest pull-pinning equivalent needs the pin to carry both the pull
+digest and that release's baked self-report, and a container cannot read its
+own registry digest (`src/airlie/update/drift.py` `classify`). Nothing is
+scheduled to change that; the deferred apply path in spec Appendix A is a
+separate piece of work and does not close this gap. Self-report pins still get
+`requested`, as above.
+
 The CLI equivalent:
 
 ```bash

@@ -326,6 +326,14 @@ today Admin is always listed and APIs 403).
 Inputs: `running_digest`, `desired_digest` (nullable), `channel_digest`
 (nullable — from last successful feed), `feed_ok` (bool).
 
+**DEPRECATED — see "Evaluation order (implementation-authoritative)" below.**
+The shipped classifier in `src/airlie/update/drift.py` decides the order; this
+table is the original design record, kept so the divergence stays visible instead
+of being silently rewritten. Note that `classify()`'s docstring and the
+parametrize comments in `tests/unit/update/test_drift.py` still speak in **this
+table's row numbers** (7 rows, including cases this order does not reach), so a
+"Row 3" in the code or tests names the case here, not the numbered list below.
+
 Evaluate top-down; first match wins:
 
 | Order | Condition | Drift |
@@ -338,9 +346,11 @@ Evaluate top-down; first match wins:
 | 6 | `running_digest` is null (dev checkout / bake missing) | `unknown` (show commit/version for humans) |
 | 7 | else | `unknown` |
 
-**`failed` is deferred to Appendix A.** v1 does not emit it; a rollback that
-leaves desired pointing at a newer digest stays `requested` until the operator
-clears or updates desired. Clearing desired is an admin action.
+**`failed` is deferred to Appendix A** and v1 does not emit it. The other half of
+this note was wrong: under the shipped order a rollback whose desired still
+points at a newer digest reports `current` while the channel still names what is
+running — the channel comparison is evaluated before desired is consulted, and
+`requested` requires `running == desired`. Clearing desired stays an admin action.
 
 **Evaluation order (implementation-authoritative — src/airlie/update/drift.py,
 first match wins):**
@@ -355,9 +365,9 @@ first match wins):**
    what the cache last showed", not "up to date"
 6. otherwise → `unknown`
 
-This differs from the design table above (rows 2–5 predate the shipped order;
-the operator guide `docs/wiki/ops/update.md` follows the code). For a stale
-unapplied desired pin, `manifest_digest = desired or channel` — the response
+This list is the authority for the order; the DEPRECATED design table above is the
+superseded record (and `docs/wiki/ops/update.md` follows this list too). For a
+stale unapplied desired pin, `manifest_digest = desired or channel` — the response
 reports the pin, not the channel target.
 
 `/health` may expose `version` and `image_digest` publicly (ungated, like

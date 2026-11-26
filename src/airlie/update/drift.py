@@ -36,7 +36,12 @@ def classify(
     release: ReleaseJson | None = None,
     channel_pull_digest: str | None = None,
 ) -> DriftResult:
-    """Apply §C's table top-down; first match wins.
+    """Evaluate the cases below top-down; first match wins. The branch order is
+    the one recorded as "implementation-authoritative" in
+    ``docs/superpowers/specs/2026-11-22-update-channel-design.md``; the
+    ``Row N`` comments cite the design spec's DEPRECATED table, whose row
+    numbering the tests follow, so the labels and this order are not the same
+    numbering.
 
     ``unknown``
         Nothing authoritative to compare. The action is the whole line: pin

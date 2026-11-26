@@ -370,17 +370,20 @@ def classify(
 ) -> DriftResult: ...
 ```
 
-Evaluate **top-down, first match wins** — copy the spec table verbatim into the parametrize rows:
+Evaluate **top-down, first match wins**. This order is implementation-authoritative — it is what
+`src/airlie/update/drift.py` `classify()` actually does, and the parametrize rows mirror it. Row 2
+deliberately precedes row 3, so the channel comparison wins before `desired`; row 5 honours the last
+confirmed cache rather than claiming freshness. If plan, spec and code ever disagree again, the code
+plus `docs/wiki/ops/update.md` win.
 
 | Order | Condition | Drift |
 | --- | --- | --- |
-| 1 | `not feed_ok` and no successful check cached (`channel_digest is None` and no prior good) | `unknown` |
-| 2 | desired set, running set, they differ | `requested` |
-| 3 | desired set, running == desired, and (`not feed_ok` or running == channel or channel unknown) | `current` |
-| 4 | `feed_ok`, running and channel set, they differ, and (desired is null or desired == running) | `behind` |
-| 5 | `feed_ok`, running == channel, and (desired is null or desired == running) | `current` |
-| 6 | `running_digest is None` | `unknown` |
-| 7 | else | `unknown` |
+| 1 | `not feed_ok` and no cached channel digest | `unknown` |
+| 2 | `feed_ok` and running == channel | `current` (before desired) |
+| 3 | desired set and running == desired | `requested` |
+| 4 | `feed_ok` and running != channel | `behind` |
+| 5 | `not feed_ok` and running known | `current` (cache honour; not freshness) |
+| 6 | else | `unknown` |
 
 `failed` is **not** emitted in v1 (Appendix A).
 
@@ -547,7 +550,6 @@ EOF
 **Files:**
 - Create: `docs/wiki/ops/update.md`
 - Create or edit: `docs/wiki/ops/deploying.md` (declarative apply runbook; `Recreate` / `maxSurge: 0`; pull policy `IfNotPresent`; pull secrets)
-- Edit: `docs/wiki/interfaces/web-walkthrough.md` (Update tab), API routes doc if one exists for `/v1`
 
 **Content (exact runbook steps from spec §D):**
 
