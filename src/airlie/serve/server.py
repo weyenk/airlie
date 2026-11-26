@@ -38,9 +38,15 @@ class Server(uvicorn.Server):
 
 
 def run(app: FastAPI, *, host: str, port: int) -> None:
-    """What `uvicorn.run(app, ...)` does for one process, with `Server`. proxy_headers is off: the resolver
-    reads the real peer to tell tailscale serve (loopback, with the device's tailnet address forwarded) from
-    the Mac itself; uvicorn's default would rewrite it to X-Forwarded-For."""
+    """What `uvicorn.run(app, ...)` does for one process, with `Server`.
+
+    `proxy_headers` stays off for every bind, a routable `host` such as `0.0.0.0` included, on purpose:
+    uvicorn would replace `request.client` with the caller's own `X-Forwarded-For` for whoever sends it, and
+    the peer address is the one fact the resolver trusts (airlie.auth.principal: `tailscale serve` on
+    loopback, plus the proxies `auth.trusted_proxies` declares). Turning it on would make a forwarded header
+    decide who a request is, which is the opposite of the guard. So the listen address only decides who can
+    connect: binding `0.0.0.0` lets remote peers reach serve, they arrive with their own address, and nothing
+    they assert about a second client is read."""
     server = Server(app, host=host, port=port, log_level="info", proxy_headers=False)
     with contextlib.suppress(KeyboardInterrupt):
         server.run()

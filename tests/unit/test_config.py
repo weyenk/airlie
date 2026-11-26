@@ -957,10 +957,23 @@ def test_story_board_is_jira_or_local(tmp_path: Path) -> None:
 def test_auth_defaults_are_off_with_30_day_sessions_and_24_hour_invites(tmp_path: Path) -> None:
     cfg = load_config(write(tmp_path, MINIMAL))
     assert cfg.auth.tailscale is False
+    assert cfg.auth.trusted_proxies == []  # no reverse proxy is trusted until the operator names it
     assert cfg.auth.rp_id is None
     assert cfg.auth.origins == []
     assert cfg.auth.session_days == 30
     assert cfg.auth.invite_hours == 24
+
+
+def test_auth_trusted_proxies_are_addresses_or_cidrs(tmp_path: Path) -> None:
+    cfg = load_config(
+        write(tmp_path, {**MINIMAL, "auth": {"trusted_proxies": ["127.0.0.1", "172.17.0.0/16"]}})
+    )
+    assert cfg.auth.trusted_proxies == ["127.0.0.1", "172.17.0.0/16"]
+    # a host name parses to no address, so it would silently trust no proxy; that is a config error instead
+    with pytest.raises(ConfigError, match=r"auth\.trusted_proxies"):
+        load_config(write(tmp_path, {**MINIMAL, "auth": {"trusted_proxies": ["nginx.internal"]}}))
+    with pytest.raises(ConfigError, match=r"auth\.trusted_proxies"):
+        load_config(write(tmp_path, {**MINIMAL, "auth": {"trusted_proxies": ["172.17.0.0/33"]}}))
 
 
 def test_auth_refuses_zero_session_days(tmp_path: Path) -> None:

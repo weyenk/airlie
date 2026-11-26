@@ -166,8 +166,8 @@ test("the top bar tabs and the phone tab bar reach board, workflows, metrics and
     const bar = width > 640 ? "[data-test=tabs]" : "nav[data-test=tabbar]";
     expect(w.get(`${bar} a[aria-current=page]`).text()).toBe("Chat");
     const links = w.findAll(`${bar} a`);
-    expect(links.map((a) => a.text())).toEqual(["Chat", "Board", "Workflows", "Metrics", "Admin"]);
-    for (const [i, path] of [[1, "/board"], [2, "/workflows"], [3, "/metrics"], [4, "/admin"]] as const) {
+    expect(links.map((a) => a.text())).toEqual(["Chat", "Board", "Workflows", "Metrics", "Admin", "Update"]);
+    for (const [i, path] of [[1, "/board"], [2, "/workflows"], [3, "/metrics"], [4, "/admin"], [5, "/update"]] as const) {
       await links[i].trigger("click");
       await vi.waitFor(() => expect(router.currentRoute.value.path).toBe(path)); // the screen's chunk loads first
       await router.push("/chat/c1");

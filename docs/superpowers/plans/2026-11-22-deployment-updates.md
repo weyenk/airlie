@@ -370,17 +370,20 @@ def classify(
 ) -> DriftResult: ...
 ```
 
-Evaluate **top-down, first match wins** — copy the spec table verbatim into the parametrize rows:
+Evaluate **top-down, first match wins**. This order is implementation-authoritative — it is what
+`src/airlie/update/drift.py` `classify()` actually does, and the parametrize rows mirror it. Row 2
+deliberately precedes row 3, so the channel comparison wins before `desired`; row 5 honours the last
+confirmed cache rather than claiming freshness. If plan, spec and code ever disagree again, the code
+plus `docs/wiki/ops/update.md` win.
 
 | Order | Condition | Drift |
 | --- | --- | --- |
-| 1 | `not feed_ok` and no successful check cached (`channel_digest is None` and no prior good) | `unknown` |
-| 2 | desired set, running set, they differ | `requested` |
-| 3 | desired set, running == desired, and (`not feed_ok` or running == channel or channel unknown) | `current` |
-| 4 | `feed_ok`, running and channel set, they differ, and (desired is null or desired == running) | `behind` |
-| 5 | `feed_ok`, running == channel, and (desired is null or desired == running) | `current` |
-| 6 | `running_digest is None` | `unknown` |
-| 7 | else | `unknown` |
+| 1 | `not feed_ok` and no cached channel digest | `unknown` |
+| 2 | `feed_ok` and running == channel | `current` (before desired) |
+| 3 | desired set and running == desired | `requested` |
+| 4 | `feed_ok` and running != channel | `behind` |
+| 5 | `not feed_ok` and running known | `current` (cache honour; not freshness) |
+| 6 | else | `unknown` |
 
 `failed` is **not** emitted in v1 (Appendix A).
 
@@ -464,9 +467,15 @@ EOF
 | Drift | Sentence |
 | --- | --- |
 | `current` | `This deployment matches what it should be running.` |
+| `current` with `feed_ok: false` | `Can't verify right now — the channel feed is down, so this deployment's digest was not compared with what the channel points to. This is not a claim that it is up to date.` |
 | `behind` | `A newer release is on the channel. Pin this digest in your manifest, then let your platform recreate the workload.` |
-| `requested` | `Desired digest is recorded; this host has not reconciled to it yet. Bump the image pin in your manifest to:` + digest |
+| `requested` | `Your pin is in effect — this deployment already runs the digest you recorded, so there is nothing to bump. Your manifest should keep pinning: ` + digest |
 | `unknown` | `Could not tell — feed error, missing digest bake, or no successful check yet.` |
+
+`requested` means the recorded desired digest equals the digest the host reports running, so the
+sentence never tells anyone to bump a pin to what is already running. `current` alone is not a
+claim of freshness: with the channel feed down the running digest was never compared with the
+channel, which is why that pair gets its own sentence rather than the all-clear one.
 
 Pinned-feed label (when `feed.kind === "pinned"` and drift is `current`): `Pinned @ <digest> — not claiming agreement with upstream stable/latest.`
 
@@ -509,8 +518,8 @@ EOF
 3. Push `<registry>/airlie:v0.MINOR.PATCH` (immutable; **no `+` in the tag**); record digest.
 4. Bake `/etc/airlie/image-digest` (rebuild-with-ARG or equivalent — one advertised digest).
 5. Publish GitHub Release with wheel + `release.json` (spec §B shape).
-6. Update `channels/latest.json` every release; `channels/stable.json` only on an explicit promotion step/input. Promotion of a release with `state_migration: true` without notes fails the promotion step.
-7. Image: non-root uid 1000, web bundle built in (spec prerequisite — `web_next` is gitignored), `CMD ["airlie", "serve"]`, OCI labels `{version, revision, created}`.
+6. Update `channels/latest.json` every release; `channels/stable.json` only on an explicit promotion step/input. Promotion of a release with `state_migration: true` without notes fails the promotion step. (As shipped: the guard exists and reads the published document, but the release job passes neither flag, so no CI-published release can reach it — see the note under "Release flags" in `docs/wiki/ops/update.md`.)
+7. Image: non-root uid 1000, web bundle built in (spec prerequisite — `web_next` is gitignored), `CMD ["airlie", "serve"]`, OCI labels `{version, revision, created}`. (As shipped: the `CMD` also passes `--host 0.0.0.0`, which is what makes the published-port path in `docs/wiki/ops/deploying.md` work; the guard there is `auth.trusted_proxies`.)
 
 - [ ] **Step 1: Containerfile** modelled on `ops/test/Containerfile` but runtime-only deps + web build + digest file path.
 
@@ -541,7 +550,6 @@ EOF
 **Files:**
 - Create: `docs/wiki/ops/update.md`
 - Create or edit: `docs/wiki/ops/deploying.md` (declarative apply runbook; `Recreate` / `maxSurge: 0`; pull policy `IfNotPresent`; pull secrets)
-- Edit: `docs/wiki/interfaces/web-walkthrough.md` (Update tab), API routes doc if one exists for `/v1`
 
 **Content (exact runbook steps from spec §D):**
 

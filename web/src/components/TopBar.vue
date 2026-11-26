@@ -5,6 +5,7 @@ import LiveBadge from "./LiveBadge.vue";
 import NotificationsSheet from "./NotificationsSheet.vue";
 import ThemeToggle from "./ThemeToggle.vue";
 import { TABS } from "./tabs";
+import { filterUpdateTab } from "@/lib/updateGating";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,6 +18,7 @@ import { useSessionStore } from "@/stores/session";
 
 const route = useRoute();
 const session = useSessionStore();
+const visibleTabs = computed(() => filterUpdateTab(TABS, session.me));
 const notificationsOpen = ref(false);
 const initials = computed(() => {
   const words = (session.me?.name ?? "").split(/\s+/).filter(Boolean);
@@ -34,7 +36,7 @@ const initials = computed(() => {
     </RouterLink>
     <nav data-test="tabs" aria-label="Main" class="inline-flex gap-0.5 rounded-lg bg-muted p-[3px] max-[640px]:hidden">
       <RouterLink
-        v-for="t in TABS"
+        v-for="t in visibleTabs"
         :key="t.tab"
         :to="t.to"
         :aria-current="route.meta.tab === t.tab ? 'page' : undefined"

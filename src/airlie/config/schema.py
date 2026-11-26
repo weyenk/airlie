@@ -6,6 +6,7 @@ checked in `AirlieConfig.validate_references`; defaults mirror the wiki build sp
 from __future__ import annotations
 
 import re
+from ipaddress import ip_network
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -616,6 +617,128 @@ class ObservabilitySpec(Strict):
     retain_days: int = 14
 
 
+FeedKind = Literal["channel_pointer", "pinned"]
+
+#: Where the channel pointer sits under ``base_url``. The two hosts a feed actually runs on
+#: address one document differently, so the difference is config rather than a guess.
+FeedLayout = Literal["mirror", "release_asset"]
+
+
+class FeedSpec(Strict):
+    """How a build learns what the next release is.
+
+    ``base_url`` is required for ``kind: channel_pointer`` and is where the channel document is
+    fetched from; ``layout`` says how the path below it is built. A pinned feed may carry
+    ``base_url`` too, but it is only a label there: the pinned manifest comes from ``path`` or
+    ``pinned_version`` + ``pinned_digest``, never from ``base_url``, and a pinned directory is
+    always laid out the way ``scripts/release_feed.py`` renders it.
+    """
+
+    kind: FeedKind = "channel_pointer"
+    base_url: str | None = None
+    layout: FeedLayout = Field(
+        default="mirror",
+        description=(
+            "where the channel pointer document sits under update.feed.base_url (kind: channel_pointer)."
+            ' "mirror" — the default, and what every existing config means — reads'
+            " <base_url>/channels/<channel>.json: a host serving the directory layout the release"
+            " renderer writes, which is what a customer's mirrored HTTPS base looks like."
+            ' "release_asset" reads <base_url>/<pointer_release_tag>/<channel>.json: a release-asset'
+            " host flattens the file name, so with base_url https://github.com/<org>/<repo>/releases/"
+            "download and pointer_release_tag channel-pointers the reader asks for the exact URL the"
+            " CI publisher uploads the pointer to. A pointer read that way names its release.json by"
+            " absolute URL, which the reader requests as written. One layout is read, never both and"
+            " never guessed from the host: a wrong layout is a wrong config, and it reads as a 404"
+            " rather than quietly working off someone else's tree"
+        ),
+    )
+    pointer_release_tag: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+        description=(
+            "the release whose assets are the channel pointers: required by layout: release_asset"
+            " (the CI publisher uploads them to one rolling release tagged channel-pointers), and"
+            " left empty for layout: mirror, where nothing uses it"
+        ),
+    )
+    channel: Literal["stable", "latest"] = "stable"
+    path: str | None = None
+    pinned_version: str | None = None
+    pinned_digest: str | None = None
+    registry_token_env: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_feed_layout(self) -> FeedSpec:
+        # The asset layout is one path segment away from the mirror layout, and both hosts answer
+        # a wrong one the same way — 404 — so the pair is refused at load, not at first check.
+        if self.kind != "channel_pointer" or self.layout != "release_asset":
+            return self
+        if not self.pointer_release_tag:
+            raise ValueError(
+                "update.feed.layout release_asset needs update.feed.pointer_release_tag"
+                " (the release the channel pointers are assets of)"
+            )
+        return self
+
+
+class CheckSpec(Strict):
+    interval_s: int = Field(default=86_400, ge=3600)
+    timeout_s: int = Field(default=10, ge=1)
+
+
+class UpdateSpec(Strict):
+    """Self-update settings. Off unless you ask for them.
+
+    Nothing here is templated: the loader's ``${VAR}`` expansion covers engine blocks only, so a
+    value under this section that contains ``${`` is rejected rather than reaching the fetcher
+    verbatim, where it would become a confusing network error.
+    """
+
+    enabled: bool = False
+    # Lets the Studio Updates tab exist while the product stays off by default.
+    panel: bool = True
+    feed: FeedSpec = Field(default_factory=FeedSpec)
+    check: CheckSpec = Field(default_factory=CheckSpec)
+
+    @model_validator(mode="after")
+    def _validate_update(self) -> UpdateSpec:
+        # Off means off: a checkout may carry this section before deciding where builds come from.
+        if not self.enabled:
+            return self
+        feed = self.feed
+        if feed.kind == "channel_pointer":
+            if not feed.base_url or not feed.base_url.startswith("https://"):
+                raise ValueError("a channel_pointer update.feed needs an https:// update.feed.base_url")
+        elif feed.path is None and not (feed.pinned_version and feed.pinned_digest):
+            raise ValueError(
+                "a pinned update.feed needs update.feed.path or update.feed.pinned_version + pinned_digest",
+            )
+        fields = sorted(_dollar_brace_fields(self))
+        if fields:
+            joined = ", ".join(fields)
+            raise ValueError(f"{joined} must be literal: airlie does not expand ${{VAR}} under update:")
+        return self
+
+
+def _dollar_brace_fields(spec: UpdateSpec) -> list[str]:
+    """Paths of ``update:`` values that still contain a literal ``${``."""
+    found: list[str] = []
+
+    def walk(value: object, path: str) -> None:
+        if isinstance(value, str):
+            if "${" in value:
+                found.append(path)
+        elif isinstance(value, dict):
+            for key, nested in value.items():
+                walk(nested, f"{path}.{key}")
+        elif isinstance(value, (list, tuple)):
+            for index, nested in enumerate(value):
+                walk(nested, f"{path}[{index}]")
+
+    walk(spec.model_dump(mode="json"), "update")
+    return found
+
+
 PushHost = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9-]+)+$")]
 
 
@@ -652,6 +775,17 @@ class AuthSpec(Strict):
         default=False,
         description="trust the Tailscale-User-Login header `tailscale serve` adds (loopback requests only)",
     )
+    trusted_proxies: list[str] = Field(
+        default_factory=list,
+        description=(
+            "addresses or CIDRs of the reverse proxies that may speak for a client, e.g. [127.0.0.1] or "
+            "[172.17.0.0/16]: only from these peers are X-Forwarded-For, X-Forwarded-Proto and "
+            "Tailscale-User-Login read (auth.tailscale alone still covers `tailscale serve` reaching us "
+            "over loopback). Empty (default) trusts no proxy, so a peer's forwarded headers change nothing "
+            "until it is listed here; naming a loopback address also means loopback is no longer the machine "
+            "itself, and the fresh-install bootstrap admin stops applying"
+        ),
+    )
     rp_id: str | None = Field(default=None, description="WebAuthn relying party (default: the request host)")
     origins: list[str] = Field(
         default_factory=list, description="WebAuthn origins (default: https://<rp_id> and http localhost)"
@@ -660,6 +794,20 @@ class AuthSpec(Strict):
         default=30, ge=1, description="how long a sign-in lasts idle; one used past half this is renewed"
     )
     invite_hours: int = Field(default=24, ge=1, description="how long an invite link may be used")
+
+    @field_validator("trusted_proxies")
+    @classmethod
+    def _trusted_proxies_are_addresses(cls, value: list[str]) -> list[str]:
+        """An entry that does not parse would match no peer and read as 'the proxy setting does not work',
+        so a typo is a config error at load instead of a silent no-op."""
+        for entry in value:
+            try:
+                ip_network(entry, strict=False)
+            except ValueError:
+                raise ValueError(
+                    "each entry must be an IP address or CIDR, e.g. 127.0.0.1 or 172.17.0.0/16"
+                ) from None
+        return value
 
 
 class MemorySpec(Strict):
@@ -1136,6 +1284,7 @@ class AirlieConfig(Strict):
     teams: TeamsSpec = Field(default_factory=TeamsSpec)
     aggregator: AggregatorSpec = Field(default_factory=AggregatorSpec)
     observability: ObservabilitySpec = Field(default_factory=ObservabilitySpec)
+    update: UpdateSpec = Field(default_factory=UpdateSpec)
     auth: AuthSpec = Field(default_factory=AuthSpec)
     notifications: NotificationsSpec = Field(default_factory=NotificationsSpec)
     memory: MemorySpec = Field(default_factory=MemorySpec)

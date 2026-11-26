@@ -124,6 +124,22 @@ Who can sign in, their role, passkeys and Tailscale login, and an Engines table 
   <img src="docs/readme/admin.png" alt="Admin: people, roles, passkeys, invites" width="720" />
 </p>
 
+### Updates
+
+What version is running, whether the channel has a newer release (with breaking flags and schema epoch),
+and an admin-only digest pin for declarative apply. The tab is hidden when `update.enabled` is false
+or `panel` is explicitly false (`airlie.yaml`). Full operator guide at [`docs/wiki/ops/update.md`](docs/wiki/ops/update.md);
+the apply runbook is at [`docs/wiki/ops/deploying.md`](docs/wiki/ops/deploying.md).
+
+- `airlie update status` — read-only snapshot: running release, desired pin (if any), drift state.
+  No network. (`src/airlie/cli.py` ~476–498)
+- `airlie update check` — runs one feed fetch, writes the ledger, exits non-zero on failure.
+  (`src/airlie/cli.py` ~500–523)
+
+The panel also exposes the four drift states (`unknown`, `requested`, `current`, `behind`),
+desired-digest pinning (admin only, validated against published digests), and a "Check now" button.
+See [`docs/wiki/ops/update.md`](docs/wiki/ops/update.md).
+
 ## Install
 
 Three tools, then everything else is a task (node 26 builds the web app in `web/`, and must be the first `node` on

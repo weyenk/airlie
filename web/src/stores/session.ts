@@ -7,7 +7,7 @@ import { useFeedStore } from "./feed";
 import { rememberChat } from "./sessions";
 import { useTurns } from "./turns";
 
-export type Me = { user_id?: string; name: string; role: "admin" | "member"; via: string };
+export type Me = { user_id?: string; name: string; role: "admin" | "member"; via: string; update_panel?: boolean };
 
 /** Who is signed in, and what to do the moment nobody is. */
 export const useSessionStore = defineStore("session", () => {

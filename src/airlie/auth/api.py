@@ -28,7 +28,7 @@ from webauthn.helpers.structs import (
     UserVerificationRequirement,
 )
 
-from airlie.auth.principal import SESSION_COOKIE, Principal, Resolver, is_loopback
+from airlie.auth.principal import SESSION_COOKIE, Principal, Resolver, speaks_for_clients
 from airlie.auth.store import AuthStore, Credential, User
 from airlie.config.schema import AuthSpec
 
@@ -94,23 +94,27 @@ def _admin(request: Request) -> Principal:
     return p
 
 
-def set_session_cookie(response: Response, request: Request, token: str, days: int) -> None:
+def set_session_cookie(response: Response, request: Request, cfg: AuthSpec, token: str, days: int) -> None:
     response.set_cookie(
         SESSION_COOKIE,
         token,
         max_age=days * 86400,
         httponly=True,
         samesite="strict",
-        secure=request_is_https(request),
+        secure=request_is_https(request, cfg),
         path="/",
     )
 
 
-def request_is_https(request: Request) -> bool:
-    """https itself, or `tailscale serve` (loopback) saying the request it proxied was https."""
+def request_is_https(request: Request, cfg: AuthSpec) -> bool:
+    """https itself, or a peer that may speak for a client — `tailscale serve` on loopback (`auth.tailscale`)
+    or one declared in `auth.trusted_proxies` — saying the request it proxied was https. From any other peer
+    `X-Forwarded-Proto` is a stranger asserting a protocol, and marking the cookie Secure on a plain-http
+    origin would just break the sign-in it belongs to."""
     if request.url.scheme == "https":
         return True
-    return is_loopback(request) and request.headers.get("x-forwarded-proto", "").lower() == "https"
+    claimed = request.headers.get("x-forwarded-proto", "").lower()
+    return speaks_for_clients(request, cfg) and claimed == "https"
 
 
 class Ceremonies:
@@ -143,7 +147,12 @@ class Ceremonies:
 
 
 def auth_router(
-    store: AuthStore, resolver: Resolver, cfg: AuthSpec, *, now: Callable[[], float] = time.time
+    store: AuthStore,
+    resolver: Resolver,
+    cfg: AuthSpec,
+    *,
+    now: Callable[[], float] = time.time,
+    update_panel: bool = False,
 ) -> APIRouter:
     router = APIRouter(prefix=PREFIX)
     ceremonies = Ceremonies(now)
@@ -167,12 +176,20 @@ def auth_router(
         log.warning("auth_refused %s %s", reason, " ".join(f"{k}={v}" for k, v in fields.items()))
 
     def sign_in(response: Response, request: Request, user: User) -> None:
-        set_session_cookie(response, request, store.make_session(user.id, cfg.session_days), cfg.session_days)
+        set_session_cookie(
+            response, request, cfg, store.make_session(user.id, cfg.session_days), cfg.session_days
+        )
 
     @router.get("/me")
     async def me(request: Request) -> dict[str, Any]:
         p = _principal(request)
-        return {"user_id": p.user_id, "name": p.name, "role": p.role, "via": p.via}
+        return {
+            "user_id": p.user_id,
+            "name": p.name,
+            "role": p.role,
+            "via": p.via,
+            "update_panel": update_panel,
+        }
 
     @router.post("/invites", status_code=201)
     async def invite(request: Request, req: InviteRequest) -> dict[str, Any]:

@@ -251,6 +251,13 @@ higher `schema_epoch` than the running process reports must surface as breaking
 in the UI. Promoting such a release to `stable` without notes is a release-job
 check (fail the promotion step).
 
+As shipped (2026-11-26): the transport and both checks are built, but nothing in
+CI sets `breaking` / `state_migration` — a push has no honest source for whether
+a merge carried the manual MINOR bump this section assumes, and the repo keeps
+no changelog, label set, or commit-trailer to read instead. Every pipeline
+release therefore publishes as non-breaking. The operator-facing statement of
+that gap is "Release flags" in `docs/wiki/ops/update.md`.
+
 **Source of truth for "what is newest on this channel":** the **channel pointer**
 (`channels/<name>.json`), which names a digest and a `release.json` URL/path.
 Adapters:
@@ -277,12 +284,12 @@ update:
     # Public default when egress allows:
     # base_url: https://github.com/<org>/airlie/releases/download
     channel: stable           # product default; nas.home.apra dogfood uses latest
+    registry_token_env: AIRLIE_UPDATE_REGISTRY_TOKEN   # optional; empty = anonymous
     # pinned:                 # air-gap / locked change window
     #   version: "0.2.3"
     #   digest: "sha256:…"
   check:
     interval_s: 86400
-  registry_token_env: AIRLIE_UPDATE_REGISTRY_TOKEN   # optional; empty = anonymous
 ```
 
 No `${VAR}` under `update:` unless `_expand_engine_env` is generalized (out of
@@ -319,6 +326,14 @@ today Admin is always listed and APIs 403).
 Inputs: `running_digest`, `desired_digest` (nullable), `channel_digest`
 (nullable — from last successful feed), `feed_ok` (bool).
 
+**DEPRECATED — see "Evaluation order (implementation-authoritative)" below.**
+The shipped classifier in `src/airlie/update/drift.py` decides the order; this
+table is the original design record, kept so the divergence stays visible instead
+of being silently rewritten. Note that `classify()`'s docstring and the
+parametrize comments in `tests/unit/update/test_drift.py` still speak in **this
+table's row numbers** (7 rows, including cases this order does not reach), so a
+"Row 3" in the code or tests names the case here, not the numbered list below.
+
 Evaluate top-down; first match wins:
 
 | Order | Condition | Drift |
@@ -331,9 +346,29 @@ Evaluate top-down; first match wins:
 | 6 | `running_digest` is null (dev checkout / bake missing) | `unknown` (show commit/version for humans) |
 | 7 | else | `unknown` |
 
-**`failed` is deferred to Appendix A.** v1 does not emit it; a rollback that
-leaves desired pointing at a newer digest stays `requested` until the operator
-clears or updates desired. Clearing desired is an admin action.
+**`failed` is deferred to Appendix A** and v1 does not emit it. The other half of
+this note was wrong: under the shipped order a rollback whose desired still
+points at a newer digest reports `current` while the channel still names what is
+running — the channel comparison is evaluated before desired is consulted, and
+`requested` requires `running == desired`. Clearing desired stays an admin action.
+
+**Evaluation order (implementation-authoritative — src/airlie/update/drift.py,
+first match wins):**
+
+1. feed down and no channel digest ever cached → `unknown`
+2. feed up and `running == channel` → `current` — checked **before** desired, so
+   a box running what the channel points at reports `current` even when a stale
+   unapplied pin exists
+3. desired set and `running == desired` → `requested`
+4. feed up and `running != channel` → `behind`
+5. feed down and `running` known → `current` — behaviour-level, "still honouring
+   what the cache last showed", not "up to date"
+6. otherwise → `unknown`
+
+This list is the authority for the order; the DEPRECATED design table above is the
+superseded record (and `docs/wiki/ops/update.md` follows this list too). For a
+stale unapplied desired pin, `manifest_digest = desired or channel` — the response
+reports the pin, not the channel target.
 
 `/health` may expose `version` and `image_digest` publicly (ungated, like
 today's `commit`). That fingerprints the install — accepted for ops probes;

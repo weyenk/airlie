@@ -236,6 +236,77 @@ def engine_check(name: str, spec: EngineSpec, probe: SystemProbe) -> CheckResult
     return CheckResult(row, "ok", f"{spec.base_url} answers {status}")
 
 
+#: What a feed that cannot be read is allowed to say (spec non-negotiable 4): drift is unverified.
+#: The other reading — a row that says up to date because nothing contradicted it — is the bug.
+DRIFT_UNVERIFIED = (
+    'the feed is enabled but cannot be read, so drift is unverified — this row never means "up to date"'
+)
+
+
+def update_check(cfg: AirlieConfig, probe: SystemProbe) -> CheckResult:
+    """The self-update feed (`update.feed`): can this install read what its channel points at?
+
+    Warn, never fail. airlie runs correctly with the feed down, and an install that deliberately
+    keeps updates off must not turn `task doctor` red. Nothing here installs: no `airlie update
+    check`, no ledger write, no `desired` write, and one HTTP request at most.
+
+    The pointer URL comes from `airlie.update.feed.pointer_target` — the reader's own — so the two
+    `update.feed.layout` shapes (mirror's `channels/<channel>.json`, release_asset's
+    `<tag>/<channel>.json`) cannot drift apart between what doctor reports and what `airlie update
+    check` fetches, and its URL guard means `RealProbe` is never handed a URL httpx would reject.
+    The fetch runs on `SystemProbe.http_status`, which is the doctor's 3 s budget (the same one the
+    engine and web:search rows use), so a hung feed host costs three seconds and reads as
+    unreachable; `update.check.timeout_s` belongs to the scheduled check, not to this row.
+    """
+    from airlie.update.feed import FeedError, pointer_target
+
+    feed = cfg.update.feed
+    if not cfg.update.enabled:
+        return CheckResult("update", "ok", "off: update.enabled false, nothing reads a feed")
+    if feed.kind == "pinned":
+        # A pinned feed's `path` is a DIRECTORY holding the rendered documents (feed._read_pinned
+        # looks for the same one); `path` wins over the bare version + digest pair, as it does there.
+        if feed.path is not None:
+            wanted = Path(feed.path).expanduser() / "channels" / f"{feed.channel}.json"
+            if wanted.is_file():
+                return CheckResult(
+                    "update",
+                    "ok",
+                    f"{wanted} is present (channel {feed.channel}): a frozen feed on disk, nothing "
+                    "fetched and nothing installed",
+                )
+            return CheckResult(
+                "update",
+                "warn",
+                f"{wanted} is not a file — update.feed.path {feed.path} must be a DIRECTORY holding "
+                f"channels/{feed.channel}.json (the layout scripts/release_feed.py renders) — "
+                f"{DRIFT_UNVERIFIED}",
+            )
+        assert feed.pinned_version is not None and feed.pinned_digest is not None  # enforced by schema
+        return CheckResult(
+            "update",
+            "ok",
+            f"pinned {feed.pinned_version} at {feed.pinned_digest} in config: no feed to reach, "
+            "nothing installed",
+        )
+    try:
+        pointer_url = pointer_target(feed)
+    except FeedError as err:  # a base_url pydantic accepted and httpx will not
+        return CheckResult(
+            "update", "warn", f"cannot build the pointer URL ({err.detail}): {DRIFT_UNVERIFIED}"
+        )
+    status = probe.http_status(pointer_url)
+    if status == 200:
+        return CheckResult(
+            "update",
+            "ok",
+            f"{pointer_url} answers 200 (channel {feed.channel}): readable — readable is not up to "
+            "date, and airlie installs nothing",
+        )
+    answered = f"answers {status}" if status is not None else "got no answer"
+    return CheckResult("update", "warn", f"{pointer_url} {answered}: {DRIFT_UNVERIFIED}")
+
+
 def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT) -> list[CheckResult]:
     results: list[CheckResult] = []
     for tool in REQUIRED_TOOLS:
@@ -299,6 +370,8 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
 
     ram_gb = probe.total_ram_bytes() / 2**30
     results.append(CheckResult("ram", "ok" if ram_gb >= 64 else "warn", f"{ram_gb:.0f} GiB"))
+
+    results.append(update_check(cfg, probe))
 
     return results
 

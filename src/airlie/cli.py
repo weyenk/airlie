@@ -42,6 +42,11 @@ controller_app = typer.Typer(no_args_is_help=True, help="Learned LTS admission c
 app.add_typer(controller_app, name="controller")
 host_app = typer.Typer(no_args_is_help=True, help="Host settings airlie keeps.")
 app.add_typer(host_app, name="host")
+update_app = typer.Typer(
+    no_args_is_help=True,
+    help="Release channel: what this deployment should be running, and whether it differs.",
+)
+app.add_typer(update_app, name="update")
 supervisor_app = typer.Typer(
     no_args_is_help=True,
     help="The supervisor's ledger: what Muse advised at each trouble point, what came of it, your verdict "
@@ -466,6 +471,58 @@ def serve(
         f"catalog models: {', '.join(raw)}; api key: {'required' if api_key else 'none'})"
     )
     run(create_app(cfg, api_key=api_key, accepted_api_keys=accepted), host=host, port=port)
+
+
+@update_app.command("status")
+def update_status(
+    config: ConfigOpt = None,
+) -> None:
+    """Print the updater's read-only status (feed, running release, desired, drift, history).
+
+    Reads the local ledger only: no network, so it works while the feed is down.
+    """
+    import json
+
+    from airlie.rev import build_commit
+    from airlie.update.identity import running_release
+    from airlie.update.status import build_status
+    from airlie.update.store import UpdateStore, update_store_path
+
+    cfg = _load(config)
+    store = UpdateStore(update_store_path(cfg.observability.state_dir))
+    try:
+        body = build_status(cfg, store, running_release(build_commit()))
+    finally:
+        store.close()
+    # This stdout is a machine contract, not prose to read: rich wraps at width 80 whenever it is not
+    # a terminal, and a feed base_url clears 80 without trying — the fold leaves the caller with text
+    # that is no longer JSON. emoji=False for the same reason: a shortcode inside a value is data.
+    console.print(json.dumps(body, indent=2), markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
+@update_app.command("check")
+def update_check(
+    config: ConfigOpt = None,
+) -> None:
+    """Run one feed check now and print the outcome; exits non-zero when the check failed."""
+    import asyncio
+    import json
+
+    from airlie.update.check import run_check
+    from airlie.update.store import UpdateStore, update_store_path
+
+    cfg = _load(config)
+    store = UpdateStore(update_store_path(cfg.observability.state_dir))
+    try:
+        outcome = asyncio.run(run_check(cfg.update, store))
+    finally:
+        store.close()
+    console.print(
+        json.dumps({"ok": outcome.ok, "reason": outcome.reason, "checked_at": outcome.checked_at}, indent=2),
+        markup=False,
+    )
+    if not outcome.ok:
+        raise typer.Exit(1)
 
 
 @app.command()

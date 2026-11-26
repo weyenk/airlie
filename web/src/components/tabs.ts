@@ -1,4 +1,4 @@
-import { ChartLine, Columns2, MessageSquare, Users, Workflow } from "lucide-vue-next";
+import { ChartLine, Columns2, MessageSquare, Package, Users, Workflow } from "lucide-vue-next";
 import type { Tab } from "@/router";
 
 export const TABS = [
@@ -7,4 +7,5 @@ export const TABS = [
   { tab: "workflows", label: "Workflows", to: "/workflows", icon: Workflow },
   { tab: "metrics", label: "Metrics", to: "/metrics", icon: ChartLine },
   { tab: "admin", label: "Admin", to: "/admin", icon: Users },
+  { tab: "update", label: "Update", to: "/update", icon: Package },
 ] as const satisfies readonly { tab: Tab; label: string; to: string; icon: unknown }[];

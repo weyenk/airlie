@@ -18,6 +18,10 @@ from tests.support.serve import FakeUpstream, cfg
 
 LOOPBACK = ("127.0.0.1", 40000)
 ELSEWHERE = ("10.0.0.5", 40000)
+DECLARED_PROXY = ("172.17.0.2", 40000)
+OTHER_PROXY = ("172.18.0.2", 40000)
+"""A reverse proxy on the docker bridge (declared in these tests) and one on another bridge the operator
+did not name."""
 PROXIED = {
     "Tailscale-User-Login": "noah@github",
     "X-Forwarded-For": "100.64.0.7",
@@ -106,6 +110,72 @@ def test_tailscale_header_is_ignored_when_auth_tailscale_is_off(store: AuthStore
     store.add_user("Noah", "admin", login="noah@github")
     r = Resolver(store, AuthSpec(tailscale=False), api_key=None)
     assert probe(r, LOOPBACK, headers=PROXIED).json() is None
+
+
+# ---- who may speak for a client: auth.trusted_proxies (empty by default) ----
+
+
+def test_a_declared_proxy_vouches_for_the_forwarded_tailnet_address(store: AuthStore) -> None:
+    """`tailscale serve` in its own container reaches serve over the bridge, not loopback; naming that
+    address (or its CIDR) reads its forwarded headers, and a proxy on another bridge stays nobody."""
+    u = store.add_user("Noah", "admin", login="noah@github")
+    by_address = Resolver(store, AuthSpec(tailscale=True, trusted_proxies=["172.17.0.2"]), api_key=None)
+    assert probe(by_address, DECLARED_PROXY, headers=PROXIED).json() == {
+        "user_id": u.id,
+        "name": "Noah",
+        "role": "admin",
+        "via": "tailscale",
+    }
+    assert probe(by_address, OTHER_PROXY, headers=PROXIED).json() is None
+    by_cidr = Resolver(store, AuthSpec(tailscale=True, trusted_proxies=["172.17.0.0/24"]), api_key=None)
+    assert probe(by_cidr, DECLARED_PROXY, headers=PROXIED).json()["via"] == "tailscale"
+    assert probe(by_cidr, OTHER_PROXY, headers=PROXIED).json() is None
+    # and tailscale serve on loopback is unchanged: the device's tailnet address, gated on auth.tailscale
+    assert probe(by_cidr, LOOPBACK, headers=PROXIED).json()["via"] == "tailscale"
+
+
+def test_a_declared_proxy_does_not_open_the_tailscale_header_by_itself(store: AuthStore) -> None:
+    """Declaring a proxy says where forwarded headers come from; `auth.tailscale` still says to read an
+    identity header at all."""
+    store.add_user("Noah", "admin", login="noah@github")
+    r = Resolver(store, AuthSpec(tailscale=False, trusted_proxies=["172.17.0.2"]), api_key=None)
+    assert probe(r, DECLARED_PROXY, headers=PROXIED).json() is None
+
+
+def test_an_undeclared_peer_forges_no_identity(store: AuthStore) -> None:
+    """With the peer guard removed these become admins, which is why they are here: a routable peer is not a
+    proxy until declared, so `auth.trusted_proxies=[]` must make X-Forwarded-For and Tailscale-User-Login
+    inert no matter how plausible the tailnet address in them looks."""
+    store.add_user("Noah", "admin", login="noah@github")
+    declared_everywhere_else = Resolver(
+        store, AuthSpec(tailscale=True, trusted_proxies=["172.17.0.0/24"]), api_key=None
+    )
+    for client in (ELSEWHERE, OTHER_PROXY):
+        assert probe(declared_everywhere_else, client, headers=PROXIED).json() is None, client
+
+
+def test_a_routable_peer_cannot_bootstrap_a_fresh_install(store: AuthStore) -> None:
+    """No users and no API key plus `--host 0.0.0.0`: the bootstrap admin is the machine's own direct
+    connection only, so no routable peer takes a fresh install — not an undeclared one, not a declared
+    proxy, whatever it forwards."""
+    r = Resolver(store, AuthSpec(tailscale=True, trusted_proxies=["172.17.0.0/24"]), api_key=None)
+    for client in (ELSEWHERE, OTHER_PROXY, DECLARED_PROXY):
+        for headers in ({}, {"X-Forwarded-For": "100.64.0.7"}, PROXIED):
+            body = probe(r, client, headers=headers).json() or {}
+            # nobody, or the tailscale "not invited" refusal — never the bootstrap admin
+            assert body.get("name") != "bootstrap" and body.get("role") != "admin", (client, headers)
+    assert probe(r, LOOPBACK).json()["name"] == "bootstrap"  # the Mac's own onboarding path still works
+
+
+def test_a_declared_loopback_proxy_is_not_the_machine_itself(store: AuthStore) -> None:
+    """One pod or container: the proxy shares the network namespace, so it arrives on loopback and may
+    forward nothing at all. Declaring it is what stops a fresh install bootstrapping a remote client behind
+    it; undeclared, loopback is still the Mac and the web app works."""
+    plain = Resolver(store, AuthSpec(), api_key=None)
+    assert probe(plain, LOOPBACK).json()["name"] == "bootstrap"
+    declared = Resolver(store, AuthSpec(trusted_proxies=["127.0.0.1"]), api_key=None)
+    assert probe(declared, LOOPBACK).json() is None
+    assert probe(declared, LOOPBACK, headers=PROXIED).json() is None
 
 
 def test_an_unknown_tailscale_login_is_not_invited(store: AuthStore) -> None:
@@ -235,6 +305,22 @@ def test_serve_answers_an_unknown_tailscale_login_with_401_not_invited(tmp_path:
         assert r.status_code == 401
         assert r.json() == {"error": "not invited"}
         assert tc.get("/v1/models", headers=PROXIED).status_code == 200
+
+
+def test_serve_accepts_a_declared_proxy_and_nobody_off_it(tmp_path: Path) -> None:
+    """The middleware sees the same peer rule: `tailscale serve` in another container works once declared,
+    and a proxy off that network gets 401 with the very same headers."""
+    c = cfg(tmp_path)
+    c.auth.tailscale = True
+    c.auth.trusted_proxies = ["172.17.0.0/24"]
+    store = AuthStore(tmp_path / "state" / "auth.sqlite")
+    store.add_user("Noah", "admin", login="noah@github")
+    store.close()
+    app = create_app(c, transport=httpx.MockTransport(FakeUpstream()))
+    with TestClient(app, client=DECLARED_PROXY) as tc:
+        assert tc.get("/v1/models", headers=PROXIED).status_code == 200
+    with TestClient(app, client=OTHER_PROXY) as tc:
+        assert tc.get("/v1/models", headers=PROXIED).status_code == 401
 
 
 def test_serve_lets_a_fresh_install_in_from_loopback_only(tmp_path: Path) -> None:

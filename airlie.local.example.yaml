@@ -56,3 +56,42 @@
 #   github_app:
 #     app_id: 1234567                     # your app's id (docs/integrations/story.md, Publishing as a bot)
 #     key_file: ~/.config/airlie/github-app.pem
+
+# Self-update (Studio → Updates). Off by default, and with enabled false nothing reads a feed and nothing runs. A
+# dogfood box sets channel: latest to take whatever is newest rather than only what stable points at. Nothing here is
+# templated: airlie expands ${VAR} in engine urls and keys only, so a value here containing ${ is refused at load.
+#
+# What this buys is awareness, never installation. airlie reads the feed and reports the digest it is running beside
+# the digest the channel points at; the panel's "set desired digest" only records that intent. Nothing here pulls an
+# image, touches a docker socket, or restarts the running install — you put the digest it shows into your own manifest
+# or stack file and your platform (Flux, Portainer's git stack, a human) applies it, then airlie reads back current.
+# See docs/wiki/ops/deploying.md for the apply runbook. `task doctor` warns while this is on and the configured feed
+# cannot be reached, because then airlie cannot say what is current: a feed it cannot read is reported as such, never
+# as up to date.
+update:
+  enabled: false
+  feed:
+    kind: channel_pointer               # channel_pointer: read the channel document at base_url
+    base_url: https://updates.example.com   # https only; required for kind: channel_pointer
+    channel: stable                     # stable (the default) | latest
+    # base_url is only half the address: layout says how the path under it is built, because the two hosts a feed
+    # really runs on address the same document differently. mirror (the default, and what every existing config means)
+    # reads <base_url>/channels/<channel>.json — the directory layout scripts/release_feed.py renders, which is what
+    # a mirrored HTTPS base serves. GitHub does not serve that shape: it uploads the pointers as release ASSETS and
+    # flattens the file name, so reading them off the repo takes the other layout:
+    #   layout: release_asset
+    #   pointer_release_tag: channel-pointers     # the one release CI uploads the pointers to
+    #   base_url: https://github.com/<org>/<repo>/releases/download
+    # which asks for exactly the URL the publisher uploads to. airlie reads one layout and never guesses it from the
+    # host, so a wrong layout reads as a 404 rather than quietly working off someone else's tree; release_asset
+    # without pointer_release_tag is refused when the config loads, not on the first check.
+    # A pinned feed ignores base_url and reads a frozen copy of the feed off disk instead. path is a DIRECTORY that
+    # holds the same documents the channel serves: <path>/channels/<channel>.json, plus the release document that
+    # pointer names, resolved under <path>. Pointing it at one .json file is not a pinned feed; the check then fails
+    # with unsupported_shape because the channel document is looked for inside the file you named, not in a directory.
+    #   path: ~/.airlie/feed-mirror
+    # Or pin by name with no directory at all, which needs both the version and the digest that shipped with it:
+    #   pinned_version: "2026.11.3"
+    #   pinned_digest: "sha256:0f3a..."
+    # registry_token_env: AIRLIE_REGISTRY_TOKEN   # the NAME of the variable holding a private registry token,
+    # never the token itself — which is why this is a name and not a value

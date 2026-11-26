@@ -26,6 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from airlie import __version__
 from airlie.auth.api import PUBLIC_PATHS, auth_router, set_session_cookie
 from airlie.auth.principal import SESSION_COOKIE, NotInvited, Principal, Resolver
 from airlie.auth.store import AuthStore
@@ -106,6 +107,8 @@ from airlie.teams.worktree import rev_parse
 from airlie.tools.web import SearXNGProvider, UrllibClient, WebFetch, WebSearch
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
+from airlie.update.identity import running_release
+from airlie.update.store import UpdateStore
 
 _STORY_DIR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 """A story key as a directory name under stories/: a route that serves a path under the state directory
@@ -656,6 +659,7 @@ def create_app(
     story_restart: Callable[..., Any] | None = None,
     story_adopt: Callable[..., Any] | None = None,
     auth_store: AuthStore | None = None,
+    update_store: UpdateStore | None = None,
     now: Callable[[], float] = time.time,
     next_dir: Path | None = None,
     manager: Manager | None = None,
@@ -690,10 +694,11 @@ def create_app(
     `run_start` replaces what the board run dispatcher calls to run an approved card's workflow (default:
     airlie.workflow.trigger.start_workflow, in the card's checkout, over `run_engine`'s engine: default an
     HTTP engine; tests give a fake). The dispatcher is `app.state.dispatcher`."""
-    app = FastAPI(title="airlie", version="0.1.0")
+    app = FastAPI(title="airlie", version=__version__)
     started_commit = (
         build_commit()
     )  # the code this process runs: a pull after it changes the checkout, not this
+    started_release = running_release(started_commit)  # read once: an image does not change under us
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
     factory = orchestrator_factory or _default_factory
     feed = Feed()
@@ -716,6 +721,17 @@ def create_app(
         transport=transport,
     )
     app.state.dispatcher = dispatcher
+    # The updater is optional: a store + panel only exist when the section is on, and a test can
+    # stand its own store in by passing update_store.
+    from airlie.update import api as update_api
+    from airlie.update.store import update_store_path
+
+    update_store = update_store or (
+        UpdateStore(update_store_path(cfg.observability.state_dir)) if cfg.update.enabled else None
+    )
+    app.state.update_ticker = None
+    if update_store is not None and cfg.update.enabled:
+        app.include_router(update_api.updates_router(cfg, update_store, started_release))
     # imported here: the manager's clock lives under airlie.serve, whose package imports this module (and the
     # chat routes import the manager)
     from airlie.chat.api import Busy, chat_router
@@ -810,9 +826,17 @@ def create_app(
         left = store.session_expires_at(token)
         if left is not None and left - now() < cfg.auth.session_days * 86400 / 2:
             store.extend_session(token, cfg.auth.session_days)
-            set_session_cookie(response, request, token, cfg.auth.session_days)
+            set_session_cookie(response, request, cfg.auth, token, cfg.auth.session_days)
 
-    app.include_router(auth_router(store, resolver, cfg.auth, now=now))
+    app.include_router(
+        auth_router(
+            store,
+            resolver,
+            cfg.auth,
+            now=now,
+            update_panel=cfg.update.enabled and cfg.update.panel,
+        )
+    )
 
     sender: PushSender | None = None
     public_key: str | None = None
@@ -911,6 +935,9 @@ def create_app(
             "status": "ok",
             "roles": list(cfg.roles),
             "commit": started_commit,
+            "version": started_release.version,
+            "image_digest": started_release.image_digest,
+            "schema_epoch": started_release.schema_epoch,
             "line": {
                 "last_tick": None,
                 "line": None,
@@ -1890,6 +1917,16 @@ def create_app(
 
         engine_tasks.append(asyncio.ensure_future(boot()))
         engine_tasks.append(asyncio.ensure_future(manager.run(cfg.manager.reap_every_s)))
+        if update_store is not None and cfg.update.enabled:
+            # the updater's own heartbeat: one check on boot, then on the configured cadence. A
+            # failed check is a ledger row, never a crash of the process that is serving.
+            from airlie.update.check import run_check
+            from airlie.update.ticker import UpdateTicker
+
+            app.state.update_ticker = UpdateTicker(
+                lambda: run_check(cfg.update, update_store), cfg.update.check.interval_s
+            )
+            app.state.update_ticker.start()
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
@@ -1909,6 +1946,10 @@ def create_app(
         board.close()
         model_allowlist.close()
         store.close()
+        if app.state.update_ticker is not None:
+            await app.state.update_ticker.stop()
+        if update_store is not None:
+            update_store.close()
 
     api_prefixes = ("v1", "health", "docs", "redoc", "openapi.json")
 

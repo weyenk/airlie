@@ -20,6 +20,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      promote_version:
+        # The version to promote (e.g. 0.1.0): the release job re-renders channels/stable.json from
+        # that version's published release.json and replaces the asset on the channel-pointers release.
+        # A version can own several releases (each merge is tagged v<version>+<sha>), so a bare version
+        # promotes the newest published build of it; name the full tag (v0.1.0+abc1234) to pick one build.
+        description: "Promote this release to channels/stable.json: a version, or a full tag (empty: none)"
+        type: string
+        default: ""
 
 concurrency:
   group: pipeline-${{ github.ref }}
@@ -352,26 +361,387 @@ jobs:
       - run: task test:security
         if: hashFiles('tests/security/**/test_*.py') != ''
 
-  # ---- release: a green push to main publishes a GitHub Release of airlie ----
+  # ---- release: a green push to main publishes a GitHub Release of airlie (and, when the
+  # release_image repository variable is "true", its image and feed documents); a workflow_dispatch
+  # with promote_version promotes that named release to channels/stable.json ----
   release:
     needs: [static, unit, functional, contract, integration, e2e, journey, performance, security]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # A push to main releases; a dispatch with a version promotes. Nothing else (a pull request,
+    # another branch, a dispatch without one) may start this job: only it holds contents:write.
+    # github.ref guards the whole expression, not one arm of it. Actions runs a workflow_dispatch from
+    # the ref you picked, so a ref check on the push arm alone would let anyone with write access
+    # dispatch this job on their own branch — running *that branch's* copy of this YAML, with
+    # contents:write and GH_TOKEN in every step's environment, ending by rolling the channel pointer
+    # every deployment reads. The branch's YAML is unreviewed; it must not be the one holding the token.
+    if: >-
+      github.ref == 'refs/heads/main' && ( github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.promote_version != '') )
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45 # the image build is the long pole: web bundle, then uv.lock's runtime deps (torch included)
     permissions:
       contents: write # this job alone: it creates the tag and the release
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
+      # Nothing here pushes with git — the tag and the release go through gh, which reads GH_TOKEN below —
+      # so the token has no reason to outlive the checkout step and sit in .git/config for the whole job.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup
+      # Task 8 step 1 / spec §A bullet 4 — the version assignment. Every green main that publishes gets a
+      # version of its own, so a merge without a hand-written bump still ships instead of silently
+      # publishing nothing and leaving channels/latest.json stale. The spec allows either writing the new
+      # version into pyproject.toml or taking the patch from the run number, and says the published tag
+      # must be unique and ordered; this uses both, in the form the spec words as "for that release
+      # artifact only": the version is written into pyproject.toml *in this checkout* and never committed
+      # back, so main keeps its base 0.MINOR.0 and nothing needs a second contents:write surface.
+      # Writing the file (rather than only the tag) is what keeps one version everywhere: the release
+      # image installs airlie from the wheel this step's edit produces, so a deployment's /health reports
+      # the same version the feed advertises. Patch comes from github.run_number — it only counts up, so
+      # the patch is unique per run and ordered within a minor, and a re-run of a run keeps its run_number,
+      # which is what lets the steps below repair their own release instead of colliding with it. MINOR
+      # stays manual (spec §A: breaking notes / state_migration), which is why the base comes from the file.
+      - name: Assign the release version
+        if: github.event_name == 'push'
+        id: version
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          BASE=$(python3 -c 'import tomllib;print(".".join(tomllib.load(open("pyproject.toml","rb"))["project"]["version"].split("+")[0].split(".")[:2]))')
+          VERSION="${BASE}.${RUN_NUMBER}"
+          # uv.lock records the root package's version beside pyproject.toml's, and the release image
+          # installs from that lock (`uv sync --frozen`), so both are rewritten together. Fail closed if
+          # either file stops holding exactly the line this expects — a half-applied version would
+          # publish a release whose tag, wheel and lock disagree.
+          python3 - "$VERSION" <<'PY'
+          import pathlib, re, sys
+          version = sys.argv[1]
+          EDITS = [
+              (pathlib.Path("pyproject.toml"), r'(?m)^(version = ")([^"]*)(")'),
+              (pathlib.Path("uv.lock"), r'(?m)^(name = "airlie"\nversion = ")([^"]*)(")'),
+          ]
+          for path, pattern in EDITS:
+              text = path.read_text(encoding="utf-8")
+              # count=2 so a second matching line shows up as count 2 rather than passing unnoticed.
+              new, count = re.subn(pattern, lambda m: m.group(1) + version + m.group(3), text, count=2)
+              if count != 1:
+                  raise SystemExit(f"release: expected exactly 1 line matching {pattern} in {path.name}, got {count}")
+              path.write_text(new, encoding="utf-8")
+          PY
+          # Read it back instead of trusting the edit, and say what the checkout now holds. Every step
+          # below re-reads pyproject.toml the way this does, so they all inherit the assigned version.
+          ASSIGNED=$(python3 -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          if [ "$ASSIGNED" != "$VERSION" ]; then
+            echo "::error::pyproject.toml reads ${ASSIGNED} after the assignment step wrote ${VERSION}"
+            exit 1
+          fi
+          {
+            echo "version=${ASSIGNED}"
+            echo "release_tag=v${ASSIGNED}+${GITHUB_SHA::7}"
+            echo "image_tag=v${ASSIGNED}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Assigned ${ASSIGNED} (run ${RUN_NUMBER}): image tag v${ASSIGNED}, release tag v${ASSIGNED}+${GITHUB_SHA::7}."
+          echo "pyproject.toml and uv.lock in this checkout now read ${ASSIGNED}. Nothing is committed back to main."
+      # Fail closed before anything is published: with release_image on, a missing registry or
+      # credentials would leave a GitHub Release of wheels alone — the worst outcome. The name is a
+      # repository variable (no real registry URLs in git); the credentials are secrets, never echoed.
+      - name: Validate the image release prerequisites
+        if: github.event_name == 'push' && vars.release_image == 'true'
+        env:
+          RELEASE_REGISTRY: ${{ vars.release_registry }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          if [ -z "$RELEASE_REGISTRY" ]; then
+            echo "::error::release_image is on but the release_registry repository variable is empty"
+            exit 1
+          fi
+          # The variable is a full image reference prefix: host[:port]/repo[/more]. A value without a
+          # repo path, or with an implicit Docker-Hub host (no dot, no port), would log in to the wrong
+          # registry and tag images no one can pull back — fail closed before anything is published.
+          case "$RELEASE_REGISTRY" in
+            */*) ;; # a repo path follows the host
+            *) echo "::error::release_registry must be a full image reference, host[:port]/repo[/more] (e.g. ghcr.io/owner/airlie)"
+               exit 1 ;;
+          esac
+          case "${RELEASE_REGISTRY%%/*}" in
+            localhost|*.*|*:*) ;; # an explicit host: localhost, dotted, or carrying a port
+            *) echo "::error::release_registry's first segment is not an explicit host (no dot, no port); it must be host[:port]/repo[/more]"
+               exit 1 ;;
+          esac
+          if [ -z "$REGISTRY_USERNAME" ] || [ -z "$REGISTRY_PASSWORD" ]; then
+            echo "::error::release_image is on but the REGISTRY_USERNAME / REGISTRY_PASSWORD secrets are missing"
+            exit 1
+          fi
       - name: Build the release package
+        if: github.event_name == 'push'
         run: uv build
       - name: Publish the GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        # one release per merged commit: the version from pyproject.toml, the commit as build metadata, so
-        # the next merge does not collide with this one's tag
+        if: github.event_name == 'push'
+        # one release per merged commit: the assigned version from pyproject.toml, the commit as build
+        # metadata in the tag. The version came from this run's number, so on a re-run the tag below is
+        # this run's own tag and gh would refuse to create it again. That refusal is the repair path, not
+        # an error: an earlier attempt can have died after creating the release and before publishing the
+        # feed, and re-running must be able to finish the release rather than be locked out by its own
+        # half-finished work. An existing release therefore takes the upload path (which is what
+        # `gh release create` does for its assets), and a fresh tag takes the create path.
         run: |
           VERSION=$(python3 -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
           TAG="v${VERSION}+${GITHUB_SHA::7}"
-          gh release create "$TAG" dist/*.whl --target "$GITHUB_SHA" --title "airlie $TAG" \
-            --notes "airlie $VERSION built from $GITHUB_SHA"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists from an earlier attempt of this run; uploading its wheels again instead of creating it twice."
+            gh release upload "$TAG" dist/*.whl --clobber
+          else
+            gh release create "$TAG" dist/*.whl --target "$GITHUB_SHA" --title "airlie $TAG" \
+              --notes "airlie $VERSION built from $GITHUB_SHA"
+          fi
+      - name: Set up the image build
+        if: github.event_name == 'push' && vars.release_image == 'true'
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to the registry
+        if: github.event_name == 'push' && vars.release_image == 'true'
+        env:
+          RELEASE_REGISTRY: ${{ vars.release_registry }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        # The variable is a full image reference (host[:port]/repo); docker login takes the host,
+        # derived here in one place. --password-stdin keeps the secret out of the process list;
+        # GitHub masks it in logs either way (the pattern docker/login-action itself uses).
+        run: |
+          set +x # disable xtrace so the password never reaches the log
+          echo "$REGISTRY_PASSWORD" | docker login --username "$REGISTRY_USERNAME" \
+            --password-stdin "${RELEASE_REGISTRY%%/*}"
+          set -x # re-enable xtrace
+      - name: Check whether the image tag was already published
+        if: github.event_name == 'push' && vars.release_image == 'true'
+        id: image_tag
+        env:
+          RELEASE_REGISTRY: ${{ vars.release_registry }}
+        run: |
+          # The image tag is v<version> without the commit's build metadata (the wheel's tag carries it,
+          # and an OCI tag takes no '+'). The version now comes from the run number, so a fresh push never
+          # finds its own tag: the tag is already there only when *this* run already pushed it, on an
+          # earlier attempt. Then the two pushes below must not run again — a rebuild of a different tree
+          # could not be called the same version (spec §A) — but the feed still has to be published, so
+          # recover the digest the first attempt advertised and hand it to the feed step.
+          VERSION=$(python3 -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          IMAGE_TAG="v${VERSION}"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          if docker buildx imagetools inspect "${RELEASE_REGISTRY}:${IMAGE_TAG}" >/dev/null 2>&1; then
+            # Two digests to recover, one per tag, and the feed needs both. The compared one is the
+            # pre-bake build's, which the scratch tag still points at: reading it off the official tag
+            # would give the baked build's own digest instead, and every deployment running that image
+            # would read "behind" forever. The pin one is the official tag's own digest — what a
+            # declarative manifest must pin, and readable from nowhere else, the container included.
+            DIGEST=$(docker buildx imagetools inspect "${RELEASE_REGISTRY}:${IMAGE_TAG}-prebake" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+            if [ -z "$DIGEST" ]; then
+              echo "::error::${RELEASE_REGISTRY}:${IMAGE_TAG} is already published but its advertised digest is not readable from the ${IMAGE_TAG}-prebake tag, so channels/latest.json cannot be re-published for it. Re-running cannot fix this: delete ${IMAGE_TAG} from the registry to re-publish it, or bump [project].version's MINOR in pyproject.toml."
+              exit 1
+            fi
+            # The outer inspect above already proved this tag answers, so an empty read here is the
+            # format template failing. Refusing beats publishing a release with nothing to pin: the
+            # operator would be handed the pre-bake digest as the value to pin, which is the defect
+            # this step exists to avoid.
+            PULL_DIGEST=$(docker buildx imagetools inspect "${RELEASE_REGISTRY}:${IMAGE_TAG}" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+            if [ -z "$PULL_DIGEST" ]; then
+              echo "::error::${RELEASE_REGISTRY}:${IMAGE_TAG} is already published but its pull digest is not readable from that tag, so release.json cannot carry a digest a manifest can pin."
+              exit 1
+            fi
+            echo "Image ${RELEASE_REGISTRY}:${IMAGE_TAG} is already published (attempt ${GITHUB_RUN_ATTEMPT} of run ${GITHUB_RUN_NUMBER}); re-publishing its feed documents at ${DIGEST} (pin ${PULL_DIGEST})."
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+            echo "pull_digest=${PULL_DIGEST}" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "digest=" >> "$GITHUB_OUTPUT"
+            echo "pull_digest=" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and publish the release image
+        if: github.event_name == 'push' && vars.release_image == 'true' && steps.image_tag.outputs.published == 'true'
+        id: image
+        env:
+          RELEASE_REGISTRY: ${{ vars.release_registry }}
+        run: |
+          VERSION=$(python3 -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          IMAGE_TAG="v${VERSION}"
+          # An image cannot state its own manifest digest (a hash fixed point), so the bake is two
+          # pushes: a pre-bake build pushed to a scratch tag, its digest D1 read from the registry,
+          # then a rebuild with D1 written into /etc/airlie/image-digest pushed to the official tag,
+          # which the registry gives its own digest D2. Both go in the feed, because they answer
+          # different questions and only one is knowable from inside the container. image.digest is
+          # D1: the only digest a running deployment can be compared with, so advertising D2 there
+          # would make every deployment that runs it read "behind" forever. image.pull_digest is D2:
+          # the digest of the tag operators actually pull, so it is the one their manifest must pin —
+          # a pin of D1 would deploy the pre-bake build, which reports no digest at all. The scratch
+          # tag keeps the official one a first use, so registries with immutability policies accept
+          # both pushes.
+          docker buildx build \
+            --file ops/release/Containerfile \
+            --build-arg VERSION="$VERSION" \
+            --build-arg REVISION="$GITHUB_SHA" \
+            --build-arg CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --build-arg IMAGE_DIGEST="" \
+            --tag "${RELEASE_REGISTRY}:${IMAGE_TAG}-prebake" \
+            --push .
+          PREBAKE_DIGEST=$(docker buildx imagetools inspect "${RELEASE_REGISTRY}:${IMAGE_TAG}-prebake" --format '{{.Manifest.Digest}}')
+          echo "Pre-bake digest (self-reported): ${PREBAKE_DIGEST}"
+          docker buildx build \
+            --file ops/release/Containerfile \
+            --build-arg VERSION="$VERSION" \
+            --build-arg REVISION="$GITHUB_SHA" \
+            --build-arg CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --build-arg IMAGE_DIGEST="$PREBAKE_DIGEST" \
+            --tag "${RELEASE_REGISTRY}:${IMAGE_TAG}" \
+            --push .
+          # Read back after the push, and never from the pre-bake tag: this is the digest of the
+          # image nobody but the registry can name.
+          PULL_DIGEST=$(docker buildx imagetools inspect "${RELEASE_REGISTRY}:${IMAGE_TAG}" --format '{{.Manifest.Digest}}')
+          echo "Pull digest (what a manifest pins): ${PULL_DIGEST}"
+          echo "image_digest=${PREBAKE_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "pull_digest=${PULL_DIGEST}" >> "$GITHUB_OUTPUT"
+      - name: Publish the feed documents
+        # The gate follows the image step, not the pre-check's published flag. With published=='true' as
+        # the only gate, a run whose image push succeeded and whose feed publish failed took the skip path
+        # on re-run — the image tag exists now, so published came back false — and CI went green with
+        # channels/latest.json frozen at the previous release, invisibly, until an operator noticed. Either
+        # the image step pushed the image this attempt, or the pre-check recovered the digest an earlier
+        # attempt of this run pushed; one of those must hold before a feed document is written.
+        if: >-
+          github.event_name == 'push' && vars.release_image == 'true' && !cancelled() &&
+          ( steps.image.outcome == 'success' || steps.image_tag.outputs.digest != '' )
+        env:
+          RELEASE_REGISTRY: ${{ vars.release_registry }}
+          IMAGE_TAG: ${{ steps.image_tag.outputs.image_tag }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.image_digest || steps.image_tag.outputs.digest }}
+          IMAGE_PULL_DIGEST: ${{ steps.image.outputs.pull_digest || steps.image_tag.outputs.pull_digest }}
+        run: |
+          VERSION=$(python3 -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          TAG="v${VERSION}+${GITHUB_SHA::7}"
+          RELEASED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          if [ -z "$IMAGE_DIGEST" ]; then
+            echo "::error::no image digest for ${IMAGE_TAG}: refusing to write release.json without one"
+            exit 1
+          fi
+          if [ -z "$IMAGE_PULL_DIGEST" ]; then
+            echo "::error::no pull digest for ${IMAGE_TAG}: refusing to write a release.json whose operators have nothing to pin (the self-reported digest names the pre-bake build, not the image they run)"
+            exit 1
+          fi
+          # release.json is the immutable per-version document: an asset of this release, addressed by URL.
+          # --breaking and --state-migration are deliberately absent. release_feed.py defaults both to false,
+          # and this run has nothing honest to set them from: spec §A bullet 4 declares them on a manual
+          # MINOR bump ("breaking notes / state_migration: true"), but a push cannot tell a bump that arrived
+          # in this merge from one that landed three merges back without comparing against the last published
+          # release, and the repo has no changelog, label set or commit-trailer convention to read instead —
+          # inventing one here is worse than leaving it open. Until a dispatch re-publish path carries a
+          # human's answer, every release publishes as non-breaking and promote-stable's state-migration
+          # guard stays unreachable (it also needs release.json's notes to be empty, and --notes below is
+          # auto-filled, so wiring the flag alone would not make it fire either).
+          uv run python scripts/release_feed.py render-release \
+            --version "$VERSION" \
+            --released-at "$RELEASED_AT" \
+            --git-sha "$GITHUB_SHA" \
+            --image-repo "$RELEASE_REGISTRY" \
+            --image-tag "$IMAGE_TAG" \
+            --image-digest "$IMAGE_DIGEST" \
+            --image-pull-digest "$IMAGE_PULL_DIGEST" \
+            --notes "airlie $VERSION built from $GITHUB_SHA" \
+            --out release.json
+          # --clobber so a re-run repairs its own release instead of dying on an asset it already uploaded.
+          gh release upload "$TAG" release.json --clobber
+          # channels/latest.json is a rolling pointer on its own dedicated release: every release updates
+          # it in place (upload --clobber), so a mirror never races a branch push.
+          if ! gh release view channel-pointers >/dev/null 2>&1; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name=channel-pointers -F target_commit_sha="$GITHUB_SHA" \
+              -f name="Channel pointers" \
+              -f body="Rolling channel pointers (channels/*.json), updated in place by the release job."
+          fi
+          # The pointer carries the self-reported digest alone, deliberately: a pointer's digest is what
+          # a deployment compares itself with, and the pin digest is not comparable with anything a
+          # container can state. The reader always fetches the release document the pointer names, and
+          # that document carries both, so nothing has to be duplicated onto the pointer.
+          uv run python scripts/release_feed.py render-pointer \
+            --channel latest \
+            --version "$VERSION" \
+            --digest "$IMAGE_DIGEST" \
+            --released-at "$RELEASED_AT" \
+            --release-json "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/release.json" \
+            --out channels/latest.json
+          # The versioned copy goes up before the rolling name is touched. `gh release upload --clobber`
+          # deletes the existing asset before uploading the new one, so a roll that fails part-way leaves
+          # channels/latest.json 404-ing for every deployment that reads it — and the reader answers that
+          # with a last_good that may be none, which reads "current": a dead feed that looks healthy. This
+          # release's own copy is the restore point, so it has to exist first. GitHub flattens an asset
+          # name to its basename, so it lands as latest.json on release $TAG.
+          gh release upload "$TAG" channels/latest.json --clobber
+          if ! gh release upload channel-pointers channels/latest.json --clobber; then
+            echo "::error::the roll of channels/latest.json failed and the pointer asset may be missing until it is re-rolled. This release keeps its own copy at https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/latest.json — re-roll it with: gh release download $TAG --pattern latest.json --dir /tmp/roll && gh release upload channel-pointers /tmp/roll/latest.json --clobber"
+            exit 1
+          fi
+      - name: Promote the named release to stable
+        if: github.event_name == 'workflow_dispatch' && inputs.promote_version != ''
+        env:
+          PROMOTE_VERSION: ${{ inputs.promote_version }}
+        run: |
+          # The promotion re-renders channels/stable.json from the versioned release's own release.json,
+          # so stable can never drift from what was published. The renderer refuses a development build
+          # outright and a release that migrates state without saying how in its notes.
+          # resolve-release-tag:begin
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | [.tag_name, .published_at // ""] | @tsv' > "$RUNNER_TEMP/releases.tsv"
+          python3 - "$PROMOTE_VERSION" "$RUNNER_TEMP/releases.tsv" > "$RUNNER_TEMP/release_tag.txt" <<'PY'
+          import sys
+          want, path = sys.argv[1], sys.argv[2]
+          want = want[1:] if want.startswith("v") else want
+          # The full tag is a direct answer, so take it: one build of a version, chosen by the operator.
+          if "+" in want:
+              print("v" + want)
+              raise SystemExit(0)
+          prefix = "v" + want + "+"
+          matches = []
+          with open(path, encoding="utf-8") as handle:
+              for line in handle:
+                  fields = line.rstrip("\n").split("\t")
+                  if len(fields) >= 2 and fields[0].startswith(prefix):
+                      matches.append((fields[1], fields[0]))
+          if not matches:
+              sys.stderr.write(
+                  f"::error::no published release is tagged v{want}+*. Pass the full tag "
+                  f"(v{want}+<sha>) as promote_version to promote one build of it.\n"
+              )
+              raise SystemExit(1)
+          # The newest published build of that version wins, and a version may own several releases: the job
+          # tags every merge v<version>+<sha>, and before the version came from the run number every merge
+          # shared 0.1.0 — so "the release for 0.1.0" was never one release, and requiring it to be made the
+          # only writer of channels/stable.json unrunnable. published_at is ISO-8601 UTC, which orders as
+          # text; an unpublished draft has no stamp, gets "" and sorts first, so it can never win. Not
+          # sorted()[-1] on the tag name: the build metadata is a commit sha, whose lexicographic order says
+          # nothing about which build is newer. A release with no published_at is not the newest by design.
+          print(max(matches, key=lambda row: row[0])[1])
+          PY
+          RELEASE_TAG=$(cat "$RUNNER_TEMP/release_tag.txt")
+          # resolve-release-tag:end
+          echo "Promoting ${RELEASE_TAG} to channels/stable.json."
+          gh release download "$RELEASE_TAG" --pattern release.json --dir "$RUNNER_TEMP/promote"
+          uv run python scripts/release_feed.py promote-stable \
+            --release-json "$RUNNER_TEMP/promote/release.json" \
+            --release-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/release.json" \
+            --out channels/stable.json
+          if ! gh release view channel-pointers >/dev/null 2>&1; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name=channel-pointers -F target_commit_sha="$GITHUB_SHA" \
+              -f name="Channel pointers" \
+              -f body="Rolling channel pointers (channels/*.json), updated in place by the release job."
+          fi
+          # Same order as the latest pointer, same reason: `gh release upload --clobber` deletes the existing
+          # asset before uploading, so the promoted version keeps its own copy of the pointer before the
+          # rolling name is rolled — that copy is what a failed roll restores from, and the error below says
+          # how. Promoting the asset to $RELEASE_TAG first also means the promotion is auditable: which
+          # release was pointed at, and when, from that release's own assets.
+          gh release upload "$RELEASE_TAG" channels/stable.json --clobber
+          if ! gh release upload channel-pointers channels/stable.json --clobber; then
+            echo "::error::the roll of channels/stable.json failed and the pointer asset may be missing until it is re-rolled. ${RELEASE_TAG} keeps its own copy at https://github.com/$GITHUB_REPOSITORY/releases/download/${RELEASE_TAG}/stable.json — re-roll it with: gh release download ${RELEASE_TAG} --pattern stable.json --dir /tmp/roll && gh release upload channel-pointers /tmp/roll/stable.json --clobber"
+            exit 1
+          fi
+          echo "channels/stable.json now points at ${RELEASE_TAG}."
