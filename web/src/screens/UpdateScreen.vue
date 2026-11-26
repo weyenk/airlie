@@ -283,9 +283,5 @@ async function doCheckNow(): Promise<void> {
       <p class="text-muted-foreground">Updates are not configured on this deployment.</p>
     </div>
 
-    <!-- 403 / network error with panel: false — status present but the admin section hidden -->
-    <div v-else-if="errorText && status?.panel === false" class="rounded-xl border border-border bg-card shadow-card p-[18px]">
-      <p class="m-0 text-muted-foreground">{{ errorText }}</p>
-    </div>
   </div>
 </template>
