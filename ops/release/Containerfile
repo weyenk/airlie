@@ -46,7 +46,7 @@ WORKDIR /src
 # torch is a declared runtime dependency (the LTS controller's training) and stays in, unlike the
 # test image which skips it to keep its layers small.
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-install-project
+RUN uv sync --frozen --no-install-project --no-dev
 
 # airlie itself, as the release job built it: the wheel from dist/, not an editable checkout. Its
 # dependencies are already in /opt/venv from the lock, so --no-deps.
