@@ -359,3 +359,57 @@ test("Check now button triggers a feed check, not a refetch", async () => {
   // checkNow should have been called (not getUpdate again)
   expect(api.checkNow).toHaveBeenCalled();
 });
+
+// ---- Error state regression (chain C fix) ----
+
+test("error state: error text shown, 'not configured' NOT rendered", async () => {
+  // Simulate a failed API call (403 or network error). status remains undefined,
+  // but errorText is populated by the component's error handling.
+  useSessionStore().me = { user_id: "u1", name: "Jess", role: "member" as const, via: "session" };
+  api.getUpdate.mockRejectedValue(new ApiError(403, "admins only"));
+  const w = mount(UpdateScreen, { attachTo: document.body });
+  await flushPromises();
+
+  // The real error sentence should appear (from chain A: v-if="errorText && !status")
+  expect(w.text()).toContain("Only admins can see deployment updates.");
+  // The "not configured" message (chain C) must NOT appear — that was the bug:
+  // v-else fires when status is undefined, so before the fix both chain A and C
+  // would render simultaneously.
+  expect(w.text()).not.toContain("Updates are not configured on this deployment.");
+});
+
+test("error state (network): error text shown, 'not configured' NOT rendered", async () => {
+  // Network failure: status undefined, errorText populated. Same bug class as 403.
+  // Must set session store and configure mock BEFORE mount (like open() does).
+  useSessionStore().me = null as unknown as { user_id: string; name: string; role: "admin" | "member"; via: string };
+  api.getUpdate.mockRejectedValue(new TypeError("Failed to fetch"));
+  const w = mount(UpdateScreen, { attachTo: document.body });
+  await flushPromises();
+
+  expect(w.text()).toContain("Can't reach airlie: Failed to fetch");
+  // Must not also show "not configured" (chain C bug)
+  expect(w.text()).not.toContain("Updates are not configured on this deployment.");
+});
+
+test("panel: false (status present, enabled:false) still shows 'not configured'", async () => {
+  // Chain C (now v-else-if="status && !status.enabled") must still match when
+  // status is explicitly returned with update disabled.
+  const status = buildStatus({ panel: false, enabled: false });
+  const w = await open(status);
+
+  expect(w.text()).toContain("Updates are not configured on this deployment.");
+});
+
+test("update enabled but admin member: 403 does not show 'not configured'", async () => {
+  // This tests the full error handling for an admin member. status is undefined
+  // because the API call fails, but chain C must NOT fire (chain A should).
+  useSessionStore().me = { user_id: "u1", name: "Jess", role: "member" as const, via: "session" };
+  api.getUpdate.mockRejectedValue(new ApiError(403, "admins only"));
+  const w = mount(UpdateScreen, { attachTo: document.body });
+  await flushPromises();
+
+  expect(w.text()).toContain("Only admins can see deployment updates.");
+  // Before the fix, chain C's v-else would also match (status is undefined),
+  // producing a confusing double message.
+  expect(w.text()).not.toContain("Updates are not configured on this deployment.");
+});

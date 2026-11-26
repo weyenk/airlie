@@ -278,9 +278,14 @@ async function doCheckNow(): Promise<void> {
       </template>
     </template>
 
-    <!-- update section off (enabled: false) -->
-    <div v-else class="mx-auto flex max-w-[960px] flex-col gap-[18px] px-5 pt-6 pb-10 max-[640px]:gap-3.5 max-[640px]:px-3 max-[640px]:pt-4">
+    <!-- update section off (enabled: false, panel present but disabled) -->
+    <div v-else-if="status && !status.enabled" class="mx-auto flex max-w-[960px] flex-col gap-[18px] px-5 pt-6 pb-10 max-[640px]:gap-3.5 max-[640px]:px-3 max-[640px]:pt-4">
       <p class="text-muted-foreground">Updates are not configured on this deployment.</p>
+    </div>
+
+    <!-- 403 / network error with panel: false — status present but the admin section hidden -->
+    <div v-else-if="errorText && status?.panel === false" class="rounded-xl border border-border bg-card shadow-card p-[18px]">
+      <p class="m-0 text-muted-foreground">{{ errorText }}</p>
     </div>
   </div>
 </template>

@@ -277,12 +277,14 @@ update:
     # Public default when egress allows:
     # base_url: https://github.com/<org>/airlie/releases/download
     channel: stable           # product default; nas.home.apra dogfood uses latest
+    registry_token_env: AIRLIE_UPDATE_REGISTRY_TOKEN   # optional; empty = anonymous
     # pinned:                 # air-gap / locked change window
     #   version: "0.2.3"
     #   digest: "sha256:…"
   check:
     interval_s: 86400
-  registry_token_env: AIRLIE_UPDATE_REGISTRY_TOKEN   # optional; empty = anonymous
+  check:
+    interval_s: 86400
 ```
 
 No `${VAR}` under `update:` unless `_expand_engine_env` is generalized (out of
@@ -334,6 +336,13 @@ Evaluate top-down; first match wins:
 **`failed` is deferred to Appendix A.** v1 does not emit it; a rollback that
 leaves desired pointing at a newer digest stays `requested` until the operator
 clears or updates desired. Clearing desired is an admin action.
+
+**Evaluation order (implementation-authoritative):** conditions are evaluated
+top-down, first-match-wins: unknown → requested → current (behaviour-level —
+"still honouring what the cache last showed", not "up to date") → behind →
+fallback-unknown. For a stale unapplied desired pin, `manifest_digest = desired
+or channel` (the same expression drift.py uses when resolving the manifest for a
+behind or unknown state).
 
 `/health` may expose `version` and `image_digest` publicly (ungated, like
 today's `commit`). That fingerprints the install — accepted for ops probes;
