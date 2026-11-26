@@ -20,13 +20,14 @@ from pathlib import Path
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "src" / "airlie" / "update"
 
-# Target files to verify the scan actually reaches real package content.
-# (api.py is skipped — FastAPI route definitions; store.py is skipped — pure SQL.)
-_SCANNED_FILES = ("drift.py", "feed.py", "check.py")
+# Target files to verify the scan actually reaches real package content —
+# including the two that contain legitimate exempted tokens (route decorators,
+# SQL verbs), so the scan provably covers them rather than skipping them.
+_SCANNED_FILES = ("api.py", "drift.py", "feed.py", "store.py")
 
 
 def test_scan_hits_real_package() -> None:
-    """The guard must resolve to an existing directory and find at least drift, feed, store."""
+    """The guard must resolve to an existing directory and find the expected core modules."""
     results = _check_package()
     assert _PACKAGE_ROOT.exists(), f"{_PACKAGE_ROOT} is not an existing directory"
     assert len(results) > 0, "_check_package returned 0 files — guard is vacuous"
@@ -47,26 +48,40 @@ _CLIENT_PATTERNS: list[str] = [
     r"\bkubernetes\.client\b",
 ]
 
+# Line shapes that legitimately contain verb tokens because they are *not*
+# egress: FastAPI route registration (incoming admin API surface) and SQL DML
+# against the local SQLite ledger.  Exemptions are per-line, never per-file:
+# any other line in the same module is still scanned.
+_EXEMPT_LINE_PATTERNS = (
+    re.compile(r"^\s*@router\.(get|post|put|patch|delete)\("),
+    re.compile(r"\bDELETE\s+FROM\b"),
+)
+
+
+def _is_exempt_line(line: str) -> bool:
+    return any(pattern.search(line) for pattern in _EXEMPT_LINE_PATTERNS)
+
 
 def _scan_update_package(source_text: str) -> dict[str, list[int]]:
     """Return {violation_type: [line_numbers]} for a single file's source.
 
     This is the reusable core so that positive-control tests can feed synthetic
     snippets and negative tests can pass real source.  Every write-verb keyword,
-    http-method call, and docker/kubernetes import is flagged with its line number.
+    http-method call, and docker/kubernetes import is flagged with its line
+    number, except on lines matching the exempt shapes (route decorators, SQL).
     """
     issues: dict[str, list[int]] = {}
 
     for verb in _WRITE_VERBS:
         if re.search(rf"\b{verb}\b", source_text):
             for i, line in enumerate(source_text.splitlines(), 1):
-                if re.search(rf"\b{verb}\b", line):
+                if re.search(rf"\b{verb}\b", line) and not _is_exempt_line(line):
                     issues.setdefault(f"verb:{verb}", []).append(i)
 
     for call in _METHOD_CALLS:
         if call in source_text:
             for i, line in enumerate(source_text.splitlines(), 1):
-                if call in line:
+                if call in line and not _is_exempt_line(line):
                     issues.setdefault(f"method:{call}", []).append(i)
 
     for pat in _CLIENT_PATTERNS:
@@ -81,29 +96,16 @@ def _scan_update_package(source_text: str) -> dict[str, list[int]]:
 def _check_package() -> dict[str, dict[str, list[int]]]:
     """Scan every .py under the update package; return {filename: issues}.
 
-    Skips pure route-definition files (e.g. ``api.py`` with FastAPI router
-    decorators) because ``.post(/...)`` on a router is not an HTTP call — it
-    registers a route.  Also skips data-access files (``store.py``) because
-    ``DELETE FROM`` is SQL, not an HTTP method call.  Real client calls are
-    on session / response objects and must be distinguished from static router
-    registrations and database operations.
+    No file is exempted — exemptions are per-line only (see
+    ``_EXEMPT_LINE_PATTERNS``): route registration and local SQL legitimately
+    contain verb tokens, while any other line, in any file, is guarded.
     """
     files = sorted(glob.glob(str(_PACKAGE_ROOT / "**" / "*.py"), recursive=True))
     results: dict[str, dict[str, list[int]]] = {}
 
     for filepath in files:
         source_text = Path(filepath).read_text(encoding="utf-8")
-        name = Path(filepath).name
-
-        # Skip files that are pure FastAPI route definitions.
-        if "router." in source_text:
-            continue
-
-        # Skip pure data-access files where DELETE FROM is SQL, not HTTP.
-        if "DELETE FROM" in source_text:
-            continue
-
-        results[name] = _scan_update_package(source_text)
+        results[Path(filepath).name] = _scan_update_package(source_text)
 
     return results
 
@@ -200,3 +202,25 @@ def test_positive_get_is_not_flagged() -> None:
     snippet = "response = session.get(url)\n"
     issues = _scan_update_package(snippet)
     assert "verb:GET" not in issues, f"false-positive on GET: {issues}"
+
+
+def test_exempt_router_decorator_not_flagged() -> None:
+    """Incoming FastAPI route registration is not egress and must not be flagged."""
+    snippet = '@router.put("/desired")\ndef set_desired(request): ...\n'
+    issues = _scan_update_package(snippet)
+    assert not issues, f"router registration flagged: {issues}"
+
+
+def test_exempt_sql_delete_not_flagged() -> None:
+    """SQL DELETE FROM against the local ledger is not egress."""
+    snippet = 'db.execute("DELETE FROM desired WHERE id = 1")\n'
+    issues = _scan_update_package(snippet)
+    assert not issues, f"local SQL statement flagged: {issues}"
+
+
+def test_nondecorator_line_mentioning_router_still_flagged() -> None:
+    """Exemption is line-shape-specific: a client call merely named router-ish
+    is still flagged."""
+    snippet = "router_client.put(url, json=body)  # real egress, not a decorator\n"
+    issues = _scan_update_package(snippet)
+    assert "method:.put(" in issues
