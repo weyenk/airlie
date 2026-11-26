@@ -515,8 +515,8 @@ EOF
 3. Push `<registry>/airlie:v0.MINOR.PATCH` (immutable; **no `+` in the tag**); record digest.
 4. Bake `/etc/airlie/image-digest` (rebuild-with-ARG or equivalent — one advertised digest).
 5. Publish GitHub Release with wheel + `release.json` (spec §B shape).
-6. Update `channels/latest.json` every release; `channels/stable.json` only on an explicit promotion step/input. Promotion of a release with `state_migration: true` without notes fails the promotion step.
-7. Image: non-root uid 1000, web bundle built in (spec prerequisite — `web_next` is gitignored), `CMD ["airlie", "serve"]`, OCI labels `{version, revision, created}`.
+6. Update `channels/latest.json` every release; `channels/stable.json` only on an explicit promotion step/input. Promotion of a release with `state_migration: true` without notes fails the promotion step. (As shipped: the guard exists and reads the published document, but the release job passes neither flag, so no CI-published release can reach it — see the note under "Release flags" in `docs/wiki/ops/update.md`.)
+7. Image: non-root uid 1000, web bundle built in (spec prerequisite — `web_next` is gitignored), `CMD ["airlie", "serve"]`, OCI labels `{version, revision, created}`. (As shipped: the `CMD` also passes `--host 0.0.0.0`, which is what makes the published-port path in `docs/wiki/ops/deploying.md` work; the guard there is `auth.trusted_proxies`.)
 
 - [ ] **Step 1: Containerfile** modelled on `ops/test/Containerfile` but runtime-only deps + web build + digest file path.
 

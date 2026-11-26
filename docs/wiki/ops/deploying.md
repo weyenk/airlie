@@ -55,9 +55,14 @@ until the drift state is `behind`. The response carries:
   `desired` is reported in its place (`src/airlie/update/drift.py` `classify`).
   See "The two digests" above: `image.digest`, in the same document, is a
   different value and not the one to pin.
-- **Breaking / `schema_epoch`:** whether the target release has
-  `breaking: true` or a higher `schema_epoch` than what you are running. These
-  must be noted in your change ticket.
+- **Breaking / `schema_epoch`:** the target release's `breaking` and
+  `state_migration` badges, and the feed's `schema_epoch`
+  (`schema_epoch_feed` on the drift object) beside the epoch compiled into what
+  you are running. Nothing compares the two epochs for you, and a false
+  `breaking` badge means "not published as breaking", not "verified
+  compatible" — the release job writes both flags false (see
+  [update.md](update.md), "Release flags"). Read the release notes and the diff
+  yourself, and note what you find in the change ticket.
 
 ### Step 2 — Optionally set `desired` (records intent)
 

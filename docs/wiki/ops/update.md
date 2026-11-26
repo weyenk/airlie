@@ -20,8 +20,9 @@ Both surfaces report:
   dev checkout), and the schema epoch compiled into this build. (`src/airlie/update/status.py` ~53–60;
   `serve/app.py` ~934–937)
 - The **channel state**: the last release the channel pointer feed answered with,
-  including its version, git sha, digest, `breaking` / `state_migration` flags.
-  (`src/airlie/update/status.py` ~30–45)
+  including its version, git sha, digest, `breaking` / `state_migration` flags
+  (both false on any release the release job published — see "Release flags"
+  below). (`src/airlie/update/status.py` ~30–45)
 - The **desired digest**: the operator's pin, recorded in the ledger, or `null`
   if unset. (`src/airlie/update/api.py` ~58–67)
 - The **drift classification** (see below). (`src/airlie/update/drift.py` ~45–80)
@@ -44,10 +45,23 @@ It evaluates these conditions in order, first match wins:
 | Feed failed and running digest is known. | `current` — honour what the cache last showed (does not imply "up to date" with respect to the live channel). |
 | Running digest is `null` (dev checkout, baked digest missing). | `unknown`. |
 
-A release with `breaking: true` or a higher `schema_epoch` than the running
-process reports is surfaced alongside its drift state (in the available releases
-list and in `DriftResult`). A release with `state_migration: true` and empty
-notes will fail the stable promotion step — see `docs/wiki/ops/deploying.md`.
+### Release flags: carried end to end, never set by CI
+
+`breaking` and `state_migration` travel the whole path — `release.json` → the
+reader → `DriftResult` → the panel's badges — and `promote-stable` refuses to
+point stable at a release with `state_migration: true` and empty notes. The
+feed's `schema_epoch` is shown in the drift result as `schema_epoch_feed`,
+next to the epoch compiled into the running build; nothing compares them for
+you.
+
+What the release job does **not** do is set either flag: `render-release` runs
+without `--breaking` / `--state-migration`, so every CI-published release reads
+as non-breaking and that promotion guard is unreachable from the pipeline. The
+reason is in the comment above the step in
+[`.github/workflows/pipeline.yml`](../../../.github/workflows/pipeline.yml) — a
+push has no honest source for "was this a breaking MINOR bump". Until that
+changes, read a false badge as *not published as breaking*, and judge
+compatibility from the release notes and the diff.
 
 Source: [`src/airlie/update/drift.py`](../../src/airlie/update/drift.py) (pure function, no I/O).
 

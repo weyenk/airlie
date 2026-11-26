@@ -251,6 +251,13 @@ higher `schema_epoch` than the running process reports must surface as breaking
 in the UI. Promoting such a release to `stable` without notes is a release-job
 check (fail the promotion step).
 
+As shipped (2026-11-26): the transport and both checks are built, but nothing in
+CI sets `breaking` / `state_migration` — a push has no honest source for whether
+a merge carried the manual MINOR bump this section assumes, and the repo keeps
+no changelog, label set, or commit-trailer to read instead. Every pipeline
+release therefore publishes as non-breaking. The operator-facing statement of
+that gap is "Release flags" in `docs/wiki/ops/update.md`.
+
 **Source of truth for "what is newest on this channel":** the **channel pointer**
 (`channels/<name>.json`), which names a digest and a `release.json` URL/path.
 Adapters:
