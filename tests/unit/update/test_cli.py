@@ -24,15 +24,19 @@ runner = CliRunner()
 _HELPER_ROLES = ("worker", "product", "reviewer", "coder", "tester", "chat", "qa")
 
 
-def _write_cfg(tmp_path: Path, *, enabled: bool, pinned: bool = True) -> Path:
+def _write_cfg(tmp_path: Path, *, enabled: bool, pinned: bool = True, feed: dict | None = None) -> Path:
     data = base_cfg(tmp_path).model_dump(mode="json")
     for extra in _HELPER_ROLES:
         data["roles"].setdefault(extra, {"prompt": str(tmp_path / f"{extra}.md"), "model": "base"})
     data["update"]["enabled"] = enabled
     data["update"]["feed"] = (
-        {"kind": "pinned", "pinned_version": "1.2.3", "pinned_digest": "sha256:" + "a" * 64}
-        if pinned
-        else {"kind": "pinned"}
+        feed
+        if feed is not None
+        else (
+            {"kind": "pinned", "pinned_version": "1.2.3", "pinned_digest": "sha256:" + "a" * 64}
+            if pinned
+            else {"kind": "pinned"}
+        )
     )
     for role in data["roles"].values():
         path = Path(role["prompt"])
@@ -80,6 +84,18 @@ def test_status_prints_the_projection(tmp_path: Path) -> None:
     }
     # nothing has been checked yet, so the ledger side is empty rather than invented
     assert body["last_check"] is None
+
+
+def test_status_stdout_stays_json_with_a_long_base_url(tmp_path: Path) -> None:
+    """`status` has no human mode, so its stdout is what scripts parse — and a piped rich Console is
+    80 columns wide, which a deployment's feed URL clears without trying. Folded output is a parse
+    error on the caller's side, deterministically, on exactly the hosts that automate this."""
+    long_url = "https://releases.example.internal/airlie/" + "a" * 70
+    cfg = _write_cfg(tmp_path, enabled=True, feed={"kind": "channel_pointer", "base_url": long_url})
+    r = runner.invoke(cli.app, ["update", "status", "--config", str(cfg)])
+    assert r.exit_code == 0, r.output
+    body = json.loads(r.output)
+    assert body["feed"]["base_url"] == long_url
 
 
 def test_status_never_creates_a_feed_request(tmp_path: Path, monkeypatch) -> None:

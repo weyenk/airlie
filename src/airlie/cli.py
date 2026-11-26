@@ -494,7 +494,10 @@ def update_status(
         body = build_status(cfg, store, running_release(build_commit()))
     finally:
         store.close()
-    console.print(json.dumps(body, indent=2), markup=False)
+    # This stdout is a machine contract, not prose to read: rich wraps at width 80 whenever it is not
+    # a terminal, and a feed base_url clears 80 without trying — the fold leaves the caller with text
+    # that is no longer JSON. emoji=False for the same reason: a shortcode inside a value is data.
+    console.print(json.dumps(body, indent=2), markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
 @update_app.command("check")
