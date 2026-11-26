@@ -380,6 +380,7 @@ jobs:
     timeout-minutes: 45 # the image build is the long pole: web bundle, then uv.lock's runtime deps (torch included)
     permissions:
       contents: write # this job alone: it creates the tag and the release
+      packages: write # GHCR push when release_image is on and REGISTRY_* secrets are unset
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -470,9 +471,14 @@ jobs:
             *) echo "::error::release_registry's first segment is not an explicit host (no dot, no port); it must be host[:port]/repo[/more]"
                exit 1 ;;
           esac
+          # Private registries need REGISTRY_USERNAME / REGISTRY_PASSWORD. ghcr.io may use those
+          # secrets when set, or fall back to github.token (packages:write on this job).
           if [ -z "$REGISTRY_USERNAME" ] || [ -z "$REGISTRY_PASSWORD" ]; then
-            echo "::error::release_image is on but the REGISTRY_USERNAME / REGISTRY_PASSWORD secrets are missing"
-            exit 1
+            case "${RELEASE_REGISTRY%%/*}" in
+              ghcr.io) ;; # login step uses github.actor + github.token
+              *) echo "::error::release_image is on but the REGISTRY_USERNAME / REGISTRY_PASSWORD secrets are missing"
+                 exit 1 ;;
+            esac
           fi
       - name: Build the release package
         if: github.event_name == 'push'
@@ -505,12 +511,21 @@ jobs:
           RELEASE_REGISTRY: ${{ vars.release_registry }}
           REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
           REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_PASSWORD: ${{ github.token }}
         # The variable is a full image reference (host[:port]/repo); docker login takes the host,
         # derived here in one place. --password-stdin keeps the secret out of the process list;
         # GitHub masks it in logs either way (the pattern docker/login-action itself uses).
+        # When REGISTRY_* are unset and the host is ghcr.io, use the job token (packages:write).
         run: |
           set +x # disable xtrace so the password never reaches the log
-          echo "$REGISTRY_PASSWORD" | docker login --username "$REGISTRY_USERNAME" \
+          USERNAME="${REGISTRY_USERNAME:-}"
+          PASSWORD="${REGISTRY_PASSWORD:-}"
+          if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
+            USERNAME="$GHCR_USERNAME"
+            PASSWORD="$GHCR_PASSWORD"
+          fi
+          echo "$PASSWORD" | docker login --username "$USERNAME" \
             --password-stdin "${RELEASE_REGISTRY%%/*}"
           set -x # re-enable xtrace
       - name: Check whether the image tag was already published
