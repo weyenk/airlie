@@ -28,7 +28,26 @@ The store is `observability.state_dir/auth.sqlite` (people, invites, passkeys, s
 tokens are hashed at rest). Nothing from it is logged; refusals are logged as `auth_refused <reason>` on the
 `airlie.auth` logger.
 
+## Dogfood on homenet (`airlie.home.arpa`)
+
+The personal dogfood runs as a digest-pinned container on the NAS, reached over LAN/tailnet as
+`http://airlie.home.arpa` (AdGuard rewrite → Caddy → host `:18090`). That edge is plain HTTP like the
+other `*.home.arpa` services: set `AIRLIE_SERVE_API_KEY`, list Caddy's docker network in
+`auth.trusted_proxies`, and create the first admin with the serve key. Passkeys and `auth.tailscale`
+need HTTPS — leave them off on this name until TLS is in front.
+
+Create the first admin inside the container (CLI writes `auth.sqlite` under the state volume):
+
+```bash
+docker exec -u airlie airlie airlie auth admin --name Noah --login noah@github \
+  --base-url http://airlie.home.arpa
+```
+
+Mac Studio's MagicDNS name (`https://mac-studio.taila5f450.ts.net`) is **omlx**, not the Studio UI —
+`tailscale serve` proxies `/` to `http://127.0.0.1:8000`.
 ## Behind `tailscale serve`
+
+For a Mac (or other host) that still fronts airlie with Tailscale HTTPS:
 
 ```bash
 tailscale serve --bg https / http://127.0.0.1:8090
@@ -46,17 +65,20 @@ auth:
 `rp_id` and `origins` default to the request's host and `https://<host>` (plus `http://localhost:*` and
 `http://127.0.0.1:*` for checks on the Mac), so they are only needed when serve sits behind a name it does not
 see. Anyone on the tailnet who opens the address arrives with their Tailscale login; invite them with that
-login (`--login`) and they are in without a passkey. Share the Studio machine with each person
+login (`--login`) and they are in without a passkey. Share the serve machine with each person
 (Tailscale admin console → share) so their devices can reach it.
 
 ## Passkeys (Face ID / Touch ID)
 
-For a device that is not on the tailnet, or a person without Tailscale, invite them to register a passkey:
+For a device that is not on the tailnet, or a person without Tailscale, invite them to register a passkey
+(HTTPS required, except `localhost`):
 
 ```bash
-task auth:admin -- --name Noah --login noah@github --base-url https://studio.tailxxxx.ts.net
-task auth:invite -- --name Pat --base-url https://studio.tailxxxx.ts.net
+task auth:admin -- --name Noah --login noah@github --base-url http://airlie.home.arpa
+task auth:invite -- --name Pat --base-url http://airlie.home.arpa
 ```
+
+On a Tailscale-HTTPS install, pass the MagicDNS `https://…` base URL instead.
 
 Each prints a link `…/join/<token>`, good for `auth.invite_hours` (24) and once. The person opens it on the
 device whose passkey they want (a phone with Face ID, a Mac with Touch ID), the web app shows their name and

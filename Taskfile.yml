@@ -324,7 +324,7 @@ tasks:
       - task: hub:check
 
   auth:admin:
-    desc: "Create the first admin and print their invite link (task auth:admin -- --name Noah [--login noah@github] [--base-url https://studio.tailxxxx.ts.net]); docs/integrations/sign-in.md"
+    desc: "Create the first admin and print their invite link (task auth:admin -- --name Noah [--login noah@github] [--base-url http://airlie.home.arpa]); docs/integrations/sign-in.md"
     cmds:
       - '{{.RUN}} airlie auth admin {{.CLI_ARGS}}'
 

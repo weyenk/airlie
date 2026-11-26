@@ -53,9 +53,16 @@ Non-interactive automation: `ssh studio '…'` (Host `studio` → `mac-studio` i
 ## Endpoints
 
 Base URL (Studio loopback): `http://127.0.0.1:8001/v1`  
+Over LAN (homenet): `http://192.168.4.34:8001/v1`  
 Over Tailscale: `http://mac-studio:8001/v1` or `http://100.77.221.113:8001/v1`  
-(omlx keeps HTTPS on `https://mac-studio.taila5f450.ts.net`; gen is plain HTTP
-on **8001** so it does not fight Tailscale Serve on 443.)
+(omlx is the default MagicDNS target: `https://mac-studio.taila5f450.ts.net`
+→ `127.0.0.1:8000`. Gen stays plain HTTP on **8001** so it does not fight
+Tailscale Serve on 443. The Studio UI lives at `http://airlie.home.arpa` on
+homenet, not on MagicDNS.)
+
+`RAPID_MLX_TRUSTED_HOSTS` must include every hostname clients put in the HTTP
+`Host` header (including `192.168.4.34` for the NAS Telegram bot). Otherwise
+Rapid-MLX returns `400 Invalid host header`.
 
 Send `Authorization: Bearer $RAPID_MLX_API_KEY` (from `gen.env`).
 
