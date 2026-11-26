@@ -76,10 +76,10 @@ def test_release_job_never_starts_on_non_main_push() -> None:
 
 
 def test_only_the_release_job_may_write_contents() -> None:
-    """The workflow's token reads; the release job alone writes (the tag and the release). Every other job,
-    a pull request's too, runs with a token that cannot push."""
+    """The workflow's token reads; the release job alone writes (the tag/release, and GHCR when
+    release_image is on). Every other job, a pull request's too, runs with a token that cannot push."""
     assert _workflow()["permissions"] == {"contents": "read"}
-    assert _release_job()["permissions"] == {"contents": "write"}
+    assert _release_job()["permissions"] == {"contents": "write", "packages": "write"}
     others = {k: v for k, v in (_workflow().get("jobs") or {}).items() if k != "release"}
     assert [k for k, v in others.items() if "write" in str(v.get("permissions", ""))] == []
     # and the one job that does hold it should not leave it in .git/config for the rest of the job either:
@@ -87,6 +87,13 @@ def test_only_the_release_job_may_write_contents() -> None:
     checkout = _release_job()["steps"][0]
     assert str(checkout["uses"]).startswith("actions/checkout@")
     assert checkout["with"]["persist-credentials"] is False
+    # ghcr.io dogfood: validate accepts missing REGISTRY_* when the host is ghcr.io; login falls back
+    # to github.actor + github.token (packages:write above).
+    assert "ghcr.io" in _step_run("Validate the image release prerequisites")
+    login_env = _release_step("Log in to the registry")["env"]
+    assert login_env["GHCR_USERNAME"] == "${{ github.actor }}"
+    assert login_env["GHCR_PASSWORD"] == "${{ github.token }}"
+    assert "GHCR_PASSWORD" in _step_run("Log in to the registry")
 
 
 def _publish_step() -> str:
