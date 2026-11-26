@@ -221,10 +221,18 @@ default stays `127.0.0.1`: a container has its own network namespace, so
 loopback inside it is reachable by nothing outside it, and an image that bound
 the default refused every connection while its logs looked normal.
 
-Binding a routable address changes who can **connect**, never who is
-**trusted** (`src/airlie/auth/principal.py`). Peers arrive with their own
-address and must carry an API key or a session cookie, and the fresh-install
-bootstrap admin is still only the machine's own direct connection.
+Binding a routable address changes who can **connect**. Trust still comes from
+the TCP peer (`src/airlie/auth/principal.py`): remote peers arrive with their
+own address and must carry an API key or a session cookie. The fresh-install
+**bootstrap admin is a loopback-listen convenience only** — `airlie serve`
+default `--host 127.0.0.1` on the Mac. With `--host 0.0.0.0` (this image):
+
+1. serve **refuses to start** unless an API key will be accepted (`--api-key`,
+   `AIRLIE_SERVE_API_KEY`, or the key `ensure_serve_api_key_stores` mints into
+   `~/.config/airlie/bridge.env` on first boot); and
+2. bootstrap is **off** (`allow_bootstrap=False`), so nothing that can still
+   talk to loopback inside the container (docker exec, an undeclared local
+   proxy) inherits admin.
 
 If anything sits in front of airlie — nginx, Traefik or HAProxy in the same
 container or pod, a mesh sidecar, or `tailscale serve` running in its own
@@ -234,20 +242,21 @@ container — list that proxy's address or CIDR in `auth.trusted_proxies`
 its empty default no proxy is trusted, so one you did not declare can assert
 neither a client identity nor a protocol.
 
-Two consequences to accept before publishing the port:
+Two further consequences to accept before publishing the port:
 
-1. Declaring a **loopback** address there also means loopback stops counting as
-   the machine itself, so a fresh install no longer bootstraps its first admin —
-   create one, or set an API key, first.
+1. Declaring a **loopback** address in `trusted_proxies` also means loopback
+   stops counting as the machine itself on a loopback-only listen — create an
+   admin, or set an API key, first.
 2. Reaching airlie through `tailscale serve` on loopback needs
    `auth.tailscale: true`, which is what makes the headers it forwards count.
    Without it `X-Forwarded-Proto` is ignored and the session cookie is not
    marked `Secure`.
 
-Finish invite and API-key setup before you expose the port. Until you do, the
-first admin has to be created where airlie is still only loopback —
-`docker exec` into the container, for instance, where a plain local request is
-still the machine itself.
+Finish invite and API-key setup before you expose the port. On this image the
+first admin uses the minted serve key (read it from the container's
+`~/.config/airlie/bridge.env`, or set `AIRLIE_SERVE_API_KEY` yourself) as
+`Authorization: Bearer …`, then invites people from the Admin tab — not the
+bootstrap principal.
 
 ## Licensing gate reminder
 

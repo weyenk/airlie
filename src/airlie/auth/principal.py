@@ -11,6 +11,11 @@ one — `0.0.0.0` lets remote peers connect, they arrive with their own address,
 read. A proxy that speaks for a client must be declared in `auth.trusted_proxies`; `auth.tailscale` is
 already the declaration for `tailscale serve` on loopback. The peer a proxy forwards (X-Forwarded-For) is a
 fact only about that proxy's upstream, so it is read from declared peers alone.
+
+The fresh-install bootstrap admin is a **loopback-listen** convenience for `airlie serve` on the Mac
+(`--host 127.0.0.1`). Binding a routable address (`0.0.0.0`, `::`, a LAN IP) means the process is reachable
+past the machine: `airlie serve` then requires an API key and passes `allow_bootstrap=False` so nothing that
+can talk to loopback inside that namespace (docker exec, an undeclared local proxy) inherits admin.
 """
 
 from __future__ import annotations
@@ -29,6 +34,8 @@ from airlie.config.schema import AuthSpec
 SESSION_COOKIE = "airlie_session"
 TAILSCALE_HEADER = "tailscale-user-login"
 LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
+#: Binds that mean "every interface" — reachable past the machine once a port is published.
+ALL_INTERFACES = frozenset({"0.0.0.0", "::", "[::]"})
 TAILNET = (ip_network("100.64.0.0/10"), ip_network("fd7a:115c:a1e0::/48"))
 """The addresses Tailscale gives devices; `tailscale serve` forwards the caller's in X-Forwarded-For."""
 PROXY_HEADERS = ("x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "forwarded", TAILSCALE_HEADER)
@@ -52,6 +59,40 @@ class NotInvited(Exception):
     def __init__(self, login: str) -> None:
         super().__init__(f"{login} is not invited")
         self.login = login
+
+
+class ServeBindError(ValueError):
+    """`airlie serve` was asked to listen past loopback without an API key."""
+
+
+def bind_allows_bootstrap(host: str) -> bool:
+    """True only when the listen address is this machine alone.
+
+    Remote peers that reach a routable bind arrive with their own source address and never hit the
+    bootstrap predicate — the residual risk is anything that can still talk to loopback *inside* the
+    same network namespace (docker exec, an undeclared local proxy). So a routable listen turns the
+    onboarding bypass off entirely; local `airlie serve` (default ``127.0.0.1``) keeps it.
+    """
+    text = host.strip().lower()
+    if text in LOOPBACK:
+        return True
+    if text in ALL_INTERFACES:
+        return False
+    try:
+        return ip_address(text.strip("[]")).is_loopback
+    except ValueError:
+        return False  # a hostname that is not localhost is treated as routable
+
+
+def assert_bind_credentials(host: str, accepted_api_keys: tuple[str, ...]) -> None:
+    """Refuse to start a routable listen with no Bearer key the process will accept."""
+    if bind_allows_bootstrap(host) or accepted_api_keys:
+        return
+    raise ServeBindError(
+        f"host {host!r} is reachable past loopback; pass --api-key (or set "
+        "AIRLIE_SERVE_API_KEY / ~/.config/airlie/bridge.env) before publishing the port, "
+        "or keep --host 127.0.0.1 for local bootstrap"
+    )
 
 
 def peer_host(request: Request) -> str | None:
@@ -141,8 +182,10 @@ class Resolver:
         api_key: str | None,
         *,
         accepted_api_keys: tuple[str, ...] | None = None,
+        allow_bootstrap: bool = True,
     ) -> None:
         self.store, self.cfg, self.api_key = store, cfg, api_key
+        self._allow_bootstrap = allow_bootstrap
         if accepted_api_keys is not None:
             self._accepted_api_keys = accepted_api_keys
         elif api_key:
@@ -174,6 +217,11 @@ class Resolver:
                 return Principal(user.id, user.name, user.role, "session")
         if unknown_login is not None:
             raise NotInvited(unknown_login)
-        if not self._accepted_api_keys and is_direct_loopback(request, self.cfg) and not self.store.users():
+        if (
+            self._allow_bootstrap
+            and not self._accepted_api_keys
+            and is_direct_loopback(request, self.cfg)
+            and not self.store.users()
+        ):
             return BOOTSTRAP
         return None

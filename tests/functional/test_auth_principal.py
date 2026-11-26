@@ -350,3 +350,66 @@ def test_serve_opens_the_user_store_under_state_dir_and_routes_see_the_principal
             "name": "Pat",
             "via": "session",
         }
+
+
+# ---- routable bind: bootstrap is a loopback-only listen convenience ----
+
+
+@pytest.mark.parametrize(
+    ("host", "allows"),
+    [
+        ("127.0.0.1", True),
+        ("::1", True),
+        ("localhost", True),
+        ("0.0.0.0", False),
+        ("::", False),
+        ("[::]", False),
+        ("192.168.1.10", False),
+        ("example.local", False),
+    ],
+)
+def test_bind_allows_bootstrap_only_for_a_loopback_listen(host: str, allows: bool) -> None:
+    from airlie.auth.principal import bind_allows_bootstrap
+
+    assert bind_allows_bootstrap(host) is allows
+
+
+def test_assert_bind_credentials_refuses_a_routable_listen_with_no_key() -> None:
+    from airlie.auth.principal import ServeBindError, assert_bind_credentials
+
+    assert_bind_credentials("127.0.0.1", ())  # local bootstrap path stays open
+    assert_bind_credentials("0.0.0.0", ("k",))  # published port with a key is fine
+    with pytest.raises(ServeBindError, match="0.0.0.0"):
+        assert_bind_credentials("0.0.0.0", ())
+
+
+def test_fresh_install_bootstrap_is_off_when_the_listen_is_routable(store: AuthStore) -> None:
+    """`airlie serve --host 0.0.0.0` must not keep the Mac onboarding bypass: anything that can talk to
+    loopback inside that process (docker exec, an undeclared local proxy) would otherwise be admin."""
+    r = Resolver(store, AuthSpec(), api_key=None, allow_bootstrap=False)
+    assert probe(r, LOOPBACK).json() is None
+    assert probe(r, ELSEWHERE).json() is None
+
+
+def test_serve_refuses_bootstrap_when_allow_bootstrap_is_off(tmp_path: Path) -> None:
+    app = create_app(
+        cfg(tmp_path),
+        transport=httpx.MockTransport(FakeUpstream()),
+        allow_bootstrap=False,
+    )
+    with TestClient(app, client=LOOPBACK) as c:
+        assert c.get("/v1/models").status_code == 401
+    with TestClient(app, client=ELSEWHERE) as c:
+        assert c.get("/v1/models").status_code == 401
+
+
+def test_serve_with_a_key_still_works_when_bootstrap_is_off(tmp_path: Path) -> None:
+    app = create_app(
+        cfg(tmp_path),
+        transport=httpx.MockTransport(FakeUpstream()),
+        api_key="s3cret",
+        allow_bootstrap=False,
+    )
+    with TestClient(app, client=ELSEWHERE) as c:
+        assert c.get("/v1/models").status_code == 401
+        assert c.get("/v1/models", headers={"Authorization": "Bearer s3cret"}).status_code == 200

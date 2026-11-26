@@ -654,6 +654,7 @@ def create_app(
     orchestrator_factory: Callable[..., Any] | None = None,
     api_key: str | None = None,
     accepted_api_keys: tuple[str, ...] | None = None,
+    allow_bootstrap: bool = True,
     story_job: Callable[..., Any] | None = None,
     initiative_job: Callable[..., Any] | None = None,
     story_restart: Callable[..., Any] | None = None,
@@ -672,6 +673,8 @@ def create_app(
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
+    `allow_bootstrap`: when false (a routable `--host`), the fresh-install loopback admin is off — see
+    `airlie.auth.principal.bind_allows_bootstrap`.
     `story_job` builds the job `POST /v1/airlie/stories` starts (default: airlie.story.factory.story_job);
     `initiative_job` the one the initiative routes start (default: airlie.story.factory.initiative_job);
     `story_restart` what `POST /v1/airlie/stories/{key}/restart` runs (default:
@@ -793,7 +796,14 @@ def create_app(
         return images
 
     store = auth_store or AuthStore(cfg.observability.state_dir.expanduser() / "auth.sqlite")
-    resolver = Resolver(store, cfg.auth, api_key, accepted_api_keys=accepted_api_keys)
+    resolver = Resolver(
+        store,
+        cfg.auth,
+        api_key,
+        accepted_api_keys=accepted_api_keys,
+        allow_bootstrap=allow_bootstrap,
+    )
+    app.state.allow_bootstrap = allow_bootstrap
 
     @app.middleware("http")
     async def _require_principal(request: Request, call_next: Callable[..., Any]) -> Any:

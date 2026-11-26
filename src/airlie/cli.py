@@ -452,6 +452,11 @@ def serve(
     ] = None,
 ) -> None:
     """OpenAI-compatible endpoint in front of airlie: roles and catalog models, plus POST /v1/airlie/run."""
+    from airlie.auth.principal import (
+        ServeBindError,
+        assert_bind_credentials,
+        bind_allows_bootstrap,
+    )
     from airlie.serve import create_app
     from airlie.serve.bridge.session import (
         accepted_serve_api_keys,
@@ -465,12 +470,28 @@ def serve(
     ensure_serve_api_key_stores(cfg)
     api_key = resolve_serve_api_key(cfg, explicit=api_key)
     accepted = accepted_serve_api_keys(cfg, explicit=api_key)
+    try:
+        assert_bind_credentials(host, accepted)
+    except ServeBindError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    # Routable listen: keep the Mac onboarding bypass off even if a later caller drops the key set.
+    allow_bootstrap = bind_allows_bootstrap(host)
     raw = [m for m in cfg.models if m not in cfg.roles]
     console.print(
         f"airlie serve on http://{host}:{port}/v1  (roles: {', '.join(cfg.roles)}; "
         f"catalog models: {', '.join(raw)}; api key: {'required' if api_key else 'none'})"
     )
-    run(create_app(cfg, api_key=api_key, accepted_api_keys=accepted), host=host, port=port)
+    run(
+        create_app(
+            cfg,
+            api_key=api_key,
+            accepted_api_keys=accepted,
+            allow_bootstrap=allow_bootstrap,
+        ),
+        host=host,
+        port=port,
+    )
 
 
 @update_app.command("status")

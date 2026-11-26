@@ -46,7 +46,8 @@ def run(app: FastAPI, *, host: str, port: int) -> None:
     loopback, plus the proxies `auth.trusted_proxies` declares). Turning it on would make a forwarded header
     decide who a request is, which is the opposite of the guard. So the listen address only decides who can
     connect: binding `0.0.0.0` lets remote peers reach serve, they arrive with their own address, and nothing
-    they assert about a second client is read."""
+    they assert about a second client is read. `airlie serve` refuses a routable bind with no API key and
+    disables the fresh-install bootstrap (`bind_allows_bootstrap`) before calling here."""
     server = Server(app, host=host, port=port, log_level="info", proxy_headers=False)
     with contextlib.suppress(KeyboardInterrupt):
         server.run()
