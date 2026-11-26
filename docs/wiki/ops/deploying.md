@@ -15,7 +15,7 @@ changes the digest in a declarative manifest, and their platform applies it.
 
 ### Step 1 — Panel / CLI shows `behind` + target digest + breaking
 
-Run the check (from the panel's "Check now" button, or `task update check`)
+Run the check (from the panel's "Check now" button, or `airlie update check`)
 until the drift state is `behind`. The response carries:
 
 - **Target digest** (`manifest_digest` on the drift object) — exactly what to
@@ -29,9 +29,13 @@ until the drift state is `behind`. The response carries:
 
 In the admin panel, click "Set desired digest" and enter the target
 `sha256:<hex>`. This writes a row to the local SQLite ledger — it does not
-redeploy anything. The benefit: the panel will report `requested` (and stay
-that way) once you bump your manifest, instead of drifting back to `behind` if
-the channel feed updates again before you apply.
+redeploy anything. The benefit: after you have deployed the pinned digest, a
+channel that moves ahead reports `requested` (you are running what you asked for)
+instead of `behind`. Before deploy, while the new image is yet to be pulled,
+the panel reports `behind` (running != desired) — the pin prevents that from
+ever degrading to a stale `behind` once deployed, because row 3 of the drift
+classifier (`desired is not None and running == desired` → `requested`) always
+wins over row 4 (`behind`).
 
 The CLI equivalent:
 
@@ -101,7 +105,7 @@ pull request) handles this step. airlie does not participate.
 ### Step 5 — Panel shows `current`
 
 After the new version boots, the next ticker cycle (default 86400 seconds)
-or a manual `task update check` re-reads the channel, and the panel reports
+or a manual `airlie update check` re-reads the channel, and the panel reports
 drift = `current`. The desired digest matches what is running — intent is met.
 
 If you set a desired pin in step 2, the panel transitions directly to

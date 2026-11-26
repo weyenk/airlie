@@ -1,6 +1,7 @@
 # Update awareness and drift (v1 operator guide)
 
-This page describes what the admin panel's Updates tab and `task update` report,
+This page describes what the admin panel's Updates tab, `airlie update status`, and
+`airlie update check` report,
 the four drift states, configuration keys, and what the system **does not** do.
 
 ## What the panel and CLI report
@@ -8,7 +9,7 @@ the four drift states, configuration keys, and what the system **does not** do.
 The admin panel (visible to admins when `update.enabled: true` and
 `update.panel: true`) and `airlie update status` (read-only, no network) both
 display information drawn from the local SQLite ledger — never the outside
-world. The panel also exposes `airlie update check` (CLI: `task update check`)
+world. The panel also exposes `airlie update check` (CLI: `airlie update check`)
 which runs one feed fetch and writes the result to that ledger.
 
 Both surfaces report:
@@ -38,7 +39,7 @@ It evaluates these conditions in order, first match wins:
 | Feed never succeeded (no cached check). | `unknown` — nothing authoritative to compare. Pin a digest yourself: either set it in the panel or put `@sha256:<hex>` directly in your manifest. |
 | Feed succeeded, running digest and channel digest both known, and they match. | `current` — you are running what the feed says is available right now. |
 | Desired digest was set by an admin and matches the running digest (regardless of feed). | `requested` — intent is met; no change to apply. (Note: v1 has no deadline yet for stale desired pins.) |
-| Feed succeeded, running digest and channel digest both known, they differ, no desired (or desired equals running). | `behind` — the channel pointer names a newer digest. The drift response carries `manifest_digest` (the target digest to pin in your manifest). |
+| Feed succeeded, running digest and channel digest both known, they differ, no desired (or desired differs from running). | `behind` — the channel pointer names a newer digest. The drift response carries `manifest_digest`: when no desired is set, this is the channel target; **when a stale (unapplied) desired pin exists** — one that does not match the running digest — `manifest_digest` reports the stale pin, **not** the channel target. |
 | Feed failed and running digest is known. | `current` — honour what the cache last showed (does not imply "up to date" with respect to the live channel). |
 | Running digest is `null` (dev checkout, baked digest missing). | `unknown`. |
 
@@ -72,9 +73,9 @@ it does not restart or redeploy anything.
 
 The CLI also exposes:
 
-- `task update status` — read-only snapshot of the current state (feed, running
+- `airlie update status` — read-only snapshot of the current state (feed, running
   release, desired pin, drift). No network. (`src/airlie/cli.py` ~476–498)
-- `task update check` — runs one feed fetch now, writes the result to the ledger,
+- `airlie update check` — runs one feed fetch now, writes the result to the ledger,
   exits non-zero when the check failed. (`src/airlie/cli.py` ~500–523)
 
 The panel's "Check now" button calls `POST /v1/admin/update/check`, which runs
