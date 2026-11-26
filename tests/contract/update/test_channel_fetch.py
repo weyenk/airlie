@@ -33,7 +33,11 @@ SPEC_RELEASE_FIELDS = {
     "state_migration",
     "schema_epoch",
 }
-SPEC_IMAGE_FIELDS = {"repo", "tag", "digest"}
+#: ``digest`` is what the image states about itself (the drift table compares it); ``pull_digest`` is
+#: the registry's digest for ``repo:tag``, so the value a manifest pins. §B predates the second one, so
+#: the reader treats it as optional — every document published before it exists has no such key, and
+#: ``tests/integration/update/test_feed_contract.py`` reads one back.
+SPEC_IMAGE_FIELDS = {"repo", "tag", "digest", "pull_digest"}
 
 #: What ``channels/<name>.json`` publishes. ``etag`` is the transport's, not the document's.
 SPEC_POINTER_FIELDS = {"version", "digest", "released_at", "release_json"}
@@ -106,6 +110,7 @@ async def test_a_published_channel_reads_through_the_real_parser() -> None:
     assert release.image.repo == document["image"]["repo"]
     assert release.image.tag == document["image"]["tag"]
     assert release.image.digest == document["image"]["digest"]
+    assert release.image.pull_digest == document["image"]["pull_digest"]
     assert release.notes == document["notes"]
     assert release.breaking is document["breaking"]
     assert release.state_migration is document["state_migration"]

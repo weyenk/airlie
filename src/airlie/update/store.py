@@ -13,7 +13,10 @@ Two rules this module exists to enforce:
 - **Nothing unreadable is discarded.** A file that won't open is moved to ``*.corrupt`` and left
   there, then a fresh one is created. A store that silently starts empty is indistinguishable from
   one that genuinely has no history, which is the worst possible failure for this feature: the
-  panel would say "up to date" when the truth was unrecoverable.
+  panel would say "up to date" when the truth was unrecoverable. Only a *write* quarantines: a read
+  cannot tell corruption from a permission blip or another process's lock, and guessing wrong by
+  renaming the live file destroys the history the read was asked to report. So a failed read says
+  so, and leaves the file exactly where it is.
 """
 
 from __future__ import annotations
@@ -31,9 +34,16 @@ from typing import Any
 from airlie.update.feed import ChannelPointer, ImageRef, ReleaseJson
 
 # Both tables are bounded: 500 passes is months of checking, and an unbounded table in a file the
-# hub holds open forever is a slow leak nobody notices until the file is large.
+# hub holds open forever is a slow leak nobody notices until the file is large. The newest good row
+# is exempt from the budget (see ``record_check``), so the table holds at most ``_RETAIN + 1``.
 _RETAIN = 500
 _BUSY_TIMEOUT_MS = 5_000
+
+#: The row ``last_good`` answers from, spelled once so prune and the reader cannot drift apart: if
+#: prune exempted a row ``last_good`` would skip, a long outage could still zero the answer. A good
+#: pass with no release is not an answer — the channel can name a document nobody published — and
+#: skipping one lets the release the feed really did publish keep answering.
+_GOOD_ROW = "ok = 1 AND release_json IS NOT NULL"
 
 
 def update_store_path(state_dir: Path) -> Path:
@@ -52,6 +62,7 @@ CREATE TABLE IF NOT EXISTS check_result (
     checked_at TEXT NOT NULL,
     ok INTEGER NOT NULL CHECK (ok IN (0, 1)),
     reason TEXT,
+    detail TEXT,
     release_json TEXT,
     pointer_json TEXT,
     etag TEXT
@@ -85,6 +96,7 @@ class CheckOutcome:
     checked_at: str
     ok: bool
     reason: str | None = None
+    detail: str | None = None
     release: ReleaseJson | None = None
     pointer: ChannelPointer | None = None
     etag: str | None = None
@@ -119,15 +131,19 @@ class UpdateStore:
         Reads never create the database. The panel has to distinguish "no history" from
         "history we could not read", and a read that opened a fresh ledger on its way
         back would erase that difference.
+
+        A read never quarantines either. Every failure ``_open`` can raise here is either
+        transient — an ``EACCES`` or ``EMFILE`` blip, another process holding the lock, all of
+        which leave a perfectly good file on disk — or real corruption, and a read cannot cheaply
+        tell the two apart. Renaming on that guess is a GET that destroys the history it was
+        asked to report while the writer carries on using the inode it just unlinked, so that
+        two processes answer differently for the same deployment. The failure travels to the
+        caller instead: reporting it is honest, and "there was no history" is not.
+        ``record_check`` is the path that quarantines, and it is the one that opens for writing.
         """
         if self._conn is None and not self.path.exists():
             return None
-        try:
-            return self._conn if self._conn is not None else self._open(quarantine=False)
-        except sqlite3.DatabaseError:
-            self.close()
-            self._move_aside_unreadable()
-            return None
+        return self._conn if self._conn is not None else self._open(quarantine=False)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
@@ -139,8 +155,9 @@ class UpdateStore:
     def _open(self, *, quarantine: bool = True) -> sqlite3.Connection:
         """Open the ledger, quarantining an unreadable file when allowed.
 
-        ``quarantine=False`` is the read path: moving the file aside and creating a new
-        one would turn "we lost the history" into "there was never any history".
+        ``quarantine=False`` is the read path: it re-raises whatever failed, because moving the
+        file aside and creating a new one would turn "we lost the history" into "there was never
+        any history". See ``_read_db`` for why a read may not rename the live file.
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -159,6 +176,11 @@ class UpdateStore:
             self._move_aside_unreadable()
             conn = self._connect()
             conn.executescript(_SCHEMA)
+        # ``CREATE TABLE IF NOT EXISTS`` never evolves a table that is already there, so a ledger
+        # written before ``detail`` existed would keep its old shape forever and the INSERT below
+        # would fail on a deployed box. Adding a nullable column is a no-rewrite ALTER.
+        if not any(row[1] == "detail" for row in conn.execute("PRAGMA table_info(check_result)")):
+            conn.execute("ALTER TABLE check_result ADD COLUMN detail TEXT")
         return conn
 
     def _move_aside_unreadable(self) -> None:
@@ -186,15 +208,28 @@ class UpdateStore:
         db.execute("COMMIT")
 
     def record_check(self, outcome: CheckOutcome) -> None:
-        """Record a pass. Always inserts the row; a good pass also upserts the last-known-good pair."""
+        """Record a pass. Always inserts the row; a good pass also upserts the last-known-good pair.
+
+        Two things happen here that are not obvious from the shape of the statement:
+
+        - The snapshot's ``release_json`` is COALESCEd, never overwritten. A good pass can arrive
+          with a pointer and no release (the channel named a document nobody published), and
+          blanking the pair here would poison the one fallback that outlives the row budget.
+        - Prune keeps the newest good row *outside* the budget. Without that, an outage longer
+          than ``_RETAIN`` passes deletes the only release the ledger ever held, and "the mirror
+          has been down for months" arrives as "this deployment never had a release" — the one
+          answer this feature is not allowed to give. The table therefore holds at most
+          ``_RETAIN + 1`` rows, which is still bounded.
+        """
         with self._lock, self._transaction() as db:
             db.execute(
-                "INSERT INTO check_result (checked_at, ok, reason, release_json, pointer_json,"
-                " etag) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO check_result (checked_at, ok, reason, detail, release_json,"
+                " pointer_json, etag) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     outcome.checked_at,
                     int(outcome.ok),
                     outcome.reason,
+                    outcome.detail,
                     None if outcome.release is None else json.dumps(_release_stored(outcome.release)),
                     None if outcome.pointer is None else json.dumps(_pointer_stored(outcome.pointer)),
                     outcome.etag,
@@ -205,7 +240,8 @@ class UpdateStore:
                     "INSERT INTO pointer_snapshot (id, pointer_json, release_json, etag)"
                     " VALUES (1, ?, ?, ?)"
                     " ON CONFLICT(id) DO UPDATE SET pointer_json = excluded.pointer_json,"
-                    " release_json = excluded.release_json, etag = excluded.etag",
+                    " release_json = COALESCE(excluded.release_json, pointer_snapshot.release_json),"
+                    " etag = excluded.etag",
                     (
                         json.dumps(_pointer_stored(outcome.pointer)),
                         None if outcome.release is None else json.dumps(_release_stored(outcome.release)),
@@ -214,7 +250,8 @@ class UpdateStore:
                 )
             db.execute(
                 "DELETE FROM check_result WHERE id NOT IN"
-                " (SELECT id FROM check_result ORDER BY id DESC LIMIT ?)",
+                " (SELECT id FROM check_result ORDER BY id DESC LIMIT ?)"
+                f" AND id NOT IN (SELECT id FROM check_result WHERE {_GOOD_ROW} ORDER BY id DESC LIMIT 1)",
                 (_RETAIN,),
             )
 
@@ -227,11 +264,18 @@ class UpdateStore:
         return None if row is None else _outcome_from(row)
 
     def last_good(self) -> CheckOutcome | None:
+        """The newest pass that can actually answer: good, and holding a release.
+
+        A good pass with no release is a hole, not an answer (see ``_GOOD_ROW``), so the release the
+        feed last really published keeps answering until a better row lands.
+        """
         with self._lock:
             db = self._read_db()
             if db is None:
                 return None
-            row = db.execute("SELECT * FROM check_result WHERE ok = 1 ORDER BY id DESC LIMIT 1").fetchone()
+            row = db.execute(
+                f"SELECT * FROM check_result WHERE {_GOOD_ROW} ORDER BY id DESC LIMIT 1"
+            ).fetchone()
         return None if row is None else _outcome_from(row)
 
     def history(self, limit: int = _RETAIN) -> list[dict[str, object]]:
@@ -326,6 +370,7 @@ def _outcome_from(row: sqlite3.Row) -> CheckOutcome:
         checked_at=str(row["checked_at"]),
         ok=bool(row["ok"]),
         reason=row["reason"],
+        detail=row["detail"],
         release=None if release_json is None else _release_loaded(json.loads(release_json)),
         pointer=None if pointer_json is None else _pointer_loaded(json.loads(pointer_json)),
         etag=row["etag"],
@@ -344,10 +389,15 @@ def _release_stored(release: ReleaseJson) -> dict[str, Any]:
         "image_repo": release.image.repo,
         "image_tag": release.image.tag,
         "image_digest": release.image.digest,
+        "image_pull_digest": release.image.pull_digest,
     }
 
 
 def _release_loaded(stored: dict[str, Any]) -> ReleaseJson:
+    # .get, not [...]: every ledger row written before the pull digest existed lacks the key, and a
+    # row that refused to load would leave the panel with no last-good release at all — which reads
+    # "unknown" for a deployment that knows exactly what it runs.
+    stored_pull = stored.get("image_pull_digest")
     return ReleaseJson(
         version=str(stored["version"]),
         released_at=str(stored["released_at"]),
@@ -356,6 +406,7 @@ def _release_loaded(stored: dict[str, Any]) -> ReleaseJson:
             repo=str(stored["image_repo"]),
             tag=str(stored["image_tag"]),
             digest=str(stored["image_digest"]),
+            pull_digest=None if stored_pull is None else str(stored_pull),
         ),
         notes=str(stored["notes"]),
         breaking=bool(stored["breaking"]),

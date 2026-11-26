@@ -15,8 +15,9 @@ which runs one feed fetch and writes the result to that ledger.
 Both surfaces report:
 
 - The **running release**: version, git sha (when a dev checkout), image
-  digest (a baked-in `@sha256:<hex>` string, or `null` on a dev checkout),
-  and the schema epoch compiled into this build. (`src/airlie/update/status.py` ~53–60;
+  digest (the baked-in `sha256:<hex>` string, exactly as the release job
+  wrote it — the `@` you add in a manifest is not part of it — or `null` on a
+  dev checkout), and the schema epoch compiled into this build. (`src/airlie/update/status.py` ~53–60;
   `serve/app.py` ~934–937)
 - The **channel state**: the last release the channel pointer feed answered with,
   including its version, git sha, digest, `breaking` / `state_migration` flags.
@@ -55,10 +56,18 @@ Source: [`src/airlie/update/drift.py`](../../src/airlie/update/drift.py) (pure f
 A local development checkout does not bake the image digest into the running
 process (there is no `/etc/airlie/image-digest` file, and `git rev-parse --short
 HEAD` may not be available). The code detects this case — `read_image_digest()`
-returns `None` (`src/airlie/update/identity.py` ~84–89) — and reports no
+returns `None` (`src/airlie/update/identity.py`) — and reports no
 digest rather than a guess. Without an image digest, the drift classification
 falls to `unknown` (rows 1 and 6). This is intentional: a dev checkout cannot
 verify whether it is up to date with respect to the published feed.
+
+The same `None` covers a bundle file that exists but cannot be believed: only
+the `sha256:<64 lowercase hex>` form the release job bakes is accepted, so a
+file left by a hand-run `docker build`, a hand edit, or a truncated value reads
+as no digest. Passing such a value through would have been worse than
+reporting nothing — drift compares the string byte for byte against the
+registry's, so it could never match, and the panel would both claim `behind`
+forever and offer that unrunnable string as the digest to pin.
 
 The CLI `airlie update status` still shows `version` and `git_sha` (from
 `build_commit()`) so a developer can identify the build by hand. The panel
@@ -102,11 +111,15 @@ update:
     base_url:             # required for channel_pointer; must be https://
       "https://your.mirror.example.com/airlie-releases"
     channel: stable       # "stable" (default) or "latest"; dogfood uses latest
-    # pinned:             # alternative kind — air-gap / change window
-    #   path:             # required for pinned when no version/digest (local directory)
-    #     "/local/releases"
-    #   pinned_version:   # pinned only; the version to report as current
-    #   pinned_digest:    # pinned only — a specific digest (e.g. sha256:<hex>)
+    # For kind: pinned (air-gap / change window) there is no base_url to follow. `path` is a
+    # directory holding the same documents the channel serves — <path>/channels/<channel>.json
+    # plus the release document that pointer names, resolved under <path>:
+    #   kind: pinned
+    #   path: /local/releases
+    # Or name the pin with no directory at all, which needs both fields:
+    #   kind: pinned
+    #   pinned_version: "2026.11.3"
+    #   pinned_digest: "sha256:<hex>"
   check:
     interval_s: 86400     # ticker interval in seconds (minimum 3600)
 ```

@@ -8,8 +8,14 @@ Verbs: POST / PUT / PATCH / DELETE (both bare keyword and .post(. etc.).
 Clients: ``docker`` package imports + ``DockerClient``, ``kubernetes`` package
 imports (including ``kubernetes.client``).
 
+Call-shape matching is case-insensitive and also covers the transport seam
+``client.request("post", url)``: httpx takes the verb as a string, so the
+lowercase spelling sends a POST exactly like the shouted one.
+
 The scan helper is a single function that returns the set of violations it finds
 so the guard can be called once per file and (optionally) inspected directly.
+Results are keyed by path relative to the scanned root, never by basename: two
+files with the same name in different directories must not overwrite each other.
 """
 
 from __future__ import annotations
@@ -34,19 +40,59 @@ def test_scan_hits_real_package() -> None:
     present = set(results)
     for expected in _SCANNED_FILES:
         assert expected in present, f"expected {expected!r} in scanned files {sorted(present)}"
+    assert not any(Path(key).is_absolute() for key in present), f"keys are not relative: {sorted(present)}"
 
 
+def test_nested_same_basename_does_not_hide_a_violation(tmp_path: Path) -> None:
+    """Results are keyed by relative path, so a namesake cannot overwrite its sibling.
+
+    Keyed by basename, the clean top-level ``store.py`` overwrote the nested dirty one (the
+    sorted walk reaches ``drivers/`` first), the collision collapsed to one entry, and the
+    ``import docker`` below shipped green.
+    """
+    (tmp_path / "store.py").write_text("CHANNEL = 'stable'\n", encoding="utf-8")
+    nested = tmp_path / "drivers"
+    nested.mkdir()
+    (nested / "store.py").write_text("import docker\n", encoding="utf-8")
+
+    results = _check_package(tmp_path)
+
+    nested_key = str(Path("drivers") / "store.py")
+    assert set(results) == {"store.py", nested_key}, f"entries merged by basename: {sorted(results)}"
+    assert not results["store.py"]
+    assert "client:import docker" in results[nested_key], f"nested violation hidden: {results}"
+
+
+# The bare keyword scan stays case-*sensitive* on purpose: ``version.py`` carries a real
+# semver ``patch`` field and lower-case prose is common, so widening this list would flag
+# true code. The shouted token is the marker for an HTTP verb here.
 _WRITE_VERBS = ("POST", "PUT", "PATCH", "DELETE")
-_METHOD_CALLS = (".post(", ".put(", ".patch(", ".delete(")
 
-_CLIENT_PATTERNS: list[str] = [
-    r"^\s*import\s+docker\b",
-    r"^\s*from\s+docker\b",
-    r"\bDockerClient\b",
-    r"^\s*import\s+kubernetes\b",
-    r"^\s*from\s+kubernetes\b",
-    r"\bkubernetes\.client\b",
-]
+# Matched with ``re.IGNORECASE``, unlike the keywords above. Two reasons: a mixed-case
+# ``.Post(``/``.PUT(`` is still egress, and the seam that takes the verb as a *string* —
+# ``client.request("post", url)`` — sends a POST just as loudly as ``client.request("POST",
+# url)`` while containing none of the ``.post(`` substrings. Case-sensitive matching let the
+# lowercase form walk straight past the reader-only invariant.
+#
+# Keyed by label so every rule owns its own ``method:<label>`` issue key: a positive control
+# asserts its own key, so deleting a rule turns that control red instead of leaving the
+# shared key satisfied by a sibling rule.
+_METHOD_CALLS: dict[str, str] = {
+    ".post(": r"\.post\s*\(",
+    ".put(": r"\.put\s*\(",
+    ".patch(": r"\.patch\s*\(",
+    ".delete(": r"\.delete\s*\(",
+    'request("verb")': r"""\.request\s*\(\s*["']?(?:post|put|patch|delete)\b""",
+}
+
+_CLIENT_PATTERNS: dict[str, str] = {
+    "import docker": r"^\s*import\s+docker\b",
+    "from docker": r"^\s*from\s+docker\b",
+    "DockerClient": r"\bDockerClient\b",
+    "import kubernetes": r"^\s*import\s+kubernetes\b",
+    "from kubernetes": r"^\s*from\s+kubernetes\b",
+    "kubernetes.client": r"\bkubernetes\.client\b",
+}
 
 # Line shapes that legitimately contain verb tokens because they are *not*
 # egress: FastAPI route registration (incoming admin API surface) and SQL DML
@@ -78,34 +124,41 @@ def _scan_update_package(source_text: str) -> dict[str, list[int]]:
                 if re.search(rf"\b{verb}\b", line) and not _is_exempt_line(line):
                     issues.setdefault(f"verb:{verb}", []).append(i)
 
-    for call in _METHOD_CALLS:
-        if call in source_text:
-            for i, line in enumerate(source_text.splitlines(), 1):
-                if call in line and not _is_exempt_line(line):
-                    issues.setdefault(f"method:{call}", []).append(i)
+    for label, pattern in _METHOD_CALLS.items():
+        compiled = re.compile(pattern, re.IGNORECASE)
+        for i, line in enumerate(source_text.splitlines(), 1):
+            if compiled.search(line) and not _is_exempt_line(line):
+                issues.setdefault(f"method:{label}", []).append(i)
 
-    for pat in _CLIENT_PATTERNS:
+    for label, pat in _CLIENT_PATTERNS.items():
         compiled = re.compile(pat, re.MULTILINE)
         for match in compiled.finditer(source_text):
             lineno = source_text[: match.start()].count("\n") + 1
-            issues.setdefault("client", []).append(lineno)
+            issues.setdefault(f"client:{label}", []).append(lineno)
 
     return issues
 
 
-def _check_package() -> dict[str, dict[str, list[int]]]:
-    """Scan every .py under the update package; return {filename: issues}.
+def _check_package(root: Path = _PACKAGE_ROOT) -> dict[str, dict[str, list[int]]]:
+    """Scan every .py under ``root``; return {path relative to root: issues}.
+
+    Keys are relative paths, not basenames. A basename key silently merges two files that
+    share a name across directories — the later scan overwrites the earlier one — so a
+    forbidden import in a nested module could be hidden by a clean top-level namesake and the
+    guard would fail open. Today the package is flat; the key shape is what keeps it safe
+    the first time a subdirectory lands there.
 
     No file is exempted — exemptions are per-line only (see
     ``_EXEMPT_LINE_PATTERNS``): route registration and local SQL legitimately
     contain verb tokens, while any other line, in any file, is guarded.
     """
-    files = sorted(glob.glob(str(_PACKAGE_ROOT / "**" / "*.py"), recursive=True))
+    files = sorted(glob.glob(str(root / "**" / "*.py"), recursive=True))
     results: dict[str, dict[str, list[int]]] = {}
 
     for filepath in files:
-        source_text = Path(filepath).read_text(encoding="utf-8")
-        results[Path(filepath).name] = _scan_update_package(source_text)
+        path = Path(filepath)
+        source_text = path.read_text(encoding="utf-8")
+        results[str(path.relative_to(root))] = _scan_update_package(source_text)
 
     return results
 
@@ -116,26 +169,27 @@ def _check_package() -> dict[str, dict[str, list[int]]]:
 def test_no_write_verbs_in_any_update_file() -> None:
     """Branch-level invariant: no HTTP write verbs anywhere in update/."""
     results = _check_package()
-    for filename, file_issues in results.items():
+    for relpath, file_issues in results.items():
         for key, lines in file_issues.items():
-            raise AssertionError(f"{filename}:{lines}: found write verb keyword in {key}")
+            raise AssertionError(f"{relpath}:{lines}: found write verb keyword in {key}")
 
 
 def test_no_docker_k8s_clients_in_any_update_file() -> None:
     """Branch-level invariant: no docker or kubernetes client construction."""
     results = _check_package()
-    for filename, file_issues in results.items():
-        if "client" in file_issues:
-            raise AssertionError(f"{filename}:{file_issues['client']}: found docker/kubernetes client")
+    for relpath, file_issues in results.items():
+        hits = {key: lines for key, lines in file_issues.items() if key.startswith("client:")}
+        if hits:
+            raise AssertionError(f"{relpath}:{hits}: found docker/kubernetes client")
 
 
 def test_http_method_calls_absent() -> None:
     """Branch-level invariant: no HTTP library method calls for write verbs."""
     results = _check_package()
-    for filename, file_issues in results.items():
+    for relpath, file_issues in results.items():
         for key in file_issues:
             if key.startswith("method:"):
-                raise AssertionError(f"{filename}:{file_issues[key]}: found write-method call in {key}")
+                raise AssertionError(f"{relpath}:{file_issues[key]}: found write-method call in {key}")
 
 
 # ---- Positive control tests (synthetic snippets — prove the detector fires) ----
@@ -148,18 +202,48 @@ def test_positive_write_verb_keyword() -> None:
     assert "verb:POST" in issues
 
 
+def test_positive_import_docker_module() -> None:
+    """``import docker`` alone must be flagged, with no namesake rule to lean on."""
+    snippet = "import docker\n"
+    issues = _scan_update_package(snippet)
+    assert "client:import docker" in issues, f"rule 'import docker' is not firing: {issues}"
+
+
+def test_positive_from_docker_import() -> None:
+    """A submodule import off the docker package must be flagged on its own rule."""
+    snippet = "from docker.errors import ImageNotFound\n"
+    issues = _scan_update_package(snippet)
+    assert "client:from docker" in issues, f"rule 'from docker' is not firing: {issues}"
+    assert "client:DockerClient" not in issues
+
+
 def test_positive_docker_import() -> None:
-    """A line importing docker must be flagged."""
+    """The canonical client import is flagged by both of its rules."""
     snippet = "from docker import DockerClient\n"
     issues = _scan_update_package(snippet)
-    assert "client" in issues
+    assert "client:from docker" in issues
+    assert "client:DockerClient" in issues
+
+
+def test_positive_import_kubernetes_module() -> None:
+    """``import kubernetes`` alone must be flagged; the from-import rules cannot see it."""
+    snippet = "import kubernetes\n"
+    issues = _scan_update_package(snippet)
+    assert "client:import kubernetes" in issues, f"rule 'import kubernetes' is not firing: {issues}"
 
 
 def test_positive_kubernetes_import() -> None:
     """A line importing kubernetes.client must be flagged."""
     snippet = "from kubernetes import client\n"
     issues = _scan_update_package(snippet)
-    assert "client" in issues
+    assert "client:from kubernetes" in issues, f"rule 'from kubernetes' is not firing: {issues}"
+
+
+def test_positive_kubernetes_client_attribute() -> None:
+    """Reaching the client module as an attribute, with no import line, must be flagged."""
+    snippet = "pods = kubernetes.client.CoreV1Api().list_pod_for_all_namespaces()\n"
+    issues = _scan_update_package(snippet)
+    assert "client:kubernetes.client" in issues, f"rule 'kubernetes.client' is not firing: {issues}"
 
 
 def test_positive_post_method_call() -> None:
@@ -201,7 +285,34 @@ def test_positive_docker_client_class() -> None:
     """DockerClient as a class name must be flagged."""
     snippet = "client = DockerClient(from_env=True)\n"
     issues = _scan_update_package(snippet)
-    assert "client" in issues
+    assert "client:DockerClient" in issues, f"rule 'DockerClient' is not firing: {issues}"
+
+
+def test_positive_request_seam_lowercase_verb() -> None:
+    """The string-verb seam must be flagged whatever the case.
+
+    ``client.request("post", url)`` contains none of the ``.post(`` substrings and no shouted
+    ``POST`` token, so before the seam rule it reached the wire unguarded — httpx sends the
+    POST regardless of how the verb was spelled.
+    """
+    snippet = 'response = await client.request("post", url)\n'
+    issues = _scan_update_package(snippet)
+    assert 'method:request("verb")' in issues, f"lowercase request verb escaped: {issues}"
+
+
+def test_positive_request_seam_uppercase_verb() -> None:
+    """The shouted spelling is caught by the seam rule, not only by the keyword scan."""
+    snippet = 'response = await client.request("PUT", url)\n'
+    issues = _scan_update_package(snippet)
+    assert 'method:request("verb")' in issues, f"uppercase request verb escaped: {issues}"
+    assert "verb:PUT" in issues
+
+
+def test_positive_mixed_case_method_call() -> None:
+    """A mixed-case write-method call is still a write-method call."""
+    snippet = "session.Patch(url, json=payload)\n"
+    issues = _scan_update_package(snippet)
+    assert "method:.patch(" in issues, f"mixed-case method call escaped: {issues}"
 
 
 def test_positive_get_is_not_flagged() -> None:

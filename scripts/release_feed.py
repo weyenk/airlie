@@ -12,6 +12,18 @@ Documents, per docs/superpowers/specs/2026-11-22-update-channel-design.md §A/§
   release.json          the immutable per-version document, an asset of that version's GitHub Release
   channels/<name>.json  a rolling pointer: one version, and the digest that release's document carries
 
+Two digests name one release, and they answer different questions (see ``--image-digest`` and
+``--image-pull-digest``):
+
+  image.digest       what the running container states about itself — the value the release job bakes
+                     into ``/etc/airlie/image-digest`` and the only one ``classify()`` can compare,
+                     because nothing inside an image can know its own manifest digest
+  image.pull_digest  the registry digest of ``repo:tag``, so the value a declarative manifest must
+                     pin and the only one a registry can verify a pull against
+
+The channel pointer carries the first alone: it is what a deployment compares itself with. The
+second travels in the release document only, which the reader always fetches after the pointer.
+
 The renderer refuses what every reader would refuse — a malformed digest, a development build on
 stable — and the promotion (promote-stable) additionally refuses a release that migrates state
 without saying how in its notes: such a pointer would hand a deployment a destructive upgrade with
@@ -66,17 +78,23 @@ def render_release(args: argparse.Namespace) -> None:
         _fail("--released-at is required (the caller stamps it; the renderer keeps no clock)")
     if args.schema_epoch < 1:
         _fail(f"--schema-epoch counts up from 1; got {args.schema_epoch}")
+    image: dict[str, object] = {
+        "repo": args.image_repo,
+        "tag": args.image_tag,
+        "digest": _require_digest(args.image_digest, "--image-digest"),
+    }
+    # Omitted rather than empty when the caller has no pull digest (a mirror built without a
+    # registry push, a release published before the pull digest existed). A reader that sees no key
+    # knows the release has nothing to pin; one that sees "" would be a digest that is not one.
+    if args.image_pull_digest:
+        image["pull_digest"] = _require_digest(args.image_pull_digest, "--image-pull-digest")
     _write(
         Path(args.out),
         {
             "version": args.version,
             "released_at": args.released_at,
             "git_sha": args.git_sha,
-            "image": {
-                "repo": args.image_repo,
-                "tag": args.image_tag,
-                "digest": _require_digest(args.image_digest, "--image-digest"),
-            },
+            "image": image,
             "notes": args.notes,
             "breaking": args.breaking,
             "state_migration": args.state_migration,
@@ -157,7 +175,20 @@ def _parser() -> argparse.ArgumentParser:
     release.add_argument("--git-sha", required=True, dest="git_sha")
     release.add_argument("--image-repo", required=True, dest="image_repo")
     release.add_argument("--image-tag", required=True, dest="image_tag")
-    release.add_argument("--image-digest", required=True, dest="image_digest")
+    release.add_argument(
+        "--image-digest",
+        required=True,
+        dest="image_digest",
+        help="the digest the image self-reports (baked into /etc/airlie/image-digest); what the "
+        "drift table compares, so always required",
+    )
+    release.add_argument(
+        "--image-pull-digest",
+        default="",
+        dest="image_pull_digest",
+        help="the registry digest of <image-repo>:<image-tag>, the value a declarative manifest "
+        "must pin; omit it only when no registry push happened",
+    )
     release.add_argument("--notes", default="")
     release.add_argument("--breaking", action="store_true")
     release.add_argument("--state-migration", action="store_true", dest="state_migration")

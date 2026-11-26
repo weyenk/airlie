@@ -826,7 +826,7 @@ def create_app(
         left = store.session_expires_at(token)
         if left is not None and left - now() < cfg.auth.session_days * 86400 / 2:
             store.extend_session(token, cfg.auth.session_days)
-            set_session_cookie(response, request, token, cfg.auth.session_days)
+            set_session_cookie(response, request, cfg.auth, token, cfg.auth.session_days)
 
     app.include_router(
         auth_router(

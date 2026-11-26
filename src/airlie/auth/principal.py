@@ -1,16 +1,24 @@
 """Who a request is. The order is the plan's: a matching admin Bearer key, then the Tailscale identity header
-(only with `auth.tailscale: true`, and only on a request `tailscale serve` proxied: it arrives from loopback
-with the device's tailnet address in X-Forwarded-For), then the `airlie_session` cookie a passkey sign-in set.
-A wrong or stale Bearer does not short-circuit the rest (the SPA may still hold an old admin key). A fresh
-install (no users, no key) lets a direct loopback request in as a bootstrap admin so the web app works on the
-Mac before anyone is invited. serve runs uvicorn with proxy_headers off, so `request.client` is the real peer.
+(only with `auth.tailscale: true`, and only on a request a peer we take forwarded headers from proxied:
+`tailscale serve` arrives from loopback with the device's tailnet address in X-Forwarded-For), then the
+`airlie_session` cookie a passkey sign-in set. A wrong or stale Bearer does not short-circuit the rest (the
+SPA may still hold an old admin key). A fresh install (no users, no key) lets a direct loopback request in as
+a bootstrap admin so the web app works on the Mac before anyone is invited.
+
+Trust comes from the TCP peer, never from a header a caller controls: serve runs uvicorn with proxy_headers
+off, so `request.client` is the real peer. That makes the listen address a reachability choice, not a trust
+one — `0.0.0.0` lets remote peers connect, they arrive with their own address, and no header they send is
+read. A proxy that speaks for a client must be declared in `auth.trusted_proxies`; `auth.tailscale` is
+already the declaration for `tailscale serve` on loopback. The peer a proxy forwards (X-Forwarded-For) is a
+fact only about that proxy's upstream, so it is read from declared peers alone.
 """
 
 from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
-from ipaddress import ip_address, ip_network
+from functools import lru_cache
+from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 from typing import Literal
 
 from fastapi import Request
@@ -46,21 +54,67 @@ class NotInvited(Exception):
         self.login = login
 
 
+def peer_host(request: Request) -> str | None:
+    """The TCP peer's address. serve runs uvicorn with `proxy_headers` off, so this is the real peer — the
+    machine itself, a peer on another network, or a proxy that shares this network namespace — and never
+    something the caller wrote."""
+    return None if request.client is None else request.client.host
+
+
 def is_loopback(request: Request) -> bool:
-    """The TCP peer is this machine: the Mac itself, or a proxy running on it."""
-    return request.client is not None and request.client.host in LOOPBACK
+    """The TCP peer is this machine: the Mac itself, or a proxy running on it. In a container that includes
+    a proxy in the same network namespace, which may be carrying a remote client, so it says where the
+    connection came from, not who the client is."""
+    host = peer_host(request)
+    return host is not None and host in LOOPBACK
 
 
-def is_direct_loopback(request: Request) -> bool:
-    """The Mac itself, with no proxy in between (nothing forwarded)."""
-    return is_loopback(request) and not any(h in request.headers for h in PROXY_HEADERS)
+@lru_cache(maxsize=32)
+def _proxy_networks(entries: tuple[str, ...]) -> tuple[IPv4Network | IPv6Network, ...]:
+    """`auth.trusted_proxies` parsed once per distinct setting (`config/schema.py` rejects anything that
+    would not parse here, so a bad entry is a startup failure, never a silent non-match)."""
+    return tuple(ip_network(entry, strict=False) for entry in entries)
 
 
-def tailnet_peer(request: Request) -> str | None:
-    """The tailnet address `tailscale serve` forwarded, when the request came through it: a loopback peer and
-    an X-Forwarded-For whose first address is a Tailscale one. Any other local proxy (task tunnel, Funnel, a
-    reverse proxy) forwards other addresses, or none."""
-    if not is_loopback(request):
+def is_trusted_proxy(request: Request, cfg: AuthSpec) -> bool:
+    """The TCP peer is a reverse proxy the operator named in `auth.trusted_proxies`. Listing it is the only
+    way a peer that is not loopback vouches for a client, and the list is empty by default: no proxy is
+    trusted until declared."""
+    host = peer_host(request)
+    if host is None:
+        return False
+    try:
+        addr = ip_address(host)
+    except ValueError:
+        return False
+    return any(addr in net for net in _proxy_networks(tuple(cfg.trusted_proxies)))
+
+
+def speaks_for_clients(request: Request, cfg: AuthSpec) -> bool:
+    """Peers whose forwarded headers are read at all: one declared in `auth.trusted_proxies`, or loopback
+    when `auth.tailscale` is on — that flag is the operator saying the local proxy is `tailscale serve`.
+    Every other peer's forwarded identity or protocol is a stranger's assertion."""
+    return is_trusted_proxy(request, cfg) or (is_loopback(request) and cfg.tailscale)
+
+
+def is_direct_loopback(request: Request, cfg: AuthSpec) -> bool:
+    """The machine itself, with nothing forwarded and no proxy declared. A peer named in
+    `auth.trusted_proxies` is a proxy even when it reaches us over loopback, so requests from it are not
+    direct: a fresh install bootstraps for the machine alone, never through a proxy that forwards no
+    headers."""
+    return (
+        is_loopback(request)
+        and not is_trusted_proxy(request, cfg)
+        and not any(h in request.headers for h in PROXY_HEADERS)
+    )
+
+
+def tailnet_peer(request: Request, cfg: AuthSpec) -> str | None:
+    """The tailnet address a proxy forwarded, when the request came through one we take forwarded headers
+    from: `tailscale serve` on loopback (`auth.tailscale`) or a declared `auth.trusted_proxies` peer, with
+    an X-Forwarded-For whose first address is a Tailscale one. Any other proxy (task tunnel, Funnel, an
+    undeclared reverse proxy) forwards other addresses, or none."""
+    if not speaks_for_clients(request, cfg):
         return None
     forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
     try:
@@ -108,7 +162,7 @@ class Resolver:
                 return API_KEY_PRINCIPAL
         login = request.headers.get(TAILSCALE_HEADER)
         unknown_login: str | None = None
-        if login and self.cfg.tailscale and tailnet_peer(request):
+        if login and self.cfg.tailscale and tailnet_peer(request, self.cfg):
             user = self.store.user_by_login(login)
             if user is not None:
                 return Principal(user.id, user.name, user.role, "tailscale")
@@ -120,6 +174,6 @@ class Resolver:
                 return Principal(user.id, user.name, user.role, "session")
         if unknown_login is not None:
             raise NotInvited(unknown_login)
-        if not self._accepted_api_keys and is_direct_loopback(request) and not self.store.users():
+        if not self._accepted_api_keys and is_direct_loopback(request, self.cfg) and not self.store.users():
             return BOOTSTRAP
         return None

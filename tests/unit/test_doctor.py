@@ -10,7 +10,7 @@ from airlie.doctor import CheckResult, node_check, run_checks, web_node_pin
 from tests.support.doctor import TOOLS_OK, FakeProbe, by_name
 
 
-def make_cfg(tmp_path: Path, engines: dict, models: dict) -> AirlieConfig:
+def make_cfg(tmp_path: Path, engines: dict, models: dict, extra: dict | None = None) -> AirlieConfig:
     data = {
         "version": 1,
         "engines": engines,
@@ -19,6 +19,8 @@ def make_cfg(tmp_path: Path, engines: dict, models: dict) -> AirlieConfig:
             r: {"prompt": "p.md", "model": "team"} for r in ("architect", "summarizer", "judge", "aggregator")
         },
     }
+    if extra:
+        data.update(extra)
     (tmp_path / "p.md").write_text("x")
     (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
     return load_config(tmp_path / "airlie.yaml")
@@ -29,6 +31,29 @@ def managed(tmp_path: Path) -> AirlieConfig:
         tmp_path,
         {"main": {"kind": "http", "base_url": "http://127.0.0.1:8080/v1", "models": ["team"]}},
         {"team": "org/model"},
+    )
+
+
+class FeedProbe(FakeProbe):
+    """The doctor's fake probe with a canned answer for pointer fetches, keeping every URL it asked."""
+
+    def __init__(self, status: int | None = 200) -> None:
+        super().__init__()
+        self.status = status
+        self.urls: list[str] = []
+
+    def http_status(self, url: str, headers: dict[str, str] | None = None) -> int | None:
+        self.urls.append(url)
+        return self.status
+
+
+def update_cfg(tmp_path: Path, feed: dict, *, enabled: bool = True) -> AirlieConfig:
+    """A config carrying an `update:` block, loaded through the real validators."""
+    return make_cfg(
+        tmp_path,
+        {"main": {"kind": "http", "base_url": "http://127.0.0.1:8080/v1", "models": ["team"]}},
+        {"team": "org/model"},
+        extra={"update": {"enabled": enabled, "feed": feed}},
     )
 
 
@@ -240,16 +265,115 @@ def test_an_unreachable_non_workflow_engine_names_its_yaml_base_url(
 
 
 def test_a_reachable_engine_is_ok_and_an_auth_refusal_still_counts_as_reachable(tmp_path: Path) -> None:
-    class Answers(FakeProbe):
-        def __init__(self, status: int | None) -> None:
-            super().__init__()
-            self.status = status
-
-        def http_status(self, url: str, headers: dict[str, str] | None = None) -> int | None:
-            return self.status
-
     cfg = _http_cfg(tmp_path)
-    assert by_name(run_checks(cfg, Answers(200)))["engine:workflow"].status == "ok"
-    assert by_name(run_checks(cfg, Answers(401)))["engine:workflow"].status == "ok"
-    assert by_name(run_checks(cfg, Answers(502)))["engine:workflow"].status == "fail"
-    assert by_name(run_checks(cfg, Answers(None)))["engine:workflow"].status == "fail"
+    assert by_name(run_checks(cfg, FeedProbe(200)))["engine:workflow"].status == "ok"
+    assert by_name(run_checks(cfg, FeedProbe(401)))["engine:workflow"].status == "ok"
+    assert by_name(run_checks(cfg, FeedProbe(502)))["engine:workflow"].status == "fail"
+    assert by_name(run_checks(cfg, FeedProbe(None)))["engine:workflow"].status == "fail"
+
+
+# The `update` row. Only the pointer document is ever asked for, warn is the worst it can say, and
+# "up to date" is a sentence it is never allowed to finish.
+
+MIRROR_BASE = "https://updates.example.com/"
+POINTER = "https://updates.example.com/channels/stable.json"
+ENGINE_URL = "http://127.0.0.1:8080/v1/models"
+
+
+def test_the_update_row_is_off_and_asks_nothing_when_updates_are_off(tmp_path: Path) -> None:
+    probe = FeedProbe()
+    row = by_name(run_checks(managed(tmp_path), probe))["update"]
+    assert row.status == "ok" and "off" in row.detail
+    assert probe.urls == [ENGINE_URL]  # the engine row only: an off feed is not contacted
+
+
+def test_the_mirror_layout_pointer_is_asked_once_and_a_200_is_ok(tmp_path: Path) -> None:
+    probe = FeedProbe(200)
+    cfg = update_cfg(tmp_path, {"kind": "channel_pointer", "base_url": MIRROR_BASE, "channel": "stable"})
+    row = by_name(run_checks(cfg, probe))["update"]
+    assert row.status == "ok" and POINTER in row.detail
+    assert probe.urls == [ENGINE_URL, POINTER]  # one fetch: never the release document, never a second host
+
+
+def test_the_release_asset_layout_asks_the_publisher_url(tmp_path: Path) -> None:
+    probe = FeedProbe(200)
+    cfg = update_cfg(
+        tmp_path,
+        {
+            "kind": "channel_pointer",
+            "base_url": "https://github.com/org/repo/releases/download",
+            "layout": "release_asset",
+            "pointer_release_tag": "channel-pointers",
+        },
+    )
+    row = by_name(run_checks(cfg, probe))["update"]
+    assert row.status == "ok"
+    assert probe.urls == [
+        ENGINE_URL,
+        "https://github.com/org/repo/releases/download/channel-pointers/stable.json",
+    ]
+    assert "channels/stable.json" not in row.detail
+
+
+@pytest.mark.parametrize("status", [404, 500, None], ids=["404", "500", "no-answer"])
+def test_an_unreadable_feed_warns_naming_the_url_and_never_says_up_to_date(
+    tmp_path: Path, status: int | None
+) -> None:
+    cfg = update_cfg(tmp_path, {"kind": "channel_pointer", "base_url": MIRROR_BASE})
+    row = by_name(run_checks(cfg, FeedProbe(status)))["update"]
+    assert row.status == "warn"  # airlie runs fine with the feed down: never fail
+    assert POINTER in row.detail and "drift is unverified" in row.detail
+    assert 'never means "up to date"' in row.detail
+
+
+def test_a_base_url_httpx_refuses_warns_instead_of_crashing_the_row(tmp_path: Path) -> None:
+    cfg = update_cfg(tmp_path, {"kind": "channel_pointer", "base_url": "https://[::1"})
+    row = by_name(run_checks(cfg, FeedProbe()))["update"]
+    assert row.status == "warn" and "cannot build the pointer URL" in row.detail
+
+
+def test_a_pinned_path_must_be_a_directory_holding_the_channel_document(tmp_path: Path) -> None:
+    mirror = tmp_path / "feed-mirror"
+    mirror.mkdir()
+    cfg = update_cfg(tmp_path, {"kind": "pinned", "path": str(mirror)})
+    wanted = mirror / "channels" / "stable.json"
+    row = by_name(run_checks(cfg, FeedProbe()))["update"]
+    assert row.status == "warn"
+    assert str(wanted) in row.detail and "DIRECTORY" in row.detail
+
+    wanted.parent.mkdir()
+    wanted.write_text("{}")
+    on_disk = by_name(run_checks(cfg, FeedProbe()))["update"]
+    assert on_disk.status == "ok" and str(wanted) in on_disk.detail
+
+
+def test_a_pinned_version_and_digest_is_ok_and_contacts_nothing(tmp_path: Path) -> None:
+    probe = FeedProbe()
+    cfg = update_cfg(
+        tmp_path,
+        {"kind": "pinned", "pinned_version": "2026.11.3", "pinned_digest": "sha256:0f3a" + "0" * 60},
+    )
+    row = by_name(run_checks(cfg, probe))["update"]
+    assert row.status == "ok" and "2026.11.3" in row.detail
+    assert probe.urls == [ENGINE_URL]
+
+
+def test_the_update_row_asks_the_feed_on_the_doctors_three_second_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hung feed host cannot stall `task doctor`: the row shares RealProbe's fetch budget."""
+    import httpx
+
+    from airlie.doctor import RealProbe
+
+    seen: dict[str, object] = {}
+
+    def hang(url: str, **kwargs: object) -> httpx.Response:
+        seen[url] = kwargs.get("timeout")
+        raise httpx.ConnectTimeout("timed out")
+
+    monkeypatch.setattr(httpx, "get", hang)
+    cfg = update_cfg(tmp_path, {"kind": "channel_pointer", "base_url": MIRROR_BASE})
+    row = by_name(run_checks(cfg, RealProbe()))["update"]
+    assert row.status == "warn" and "got no answer" in row.detail
+    assert seen[POINTER] == 3.0

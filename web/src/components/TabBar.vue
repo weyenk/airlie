@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { TABS } from "./tabs";
 import { filterUpdateTab } from "@/lib/updateGating";
@@ -6,7 +7,9 @@ import { useSessionStore } from "@/stores/session";
 
 const route = useRoute();
 const session = useSessionStore();
-const visibleTabs = filterUpdateTab(TABS, session.me);
+// computed, not a one-shot const: main.ts mounts before the router guard learns who we are,
+// so below 640px — where this bar is the only nav — a frozen list would drop Update forever.
+const visibleTabs = computed(() => filterUpdateTab(TABS, session.me));
 </script>
 
 <template>

@@ -11,6 +11,37 @@ Nothing in `/v1` calls Portainer, Kubernetes, or a docker socket (`src/airlie/up
 header comment; `serve/app.py` ~730–735). The operator or their GitOps tooling
 changes the digest in a declarative manifest, and their platform applies it.
 
+## The two digests, and which one goes in your manifest
+
+The release image is built in two pushes because an image cannot contain its
+own manifest digest (`.github/workflows/pipeline.yml` release job,
+`ops/release/Containerfile`). Both digests are published in `release.json`, and
+they answer different questions:
+
+| Value | What it is | Where it belongs |
+| --- | --- | --- |
+| `image.pull_digest` | the registry digest of `<repo>:<tag>` — the image you actually pull | **your manifest's `image: …@sha256:<pull_digest>`** |
+| `image.digest` | the digest baked into `/etc/airlie/image-digest`, which the running container self-reports | compared by the drift table; never pinned in a manifest |
+
+They are different values for one release, and neither can be computed from the
+other: the container can state its own `image.digest` but never its registry
+digest, and the registry knows the pull digest but nothing the container says.
+
+**Pin the pull digest.** Pinning `image.digest` deploys the *pre-bake* build,
+whose digest file is empty, so the container reports nothing about itself and
+the panel can never compare it with the channel — the drift state sticks at
+`unknown` for as long as that pod runs.
+
+### Releases without a pull digest
+
+A `release.json` published before `pull_digest` existed carries only
+`image.digest`. `manifest_digest` then falls back to that value and the panel
+recommends it, because the feed has nothing better to offer; following it lands
+in the `unknown` state above. Re-render the release from the pushed image (see
+"Air-gap and pinned mirrors") once its registry digest is readable, or pin by
+reading the tag yourself: `docker buildx imagetools inspect <repo>:<tag>`
+reports exactly the `pull_digest` value.
+
 ## The five steps
 
 ### Step 1 — Panel / CLI shows `behind` + target digest + breaking
@@ -19,8 +50,11 @@ Run the check (from the panel's "Check now" button, or `airlie update check`)
 until the drift state is `behind`. The response carries:
 
 - **Target digest** (`manifest_digest` on the drift object) — exactly what to
-  pin. It is a `sha256:<64-hex>` string from the channel pointer's release
-  document (`release.json`'s `image.digest`). (`src/airlie/update/drift.py` ~75–80)
+  pin. With no `desired` recorded it is the release document's
+  `image.pull_digest`, the registry's digest for the image tag; a recorded
+  `desired` is reported in its place (`src/airlie/update/drift.py` `classify`).
+  See "The two digests" above: `image.digest`, in the same document, is a
+  different value and not the one to pin.
 - **Breaking / `schema_epoch`:** whether the target release has
   `breaking: true` or a higher `schema_epoch` than what you are running. These
   must be noted in your change ticket.
@@ -29,13 +63,21 @@ until the drift state is `behind`. The response carries:
 
 In the admin panel, click "Set desired digest" and enter the target
 `sha256:<hex>`. This writes a row to the local SQLite ledger — it does not
-redeploy anything. The benefit: after you have deployed the pinned digest, a
-channel that moves ahead reports `requested` (you are running what you asked for)
-instead of `behind`. Before deploy, while the new image is yet to be pulled,
-the panel reports `behind` (running != desired) — the pin prevents that from
-ever degrading to a stale `behind` once deployed, because row 3 of the drift
-classifier (`desired is not None and running == desired` → `requested`) always
-wins over row 4 (`behind`).
+redeploy anything. Record the pull digest you are about to deploy, so the ledger
+names the same build your manifest will. Before deploy, while the new image is
+yet to be pulled, the panel reports `behind` (running != desired), and after
+your platform reconciles it reports `current`.
+
+What `desired` does *not* do is hold the `requested` state for a pull-digest
+pin. Row 3 of the drift classifier fires on `desired == running`, and the
+running digest is the container's self-report (`image.digest`) — a value that is
+never the registry digest you pinned (that is the whole reason the build is two
+pushes). So a pull-digest pin reads `current` while the channel still points at
+that release, and `behind` once the channel moves ahead of it. If you want the
+hold that says "I have decided to stay on this build, stop calling it behind",
+record the release's `image.digest` instead — the one value this deployment can
+confirm it is running. Both are accepted pins (step 2's PUT validates against
+the last-good release's two digests plus what is running).
 
 The CLI equivalent:
 
@@ -45,8 +87,9 @@ curl -X PUT https://your.airlie.example.com/v1/admin/update/desired \
   -d '{"digest": "sha256:abcdef..."}'
 ```
 
-The API validates that the digest was published (on last-good or running) and
-rejects unknown values with HTTP 400 (`src/airlie/update/api.py` ~53–60).
+The API validates the digest against what the last-good release publishes (both
+of its digests) and what is running, and rejects anything else with HTTP 400
+(`src/airlie/update/api.py` `_known_digests`).
 
 This step is optional but recommended — it decouples awareness ("we should
 update") from action (the manifest bump). If you skip it, the panel reports
@@ -54,15 +97,18 @@ update") from action (the manifest bump). If you skip it, the panel reports
 
 ### Step 3 — Bump the digest in your declarative manifest
 
-Change `image: <registry>/airlie@sha256:<target>` in your declarative manifest.
+Change `image: <registry>/airlie@sha256:<target>` in your declarative manifest,
+where `<target>` is the **pull digest** (`release.json`'s `image.pull_digest`,
+the `manifest_digest` the panel showed you in step 1). Not `image.digest`: that
+one pulls the pre-bake build (see "The two digests").
 
 Example for a Docker Compose / Portainer git-backed stack:
 
 ```yaml
 services:
   airlie:
-    image: ghcr.io/<org>/airlie@sha256:<target>  # bump from <old-sha> to <target>
-    imagePullPolicy: IfNotPresent                  # required; see below
+    image: ghcr.io/<org>/airlie@sha256:<pull-digest>  # bump from <old> to <new>
+    imagePullPolicy: IfNotPresent                     # required; see below
 ```
 
 Or for Kubernetes (the Helm values or CRD your platform manages):
@@ -73,8 +119,8 @@ spec:
     spec:
       containers:
         - name: airlie
-          image: ghcr.io/<org>/airlie@sha256:<target>  # bumped
-          imagePullPolicy: IfNotPresent                 # required
+          image: ghcr.io/<org>/airlie@sha256:<pull-digest>  # bumped
+          imagePullPolicy: IfNotPresent                     # required
 ```
 
 **`imagePullPolicy: IfNotPresent` is important.** Never use `Always`: on a
@@ -106,30 +152,86 @@ pull request) handles this step. airlie does not participate.
 
 After the new version boots, the next ticker cycle (default 86400 seconds)
 or a manual `airlie update check` re-reads the channel, and the panel reports
-drift = `current`. The desired digest matches what is running — intent is met.
+drift = `current`.
 
-If you set a desired pin in step 2, the panel transitions directly to
-`current` (desired == running, feed confirms). If you skipped step 2, it goes
-through `current` once the feed answers match your now-running digest.
+Read `current` for what it actually checked: the container's self-reported
+digest against the digest the channel advertises as its self-report
+(`image.digest`). It never compares your manifest's pull pin — no process inside
+the image can know that value. Getting `current` here is the confirmation that
+you pinned the right build: had you pinned `image.digest` instead, you would be
+running the pre-bake image and this line would read `unknown`.
+
+A `desired` pin from step 2 does not change this answer. It changes what you see
+later: a self-report pin holds `requested` when the channel moves ahead or the
+feed goes down (spec §C row 3), while a pull-digest pin holds nothing, so the
+row below it reports `behind` as soon as the channel points somewhere newer.
 
 ## Air-gap and pinned mirrors
 
 For air-gapped deployments (no egress to the public registry), use
-`feed: kind: pinned` with a local path (`update.feed.path`) or explicit
-version + digest. The panel reports `pinned @ <digest>` when the feed
-answers but does not imply agreement with upstream.
+`feed: kind: pinned` with `update.feed.path` — a **directory**, not a manifest
+file — or explicit version + digest. The panel reports `pinned @ <digest>`
+when the feed answers but does not imply agreement with upstream.
 
 To fill a pinned mirror after a new release:
 
 1. Run `scripts/release_feed.py render-release` and
    `render-pointer` (invoked by the CI release job) against your local
-   build. (`scripts/release_feed.py` — pure renderer, no network)
-2. Place the resulting `release.json` and channel pointer under your pinned
-   mirror's path (or run a local copy of the script against your build).
+   build. (`scripts/release_feed.py` — pure renderer, no network) Pass
+   `--image-digest` the digest you baked into the image and
+   `--image-pull-digest` the registry digest of the tag you mirrored —
+   `docker buildx imagetools inspect <repo>:<tag>` reads it back. Omit the
+   latter only if the mirror has no registry push to name, and the operators
+   reading it then have nothing to pin.
+2. Place the resulting files under that directory with the names the feed
+   reader looks for: the pointer at
+   `<update.feed.path>/channels/<channel>.json` (`channel` is
+   `update.feed.channel`, `stable` by default), and the release document
+   where that pointer's `release_json` says, resolved under
+   `<update.feed.path>` — a document outside the directory is refused.
+   (`src/airlie/update/feed.py` `_read_pinned_documents`.)
 
 The release image is built by `.github/workflows/pipeline.yml` (release job)
 and baked with `ARG IMAGE_DIGEST` via a two-push build into
-`/etc/airlie/image-digest`. (`ops/release/Containerfile`)
+`/etc/airlie/image-digest`: the first push's digest is what the image
+self-reports (`release.json`'s `image.digest`), and the second push is the image
+you deploy, whose registry digest the same document publishes as
+`image.pull_digest`. (`ops/release/Containerfile`)
+
+## Reaching the image over a published port
+
+The image starts `airlie serve --host 0.0.0.0` on port 8090. The CLI's own
+default stays `127.0.0.1`: a container has its own network namespace, so
+loopback inside it is reachable by nothing outside it, and an image that bound
+the default refused every connection while its logs looked normal.
+
+Binding a routable address changes who can **connect**, never who is
+**trusted** (`src/airlie/auth/principal.py`). Peers arrive with their own
+address and must carry an API key or a session cookie, and the fresh-install
+bootstrap admin is still only the machine's own direct connection.
+
+If anything sits in front of airlie — nginx, Traefik or HAProxy in the same
+container or pod, a mesh sidecar, or `tailscale serve` running in its own
+container — list that proxy's address or CIDR in `auth.trusted_proxies`
+(for example `[127.0.0.1]` or `[172.17.0.2]`). Only from a listed peer are
+`X-Forwarded-For`, `X-Forwarded-Proto` and `Tailscale-User-Login` read. Left at
+its empty default no proxy is trusted, so one you did not declare can assert
+neither a client identity nor a protocol.
+
+Two consequences to accept before publishing the port:
+
+1. Declaring a **loopback** address there also means loopback stops counting as
+   the machine itself, so a fresh install no longer bootstraps its first admin —
+   create one, or set an API key, first.
+2. Reaching airlie through `tailscale serve` on loopback needs
+   `auth.tailscale: true`, which is what makes the headers it forwards count.
+   Without it `X-Forwarded-Proto` is ignored and the session cookie is not
+   marked `Secure`.
+
+Finish invite and API-key setup before you expose the port. Until you do, the
+first admin has to be created where airlie is still only loopback —
+`docker exec` into the container, for instance, where a plain local request is
+still the machine itself.
 
 ## Licensing gate reminder
 

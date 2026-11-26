@@ -23,6 +23,7 @@ function buildStatus(overrides: Partial<UpdateStatus> = {}): UpdateStatus {
     running: { version: "0.2.1", git_sha: null, image_digest: "sha256:running111", schema_epoch: 42 },
     available: [],
     feed_unavailable: false,
+    ledger_unreadable: false,
     desired_digest: null,
     channel: null,
     last_check: null,
@@ -85,9 +86,9 @@ test("drift behind: shows recommended digest, breaking / state_migration flags",
   const status = buildStatus({ drift: buildDrift({ drift: "behind", feed_ok: true, breaking: true, state_migration: true }) });
   status.feed.kind = "channel_pointer";
   (status as UpdateStatus).available = [
-    { version: "0.3.0", git_sha: null, released_at: 1800_001_000, digest: "sha256:channel99", breaking: true, state_migration: true },
+    { version: "0.3.0", git_sha: null, released_at: 1800_001_000, digest: "sha256:channel99", pull_digest: null, breaking: true, state_migration: true },
   ];
-  (status as UpdateStatus).channel = { version: "0.3.0", git_sha: null, released_at: 1800_001_000, digest: "sha256:channel99", breaking: true, state_migration: true };
+  (status as UpdateStatus).channel = { version: "0.3.0", git_sha: null, released_at: 1800_001_000, digest: "sha256:channel99", pull_digest: null, breaking: true, state_migration: true };
   const w = await open(status);
   expect(w.text()).toContain("A newer release is on the channel. Pin this digest in your manifest, then let your platform recreate the workload.");
   expect(w.text()).toContain("sha256:channel99");
@@ -99,18 +100,37 @@ test("drift behind without manifest_digest shows the recommended digest (channel
   const status = buildStatus({ drift: buildDrift({ drift: "behind", feed_ok: true }) });
   status.feed.kind = "channel_pointer";
   (status as UpdateStatus).available = [
-    { version: "0.3.0", git_sha: null, released_at: 1800_001_000, digest: "sha256:channel99", breaking: false, state_migration: false },
+    { version: "0.3.0", git_sha: null, released_at: 1800_001_000, digest: "sha256:channel99", pull_digest: null, breaking: false, state_migration: false },
   ];
-  (status as UpdateStatus).channel = { version: "0.3.0", git_sha: null, released_at: 1800_001_000, digest: "sha256:channel99", breaking: false, state_migration: false };
+  (status as UpdateStatus).channel = { version: "0.3.0", git_sha: null, released_at: 1800_001_000, digest: "sha256:channel99", pull_digest: null, breaking: false, state_migration: false };
   const w = await open(status);
   expect(w.text()).toContain("sha256:channel99");
 });
 
-test("drift requested: appends the desired digest to the sentence", async () => {
-  const status = buildStatus({ drift: buildDrift({ drift: "requested", feed_ok: true }) });
+test("drift requested: the pin is already in effect and its digest is not offered as a new pin", async () => {
+  const status = buildStatus({
+    drift: buildDrift({ drift: "requested", feed_ok: true, running_digest: "sha256:pinned88", desired_digest: "sha256:pinned88", manifest_digest: "sha256:pinned88" }),
+  });
   status.desired_digest = "sha256:pinned88";
   const w = await open(status);
-  expect(w.text()).toContain("Desired digest is recorded; this host has not reconciled to it yet. Bump the image pin in your manifest to: sha256:pinned88");
+  expect(w.text()).toContain("Your pin is in effect — this deployment already runs the digest you recorded, so there is nothing to bump. Your manifest should keep pinning: sha256:pinned88");
+  // the requested digest is what the host already runs, so it must not be offered as something to pin
+  expect(w.text()).not.toContain("Manifest digest to pin:");
+  expect(w.text()).toContain("Desired digest: sha256:pinned88");
+});
+
+test("drift current on a down feed: no all-clear sentence next to 'Feed unavailable'", async () => {
+  // drift.py's row "not feed_ok and running_digest is known" yields current. The panel holds the
+  // feed answer in the same payload, so the sentence has to say the window is unverifiable.
+  const status = buildStatus({
+    drift: buildDrift({ drift: "current", feed_ok: false, running_digest: "sha256:running111", channel_digest: "sha256:stale999" }),
+  });
+  status.feed_unavailable = true;
+  status.last_check = { at: "2026-11-25T18:00:00+00:00", ok: false, reason: "unreachable", detail: null };
+  const w = await open(status);
+  expect(w.text()).toContain("Feed unavailable — unreachable");
+  expect(w.text()).toContain("Can't verify right now — the channel feed is down, so this deployment's digest was not compared with what the channel points to. This is not a claim that it is up to date.");
+  expect(w.text()).not.toContain("matches what it should be running");
 });
 
 test("drift unknown (feed ok, but no comparison possible)", async () => {
@@ -140,7 +160,7 @@ test("pinned feed + current drift: shows the pinned label", async () => {
 test("feed_unavailable renders the feed-error sentence with reason", async () => {
   const status = buildStatus({ drift: buildDrift({ drift: "current", feed_ok: false }) });
   status.feed_unavailable = true;
-  (status as UpdateStatus).last_check = { at: "2026-11-25T18:00:00+00:00", ok: false, reason: "unreachable" };
+  (status as UpdateStatus).last_check = { at: "2026-11-25T18:00:00+00:00", ok: false, reason: "unreachable", detail: null };
   const w = await open(status);
   expect(w.text()).toContain("Feed unavailable — unreachable");
 });
@@ -198,8 +218,8 @@ test("no running version: does not render the 'This deployment' section", async 
 test("available releases shows version, digest and breaking/state_migration badges", async () => {
   const status = buildStatus({
     available: [
-      { version: "0.3.0", git_sha: null, released_at: 1800_001_000, digest: "sha256:channel99", breaking: true, state_migration: false },
-      { version: "0.2.5", git_sha: null, released_at: 1800_000_500, digest: "sha256:channel88", breaking: false, state_migration: true },
+      { version: "0.3.0", git_sha: null, released_at: 1800_001_000, digest: "sha256:channel99", pull_digest: null, breaking: true, state_migration: false },
+      { version: "0.2.5", git_sha: null, released_at: 1800_000_500, digest: "sha256:channel88", pull_digest: null, breaking: false, state_migration: true },
     ],
   });
   status.feed.kind = "channel_pointer";
@@ -243,6 +263,39 @@ test("admin with existing desired_digest: shows the 'Desired digest' section ins
   expect(w.html()).not.toContain("Set desired digest");
   // Instead, the 'Desired' section with a Clear button should appear
   expect(w.html()).toContain("Desired digest");
+});
+
+// ---- Clear adopts the DELETE response's fresh status ----
+
+test("Clear: the fresh status drives the panel, so the cleared digest is gone and drift re-classifies", async () => {
+  const before = buildStatus({
+    drift: buildDrift({ drift: "requested", feed_ok: true, running_digest: "sha256:pinned88", desired_digest: "sha256:pinned88", manifest_digest: "sha256:pinned88" }),
+    desired_digest: "sha256:pinned88",
+  });
+  // what the server answers the DELETE with: no pin left, so the channel pointer decides again
+  const after = buildStatus({
+    drift: buildDrift({ drift: "current", feed_ok: true, running_digest: "sha256:running111", desired_digest: null, channel_digest: "sha256:running111", manifest_digest: "sha256:running111" }),
+    desired_digest: null,
+  });
+  api.getUpdate.mockResolvedValue(before);
+  api.clearDesired.mockResolvedValue(after);
+  useSessionStore().me = { user_id: "u1", name: "Noah", role: "admin" as const, via: "session" };
+  const w = mount(UpdateScreen, { attachTo: document.body });
+  await flushPromises();
+  expect(w.text()).toContain("Desired digest: sha256:pinned88");
+
+  const clearBtn = w.findAll("button").find((b) => b.text().trim() === "Clear");
+  expect(clearBtn).toBeDefined();
+  await clearBtn!.trigger("click");
+  await flushPromises();
+
+  expect(api.clearDesired).toHaveBeenCalledTimes(1);
+  // the response drives the panel: the cleared digest is nowhere on screen (it must not come back
+  // under "Manifest digest to pin"), the requested sentence is gone, the fresh one is shown
+  expect(w.text()).not.toContain("sha256:pinned88");
+  expect(w.text()).not.toContain("Your pin is in effect");
+  expect(w.text()).toContain("This deployment matches what it should be running.");
+  expect(w.text()).toContain("Set desired digest");
 });
 
 // ---- No Update Now button in any state ----
@@ -343,7 +396,7 @@ test("behind with schema_epoch_feed: shows the epoch feed", async () => {
 test("Check now button triggers a feed check, not a refetch", async () => {
   const status = buildStatus();
   api.getUpdate.mockResolvedValue(status);
-  (api.checkNow as ReturnType<typeof vi.fn>).mockResolvedValue(buildStatus({ last_check: { at: "2026-11-25T19:00:00+00:00", ok: true, reason: null } }) as UpdateStatus);
+  (api.checkNow as ReturnType<typeof vi.fn>).mockResolvedValue(buildStatus({ last_check: { at: "2026-11-25T19:00:00+00:00", ok: true, reason: null, detail: null } }) as UpdateStatus);
   useSessionStore().me = { user_id: "u1", name: "Noah", role: "admin" as const, via: "session" };
   const w = mount(UpdateScreen, { attachTo: document.body });
   await flushPromises();
@@ -412,4 +465,39 @@ test("update enabled but admin member: 403 does not show 'not configured'", asyn
   // Before the fix, chain C's v-else would also match (status is undefined),
   // producing a confusing double message.
   expect(w.text()).not.toContain("Updates are not configured on this deployment.");
+});
+
+test("an unavailable feed names the reason AND the detail that says what refused", async () => {
+  // The reason is the key the row is filed under; on its own it sends the operator to read the
+  // code to find out which path was wrong, so the detail the reader already built has to show.
+  const status = buildStatus({ drift: buildDrift({ drift: "unknown" }) });
+  status.feed.kind = "channel_pointer";
+  status.feed_unavailable = true;
+  status.last_check = {
+    at: "2026-11-25T18:00:00+00:00",
+    ok: false,
+    reason: "unsupported_shape",
+    detail: "/mirrors/a/channels/stable.json is not a file",
+  };
+
+  const w = await open(status);
+
+  expect(w.text()).toContain("Feed unavailable — unsupported_shape: /mirrors/a/channels/stable.json is not a file");
+});
+
+test("an unreadable ledger gets its own sentence and does not blame the feed", async () => {
+  // Empty history either way, and only one of them means the record was lost — the distinction the
+  // store exists to keep, so the panel has to render it rather than a generic feed error.
+  const status = buildStatus({
+    drift: buildDrift({ drift: "unknown" }),
+    feed_unavailable: true,
+    ledger_unreadable: true,
+  });
+  status.feed.kind = "channel_pointer";
+
+  const w = await open(status);
+
+  expect(w.text()).toContain("Update history could not be read");
+  expect(w.text()).toContain("not the same as an install that has never checked");
+  expect(w.text()).not.toContain("Feed unavailable");
 });

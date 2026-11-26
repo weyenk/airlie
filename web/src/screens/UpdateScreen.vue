@@ -11,7 +11,7 @@ import ErrorBanner from "@/components/ErrorBanner.vue";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useSessionStore } from "@/stores/session";
-import { driftSentence, feedErrorSentence, pinnedLabel } from "@/lib/update";
+import { driftSentence, feedErrorSentence, LEDGER_UNREADABLE_SENTENCE, pinnedLabel } from "@/lib/update";
 
 const session = useSessionStore();
 function isAdmin(): boolean {
@@ -48,9 +48,9 @@ async function loadUpdate(): Promise<void> {
 async function clearDesiredDigest(): Promise<void> {
   busy.value = true;
   try {
-    await clearDesired();
-    const s = status.value!;
-    status.value = { ...s, desired_digest: null };
+    // the response is the fresh truth: it re-classifies drift too, so the panel never keeps
+    // telling the operator to pin the digest they just cleared
+    status.value = await clearDesired();
   } catch (e) {
     errorText.value = e instanceof ApiError ? e.message : (e as Error).message;
   } finally {
@@ -156,14 +156,19 @@ async function doCheckNow(): Promise<void> {
               {{ pinnedLabel(status.drift.manifest_digest || "—") }}
             </p>
 
-            <!-- Feed-unavailable warning -->
-            <p v-if="status.feed_unavailable" class="m-0 text-warn">
-              {{ feedErrorSentence(status.last_check?.reason) }}
+            <!-- The ledger itself could not be read. Its own sentence, and it replaces the feed one:
+                 with no history the feed answer is simply unknown, so "Feed unavailable" would blame
+                 the wrong thing while the record is what is missing. -->
+            <p v-if="status.ledger_unreadable" class="m-0 text-warn">{{ LEDGER_UNREADABLE_SENTENCE }}</p>
+
+            <!-- Feed-unavailable warning: the reason keys the row, the detail names what refused -->
+            <p v-if="status.feed_unavailable && !status.ledger_unreadable" class="m-0 text-warn">
+              {{ feedErrorSentence(status.last_check?.reason, status.last_check?.detail) }}
             </p>
 
-            <!-- Drift message -->
+            <!-- Drift message (feed_ok keeps "current" honest while the feed is down) -->
             <div class="rounded-lg bg-track/60 px-4 py-3 text-[13px] leading-relaxed">
-              <p class="m-0">{{ driftSentence(status.drift.drift, status.desired_digest) }}</p>
+              <p class="m-0">{{ driftSentence(status.drift.drift, status.desired_digest, status.drift.feed_ok) }}</p>
             </div>
 
             <!-- Behind: breaking / state_migration flags from drift.* -->
@@ -181,8 +186,10 @@ async function doCheckNow(): Promise<void> {
               </div>
             </template>
 
-            <!-- manifest_digest for the operator to pin (behind or unknown) -->
-            <div v-if="status.drift && status.drift.manifest_digest" class="flex items-center gap-2 text-xs">
+            <!-- manifest_digest for the operator to pin (behind or unknown). Never for
+                 "requested": there the digest is the one already running, and the Desired
+                 digest row below is what the manifest already says. -->
+            <div v-if="status.drift && status.drift.manifest_digest && status.drift.drift !== 'requested'" class="flex items-center gap-2 text-xs">
               <span class="text-muted-foreground">Manifest digest to pin:</span>
               <code class="rounded bg-card px-2 py-0.5 font-mono">{{ status.drift.manifest_digest }}</code>
             </div>

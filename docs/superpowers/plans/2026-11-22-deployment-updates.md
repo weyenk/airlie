@@ -464,9 +464,15 @@ EOF
 | Drift | Sentence |
 | --- | --- |
 | `current` | `This deployment matches what it should be running.` |
+| `current` with `feed_ok: false` | `Can't verify right now — the channel feed is down, so this deployment's digest was not compared with what the channel points to. This is not a claim that it is up to date.` |
 | `behind` | `A newer release is on the channel. Pin this digest in your manifest, then let your platform recreate the workload.` |
-| `requested` | `Desired digest is recorded; this host has not reconciled to it yet. Bump the image pin in your manifest to:` + digest |
+| `requested` | `Your pin is in effect — this deployment already runs the digest you recorded, so there is nothing to bump. Your manifest should keep pinning: ` + digest |
 | `unknown` | `Could not tell — feed error, missing digest bake, or no successful check yet.` |
+
+`requested` means the recorded desired digest equals the digest the host reports running, so the
+sentence never tells anyone to bump a pin to what is already running. `current` alone is not a
+claim of freshness: with the channel feed down the running digest was never compared with the
+channel, which is why that pair gets its own sentence rather than the all-clear one.
 
 Pinned-feed label (when `feed.kind === "pinned"` and drift is `current`): `Pinned @ <digest> — not claiming agreement with upstream stable/latest.`
 

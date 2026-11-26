@@ -10,10 +10,14 @@
 # The digest bake is two pushes (the release job, not this file): an image cannot state its own
 # manifest digest — a hash fixed point — so the pre-bake build is pushed first and its digest D1 read
 # from the registry, then this file is rebuilt with ARG IMAGE_DIGEST set to D1's full sha256:<hex> and
-# pushed to the official tag. The feed advertises D1: a deployment that runs the baked image
-# self-reports D1 and reads "current"; one pinned at @sha256:D1 runs the pre-bake build, which reports
-# no digest and reads "unknown" — honest. An empty ARG (the pre-bake build) writes an empty file,
-# which airlie.update.identity.read_image_digest reports as no digest.
+# pushed to the official tag, where the registry gives that build its own digest D2. Both are
+# published, because they answer different questions (scripts/release_feed.py, airlie.update.feed.
+# ImageRef): the feed's image.digest is D1, the only value a running container can be compared with,
+# and its image.pull_digest is D2, the value a declarative manifest must pin. So: run the official tag
+# (or pin @sha256:D2) and the container self-reports D1 and reads "current"; pin @sha256:D1 and you
+# run the pre-bake build, which reports no digest and reads "unknown" — honest, and not what the
+# runbook asks anyone to do. An empty ARG (the pre-bake build) writes an empty file, which
+# airlie.update.identity.read_image_digest reports as no digest.
 
 # The web bundle, built inside the image: src/airlie/serve/web_next is gitignored, so a wheel alone
 # could not serve the UI (app.py's NEXT_DIR is Path(__file__).parent / "web_next"). node at the major
@@ -58,9 +62,16 @@ RUN uv pip install --python /opt/venv/bin/python --no-deps /tmp/wheel/*.whl && r
 COPY --from=web /src/airlie/serve/web_next /opt/venv/lib/python3.12/site-packages/airlie/serve/web_next
 
 # The digest the release job baked in (§A): empty for the pre-bake build, D1's full sha256:<hex> for
-# the final one. Written verbatim — read_image_digest strips and adds no prefix, so an empty file
-# reports no digest (drift "unknown"), never a guess. Root-owned and read-only for the server: the
-# process reads it once at boot (airlie.update.identity.running_release) and never writes.
+# the final one. Written verbatim, so the file holds exactly what the image is asked to state about
+# itself. airlie.update.identity.read_image_digest accepts only the sha256:<64 lowercase hex> form
+# this writes and adds no prefix to it; anything else — a bare hex string, a truncated value, a tag,
+# this empty file on the pre-bake build — reads as no digest, which is what drift already knows how
+# to say (§C row 6) and never a guess. Rejecting rather than passing a wrong-shaped value through is
+# the point: drift byte-compares this against the digest the channel advertises as its self-report, and
+# it is also the one digest a deployment can record as the hold that keeps a deliberate pin reading
+# "requested" (airlie.update.api._known_digests).
+# Root-owned and read-only for the server: the process reads it once at boot
+# (airlie.update.identity.running_release) and never writes.
 ARG IMAGE_DIGEST=""
 RUN mkdir -p /etc/airlie \
     && printf '%s\n' "$IMAGE_DIGEST" > /etc/airlie/image-digest \
@@ -80,4 +91,11 @@ LABEL org.opencontainers.image.title="airlie" \
 RUN useradd --create-home --uid 1000 airlie
 USER airlie
 
-CMD ["airlie", "serve"]
+# Reachable by default. A container gets its own network namespace, so the CLI's loopback default
+# made this image unreachable through a published port or a pod network: connection refused with
+# perfectly normal-looking logs. Binding a routable address changes who can CONNECT, never who is
+# TRUSTED — peers arrive with their own address and must carry an API key or a session cookie, and
+# the fresh-install bootstrap admin stays the machine's own direct connection (see src/airlie/auth).
+# Anything sitting in front of airlie must be named in auth.trusted_proxies or its forwarded headers
+# are ignored; declaring a loopback proxy there also means loopback stops counting as the machine.
+CMD ["airlie", "serve", "--host", "0.0.0.0"]

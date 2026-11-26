@@ -59,13 +59,17 @@ def _store(tmp_path: Path) -> store_module.UpdateStore:
     return store_module.UpdateStore(tmp_path / "update.sqlite")
 
 
-def _release(version: str, digest: str = "c" * 64) -> ReleaseJson:
-    """A minimal release document. The panel only reads what release_summary gives it."""
+def _release(version: str, digest: str = "c" * 64, pull_digest: str | None = None) -> ReleaseJson:
+    """A minimal release document. The panel only reads what release_summary gives it.
+
+    `pull_digest` stays None unless a test asks for it: the projection has to answer correctly for a
+    release published before that digest existed, and half the tests here are that case by default.
+    """
     return ReleaseJson(
         version=version,
         released_at="2026-11-24T00:00:00Z",
         git_sha="0" * 40,
-        image=ImageRef(repo="r", tag=version, digest=digest),
+        image=ImageRef(repo="r", tag=version, digest=digest, pull_digest=pull_digest),
         notes="",
         breaking=False,
         state_migration=False,
@@ -148,8 +152,14 @@ def test_build_status_fields(tmp_path: Path) -> None:
         assert body["channel"]["version"] == "1.0.0"
         assert body["channel"]["digest"] == "c" * 64
         assert body["available"] == [body["channel"]]
-        assert body["last_check"] == {"at": "2026-11-24T00:00:00Z", "ok": True, "reason": None}
+        assert body["last_check"] == {
+            "at": "2026-11-24T00:00:00Z",
+            "ok": True,
+            "reason": None,
+            "detail": None,
+        }
         assert body["feed_unavailable"] is False
+        assert body["ledger_unreadable"] is False
     finally:
         store.close()
 
@@ -231,5 +241,59 @@ def test_build_status_never_opens_a_transport(tmp_path: Path, monkeypatch: pytes
         )
         body: dict[str, Any] = st.build_status(cfg, store, _running())
         assert body["enabled"] is True
+    finally:
+        store.close()
+
+
+def test_the_projection_offers_the_pull_digest_as_the_one_to_pin(tmp_path: Path) -> None:
+    """The release's two digests reach the panel through the ledger, each in its own slot.
+
+    `channel.pull_digest` is the string the runbook tells an operator to copy into a manifest, and
+    `drift.manifest_digest` is that same string — the panel's "pin this" line has to be a value the
+    registry will serve for the tag. `drift.channel_digest` and `channel.digest` stay the
+    self-reported one, because that is what the running container can be compared with: the deployment
+    below runs the image whose self-report matches the channel, and reads `current` even though the
+    two digests differ.
+    """
+    cfg = _cfg(tmp_path)
+    store = _store(tmp_path)
+    self_reported = "c" * 64
+    pull = "d" * 64
+    try:
+        store.record_check(
+            _outcome(
+                _release("1.0.0", self_reported, pull_digest=pull),
+                _pointer("1.0.0", self_reported),
+                "e1",
+                "2026-11-24T00:00:00Z",
+            )
+        )
+        running = identity_module.RunningRelease(
+            version="1.0.0", git_sha=None, image_digest=self_reported, schema_epoch=1
+        )
+        body = st.build_status(cfg, store, running)
+        assert body["channel"]["digest"] == self_reported
+        assert body["channel"]["pull_digest"] == pull
+        assert body["available"][0]["pull_digest"] == pull
+        assert body["drift"]["manifest_digest"] == pull
+        assert body["drift"]["channel_digest"] == self_reported
+        assert body["drift"]["drift"] == "current"
+    finally:
+        store.close()
+
+
+def test_a_release_without_a_pull_digest_still_offers_something(tmp_path: Path) -> None:
+    """A release published before the pull digest existed has one digest and the panel must not answer
+    `manifest_digest: null` — an operator with no recommendation pins nothing."""
+    cfg = _cfg(tmp_path)
+    store = _store(tmp_path)
+    self_reported = "c" * 64
+    try:
+        store.record_check(
+            _outcome(_release("1.0.0", self_reported), _pointer("1.0.0", self_reported), "e1", "t")
+        )
+        body = st.build_status(cfg, store, _running())
+        assert body["channel"]["pull_digest"] is None
+        assert body["drift"]["manifest_digest"] == self_reported
     finally:
         store.close()

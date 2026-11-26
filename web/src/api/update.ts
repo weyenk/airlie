@@ -11,13 +11,16 @@ export type ReleaseSummary = {
   git_sha: string | null;
   released_at: number;
   digest: string | null;
+  // The registry digest of the same release's repo:tag — the value a manifest pins. Null for a
+  // release published before it was advertised, when the self-report above is all there is.
+  pull_digest: string | null;
   breaking: boolean;
   state_migration: boolean;
 };
 
 export type FeedInfo = { kind: string; channel: string; base_url: string | null };
 
-export type CheckResult = { at: string; ok: boolean; reason: string | null };
+export type CheckResult = { at: string; ok: boolean; reason: string | null; detail: string | null };
 
 export type DriftInfo = {
   drift: "unknown" | "requested" | "current" | "behind";
@@ -38,6 +41,9 @@ export type UpdateStatus = {
   running: { version: string; git_sha: string | null; image_digest: string | null; schema_epoch: number } | null;
   available: ReleaseSummary[];
   feed_unavailable: boolean;
+  // The ledger itself could not be read — distinct from an install with no history, and the panel
+  // must not render the two the same way.
+  ledger_unreadable: boolean;
   desired_digest: string | null;
   channel: ReleaseSummary | null;
   last_check: CheckResult | null;

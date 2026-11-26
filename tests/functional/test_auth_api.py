@@ -14,7 +14,7 @@ from airlie.auth.store import AuthStore
 from airlie.serve.app import create_app
 from tests.support.auth_store import Clock
 from tests.support.serve import FakeUpstream, cfg
-from tests.unit.serve_helpers import TestClient
+from tests.unit.serve_helpers import LOOPBACK, TestClient
 from tests.unit.webauthn_helpers import SoftAuthenticator
 
 ORIGIN = "http://localhost:8090"
@@ -314,6 +314,7 @@ def test_configured_rp_id_and_origins_win_over_the_request(tmp_path: Path) -> No
 
 def test_the_cookie_is_secure_when_tailscale_serve_says_the_request_was_https(tmp_path: Path) -> None:
     s = Studio(tmp_path)
+    s.cfg.auth.tailscale = True  # the operator says the proxy on loopback is tailscale serve
     s.cfg.auth.rp_id = "studio.tail1234.ts.net"
     try:
         token = s.invite("Pat")
@@ -325,6 +326,35 @@ def test_the_cookie_is_secure_when_tailscale_serve_says_the_request_was_https(tm
         r = proxied.post("/v1/auth/register/verify", json={"invite": token, "credential": cred})
         assert r.status_code == 201, r.text
         assert "Secure" in r.headers["set-cookie"]
+    finally:
+        s.store.close()
+
+
+def _registers_over_a_proxy(s: Studio, client: tuple[str, int]) -> str:
+    """The set-cookie of a passkey registration whose request `X-Forwarded-Proto` says was https, sent
+    through `client` (the ceremony's routes are public, so this isolates the cookie's Secure flag)."""
+    token = s.invite("Pat")
+    proxied = TestClient(
+        s.app, base_url="http://studio.tail1234.ts.net", client=client, headers={"X-Forwarded-Proto": "https"}
+    )
+    o = proxied.post("/v1/auth/register/options", json={"invite": token}).json()
+    cred = SoftAuthenticator().create(o, "https://studio.tail1234.ts.net")
+    r = proxied.post("/v1/auth/register/verify", json={"invite": token, "credential": cred})
+    assert r.status_code == 201, r.text
+    return r.headers["set-cookie"]
+
+
+def test_x_forwarded_proto_is_a_protocol_claim_only_a_declared_proxy_makes(tmp_path: Path) -> None:
+    """Anyone may send X-Forwarded-Proto; only a peer `auth.trusted_proxies` names (or loopback with
+    `auth.tailscale` on) has it read. Marking the cookie Secure on a plain-http origin would drop the
+    session the person just won, so an undeclared peer's claim must stay inert."""
+    s = Studio(tmp_path)
+    s.cfg.auth.rp_id = "studio.tail1234.ts.net"
+    try:
+        assert "Secure" not in _registers_over_a_proxy(s, LOOPBACK)  # nothing declared: not https
+        assert "Secure" not in _registers_over_a_proxy(s, ELSEWHERE)  # a routable peer, undeclared
+        s.cfg.auth.trusted_proxies = ["10.0.0.5"]
+        assert "Secure" in _registers_over_a_proxy(s, ELSEWHERE)  # declared: its claim counts
     finally:
         s.store.close()
 

@@ -14,6 +14,7 @@ import yaml
 from typer.testing import CliRunner
 
 from airlie import cli
+from airlie.update.store import UpdateStore, update_store_path
 from tests.support.serve import cfg as base_cfg
 
 runner = CliRunner()
@@ -110,3 +111,18 @@ def test_check_records_the_pass_it_made(tmp_path: Path) -> None:
     assert body["ok"] is True
     assert body["reason"] is None
     assert body["checked_at"]
+    # stdout is the CLI vouching for itself, which is not evidence. What `check` is *for* is
+    # the row the panel, `status` and the ticker all read back, so open the ledger the config
+    # points at — `observability.state_dir`, the one path `update_store_path` allows — and read
+    # the row this pass wrote. A check that printed ok while storing nothing, or that wrote a
+    # scratch ledger beside the real one, passes above and fails here.
+    store = UpdateStore(update_store_path(tmp_path / "state"))
+    try:
+        row = store.last_check()
+    finally:
+        store.close()
+    assert row is not None, f"`update check` printed ok but left no row in {store.path}"
+    assert row.ok is True
+    assert row.reason is None
+    assert row.checked_at == body["checked_at"]
+    assert row.release is not None and row.release.version == "1.2.3"
