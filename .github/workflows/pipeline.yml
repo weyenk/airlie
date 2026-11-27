@@ -325,7 +325,7 @@ jobs:
         with:
           name: e2e-evidence
           path: test-results/
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
   journey:
     needs: [functional, contract, integration]

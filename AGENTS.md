@@ -41,4 +41,4 @@ uv run pytest -q -n auto --maxprocesses 8
 task web:gate
 ```
 
-Unit tests over 500 ms or on the real clock are quarantined in [`tests/unit/quarantine.toml`](tests/unit/quarantine.toml) and left out of that run; `task test:quarantine` runs only them (they must still pass). CI's unit job sets `AIRLIE_TEST_BUDGET_MS=500` and fails on a new test over it: make it fast, or list it there with a `slow:` or `clock:` reason.
+Unit tests over the budget or on the real clock are quarantined in [`tests/unit/quarantine.toml`](tests/unit/quarantine.toml) and left out of that run; `task test:quarantine` runs only them (they must still pass). The budget is opt-in: `tests/unit/conftest.py` only reports when `AIRLIE_TEST_BUDGET_MS` is set, and the gate commands above do not set it, so a slow test passes locally and fails in CI. CI's unit job sets `AIRLIE_TEST_BUDGET_MS=1000` ([`.github/workflows/pipeline.yml`](.github/workflows/pipeline.yml)) and fails on a new test over it: make it fast, or list it there with a `slow:` or `clock:` reason. To check locally before pushing, add the variable to the pytest run.

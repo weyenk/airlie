@@ -2,14 +2,24 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { createMemoryHistory, createRouter } from "vue-router";
 import { ApiError } from "@/api";
+import { invitedBy, invitedYou } from "@/lib/operatorCopy";
 import { useSessionStore } from "@/stores/session";
 import JoinScreen from "./JoinScreen.vue";
 
 const api = vi.hoisted(() => ({ peekInvite: vi.fn(), passkeyRegister: vi.fn(), passkeysSupported: vi.fn() }));
 vi.mock("@/api/auth", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/auth")>()), ...api }));
 
-async function open(token = "tok%2Fen") {
-  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ name: "Marcus", role: "member", via: "session" })));
+async function open(token = "tok%2Fen", operator?: string) {
+  // Answers per route: the copy read (`/v1/auth/operator`) must not swallow the session answer the store's
+  // `load` reads after a passkey is created. No `operator_label` is an older server, i.e. the fallback.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) =>
+      url === "/v1/auth/operator"
+        ? Response.json(operator === undefined ? {} : { operator_label: operator })
+        : Response.json({ name: "Marcus", role: "member", via: "session" }),
+    ),
+  );
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -37,12 +47,14 @@ afterEach(() => {
 });
 
 test("the invite is read from the path and names who it is for and who sent it", async () => {
-  const { w } = await open();
+  const { w } = await open(undefined, "Ada");
   expect(api.peekInvite).toHaveBeenCalledWith("tok/en"); // the path's token, decoded
   expect(w.get("h1").text()).toBe("You're invited");
   expect(w.text()).toContain("Marcus");
-  expect(w.text()).toContain("invited by Noah");
-  expect(w.text()).toContain("Noah invited you to airlie. Create a passkey to sign in here from now on.");
+  // "Ada", not the default: the screen must show the operator the server named, not a value it shares with
+  // the helper's own fallback. Both sides here read that configured label, so a drift in either is caught.
+  expect(w.text()).toContain(invitedBy("Ada"));
+  expect(w.text()).toContain(invitedYou("Ada"));
   expect((button(w).element as HTMLButtonElement).disabled).toBe(false);
   expect(w.get("a").text()).toBe("Sign in");
 });
@@ -67,7 +79,7 @@ test("an invite that is gone (410 on arrival) is the expired page", async () => 
   api.peekInvite.mockRejectedValue(new ApiError(410, "invite expired or already used"));
   const { w } = await open();
   expect(w.get("h1").text()).toBe("This link has expired");
-  expect(w.get("[role=alert]").text()).toBe("Invites work once and for a day. Ask Noah for a new one.");
+  expect(w.get("[role=alert]").text()).toBe("Invites work once and for a day. Ask your administrator for a new one.");
   expect(w.text()).toContain("Already have a passkey?");
   expect(button(w).exists()).toBe(false);
 });
@@ -83,7 +95,7 @@ test("an invite used up while the prompt was open is the expired page too", asyn
 test.each([
   [Object.assign(new Error("x"), { name: "NotAllowedError" }), null],
   [Object.assign(new Error("x"), { name: "InvalidStateError" }), "This device already has a passkey for airlie. Sign in with it instead."],
-  [new TypeError("Failed to fetch"), "Can't reach airlie. Is it running, and are you on Noah's network?"],
+  [new TypeError("Failed to fetch"), "Can't reach airlie from this browser. Check you're connected the way this install is usually reached, and open it again at http://localhost:3000."],
   [new Error("boom"), "Couldn't create the passkey: boom"],
 ])("a failed passkey (%s) says %s and can be tried again", async (error, message) => {
   const { w, router } = await open();
@@ -118,4 +130,32 @@ test("a second press while the first is working creates one passkey", async () =
   expect(api.passkeyRegister).toHaveBeenCalledOnce();
   release();
   await flushPromises();
+});
+
+// ---- who the copy names (auth.operator_label) ----
+
+test("the invite page names the sender, and an organization's name reads as well as a person's", async () => {
+  // "invited by <label>" is the sentence the label is actually for: it says who sent this link. The old copy
+  // also hung the install's hardware on the label, which an organization's name cannot carry.
+  const { w } = await open("tok%2Fen", "Acme Inc");
+  expect(w.text()).toContain("invited by Acme Inc");
+  expect(w.text()).toContain("Acme Inc invited you to airlie. Create a passkey to sign in here from now on.");
+  expect(w.text()).not.toContain("undefined");
+  expect(w.text()).not.toMatch(/Acme Inc'/);
+});
+
+test("a stale link names whoever issues invites here", async () => {
+  api.peekInvite.mockRejectedValue(new ApiError(410, "invite expired or already used"));
+  const { w } = await open("tok", "Dana");
+  expect(w.get("[role=alert]").text()).toBe("Invites work once and for a day. Ask Dana for a new one.");
+});
+
+test("with no label configured the invite page still renders finished English", async () => {
+  // The guard that matters for a default install: the key is absent, and the sentences must still be complete.
+  // Literals, not the helpers — this is the shipped-default path, so comparing against the helper would only
+  // prove the two share a fallback, not that the fallback is finished English.
+  const { w } = await open();
+  expect(w.text()).toContain("invited by your administrator");
+  expect(w.text()).toContain("your administrator invited you to airlie. Create a passkey to sign in here from now on.");
+  expect(w.text()).not.toContain("undefined");
 });

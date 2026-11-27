@@ -28,6 +28,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from airlie import __version__
 from airlie.auth.api import PUBLIC_PATHS, auth_router, set_session_cookie
+from airlie.auth.oidc_wiring import build_oidc_flow
 from airlie.auth.principal import SESSION_COOKIE, NotInvited, Principal, Resolver
 from airlie.auth.store import AuthStore
 from airlie.board import BoardStore
@@ -828,15 +829,32 @@ def create_app(
         return response
 
     def _renew_session(request: Request, response: Response) -> None:
-        """A sign-in with under half its days left is extended on use (same token, so a request in flight
-        with the old cookie keeps working); an idle one runs out."""
+        """A sign-in with under half its life left is extended on use (same token, so a request in flight with
+        the old cookie keeps working); an idle one runs out.
+
+        How far it may be extended is the store's answer rather than this function's: `session_renewal`
+        pairs the expiry with a ceiling, and a session minted through an IdP carries one
+        (`auth.oidc.session_hours`, fixed when the callback minted it). Renewing such a session to
+        `session_days` would be exactly the drift the spec names — a person the IdP has already deactivated
+        holding a self-renewing airlie cookie — and this is the only place it can be prevented, because the
+        route that minted the session is not the one renewing it.
+        So the extension is clamped to the ceiling, and a session already at it is left alone entirely: no
+        Set-Cookie, so the browser's own expiry is not pushed out from under it either.
+        """
         token = request.cookies.get(SESSION_COOKIE)
         if token is None:
             return
-        left = store.session_expires_at(token)
-        if left is not None and left - now() < cfg.auth.session_days * 86400 / 2:
-            store.extend_session(token, cfg.auth.session_days)
-            set_session_cookie(response, request, cfg.auth, token, cfg.auth.session_days)
+        left, ceiling = store.session_renewal(token)
+        if left is None:
+            return
+        horizon = cfg.auth.session_days * 86400
+        if left - now() >= horizon / 2:
+            return  # still young: nothing to do, and no Set-Cookie to write
+        limit = horizon if ceiling is None else min(horizon, ceiling - now())
+        if limit <= 0:
+            return  # at or past its ceiling: it ends on its own, and signing in again is the way back
+        store.extend_session(token, limit / 86400)
+        set_session_cookie(response, request, cfg.auth, token, limit)
 
     app.include_router(
         auth_router(
@@ -845,6 +863,7 @@ def create_app(
             cfg.auth,
             now=now,
             update_panel=cfg.update.enabled and cfg.update.panel,
+            oidc=build_oidc_flow(cfg, store=store, transport=transport, now=now),
         )
     )
 

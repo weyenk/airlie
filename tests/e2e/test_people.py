@@ -18,6 +18,13 @@ from tests.e2e.conftest import KEY, Evidence, Server
 
 pytestmark = pytest.mark.e2e
 
+#: The default `auth.operator_label`, spelled out because the browser cannot import the Python constant. It
+#: must stay byte-identical to `DEFAULT_OPERATOR_LABEL` in `src/airlie/config/schema.py` and
+#: `web/src/lib/operator.ts`; the sentences below interpolate it the way `web/src/lib/operatorCopy.ts` builds
+#: them, so a rebrand changes one line here rather than five assertions. No sentence appends an apostrophe to
+#: it, so a role phrase like this reads correctly in all of them.
+OPERATOR = "your administrator"
+
 
 def _invite(server: Server, name: str) -> str:
     """The token of a fresh invite for `name`, made as the admin key would, and not through the page."""
@@ -55,7 +62,7 @@ def test_a_wrong_key_stays_on_sign_in(page: Page, server: Server, evidence: Evid
     page.get_by_label("Admin key").fill("not-the-key")
     page.get_by_role("button", name="Sign in with the key").click()
     evidence.expect(page.get_by_role("alert"), "sign in says the key is wrong").to_have_text(
-        "That key isn't valid. Ask Noah for a new one."
+        f"That key isn't valid. Ask {OPERATOR} for a new one."
     )
     evidence.expect(page, "still on sign in").to_have_url(re.compile(r"/signin$"))
     assert page.evaluate("localStorage.getItem('airlie.key')") is None
@@ -122,10 +129,48 @@ def test_an_expired_link_shows_the_expired_page(page: Page, server: Server, evid
     page.goto(f"{server.url}/join/not-a-live-token")
     evidence.expect(page.get_by_role("heading"), "the expired page").to_have_text("This link has expired")
     evidence.expect(page.get_by_role("alert"), "it says what to do").to_have_text(
-        "Invites work once and for a day. Ask Noah for a new one."
+        f"Invites work once and for a day. Ask {OPERATOR} for a new one."
     )
     evidence.expect(page.get_by_role("link", name="Sign in"), "and points to Sign in").to_be_visible()
     evidence.expect(page.get_by_role("button", name="Create passkey"), "nothing to create").to_have_count(0)
+
+
+def test_the_sign_in_copy_names_no_machine_and_no_network(
+    page: Page, server: Server, evidence: Evidence
+) -> None:
+    """The copy a stranger reads must hold for an install that is nobody's Mac Studio and is not reached over
+    a tailnet. The sentences are pinned in `web/src/lib/operatorCopy.test.ts`, which runs against the test
+    renderer; this reads the same copy off a real browser against a real server, which is also the only place
+    that proves the shipped build carries it (the e2e image builds the web app).
+
+    Anchored on the two elements the copy actually renders into. A whole-page check would scan the app chrome
+    too, and on `/signin` that includes the Tailscale login field this screen shows when `auth.tailscale` is
+    on — a word a stranger may legitimately see, so its absence is out of scope here."""
+    page.goto(f"{server.url}/signin")
+    subtitle = page.locator("h1").locator("xpath=following-sibling::p[1]")
+    evidence.expect(subtitle, "the sign-in subtitle is there").to_be_visible()
+    evidence.expect(subtitle, "the subtitle names no hardware").not_to_contain_text("Mac Studio")
+    evidence.expect(subtitle, "a default install says this, not a hole").to_have_text(
+        "This airlie studio. Sign in as yourself."
+    )
+    pointer = page.locator("[data-invite-pointer]")
+    evidence.expect(pointer, "the invite pointer names the shipped operator").to_have_text(
+        f"No passkey yet? Open the invite link {OPERATOR} sent you on this device."
+    )
+    evidence.expect(pointer, "and names no network").not_to_contain_text("network")
+    assert "undefined" not in page.locator("body").inner_text()
+
+
+def test_a_default_invite_page_names_the_shipped_operator(
+    page: Page, server: Server, evidence: Evidence
+) -> None:
+    """A default install's invite copy must be finished English too — the shipped label, not a blank or a
+    half-filled template. (`test_an_expired_link_shows_the_expired_page` guards the expired-page behaviour on
+    the same string; this one is where the default-install copy guards are collected.)"""
+    page.goto(f"{server.url}/join/not-a-live-token")
+    evidence.expect(page.get_by_role("alert"), "it says what to do").to_have_text(
+        f"Invites work once and for a day. Ask {OPERATOR} for a new one."
+    )
 
 
 def test_a_used_invite_is_expired_the_second_time(

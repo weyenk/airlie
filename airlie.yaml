@@ -168,6 +168,16 @@ observability:
 #   origins: [https://studio.tail1234.ts.net]
 #   session_days: 30
 #   invite_hours: 24
+#   operator_label: your administrator   # who the sign-in and invite screens name as the person to ask for an
+#                                  # invite. This is the shipped default — a role, because a build
+#                                  # cannot know who runs your install. A personal name ("Noah"), an
+#                                  # organization ("Acme Inc") or another role ("your workspace admin")
+#                                  # are all fine. A sentence never adds an apostrophe to it, so write one
+#                                  # in if you want that reading (docs/integrations/sign-in.md)
+#   oidc:                          # company IdP sign-in (Okta / Entra / Google Workspace), off by default:
+#     enabled: false               # docs/integrations/oidc-sign-in.md — it changes who airlie trusts as a
+#     external_url: https://airlie.acme.com   # person, not how a repository is reached. The redirect_uri the
+#     issuer: https://dev-123.okta.com        # IdP registers is external_url + /v1/auth/oidc/callback, always
 
 # ---- Stories (task story; docs/integrations/story.md) -------------------------------------------------------------
 # A Jira issue (or --text) → product's story → architect's layers → each layer built from the architect's package

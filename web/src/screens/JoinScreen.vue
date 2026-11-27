@@ -1,5 +1,6 @@
 <script setup lang="ts">
 // /join/<token>: the invite link. Shows who the invite is for and creates their passkey on this device.
+// The operator the copy names comes from the install (`auth.operator_label`, web/src/lib/operator.ts).
 import { Lock } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -8,6 +9,8 @@ import { passkeyRegister, passkeysSupported, peekInvite } from "@/api/auth";
 import BarePanel from "@/components/BarePanel.vue";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import { Button } from "@/components/ui/button";
+import { fetchOperatorLabel } from "@/lib/operator";
+import { invitedBy, invitedYou, inviteExpired, unreachableHost } from "@/lib/operatorCopy";
 import { useSessionStore } from "@/stores/session";
 
 const route = useRoute();
@@ -26,6 +29,8 @@ const initials = computed(() => (name.value ?? "?").trim().slice(0, 2).toUpperCa
 
 // Peek at the invite: the registration options carry the person's name, and 410 says the link is gone.
 onMounted(async () => {
+  // Whose invite this is, for the copy that tells a person who to ask when the link went stale.
+  void fetchOperatorLabel();
   try {
     name.value = await peekInvite(token.value);
     ready.value = true;
@@ -48,7 +53,7 @@ async function create(): Promise<void> {
     if (e instanceof ApiError && e.status === 410) expired.value = true;
     else if (failure === "NotAllowedError" || failure === "AbortError") error.value = ""; // the person closed the prompt
     else if (failure === "InvalidStateError") error.value = "This device already has a passkey for airlie. Sign in with it instead.";
-    else if (e instanceof TypeError) error.value = "Can't reach airlie. Is it running, and are you on Noah's network?";
+    else if (e instanceof TypeError) error.value = unreachableHost();
     else error.value = `Couldn't create the passkey: ${(e as Error).message}`;
   } finally {
     busy.value = false;
@@ -60,25 +65,26 @@ async function create(): Promise<void> {
   <BarePanel>
     <template v-if="expired">
       <h1 class="text-xl font-bold tracking-[-0.01em]">This link has expired</h1>
-      <ErrorBanner error="Invites work once and for a day. Ask Noah for a new one." />
+      <ErrorBanner :error="inviteExpired()" />
       <div class="text-xs leading-normal text-muted-foreground">
         Already have a passkey? <RouterLink to="/signin" class="text-primary">Sign in</RouterLink>
       </div>
     </template>
     <template v-else>
       <h1 class="text-xl font-bold tracking-[-0.01em]">You're invited</h1>
-      <!-- "invited by Noah" is fixed wording (as in the old app): register/options returns the person's name, not who invited them -->
+      <!-- "invited by <operator>" is fixed wording (as in the old app): register/options returns the person's
+           name, not who invited them -->
       <div v-if="name !== null" class="flex items-center gap-2.5 rounded-[10px] border border-border p-3">
         <span class="inline-flex size-[30px] items-center justify-center rounded-full bg-track text-xs font-semibold">{{ initials }}</span>
         <div>
           <div class="font-semibold">{{ name }}</div>
-          <div class="text-xs text-muted-foreground">invited by Noah</div>
+          <div class="text-xs text-muted-foreground">{{ invitedBy() }}</div>
         </div>
       </div>
       <p v-if="ready && !supported" class="m-0 leading-normal text-muted-foreground">
         This browser can't make passkeys. Open the link in Safari or Chrome on your phone or Mac.
       </p>
-      <p v-else-if="ready" class="m-0 leading-normal text-muted-foreground">Noah invited you to airlie. Create a passkey to sign in here from now on.</p>
+      <p v-else-if="ready" class="m-0 leading-normal text-muted-foreground">{{ invitedYou() }}</p>
       <p v-else-if="!error" class="m-0 leading-normal text-muted-foreground">Checking your invite.</p>
       <Button data-create class="h-11 text-sm" :disabled="!ready || !supported || busy" @click="create"><Lock />Create passkey</Button>
       <ErrorBanner v-if="error" :error="error" />

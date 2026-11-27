@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 import pytest
 
-from airlie.auth.store import AuthStore
+from airlie.auth.store import AuthStore, Credential
 from airlie.serve.app import create_app
 from tests.support.auth_store import Clock
 from tests.support.serve import FakeUpstream, cfg
@@ -428,6 +428,27 @@ def test_a_young_session_is_not_renewed(tmp_path: Path) -> None:
     s.clock.t += 10 * 86400
     assert "set-cookie" not in s.get("/v1/auth/me", token).headers
     s.store.close()
+
+
+def test_an_admin_ends_every_session_a_person_has_and_keeps_their_passkeys(studio: Studio) -> None:
+    """The revocation that is not a deletion: a lost laptop, or a person the IdP says has left. Their cookie
+    is dead from the next request, their passkey survives, and they are not re-invited to get their own
+    device back. `DELETE /v1/auth/users/{id}` already existed and does something else — it takes the person
+    too."""
+    pat = studio.store.add_user("Pat", "member", login="pat")
+    phone = studio.store.make_session(pat.id, 30)
+    laptop = studio.store.make_session(pat.id, 30)
+    studio.store.add_credential(Credential(b"pk", pat.id, b"key", 0, (), studio.clock.t))
+
+    assert studio.admin.delete(f"/v1/auth/users/{pat.id}/sessions").status_code == 204
+    assert studio.store.session_user(phone) is None
+    assert studio.store.session_user(laptop) is None
+    assert studio.store.user(pat.id) is not None
+    assert len(studio.store.credentials(pat.id)) == 1
+    # the admin who did it is untouched, and an unknown person is 404 rather than a silent success
+    assert studio.admin.get("/v1/auth/me").status_code == 200
+    assert studio.admin.delete("/v1/auth/users/nobody/sessions").status_code == 404
+    assert studio.phone.delete(f"/v1/auth/users/{pat.id}/sessions").status_code == 401
 
 
 def test_an_idle_session_still_ends(tmp_path: Path) -> None:

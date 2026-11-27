@@ -75,7 +75,7 @@ markers = [
 addopts = "-m 'not live and not e2e'"
 
 [tool.ruff]
-extend-exclude = ["docs", "vendor"]   # docs: illustrative code blocks ruff must not format; vendor: pinned upstream files, never edited
+extend-exclude = ["docs", "vendor", ".qwen"]   # docs: illustrative code blocks ruff must not format; vendor: pinned upstream files, never edited; .qwen: agent scratch, worktrees and settings — none of it project Python, and a throwaway script there must not fail the tree-wide gate
 line-length = 110
 target-version = "py312"
 src = ["src", "tests"]

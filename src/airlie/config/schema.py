@@ -39,6 +39,15 @@ KNOWN_TOOLS = frozenset(
 
 MUTATING_TOOLS = frozenset({"write_file", "edit_file", "shell", "git", "run_tests"})  # fmt: skip
 
+DEFAULT_OPERATOR_LABEL = "your administrator"
+"""The operator the sign-in and invite screens name. A role phrase rather than a person: an install that never
+sets the key has no operator this build knows, so the fallback names the role instead of shipping one person's
+name as the product's voice. It reads in every sentence the copy builds, and none can add an apostrophe
+to it. The schema default, the web app's fallback when the
+server says nothing, and what `docs/integrations/sign-in.md` documents are this one string, so a default
+install's copy cannot drift from the value it would have to set to get back. `web/src/lib/operator.ts`
+keeps its own spelling of it: the build ships to a browser and cannot import Python."""
+
 
 class Sampling(Strict):
     temperature: float = 0.7
@@ -768,6 +777,107 @@ class NotificationsSpec(Strict):
     )
 
 
+def _origin_host_is_well_formed(host: str) -> bool:
+    """A host, with an optional :port, that could actually be dialled. Ports are allowed because airlie is
+    routinely served on one; an empty host or an empty port is a typo that would otherwise reach the IdP."""
+    name, colon, port = host.partition(":")
+    if not name:
+        return False
+    if not colon:
+        return True
+    return port.isdigit() and port != ""
+
+
+class OIDCSpec(Strict):
+    """auth.oidc: sign in to airlie with a company IdP
+    (docs/superpowers/specs/2026-11-26-oidc-sign-in-design.md). Off by default, so an install that never
+    mentions it keeps today's passkey and Tailscale sign-in unchanged. It changes who airlie trusts as a
+    person and nothing else: repository access still comes from the GitHub App link."""
+
+    enabled: bool = False
+    issuer: str | None = Field(
+        default=None,
+        description="the IdP's issuer, exactly the `iss` it puts in an ID token; discovery reads "
+        "<issuer>/.well-known/openid-configuration",
+    )
+    client_id: str | None = Field(
+        default=None, description="the id the IdP knows airlie by; the required `aud` of an ID token"
+    )
+    client_secret_file: Path | None = Field(
+        default=None,
+        description="file holding the client secret (0600, like story.github_app.client_secret_file); a "
+        "confidential client needs it to exchange the code, and it is never logged",
+    )
+    scopes: list[str] = Field(default_factory=lambda: ["openid", "profile", "email"])
+    groups_claim: str | None = Field(
+        default=None,
+        description="the ID-token claim carrying group membership (Okta and Entra name it differently, so it "
+        "is named rather than guessed); null reads no groups",
+    )
+    allowed_domains: list[str] = Field(
+        default_factory=list, description="email domains allowed in; empty (default) allows every domain"
+    )
+    allowed_groups: list[str] = Field(
+        default_factory=list,
+        description="groups allowed in; non-empty needs groups_claim, and a token lacking it is refused",
+    )
+    session_hours: int = Field(
+        default=12,
+        ge=1,
+        description="how long a session signed in through the IdP lasts, and is not renewed past; shorter "
+        "auth.session_days because the IdP, not airlie, is what knows whether the person still works here",
+    )
+    admin_role_claim: str | None = Field(
+        default=None,
+        description="a claim whose values grant the admin role; null (default) makes every signed-in "
+        "member and admin is granted in airlie, so an IdP group cannot silently mint admins",
+    )
+    external_url: str | None = Field(
+        default=None,
+        description="the origin airlie is reached at, e.g. https://airlie.acme.com; the OIDC redirect_uri is "
+        "this plus a fixed path, so it is one configured value the IdP can match rather than a Host header "
+        "guessed per request (serve runs uvicorn with proxy_headers off, so that header is caller-supplied)",
+    )
+
+    @field_validator("external_url")
+    @classmethod
+    def _external_url_is_an_origin(cls, value: str | None) -> str | None:
+        """Same shape as the issuer, for a sharper reason: the redirect_uri is this plus a fixed path, so a
+        path or a trailing slash here yields a URI no IdP has registered, and a Host-derived value would let a
+        caller send the code exchange, and the client secret, to a host they chose."""
+        if value is None:
+            return None
+        if not value.startswith("https://"):
+            raise ValueError("external_url must be an https origin, e.g. https://airlie.acme.com")
+        rest = value.removeprefix("https://")
+        if not rest or "?" in rest or "#" in rest or "@" in rest:
+            raise ValueError("external_url must be an https origin, e.g. https://airlie.acme.com")
+        host, slash, _ = rest.partition("/")
+        if slash:
+            raise ValueError("external_url must carry no path; the redirect path is airlie's own")
+        if not _origin_host_is_well_formed(host):
+            raise ValueError("external_url must be an https origin, e.g. https://airlie.acme.com")
+        return value
+
+    @field_validator("issuer")
+    @classmethod
+    def _issuer_is_an_origin(cls, value: str | None) -> str | None:
+        """The issuer is compared to the `iss` claim, so a trailing slash or a path here means no token ever
+        matches and every sign-in is refused — which reads as the IdP being broken, not as a typo here."""
+        if value is None:
+            return None
+        if not value.startswith("https://"):
+            raise ValueError("auth.oidc.issuer must be an https:// URL")
+        rest = value.removeprefix("https://")
+        if not rest or "/" in rest or "?" in rest or "#" in rest:
+            raise ValueError(
+                "auth.oidc.issuer must be an https origin with no path, e.g. https://acme.okta.com"
+            )
+        if "@" in rest:
+            raise ValueError("auth.oidc.issuer must carry no user info")
+        return value
+
+
 class AuthSpec(Strict):
     """Who may use `task serve` as a person (docs/superpowers/plans/2026-10-17-sign-in.md)."""
 
@@ -794,6 +904,24 @@ class AuthSpec(Strict):
         default=30, ge=1, description="how long a sign-in lasts idle; one used past half this is renewed"
     )
     invite_hours: int = Field(default=24, ge=1, description="how long an invite link may be used")
+    operator_label: str = Field(
+        default=DEFAULT_OPERATOR_LABEL,
+        min_length=1,
+        description="who the sign-in and invite screens say to ask for an invite; defaults to the role "
+        "phrase 'your administrator'. A personal name ('Noah'), an organization ('Acme Inc') or another "
+        "role are all fine. The one place the install names its operator, so the same build serves a "
+        "personal dogfood and a corporate one. It reaches an anonymous visitor (GET /v1/auth/operator) "
+        "because that is the copy their screen already prints, so it is not a place to keep a secret",
+    )
+
+    @field_validator("operator_label")
+    @classmethod
+    def _operator_label_says_something(cls, value: str) -> str:
+        """A label of spaces would render the sentence as a hole — exactly the blank the UI's fallback
+        exists to prevent — and the caller would have no idea the key was what did it."""
+        if not value.strip():
+            raise ValueError("auth.operator_label needs a word to show, not only whitespace")
+        return value
 
     @field_validator("trusted_proxies")
     @classmethod
@@ -808,6 +936,8 @@ class AuthSpec(Strict):
                     "each entry must be an IP address or CIDR, e.g. 127.0.0.1 or 172.17.0.0/16"
                 ) from None
         return value
+
+    oidc: OIDCSpec = Field(default_factory=OIDCSpec)
 
 
 class MemorySpec(Strict):
@@ -1334,6 +1464,16 @@ class AirlieConfig(Strict):
         ]
         if "github_app" in self.chat.sources and self.story.github_app.app_id is None:
             problems.append("chat.sources lists github_app, which needs story.github_app.app_id")
+        oidc = self.auth.oidc
+        if oidc.enabled:  # an IdP that cannot finish a sign-in should fail at load, not on the callback
+            for field_name in ("issuer", "client_id", "client_secret_file", "external_url"):
+                if getattr(oidc, field_name) is None:
+                    problems.append(f"auth.oidc.enabled needs auth.oidc.{field_name}")
+        if oidc.allowed_groups and oidc.groups_claim is None:
+            problems.append(
+                "auth.oidc.allowed_groups needs auth.oidc.groups_claim, the claim that carries them; "
+                "without it nothing is gated and everyone is allowed"
+            )
         served_by: dict[str, list[str]] = {m: [] for m in self.models}
         for ename, e in self.engines.items():
             for m in e.models:

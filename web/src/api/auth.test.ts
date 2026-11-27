@@ -9,12 +9,26 @@ import {
   passkeyLogin,
   passkeyRegister,
   peekInvite,
+  signInOptions,
   signInWithKey,
 } from "./auth";
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+test("the sign-in options ask the server whether it has an IdP, without a key", async () => {
+  localStorage.setItem("airlie.key", "an-admin-key");
+  const fetchMock = stubJson({ oidc: true });
+
+  await expect(signInOptions()).resolves.toEqual({ oidc: true });
+
+  // No Authorization header: this is what the sign-in screen sends before anyone is anybody, and a bearer key
+  // would make the answer depend on who happened to have one in this browser.
+  expect(callOf(fetchMock, 0)).toMatchObject({ url: "/v1/auth/signin/options", method: "GET" });
+  expect(callOf(fetchMock, 0).headers.Authorization).toBeUndefined();
+  localStorage.clear();
 });
 
 test("users use the auth route", async () => {
