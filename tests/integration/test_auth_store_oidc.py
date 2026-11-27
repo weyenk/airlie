@@ -263,48 +263,34 @@ def test_the_migration_touches_no_other_table(tmp_path: Path, clock: Clock) -> N
         second.close()
 
 
-# ---- the housekeeping ----
+# ---- which session rows the store will accept at all ----
 
 
-def test_pruning_drops_expired_rows_and_rows_whose_person_is_gone(store: AuthStore, clock: Clock) -> None:
-    dana, sam = store.add_user("Dana", "member"), store.add_user("Sam", "member")
-    live = store.make_session(sam.id, 30)
-    expired = store.make_session(dana.id, 1)
-    clock.t += 2 * 86400  # `expired` is now a day past its own expiry
-    # The orphan cannot be written through the store at all: `sessions.user_id` is a foreign key and the
-    # pragma is on, so airlie is refused for its own sessions and for anybody else's (see the test after this
-    # one). A file can still hold one — a person removed with an operator's sqlite3 leaves rows behind, since
-    # that client runs no pragma and so no cascade — hence the insert with enforcement off, which is the
-    # state the clause is for and the only way to reach it from here.
-    store.conn.execute("pragma foreign_keys=off")
-    store.conn.execute(
-        "insert into sessions (digest, user_id, expires_at) values ('gone', ?, ?)",
-        (uuid.uuid4().hex, clock.t + 30 * 86400),
-    )
-    store.conn.execute("pragma foreign_keys=on")
-
-    assert store.prune_sessions() == 2  # the expired row and the orphan; `live` is neither
-    assert store.session_user(live) == sam
-    assert store.session_user(expired) is None
-    assert store.conn.execute("select count(*) from sessions").fetchone() == (1,)
-    assert store.prune_sessions() == 0  # nothing left to drop, and a second pass is not an error
-
-
-def test_the_store_refuses_a_session_for_a_person_it_does_not_have(store: AuthStore) -> None:
-    """The half of pruning's premise that has to stay true for it to be housekeeping and not a patch: airlie
-    cannot mint a session for a row it has not got, so it cannot be the thing that creates orphans."""
+def test_airlie_cannot_write_a_session_for_a_person_it_does_not_have(store: AuthStore) -> None:
+    """The foreign key is what keeps a revoked person from being signed in by a row nobody owns: with
+    `pragma foreign_keys=on` (set in `AuthStore.__init__`) no insert through the store can leave a session
+    pointing at a missing user, so deleting a person cascades their sessions away and nothing can put a new
+    one back. The cascade itself is proven in `test_auth_store.py`'s
+    `test_deleting_a_user_cascades_to_credentials_sessions_and_invites`."""
     with pytest.raises(sqlite3.IntegrityError):
         store.make_session(uuid.uuid4().hex, 30)
 
 
-def test_pruning_leaves_an_oidc_session_that_is_still_inside_its_cap(store: AuthStore, clock: Clock) -> None:
-    """Pruning is housekeeping, not the cap: a capped session that has not expired yet is a signed-in person,
-    and dropping it here would turn a cleanup into an unannounced sign-out."""
+def test_a_capped_session_that_has_not_expired_is_still_a_signed_in_person(
+    store: AuthStore, clock: Clock
+) -> None:
+    """Nothing revokes a session early: the ceiling bounds how far `session_renewal` may push the expiry, and
+    `session_user` judges a row by its expiry alone. A row that has not expired is somebody at a keyboard, so
+    any future cleanup would have to leave it alone — and an expired row is refused here at read time rather
+    than assumed gone by a sweep that does not exist."""
     dana = store.add_user("Dana", "member")
     oidc = store.make_session(dana.id, 0.5, via=VIA_OIDC, ceiling_hours=12)
-    clock.t += 0.25 * 86400
-    assert store.prune_sessions() == 0
+    clock.t += 0.25 * 86400  # halfway through its life, and nowhere past the ceiling
     assert store.session_user(oidc) == dana
+    assert store.session_expires_at(oidc) == clock.t + 0.25 * 86400
+    assert store.session_renewal(oidc)[1] == clock.t + 0.25 * 86400
+    clock.t += 0.25 * 86400 + 1  # one second past its own expiry
+    assert store.session_user(oidc) is None
 
 
 def _tables(path: Path) -> set[str]:

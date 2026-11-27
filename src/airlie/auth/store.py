@@ -5,7 +5,12 @@ nobody in. Nothing in here logs.
 A session row records how it was minted (`auth_via`) and, when an IdP minted it, the absolute instant its
 expiry may never be pushed past (`ceiling`). `session_renewal` is the only reader of both, so there is one
 place that decides how far a cookie may be pushed; the ceiling is written at minting rather than derived from
-the current setting — see `session_renewal` for why."""
+the current setting — see `session_renewal` for why.
+
+Nothing here removes a session on a timer. An expired row is refused where it is read (`session_user`) rather
+than collected in a sweep, and a person airlie no longer has loses their sessions through the
+`on delete cascade` that every child table of `users` carries — so ending sessions is either `end_sessions`
+from an admin or the deletion of the person, never a background pass."""
 
 from __future__ import annotations
 
@@ -103,6 +108,9 @@ create table if not exists credentials (
     id blob primary key, user_id text not null references users(id) on delete cascade,
     public_key blob not null, sign_count integer not null, transports text not null,
     created_at real not null);
+-- `on delete cascade` here, with the `pragma foreign_keys=on` in `__init__`, is what revokes a person's
+-- sessions when they are deleted — there is no pruning pass to remember to run, and the one way to keep a row
+-- of somebody airlie no longer has is to delete them with a client that runs no pragma (see `end_sessions`).
 create table if not exists sessions (
     digest text primary key, user_id text not null references users(id) on delete cascade,
     expires_at real not null);
@@ -379,30 +387,18 @@ class AuthStore:
         self.conn.execute("delete from sessions where digest = ?", (_digest(token),))
 
     def end_sessions(self, user_id: str) -> None:
-        self.conn.execute("delete from sessions where user_id = ?", (user_id,))
+        """End every device of one person. The admin route is
+        `DELETE /v1/auth/users/{user_id}/sessions` (`auth/api.py`).
 
-    def prune_sessions(self) -> int:
-        """Drop every session that cannot be used any more, and say how many went: rows past their expiry, and
-        rows whose person airlie no longer has.
+        Nothing here deletes rows in the background and nothing schedules a sweep, which is fine because no
+        reader admits an expired row: `session_user` refuses one on its own instant, and the rows a deleted
+        person left are dropped by the `on delete cascade` on `sessions.user_id` rather than collected later.
 
-        The second half is what makes a revocation real. A subject cut off at the IdP stops minting new
-        sessions at the callback, and `delete_user` cascades in SQL — but a session row can still outlive its
-        person when the row was removed straight from the file (an operator's sqlite3), and a table that holds
-        a list of people who cannot sign in is a table an operator cannot read.
-
-        Expiry is folded in for the same reason: `session_user` refuses a past-expiry row, so those rows are
-        dead weight rather than a risk, and a session store that only ever grows is its own problem
-        eventually.
-
-        That is the whole promise. Nothing schedules this — an install that never calls it loses nothing,
-        because every refusal above already holds. The count comes from the two statements' own `rowcount`
-        rather than a `count(*)` before and after, so the number it prints is the number of rows it deleted
-        and not the number of rows that happened to be in the table.
+        Deleting the person is the other way to end their sessions, and it is not interchangeable:
+        `delete_user` takes the passkeys and invites too, through the `on delete cascade` those tables carry.
+        So revoking a laptop that was left on is this method, and removing the person is that one.
         """
-        expired = self.conn.execute("delete from sessions where expires_at < ?", (self._now(),))
-        gone = expired.rowcount
-        orphans = self.conn.execute("delete from sessions where user_id not in (select id from users)")
-        return gone + orphans.rowcount
+        self.conn.execute("delete from sessions where user_id = ?", (user_id,))
 
     # ---- push subscriptions and notification settings ----
     def save_push(self, user_id: str, endpoint: str, p256dh: str, auth: str) -> None:
