@@ -768,6 +768,70 @@ class NotificationsSpec(Strict):
     )
 
 
+class OIDCSpec(Strict):
+    """auth.oidc: sign in to airlie with a company IdP
+    (docs/superpowers/specs/2026-11-26-oidc-sign-in-design.md). Off by default, so an install that never
+    mentions it keeps today's passkey and Tailscale sign-in unchanged. It changes who airlie trusts as a
+    person and nothing else: repository access still comes from the GitHub App link."""
+
+    enabled: bool = False
+    issuer: str | None = Field(
+        default=None,
+        description="the IdP's issuer, exactly the `iss` it puts in an ID token; discovery reads "
+        "<issuer>/.well-known/openid-configuration",
+    )
+    client_id: str | None = Field(
+        default=None, description="the id the IdP knows airlie by; the required `aud` of an ID token"
+    )
+    client_secret_file: Path | None = Field(
+        default=None,
+        description="file holding the client secret (0600, like story.github_app.client_secret_file); a "
+        "confidential client needs it to exchange the code, and it is never logged",
+    )
+    scopes: list[str] = Field(default_factory=lambda: ["openid", "profile", "email"])
+    groups_claim: str | None = Field(
+        default=None,
+        description="the ID-token claim carrying group membership (Okta and Entra name it differently, so it "
+        "is named rather than guessed); null reads no groups",
+    )
+    allowed_domains: list[str] = Field(
+        default_factory=list, description="email domains allowed in; empty (default) allows every domain"
+    )
+    allowed_groups: list[str] = Field(
+        default_factory=list,
+        description="groups allowed in; non-empty needs groups_claim, and a token lacking it is refused",
+    )
+    session_hours: int = Field(
+        default=12,
+        ge=1,
+        description="how long a session signed in through the IdP lasts, and is not renewed past; shorter "
+        "auth.session_days because the IdP, not airlie, is what knows whether the person still works here",
+    )
+    admin_role_claim: str | None = Field(
+        default=None,
+        description="a claim whose values grant the admin role; null (default) makes every signed-in "
+        "member and admin is granted in airlie, so an IdP group cannot silently mint admins",
+    )
+
+    @field_validator("issuer")
+    @classmethod
+    def _issuer_is_an_origin(cls, value: str | None) -> str | None:
+        """The issuer is compared to the `iss` claim, so a trailing slash or a path here means no token ever
+        matches and every sign-in is refused — which reads as the IdP being broken, not as a typo here."""
+        if value is None:
+            return None
+        if not value.startswith("https://"):
+            raise ValueError("auth.oidc.issuer must be an https:// URL")
+        rest = value.removeprefix("https://")
+        if not rest or "/" in rest or "?" in rest or "#" in rest:
+            raise ValueError(
+                "auth.oidc.issuer must be an https origin with no path, e.g. https://acme.okta.com"
+            )
+        if "@" in rest:
+            raise ValueError("auth.oidc.issuer must carry no user info")
+        return value
+
+
 class AuthSpec(Strict):
     """Who may use `task serve` as a person (docs/superpowers/plans/2026-10-17-sign-in.md)."""
 
@@ -808,6 +872,8 @@ class AuthSpec(Strict):
                     "each entry must be an IP address or CIDR, e.g. 127.0.0.1 or 172.17.0.0/16"
                 ) from None
         return value
+
+    oidc: OIDCSpec = Field(default_factory=OIDCSpec)
 
 
 class MemorySpec(Strict):
@@ -1334,6 +1400,16 @@ class AirlieConfig(Strict):
         ]
         if "github_app" in self.chat.sources and self.story.github_app.app_id is None:
             problems.append("chat.sources lists github_app, which needs story.github_app.app_id")
+        oidc = self.auth.oidc
+        if oidc.enabled:  # an IdP that cannot finish a sign-in should fail at load, not on the callback
+            for field_name in ("issuer", "client_id", "client_secret_file"):
+                if getattr(oidc, field_name) is None:
+                    problems.append(f"auth.oidc.enabled needs auth.oidc.{field_name}")
+        if oidc.allowed_groups and oidc.groups_claim is None:
+            problems.append(
+                "auth.oidc.allowed_groups needs auth.oidc.groups_claim, the claim that carries them; "
+                "without it nothing is gated and everyone is allowed"
+            )
         served_by: dict[str, list[str]] = {m: [] for m in self.models}
         for ename, e in self.engines.items():
             for m in e.models:
