@@ -73,9 +73,12 @@ Two problems this closes, both found in the current code:
    the callback. Attractive (single-use, expiry, `test_an_invite_twice_is_410`), but it couples the corporate
    path to the passkey onboarding flow and its TTL semantics. Deferred; revisit if admin-binding proves
    awkward.
-4. **Let `via="oidc"` resolve per request** (verify an assertion each time). Rejected — it re-derives identity
+4. **Derive `redirect_uri` from the request host**, as `rp_id` does. Rejected — see "configured, never derived".
+   With `proxy_headers=False` the Host header is attacker-controlled, and unlike WebAuthn a wrong value here
+   leaks the exchange rather than failing it.
+5. **Let `via="oidc"` resolve per request** (verify an assertion each time). Rejected — it re-derives identity
    from a client-supplied artifact on every call, which is strictly more attack surface than the chosen design.
-5. **SAML.** Rejected for now; the named IdPs all speak OIDC. If a prospect requires SAML, that is a second
+6. **SAML.** Rejected for now; the named IdPs all speak OIDC. If a prospect requires SAML, that is a second
    federation adapter behind the same binding table, not a rewrite.
 
 ## Target architecture
@@ -109,14 +112,20 @@ auth:
     groups_claim: groups                     # claim name; null disables group gating
     allowed_domains: [acme.com]
     allowed_groups: [airlie-users]
+    external_url: https://airlie.acme.com    # required when enabled; redirect_uri is this + the fixed path
     session_hours: 12                        # cap for OIDC-minted sessions
     admin_role_claim: null                   # null: OIDC users are members; admin is granted in airlie
 ```
 
-`issuer`, `client_id` are required when `enabled`. `redirect_uri` is derived from the request (the same
-host-derived logic WebAuthn's `rp_id` / `origins` already use, so `test_configured_rp_id_and_origins_win_over_the_request`
-is the precedent) rather than a fourth place to keep a URL in sync — with the exact value printed at startup so
-the operator can paste it into the IdP.
+`issuer`, `client_id`, `client_secret_file` and `external_url` are required when `enabled`, enforced by the same
+load-time `problems` rule that catches `chat.sources: [github_app]` without an `app_id`
+(`config/schema.py:1335`) — a setting that only breaks on someone's first callback is a config error, not a
+runtime error. `external_url` must be an `https://` origin with no path, so the `redirect_uri` built from it
+cannot drift from what the IdP has registered.
+
+- **`redirect_uri` is configured, never derived** — built from `external_url` plus a fixed path, so exactly one
+  value is ever sent and it matches what the IdP registered byte for byte. The WebAuthn precedent is not
+  transferable, and an earlier draft of this spec got this wrong; see **Security notes** for why.
 
 ## Security notes
 
@@ -126,8 +135,23 @@ the operator can paste it into the IdP.
 - **`state` is CSRF protection, `nonce` is token-injection protection.** They are different defects and both
   are needed; neither is reused, both expire in minutes, and pending entries are capped the way
   `test_outstanding_ceremonies_are_capped_so_a_public_route_cannot_grow_memory` caps WebAuthn ceremonies.
-- **No open redirect.** `/start` takes no destination. The post-login target is a path allowlist, never a
-  caller-supplied URL.
+- **`redirect_uri` is configured, never derived.** WebAuthn's `rp_id` derives from
+  `request.headers.get("host")` (`auth/api.py:160`) and looks like precedent. It is not. serve runs uvicorn with
+  `proxy_headers=False` for every bind, including a routable `0.0.0.0` (`serve/server.py:51`), so a Host header is
+  whatever an off-box peer asserts. For WebAuthn a spoofed `rp_id` is harmless: the credential is bound to the
+  origin, so verification fails — fail closed, a broken sign-in, which is what
+  `test_a_registration_from_another_origin_is_refused` pins. For OIDC the same derivation sends `state`, PKCE and
+  the **client secret** to an attacker-chosen host, and PKCE does not protect a confidential client's secret
+  against a chosen redirect. Same-looking derivation, opposite consequence.
+
+  There is also no scheme to derive *from*: `request.url.scheme` (`auth/api.py:114`) is the only scheme read in
+  auth, and HTTPS arrives from `tailscale serve` or a declared proxy. A derived URI would emit `http://`, which
+  most IdPs refuse to register.
+
+- **No open redirect at the *application* seam.** `/start` takes no destination and the post-login target is a
+  path allowlist, never a caller-supplied URL. The *protocol*-level redirect surface is closed by configuration
+  rather than by airlie: `redirect_uri` is one fixed configured value and the IdP matches it against its
+  registration.
 - **JWKS cache keyed by `kid`**, bounded, refreshed on unknown `kid` at most once per interval; no fetch per
   request. Pinning the key set is not required since the token is short-lived.
 - **`client_secret` and any IdP error text never reach a log or an error body** — the discipline
