@@ -183,8 +183,11 @@ class AuthStore:
         `oidc_bindings` fresh, and the probe below only handles the file that predates it.
 
         `table_info` is the probe rather than `pragma user_version`: it reports what this file actually holds,
-        which makes the migration idempotent and self-healing (a partially migrated file is finished, not
-        skipped) — the same shape `chat/threads.py` and `update/store.py` use.
+        so a file that already carries some of these columns adds only the ones it lacks instead of failing on
+        a duplicate column, which is what a blanket `alter table` would do — the same shape
+        `chat/threads.py` and `update/store.py` use. The connection has no explicit transaction, so each
+        `alter table` commits on its own and a file interrupted between two of them is finished by the next
+        open rather than left half-migrated.
         """
         have = {row[1] for row in self.conn.execute("pragma table_info(sessions)")}
         for column in _SESSION_COLUMNS:
