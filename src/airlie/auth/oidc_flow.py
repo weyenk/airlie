@@ -21,12 +21,22 @@ import base64
 import hashlib
 import secrets
 from collections import deque
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
+from typing import Any
+from urllib.parse import urlencode
+
+from airlie.auth.oidc import KeyRing, TokenRejected, verify_id_token
+from airlie.auth.oidc_http import ClientSecret, IdP, IdPUnreachable, Provider, SecretRefused
+from airlie.config.schema import OIDCSpec
 
 #: How long a pending attempt lives. A person mid-redirect is typing nothing, so minutes are
 #: enough, and it bounds how long a leaked state is worth replaying.
 ATTEMPT_TTL_SECONDS = 300.0
+
+#: Where a person who did not get a session goes: the studio's own sign-in screen, where the button that
+#: started all this still is. A guarded route would only bounce them back here without a cookie.
+_SIGNIN = "/signin"
 
 #: `token_urlsafe(48)` is 64 characters of the base64url alphabet: inside RFC 7636's 43-128 for
 #: the verifier, and long enough that state and nonce are unguessable rather than merely uncommon.
@@ -73,6 +83,64 @@ class Pending:
     verifier: str
     redirect_uri: str
     expires_at: float
+    target: str = "/"
+
+
+class Refused(Exception):
+    """The attempt cannot become a session. `code` names the check that stopped it and is what reaches
+    the log; `status` is the HTTP answer.
+
+    No message carries IdP text, a token, a code or the client secret, so a route can log `code` and
+    say a fixed sentence to the browser without deciding, per raise site, what is safe to repeat."""
+
+    def __init__(self, code: str, status: int = 400) -> None:
+        self.code = code
+        self.status = status
+        super().__init__(code)
+
+
+class Unsigned(Exception):
+    """The IdP did not answer: unreachable, an error reply, or a body airlie cannot read as a token
+    reply. 502, because the person can retry and the thing that failed is not airlie."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def lookup_binding(iss: str, sub: str) -> str | None:
+    """The user bound to this subject, or None when nobody is.
+
+    This is the seam Slice C's `oidc_bindings` table fills: until it exists, no subject is bound, which
+    is the safe answer — an IdP assertion alone must never create a user (the spec's "no auto-link by
+    email"). A module-level function rather than a store parameter so `oidc_flow` stays free of
+    `auth.store`, and so the test double replaces one name."""
+    return None
+
+
+class Outcome:
+    """What a callback decided: `user_id` (sign this person in and take them to `target`), or `failure`
+    naming the gate that stopped them with no user to sign in.
+
+    An `Outcome` rather than an exception for a refusal because a refusal is a normal answer here — an
+    unbound subject, a person who declined the consent screen — and the route owes those a fixed sentence,
+    not a stack. `Unsigned` stays an exception because the IdP failing is a different event."""
+
+    def __init__(
+        self,
+        *,
+        user_id: str | None = None,
+        failure: str | None = None,
+        target: str = _SIGNIN,
+        subject: str | None = None,
+    ) -> None:
+        self.user_id = user_id
+        self.failure = failure
+        self.subject = subject
+        # A refusal carries no destination of its own. The target arrived on a request that just demonstrated
+        # it can be forged, and an anonymous browser does not belong on a guarded route, so this stays the
+        # sign-in screen and the route answers a refusal with a JSON body rather than a redirect.
+        self.target = target if user_id is not None else _SIGNIN
 
 
 #: The studio routes a sign-in may resume (`web/src/router.ts`). A target is allowed when it equals
@@ -186,3 +254,185 @@ class Attempts:
         for state in [s for s, a in self._by_state.items() if a.expires_at <= t]:
             self._by_state.pop(state, None)
             self._order.remove(state)
+
+
+#: Where a sign-in begins and ends. Fixed strings, because the `redirect_uri` registered at the IdP is
+#: `external_url` plus the callback path and must be byte-identical on every request.
+CALLBACK_PATH = "/v1/auth/oidc/callback"
+
+
+class Flow:
+    """The two halves of an authorization-code sign-in, over one `IdP`, one `Attempts` and one clock.
+
+    The routes in `auth/api.py` stay thin — parse the query, call this, turn the result into a response —
+    because every decision worth arguing about is here, where it can be tested without an HTTP layer: what
+    goes to the IdP, which attempt a callback is allowed to answer, and what a verified subject may become.
+
+    `idp` is injected rather than built here so serve shares one instance (and therefore one discovery and
+    JWKS cache) across requests, and tests hand it a `MockTransport`.
+    """
+
+    def __init__(
+        self,
+        spec: OIDCSpec,
+        idp: IdP,
+        attempts: Attempts,
+        *,
+        now: Callable[[], float],
+        secret: ClientSecret | None = None,
+    ) -> None:
+        self._spec = spec
+        self._idp = idp
+        self._attempts = attempts
+        self._now = now
+        self._secret = secret
+
+    @property
+    def enabled(self) -> bool:
+        return self._spec.enabled
+
+    @property
+    def issuer(self) -> str:
+        return self._idp.issuer
+
+    def redirect_uri(self) -> str:
+        """The `redirect_uri` for every request: the configured origin plus airlie's own path.
+
+        Never derived from Host or Forwarded-Host — serve runs uvicorn with proxy_headers off, so those
+        headers say what the caller typed. A redirect_uri an attacker chose is a code delivered to them, and
+        the exchange that follows carries the client secret."""
+        external = self._spec.external_url
+        if not external:
+            # config/schema.py requires it when enabled, so this is a programmatic config, not a typo
+            raise Unsigned("external_url")
+        return f"{external.rstrip('/')}{CALLBACK_PATH}"
+
+    async def start(self, target: str | None) -> str:
+        """The URL to send the browser to, having saved what its callback will have to answer.
+
+        Raises `Unsigned` when the IdP cannot be reached for discovery: a redirect to a page that will fail
+        at the callback is worse than a 502 now, and the person retrying is what clears it.
+
+        The default target is the studio root, not the sign-in screen. `safe_target` also accepts `/signin`,
+        and the callback sends a *failure* there, so one default would either strand someone who signed in
+        successfully on the very screen they just left, or bounce someone who failed onto a guarded route."""
+        provider = await self._provider()
+        attempt = new_attempt(redirect_uri=self.redirect_uri(), now=self._now())
+        saved = replace(attempt, target=safe_target(target, default="/"))
+        self._attempts.open(saved)
+        query = urlencode(
+            {
+                "response_type": "code",
+                "client_id": self._spec.client_id or "",
+                "redirect_uri": saved.redirect_uri,
+                "scope": " ".join(self._spec.scopes),
+                "state": saved.state,
+                "nonce": saved.nonce,
+                "code_challenge": code_challenge(saved.verifier),
+                "code_challenge_method": "S256",
+            }
+        )
+        return f"{provider.authorize_endpoint}?{query}"
+
+    async def callback(self, query: Mapping[str, str]) -> Outcome:
+        """Close an attempt and decide what it means. Returns an Outcome rather than raising for a refusal
+        the person caused, so the route logs one line and answers a fixed sentence.
+
+        Order is the order that costs an attacker the most and airlie the least: match and consume the state
+        (so nothing is sent to the IdP for a callback that answers no request of ours), then exchange, then
+        verify the token against the saved nonce, then apply airlie's own gates, then look for a binding."""
+        state = query.get("state") or ""
+        attempt = self._attempts.take(state)
+        if attempt is None:
+            raise Refused("no_attempt")  # 400: forged, expired, or already answered
+        if query.get("error"):
+            # The IdP says the person declined or the request was bad. Their attempt is already spent.
+            return Outcome(failure="declined")
+        code = query.get("code") or ""
+        if not code:
+            return Outcome(failure="no_code")
+
+        form = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": attempt.redirect_uri,
+            "client_id": self._spec.client_id or "",
+            "code_verifier": attempt.verifier,
+        }
+        secret = self._client_secret()
+        if secret:
+            form["client_secret"] = secret
+        reply = await self._exchange(form)
+        token = reply.get("id_token")
+        if not isinstance(token, str) or not token:
+            raise Unsigned("no_id_token")
+
+        keys = await self._keys()
+        try:
+            claims = verify_id_token(
+                token,
+                keys,
+                issuer=self._idp.issuer,
+                audience=self._spec.client_id or "",
+                nonce=attempt.nonce,
+                now=self._now(),
+                allowed_domains=tuple(self._spec.allowed_domains),
+                groups_claim=self._spec.groups_claim,
+                allowed_groups=tuple(self._spec.allowed_groups),
+                admin_role_claim=self._spec.admin_role_claim,
+            )
+        except TokenRejected as e:
+            raise Refused(e.code, 401) from e
+        except (TypeError, ValueError) as e:
+            # a key the JWT library cannot use is the IdP's problem, not the person's
+            raise Unsigned("key") from e
+
+        user_id = lookup_binding(claims.iss, claims.sub)
+        if user_id is None:
+            # The verified subject is what an admin binds, so it is carried out for the log. The spec refuses
+            # to guess: no user is created, and an email is never the key ("no auto-link by email").
+            return Outcome(failure="unbound", subject=claims.sub)
+        return Outcome(user_id=user_id, target=attempt.target)
+
+    async def _provider(self) -> Provider:
+        """Discovery, with the IdP's own failure translated into airlie's.
+
+        `IdP` raises `IdPUnreachable`, which quotes a status or an exception type; `Unsigned` is the type the
+        routes answer 502 for and that carries nothing worth leaking. Translating here rather than letting the
+        route import both types keeps every IdP-facing failure answering the same way."""
+        try:
+            return await self._idp.provider()
+        except IdPUnreachable as e:
+            raise Unsigned(e.code) from e
+
+    async def _keys(self) -> KeyRing:
+        """The IdP's keys, translated the same way discovery is.
+
+        A failure to read them is 502 rather than 401 deliberately: an unknown `kid` is already resolved by
+        `IdP.key_ring(force=...)`'s one refetch inside `verify`, so anything still failing here is the IdP
+        being unreadable, and telling the person "your IdP said no" would send them to the wrong door."""
+        try:
+            return await self._idp.key_ring()
+        except IdPUnreachable as e:
+            raise Unsigned(e.code) from e
+
+    async def _exchange(self, form: dict[str, str]) -> Mapping[str, Any]:
+        try:
+            reply = await self._idp.exchange(form)
+        except IdPUnreachable as e:
+            raise Unsigned(e.code) from e
+        if reply.get("error"):
+            # The IdP's `error_description` often quotes our own request, secret included: only the code
+            # is ours to keep, and `IdP.exchange` masks the values before they get this far.
+            raise Unsigned("token_refused")
+        return reply
+
+    def _client_secret(self) -> str | None:
+        """The configured secret, or None for a public client. A file that cannot be trusted is a refusal
+        naming the setting, not a secret worth trying without."""
+        if self._secret is None:
+            return None
+        try:
+            return self._secret.read()
+        except SecretRefused:
+            raise Unsigned("client_secret") from None

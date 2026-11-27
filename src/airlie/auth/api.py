@@ -12,7 +12,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from webauthn import (
     generate_authentication_options,
@@ -28,6 +28,7 @@ from webauthn.helpers.structs import (
     UserVerificationRequirement,
 )
 
+from airlie.auth.oidc_flow import Flow, Refused, Unsigned
 from airlie.auth.principal import SESSION_COOKIE, Principal, Resolver, speaks_for_clients
 from airlie.auth.store import AuthStore, Credential, User
 from airlie.config.schema import AuthSpec
@@ -37,9 +38,19 @@ log = logging.getLogger("airlie.auth")
 PREFIX = "/v1/auth"
 PUBLIC_PATHS = frozenset(
     f"{PREFIX}/{p}"
-    for p in ("register/options", "register/verify", "login/options", "login/verify", "logout")
+    for p in (
+        "register/options",
+        "register/verify",
+        "login/options",
+        "login/verify",
+        "logout",
+        "oidc/start",
+        "oidc/callback",
+    )
 )
-"""The routes a person reaches before they are anyone; serve's middleware lets them through."""
+"""The routes a person reaches before they are anyone; serve's middleware lets them through. The two OIDC
+routes are here because a sign-in through the IdP starts, by definition, from someone airlie does not know
+yet — and `/callback` arrives on the IdP's redirect, which carries no cookie airlie would recognize."""
 
 CHALLENGE_SECONDS = 300
 MAX_CEREMONIES = 1000
@@ -153,6 +164,7 @@ def auth_router(
     *,
     now: Callable[[], float] = time.time,
     update_panel: bool = False,
+    oidc: Flow | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix=PREFIX)
     ceremonies = Ceremonies(now)
@@ -179,6 +191,62 @@ def auth_router(
         set_session_cookie(
             response, request, cfg, store.make_session(user.id, cfg.session_days), cfg.session_days
         )
+
+    # ---- sign in with the company IdP (docs/superpowers/specs/2026-11-26-oidc-sign-in-design.md) ----
+
+    _OIDC_FAILED = "sign-in failed"
+
+    def oidc_denied(code: str, status: int = 400, **fields: Any) -> JSONResponse:
+        """One log line naming the check that stopped this sign-in, and a fixed sentence to the browser.
+
+        The IdP's own words never appear in the response: they describe airlie to a third party (client_id,
+        endpoints) and on a failed exchange they quote the request, client secret included."""
+        refused(code, **fields)
+        return JSONResponse({"error": _OIDC_FAILED}, status_code=status)
+
+    @router.get("/oidc/start")
+    async def oidc_start(request: Request, target: str | None = None) -> Response:
+        if oidc is None or not oidc.enabled:
+            # Not enabled here: nothing to explain to someone who typed the URL. The studio only asks the
+            # options endpoint whether to show the button, so nobody clicks their way to this.
+            raise HTTPException(404, "no such route")
+        try:
+            location = await oidc.start(target)
+        except Unsigned as e:
+            refused(f"oidc start: {e.code}")
+            return JSONResponse({"error": _OIDC_FAILED}, status_code=502)
+        return RedirectResponse(location, status_code=302)
+
+    @router.get("/oidc/callback")
+    async def oidc_callback(request: Request) -> Response:
+        if oidc is None or not oidc.enabled:
+            raise HTTPException(404, "no such route")
+        query = {key: str(value) for key, value in request.query_params.items()}
+        try:
+            outcome = await oidc.callback(query)
+        except Refused as e:
+            # e.status is the route's answer: 401 for a token that did not verify (Slice D's UI distinguishes
+            # "your IdP said no" from "nobody has linked you yet"), 400 for a callback answering no attempt.
+            return oidc_denied(f"oidc callback: {e.code}", status=e.status)
+        except Unsigned as e:
+            refused(f"oidc callback: {e.code}")
+            return JSONResponse({"error": _OIDC_FAILED}, status_code=502)
+        if outcome.failure:
+            # The verified subject is the one thing that makes this fixable: an admin binds exactly that. The
+            # state is deliberately not logged — until this moment it was a live secret, and a log line is
+            # how a session ends up in a log file. 403, not 400: the request was well-formed and the token
+            # verified, airlie just has no permission for this person, which is what tells Slice D's UI that
+            # this is a "ask an admin to link you" state rather than a retry.
+            refused(f"oidc callback: {outcome.failure}", issuer=oidc.issuer, sub=outcome.subject or "?")
+            return oidc_denied(f"oidc callback: {outcome.failure}", status=403)
+        user = store.user(str(outcome.user_id))
+        if user is None:
+            # A binding to a person airlie no longer has: Slice C drops those with the user. Refusing is the
+            # only safe reading, and re-linking is an admin action rather than a fresh sign-in.
+            return oidc_denied("oidc callback: binding without a user", status=403)
+        redirect = RedirectResponse(outcome.target, status_code=302)
+        sign_in(redirect, request, user)
+        return redirect
 
     @router.get("/me")
     async def me(request: Request) -> dict[str, Any]:

@@ -28,6 +28,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from airlie import __version__
 from airlie.auth.api import PUBLIC_PATHS, auth_router, set_session_cookie
+from airlie.auth.oidc_wiring import build_oidc_flow
 from airlie.auth.principal import SESSION_COOKIE, NotInvited, Principal, Resolver
 from airlie.auth.store import AuthStore
 from airlie.board import BoardStore
@@ -845,6 +846,7 @@ def create_app(
             cfg.auth,
             now=now,
             update_panel=cfg.update.enabled and cfg.update.panel,
+            oidc=build_oidc_flow(cfg, transport=transport, now=now),
         )
     )
 
