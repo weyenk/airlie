@@ -15,6 +15,8 @@ A successful callback ends in the same artifact a passkey login produces: a cook
 from __future__ import annotations
 
 import base64
+import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, parse_qsl, urlparse
@@ -24,10 +26,15 @@ import jwt
 import pytest
 import yaml
 from cryptography.hazmat.primitives.asymmetric import rsa
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
-from airlie.auth.oidc_flow import code_challenge
+from airlie.auth.api import auth_router
+from airlie.auth.oidc_flow import Flow, Outcome, code_challenge
+from airlie.auth.principal import Resolver
 from airlie.auth.store import AuthStore
 from airlie.config import load_config
+from airlie.config.schema import AuthSpec
 from airlie.serve.app import PUBLIC_PATHS, create_app
 from tests.support.auth_store import Clock
 from tests.support.serve import FakeUpstream
@@ -218,6 +225,26 @@ class Studio:
         return user
 
 
+def _reached_the_binding_gate(response: httpx.Response) -> bool:
+    """Whether the callback got all the way past verification to airlie's own binding table.
+
+    Unbound used to answer 403 and now answers the sign-in redirect, and several tests here only need to know
+    that the exchange and the verifier let them through to that table — not which of its two answers they got.
+    Spelled as a helper so those tests stay one assertion and cannot drift into accepting a failure that
+    stopped short of the gate."""
+    return response.status_code == 302 and response.headers.get("location") == "/signin?oidc_unbound=1"
+
+
+def _refused_without_a_session(response: httpx.Response) -> bool:
+    """Whether this callback signed nobody in — the thing these admin-surface tests actually check when they
+    ask whether a subject is still bound. A subject that is no longer bound is refused, and the unbound
+    refusal is the sign-in redirect with no cookie on it, so "not signed in" is the assertion that outlives
+    refusal changing shape. Checked together: a 302 that also minted a session would be a revoked person still
+    working."""
+    signed_in = session_cookie(response) is not None
+    return not signed_in and response.status_code in (302, 403)
+
+
 def secret_file_for(tmp_path: Path, text: str = SECRET) -> Path:
     path = tmp_path / "client-secret"
     path.write_text(text + "\n")
@@ -250,6 +277,75 @@ def test_both_routes_are_public() -> None:
     signed in yet is told "not signed in" while trying to sign in, and the route body never runs."""
     assert "/v1/auth/oidc/start" in PUBLIC_PATHS
     assert "/v1/auth/oidc/callback" in PUBLIC_PATHS
+
+
+def test_the_sign_in_options_route_is_public() -> None:
+    """The sign-in screen asks whether this install has an IdP before it offers the button, and it asks while
+    nobody is signed in. Left out of PUBLIC_PATHS the answer is a 401, the screen reads "no IdP", and an
+    operator who configured everything correctly gets a sign-in screen with no SSO button and no error
+    anywhere — the failure looks like the setting did nothing."""
+    assert "/v1/auth/signin/options" in PUBLIC_PATHS
+
+
+def test_the_options_endpoint_reports_no_idp_when_oidc_is_off(tmp_path: Path) -> None:
+    """The shipped shape: a config that never mentions OIDC. The button is absent rather than greyed out, so a
+    default install's sign-in screen is the screen it was before SSO existed."""
+    store = AuthStore(tmp_path / "state" / "auth.sqlite")
+    app = create_app(
+        minimal_config(tmp_path), transport=httpx.MockTransport(FakeUpstream()), auth_store=store
+    )
+    r = client_for(app).get("/v1/auth/signin/options")
+    assert r.status_code == 200
+    assert r.json() == {"oidc": False}
+    store.close()
+
+
+def test_the_options_endpoint_reports_the_idp_it_would_redirect_to(studio: Studio) -> None:
+    """Enabled and configured: the same condition `/start` tests, so the screen can never offer a button whose
+    route answers 404."""
+    r = studio.client.get("/v1/auth/signin/options")
+    assert r.status_code == 200
+    assert r.json() == {"oidc": True}
+
+
+def test_the_reported_flag_is_the_flag_the_routes_answer_for(tmp_path: Path) -> None:
+    """The two halves of one decision must not be able to drift: `/start` answers 404 exactly when the options
+    endpoint says there is no IdP. An install advertising a button for a route that 404s is a sign-in screen
+    that sends people to a dead link, and the drift is invisible from either side alone.
+
+    `enabled: false` beside an issuer is the case that makes pinning the two together worth it: on it
+    `build_oidc_flow` is non-None (its condition is `enabled and issuer`), and the flow's `enabled` is what
+    the routes refuse on. So the flag reads the pair the routes read, not the builder alone — a build that
+    answered from `oidc is not None` would offer a button for a 404."""
+    built = Studio(tmp_path, enabled=False)
+    try:
+        assert built.client.get("/v1/auth/signin/options").json() == {"oidc": False}
+        assert built.start().status_code == 404  # and it stayed 404, as the flag says
+    finally:
+        built.store.close()
+
+
+def test_the_options_endpoint_names_nothing_about_the_idp(studio: Studio) -> None:
+    """It is public, so it says only that an IdP exists. The issuer names the company behind the deployment to
+    anyone who can reach it, and the rest of the block is policy an attacker would rather read than guess; all
+    of it is one answer away the moment this route starts echoing its config."""
+    body = studio.client.get("/v1/auth/signin/options")
+    assert body.status_code == 200
+    assert body.json() == {"oidc": True}
+    for leak in (ISSUER, CLIENT_ID, EXTERNAL, SECRET):
+        assert leak not in body.text
+
+
+def test_the_options_endpoint_is_anonymous(tmp_path: Path) -> None:
+    """No cookie: this is what the sign-in screen sends. A 401 here is the failure in
+    `test_the_sign_in_options_route_is_public` arriving from the other side."""
+    built = Studio(tmp_path)
+    try:
+        anonymous = client_for(built.app)
+        assert "airlie_session" not in anonymous.cookies
+        assert anonymous.get("/v1/auth/signin/options").status_code == 200
+    finally:
+        built.store.close()
 
 
 def test_oidc_off_answers_404(tmp_path: Path) -> None:
@@ -354,7 +450,7 @@ def test_a_public_client_exchanges_without_a_secret(tmp_path: Path) -> None:
     studio = Studio(tmp_path, client_secret_file=str(tmp_path / "absent"))
     response = studio.succeed()
     assert "client_secret" not in studio.idp.token_requests[-1]
-    assert response.status_code == 403  # it reached the binding gate, so the exchange was accepted
+    assert _reached_the_binding_gate(response)  # it got to the binding gate, so the exchange was accepted
     studio.store.close()
 
 
@@ -407,7 +503,7 @@ def test_the_state_is_consumed_by_the_first_callback(studio: Studio) -> None:
     Popping it also means the verifier is never offered twice."""
     params = studio.authorize_params()
     studio.token_for(params["nonce"])
-    assert studio.callback({"code": "c", "state": params["state"]}).status_code == 403
+    assert _reached_the_binding_gate(studio.callback({"code": "c", "state": params["state"]}))
     assert studio.callback({"code": "c", "state": params["state"]}).status_code == 400
     assert studio.idp.calls["token"] == 1
 
@@ -435,9 +531,9 @@ def test_two_attempts_do_not_answer_each_other(studio: Studio) -> None:
 
 def test_each_attempt_completes_on_its_own_nonce(studio: Studio) -> None:
     """The same flow twice, each with a token minted for its own nonce: both get as far as the gate airlie
-    controls, which is as far as Slice B goes without a binding."""
-    assert studio.succeed().status_code == 403
-    assert studio.succeed().status_code == 403
+    controls, which is as far as this goes without a binding."""
+    assert _reached_the_binding_gate(studio.succeed())
+    assert _reached_the_binding_gate(studio.succeed())
 
 
 def test_a_url_from_the_history_cannot_sign_anyone_in(studio: Studio) -> None:
@@ -541,7 +637,7 @@ def test_a_rotated_key_is_picked_up(studio: Studio) -> None:
     params = studio.authorize_params()
     studio.idp.jwks = {"keys": [public_jwk("rotated")]}
     studio.token_for(params["nonce"], kid="rotated")
-    assert studio.callback({"code": "c", "state": params["state"]}).status_code == 403
+    assert _reached_the_binding_gate(studio.callback({"code": "c", "state": params["state"]}))
 
 
 def test_the_jwks_is_fetched_once_across_sign_ins(studio: Studio) -> None:
@@ -586,8 +682,9 @@ def test_a_verified_but_unbound_subject_is_refused_and_no_user_appears(studio: S
     airlie identity and pick their own subject to be known by."""
     dana = studio.store.add_user("Dana", "member", login="dana")
     response = studio.succeed()
-    assert response.status_code == 403
+    assert response.status_code == 302  # the refusal is a redirect now; nothing about it mints a session
     assert session_cookie(response) is None
+    assert "set-cookie" not in response.headers
     assert studio.store.users() == [dana]  # the sign-in created nobody
 
 
@@ -619,18 +716,22 @@ def test_the_subject_is_never_used_as_a_user_id(studio: Studio) -> None:
     id still gets nothing. A session may only ever be keyed on a row airlie created."""
     dana = studio.store.add_user("Dana", "member", login="dana")
     response = studio.succeed(sub=dana.id)
-    assert response.status_code == 403
+    assert response.status_code == 302  # refused, and refused without a session
     assert session_cookie(response) is None
+    assert "set-cookie" not in response.headers
 
 
 def test_a_failure_never_redirects(studio: Studio) -> None:
-    """The route answers every failure with a JSON body, not a redirect — so the target the person asked for
-    cannot be used as a destination by a callback that failed. That single property is worth pinning across
-    the failures rather than at one site, because the way to break it is to "help" the person back to the
-    sign-in screen with a 302, which turns an attacker-chosen target into a live redirect and, on the
-    unbound path, sends a session-less browser to a guarded page that bounces it into a loop.
+    """A failure that did not verify answers a JSON body, never a redirect — so the target the person asked
+    for cannot be used as a destination by a callback that failed. That single property is worth pinning
+    across the failures rather than at one site, because the way to break it is to "help" the person back
+    somewhere with a 302, which turns an attacker-chosen target into a live redirect and, on a guarded route,
+    sends a session-less browser into a bounce loop.
 
-    A successful sign-in is the one place a Location is right, which is what the target tests above check."""
+    Exactly one refusal redirects, and it is not one of these: `unbound` — the only gate behind verification —
+    is pinned separately at `test_an_unbound_subject_is_sent_to_the_sign_in_screen_with_one_flag`, and its
+    destination is a constant rather than the attempt's target. A successful sign-in is the other place a
+    Location is right, which is what the target tests above check."""
     studio.bind("user-123")  # otherwise the earliest failure is "unbound" and the interesting ones never run
     for params, expected in (
         ({"state": "never-issued", "code": "c"}, 400),
@@ -648,9 +749,402 @@ def test_a_failure_never_redirects(studio: Studio) -> None:
     assert session_cookie(bad_token) is None
 
 
-def test_an_unbound_subject_gets_no_redirect_and_no_session(tmp_path: Path) -> None:
-    """The unbound path specifically, with nothing bound: 403, JSON, no Location, no cookie. Honouring the
-    target here would hand the redirect to whoever wrote the link that started the attempt.
+def test_an_unbound_subject_is_sent_to_the_sign_in_screen_with_one_flag(tmp_path: Path) -> None:
+    """The most common state of a real corporate rollout: SSO worked, nobody is linked yet. The old answer was
+    a bare 403 JSON body, which left the browser sitting on airlie's JSON — the SPA never booted, so the
+    person read nothing and the `reason` field could be read by nobody.
+
+    So this one refusal answers 302 to airlie's own sign-in screen carrying the flag the screen already reads
+    (`OIDC_UNBOUND_FLAG` in `web/src/lib/oidc.ts`, pinned by name at `web/src/lib/oidc.test.ts`). No user
+    appears: the tempting version of this branch creates the person on the IdP's say-so, which makes the first
+    sign-in work and means anyone the IdP will still assert — a departed account, an IdP-wide group — can
+    conjure an airlie identity and choose the subject it is known by."""
+    studio = Studio(tmp_path, client_secret_file=str(secret_file_for(tmp_path)))
+    assert studio.store.users() == []
+    response = studio.succeed(target="/board/SECRET-1")
+    assert response.status_code == 302, response.text
+    assert response.headers["location"] == "/signin?oidc_unbound=1"
+    assert response.text == ""  # a redirect carries no body for the SPA to miss
+    assert session_cookie(response) is None
+    assert studio.store.users() == []  # the sign-in created nobody
+    studio.store.close()
+
+
+def _domain_refused(tmp_path: Path) -> httpx.Response:
+    """A token whose email domain the config refuses: 401, and the only gate that reaches this answer with a
+    verified signature rather than a rejected one, so it cannot be produced from the shared studio (whose
+    config allows `acme.com`)."""
+    refused = Studio(tmp_path, allowed_domains=["other.example"])
+    try:
+        return refused.succeed(target="/board/SECRET-1")
+    finally:
+        refused.store.close()
+
+
+def _bind_a_person_airlie_does_not_have(studio: Studio) -> None:
+    """A binding row pointing at a user id with no row behind it — `binding_without_user`'s starting state.
+
+    Written by hand with enforcement off because the store cannot produce it: its foreign key refuses the
+    insert and deleting a person cascades their bindings away. An operator's own sqlite3 session is the only
+    thing that leaves a row like this behind (that client runs no `pragma foreign_keys`), which is why the
+    route has an answer for it. One helper because several tests need this exact row and the unique
+    `(iss, sub)` means only one of them can create it."""
+    studio.store.conn.execute("pragma foreign_keys=off")
+    studio.store.conn.execute(
+        "insert into oidc_bindings (iss, sub, user_id, bound_at, bound_by) values (?, ?, ?, ?, ?)",
+        (ISSUER, "user-123", "no-such-user", studio.clock.t, "admin"),
+    )
+    studio.store.conn.commit()
+
+
+def _refusal_shapes(studio: Studio, tmp_path: Path) -> list[tuple[str, httpx.Response]]:
+    """One live HTTP response per way this route can refuse, keyed by the gate that closed.
+
+    Built here rather than written as a table of literals because a refusal is defined by the gate that
+    produced it, so each case has to run its own `/start`, read its own state off the authorize redirect, and
+    set the IdP's reply just before the case that consumes it.
+
+    `declined` and `no_code` are deliberately absent: no browser can make this route answer them. `create_app`
+    calls `build_oidc_flow` once per app and `Flow.start`/`Flow.callback` share that one `Attempts`, so a
+    state the browser read off `/start` is always live here — and a test's own second `build_oidc_flow` gets a
+    second store, which is why an out-of-band state only ever answers `no_attempt`. Those two gates are
+    pinned at the
+    flow instead, in `test_no_other_failure_value_redirects_than_unbound`, so the whole failure set is still
+    covered rather than only the half that happens to be reachable."""
+    shapes: list[tuple[str, httpx.Response]] = []
+
+    shapes.append(("no_attempt", studio.callback({"code": "c"})))
+    shapes.append(("unknown_state", studio.callback({"code": "c", "state": "never-issued"})))
+
+    # a claim the token itself fails to satisfy: refused at 401 by a TokenRejected
+    expired = studio.authorize_params(target="/board/SECRET-1")
+    studio.token_for(expired["nonce"], exp=int(studio.clock.t) - 30)
+    shapes.append(("expired", studio.callback({"code": "c", "state": expired["state"]})))
+
+    forged_nonce = studio.authorize_params(target="/board/SECRET-1")
+    studio.token_for("a-nonce-minted-for-another-attempt")
+    shapes.append(("nonce", studio.callback({"code": "c", "state": forged_nonce["state"]})))
+
+    shapes.append(("domain", _domain_refused(tmp_path)))
+
+    unsigned = studio.authorize_params(target="/board/SECRET-1")
+    studio.idp.tokens = {"id_token": "unsigned-junk", "access_token": "a"}
+    shapes.append(("unsigned", studio.callback({"code": "c", "state": unsigned["state"]})))
+
+    no_id_token = studio.authorize_params(target="/board/SECRET-1")
+    studio.idp.tokens = {"access_token": "at-1"}
+    shapes.append(("no_id_token", studio.callback({"code": "c", "state": no_id_token["state"]})))
+
+    refused_exchange = studio.authorize_params(target="/board/SECRET-1")
+    studio.idp.tokens = {"id_token": "unused", "access_token": "a"}
+    studio.idp.reject = {"error": "invalid_client", "error_description": f"secret {SECRET}"}
+    shapes.append(("token_refused", studio.callback({"code": "c", "state": refused_exchange["state"]})))
+    studio.idp.reject = None
+
+    shapes.append(("idp_unreachable", _idp_unreachable(tmp_path)))
+    return shapes
+
+
+def _idp_unreachable(tmp_path: Path) -> httpx.Response:
+    """A callback whose token endpoint cannot be reached at all — the `Unsigned` half of the failure set.
+
+    Built as an app that opens every discovery/JWKS call and then a token exchange over a transport that
+    answers nothing, because the seam cannot be swapped mid-flow here: `create_app` calls `build_oidc_flow`,
+    which constructs a fresh `Attempts`, so `Studio.with_idp` would throw away the attempt `/start` just saved
+    and this case would answer `no_attempt` instead of the gate it is meant to pin."""
+    home = _unbound_home(tmp_path, "unreachable")
+
+    class HalfDead(httpx.AsyncBaseTransport):
+        """Discovery and the JWKS work; the token endpoint is gone."""
+
+        def __init__(self, host: IdPHost) -> None:
+            self.host = host
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/token"):
+                raise httpx.ConnectError("connection refused", request=request)
+            return self.host.handle(request)
+
+    studio = Studio(home)
+    try:
+        studio.idp.tokens = {"id_token": "unused", "access_token": "a"}
+        studio.app = create_app(
+            studio.cfg, transport=HalfDead(studio.idp), auth_store=studio.store, now=studio.clock
+        )
+        studio.client = client_for(studio.app)
+        params = studio.authorize_params(target="/board/SECRET-1")
+        return studio.callback({"code": "c", "state": params["state"]})
+    finally:
+        studio.store.close()
+
+
+def test_only_the_unbound_refusal_redirects(studio: Studio, tmp_path: Path) -> None:
+    """REQ 1 — every refusal this route can actually answer keeps its status, keeps a JSON body, and keeps no
+    Location.
+
+    Enumerated rather than exemplified: the way to break this is a second `if` that "helps" one more failure
+    along, and one example cannot see that. `/signin` is public, so redirecting there is safe in a way
+    redirecting a failure to its target never is — which is precisely the reason the exception has to stay
+    confined to the one gate behind verification. Anything else that grew a Location would be reading a
+    destination from a request that just failed."""
+    unbound = studio.succeed(target="/board/SECRET-1")
+    assert unbound.status_code == 302  # the one exception, so the loop below is about everything else
+
+    # The enumeration must cover the branch that exception lives in, not merely the gate that got the new
+    # answer. `unbound` above is one half of `if outcome.failure:`; the other half is a binding whose person
+    # is
+    # gone. It is seeded on its own store and last, because a connection's `pragma foreign_keys` is persistent
+    # and the shipped default (`pragma foreign_keys=on`, `auth/store.py`) would cascade a hand-written orphan
+    # row away before the callback read it — leaving the case to degrade silently into the unbound refusal it
+    # exists to distinguish itself from, which is exactly the hole that let the mutation through.
+    seeded = Studio(_unbound_home(tmp_path, "enumerated"))
+    try:
+        _bind_a_person_airlie_does_not_have(seeded)
+        orphan = seeded.authorize_params(target="/board/SECRET-1")
+        seeded.token_for(orphan["nonce"])
+        shapes = _refusal_shapes(studio, tmp_path) + [
+            ("binding_without_user", seeded.callback({"code": "c", "state": orphan["state"]}))
+        ]
+    finally:
+        seeded.store.close()
+
+    seen = {gate for gate, _ in shapes}
+    # the enumeration is only worth anything if it still covers the gates it claims to
+    assert {"no_attempt", "expired", "nonce", "domain", "unsigned", "no_id_token", "token_refused"} <= seen, (
+        seen
+    )
+
+    for gate, response in shapes:
+        assert "location" not in response.headers, f"{gate} answered a redirect: {response.headers}"
+        assert response.headers.get("content-type", "").startswith("application/json"), gate
+        if gate == "binding_without_user":
+            assert response.status_code == 403, gate
+            assert response.json()["reason"] == "binding_without_user", gate
+        elif gate in ("expired", "nonce", "domain", "unsigned"):
+            assert response.status_code == 401, gate
+        elif gate in ("no_id_token", "token_refused", "idp_unreachable"):
+            assert response.status_code == 502, gate
+        else:
+            assert response.status_code == 400, gate
+        assert session_cookie(response) is None, gate
+        assert "set-cookie" not in response.headers, gate
+
+
+def test_no_other_failure_value_redirects_than_unbound(tmp_path: Path) -> None:
+    """REQ 1, at the seam the route actually branches on: `Outcome.failure`.
+
+    The route's rule is one string comparison, so the honest version of "only unbound redirects" is: hand the
+    route every failure value the flow can produce and check what it answers. Two of them — the declined
+    consent screen and a callback with no code — cannot be produced over HTTP at all (see `_refusal_shapes`),
+    so they are manufactured here at the flow. Without this half the enumeration would cover only what
+    is reachable today, which is exactly how `declined` could one day start redirecting unnoticed. The last
+    entry is a gate nobody has written yet: an unknown failure must still be refused, not waved at a page."""
+    store = AuthStore(tmp_path / "auth.sqlite")
+    try:
+        outcomes = [
+            Outcome(failure="declined", target="/board/SECRET-1"),
+            Outcome(failure="no_code", target="/board/SECRET-1"),
+            Outcome(failure="binding_without_user", target="/board/SECRET-1"),
+            Outcome(failure="some_future_gate", target="/board/SECRET-1"),
+        ]
+        refused = _route_refusals(store, outcomes)
+        assert len(refused) == len(outcomes), "the harness produced nothing to check"
+        for failure, response in refused:
+            assert response.status_code == 403, failure
+            assert "location" not in response.headers, f"{failure} redirected: {response.headers}"
+            assert response.headers.get("content-type", "").startswith("application/json"), failure
+            assert response.json()["reason"] == failure, failure
+            assert session_cookie(response) is None, failure
+            assert "set-cookie" not in response.headers, failure
+    finally:
+        store.close()
+
+
+def _route_refusals(store: AuthStore, outcomes: list[Outcome]) -> list[tuple[str, Any]]:
+    """Each `Outcome` above, answered by the real route, with only the flow's decision stubbed.
+
+    The double stands in for the IdP-facing half only: `callback` returns the outcome, everything else — the
+    route, its branches, its response — is airlie's own. So a change in how a failure becomes HTTP shows up
+    here, and a failure that started redirecting could not hide behind a mocked response."""
+    results: list[tuple[str, Any]] = []
+
+    class _Decided(Flow):
+        def __init__(self, outcome: Outcome) -> None:
+            self._outcome = outcome
+
+        @property
+        def enabled(self) -> bool:
+            return True
+
+        @property
+        def issuer(self) -> str:
+            return ISSUER
+
+        async def callback(self, query: Mapping[str, str]) -> Outcome:
+            return self._outcome
+
+    router = auth_router(store, Resolver(store, AuthSpec(), None), AuthSpec(), oidc=_Decided(Outcome()))
+    assert router.routes  # the shipped factory built the route, so a 404 below means a real mistake
+    for outcome in outcomes:
+        app = FastAPI()
+        decided = _Decided(outcome)
+        app.include_router(auth_router(store, Resolver(store, AuthSpec(), None), AuthSpec(), oidc=decided))
+        response = TestClient(app).get("/v1/auth/oidc/callback?code=c&state=s", follow_redirects=False)
+        assert response.status_code != 404, "the route did not use the stubbed flow"
+        results.append((str(outcome.failure), response))
+    return results
+
+
+def test_the_unbound_redirect_carries_nothing_the_flow_used(studio: Studio) -> None:
+    """REQ 2 — the destination is the sign-in route plus one flag, byte for byte, and nothing else.
+
+    Each value below is on the request that just reached this response, and none of them may appear in the
+    Location: the code and the client secret were in the exchange form, the state was live until a moment ago,
+    the nonce and verifier are what made the token count, and the `sub` is the key an admin binds a person on.
+    An address is kept in browser history and can leave as a Referer, so a subject in a URL is a subject
+    handed onward — which is why the pair lives in the log line and not here."""
+    params = studio.authorize_params(target="/board/SECRET-1")
+    studio.token_for(params["nonce"])
+    response = studio.callback({"code": "the-code", "state": params["state"]})
+    assert response.status_code == 302
+    location = response.headers["location"]
+    assert location == "/signin?oidc_unbound=1"
+    assert "?" in location  # the flag is a query parameter, not a path airlie has no route for
+    for leak in (
+        "user-123",  # sub
+        ISSUER,  # iss
+        "dana@acme.com",  # email claim
+        params["state"],
+        params["nonce"],
+        "the-code",
+        SECRET,
+        "SECRET-1",  # the target the attempt carried
+        "board",
+        "&",  # a second parameter would mean the flag is no longer alone
+    ):
+        assert leak not in location, f"{leak!r} reached the Location: {location}"
+    # the verifier went to the token endpoint and must not have surfaced anywhere
+    assert "code_verifier" not in location
+    assert studio.idp.token_requests[-1]["code_verifier"] not in location
+
+
+def test_the_unbound_destination_ignores_the_target_the_attempt_carried(studio: Studio) -> None:
+    """REQ 3 — the Location is one constant, whatever the attempt was aiming at.
+
+    On a failure the stored target is meaningless: it arrived on the request that just failed, and
+    `Outcome.target` collapses to `/signin` for exactly that reason. Asserted byte-for-byte across a whole set
+    of targets — including the ones an implementation built from `request.url`, `Host`, `X-Forwarded-Host` or
+    `outcome.target` would answer differently — so no such derivation can slip in under the cover of "the
+    redirect is only a flag". The Host and forwarded-header variants are sent here because the risk is a
+    future implementation reading them; a constant survives them by construction."""
+    targets = ["/", "/board/SECRET-1", "/chat", "/metrics", "/admin", "/workflows/x", "//evil.example"]
+    seen = set()
+    for target in targets:
+        response = studio.succeed(target=target)
+        assert response.status_code == 302, response.text
+        seen.add(response.headers["location"])
+        assert response.headers["location"] == "/signin?oidc_unbound=1", target
+
+    weird = studio.authorize_params(target="/board/SECRET-1")
+    studio.token_for(weird["nonce"])
+    headers = {
+        "Host": "attacker.example",
+        "X-Forwarded-Host": "attacker.example",
+        "X-Forwarded-Proto": "https",
+        "X-Forwarded-Prefix": "/airlie",
+    }
+    spoofed = studio.client.get(
+        f"/v1/auth/oidc/callback?code=the-code&state={weird['state']}",
+        follow_redirects=False,
+        headers=headers,
+    )
+    assert spoofed.status_code == 302
+    seen.add(spoofed.headers["location"])
+    assert spoofed.headers["location"] == "/signin?oidc_unbound=1"
+    assert "attacker" not in spoofed.headers["location"]
+    assert seen == {"/signin?oidc_unbound=1"}  # one answer, for seven targets and a spoofed host
+
+
+def test_the_unbound_redirect_mints_no_session(studio: Studio) -> None:
+    """REQ 4 — a refusal mints nothing. Not a cookie, not a row.
+
+    The row is the part a `Set-Cookie` check cannot see: an implementation that called `make_session` and then
+    redirected without the cookie would pass a header-only test and leave a live session in the store for a
+    person airlie refused."""
+    assert _session_rows(studio.store) == 0
+    response = studio.succeed(target="/board/SECRET-1")
+    assert response.status_code == 302
+    assert "set-cookie" not in response.headers, response.headers
+    assert session_cookie(response) is None
+    assert _session_rows(studio.store) == 0
+
+
+def test_two_unbound_people_get_the_same_answer(tmp_path: Path) -> None:
+    """REQ 5 — one person's unbound redirect is indistinguishable from another's.
+
+    Two separate deployments' worth of flow, two subjects, two targets: same status, same Location, same empty
+    body, same header names. Anything that varied here — the subject, the issuer, a per-attempt value, a
+    timestamp — would let a caller compare two redirects and read a binding table they have no access to."""
+    one = Studio(_unbound_home(tmp_path, "one"))
+    two = Studio(_unbound_home(tmp_path, "two"))
+    try:
+        first_params = one.authorize_params(target="/board/SECRET-1")
+        one.token_for(first_params["nonce"], sub="subject-one", email="one@acme.com")
+        first = one.callback({"code": "code-one", "state": first_params["state"]})
+
+        second_params = two.authorize_params(target="/metrics")
+        two.token_for(second_params["nonce"], sub="subject-two", email="two@acme.com")
+        second = two.callback({"code": "code-two", "state": second_params["state"]})
+
+        assert first.status_code == second.status_code == 302
+        assert first.headers["location"] == second.headers["location"] == "/signin?oidc_unbound=1"
+        assert first.text == second.text == ""
+        assert sorted(first.headers.keys()) == sorted(second.headers.keys())
+        for value in ("subject-one", "subject-two", "one@acme.com", "two@acme.com", ISSUER, "SECRET-1"):
+            assert value not in first.text
+            assert value not in second.text
+            assert value not in first.headers["location"]
+            assert value not in second.headers["location"]
+    finally:
+        one.store.close()
+        two.store.close()
+
+
+def _unbound_home(tmp_path: Path, name: str) -> Path:
+    """A directory `Studio` can be built in. It inherits `Studio`'s creation of the base config, so all it has
+    to supply is a place for that config to live."""
+    home = tmp_path / name
+    home.mkdir(parents=True, exist_ok=True)
+    return home
+
+
+def _session_rows(store: AuthStore) -> int:
+    return int(store.conn.execute("select count(*) from sessions").fetchone()[0])
+
+
+def test_an_unbound_refusal_is_still_logged_with_the_pair_the_admin_needs(studio: Studio, caplog) -> None:
+    """The redirect carries no `iss`/`sub`, so the log line is the whole handoff: it must survive the change
+    unchanged, naming both halves, while nothing sensitive joins it or the redirect."""
+    with caplog.at_level("WARNING"):
+        response = studio.succeed(target="/board/SECRET-1")
+    lines = [r.getMessage() for r in caplog.records if "auth_refused" in r.getMessage()]
+    joined = " ".join(lines)
+    assert f"issuer={ISSUER}" in joined, joined
+    assert "sub=user-123" in joined, joined
+    assert "unbound" in joined, joined
+    assert response.status_code == 302
+    assert "user-123" not in response.headers["location"]
+    assert ISSUER not in response.headers["location"]
+
+
+def test_an_unbound_subject_gets_no_session_and_no_user_and_no_target(tmp_path: Path) -> None:
+    """The unbound path with nothing bound, from the side that must never change: no session, no new person,
+    and no trace of the target the attempt carried.
+
+    The redirect goes to one constant, so honouring the target here is impossible by construction — and this
+    is
+    the assertion that stays true whichever way the status is spelled, which is why it is kept beside (not in
+    place of) the test that pins the 302 itself.
 
     And no user appears: the tempting version of this branch creates the person on the IdP's say-so, which
     makes the first sign-in work and means anyone the IdP will still assert — a departed account, an IdP-wide
@@ -658,10 +1152,10 @@ def test_an_unbound_subject_gets_no_redirect_and_no_session(tmp_path: Path) -> N
     studio = Studio(tmp_path, client_secret_file=str(secret_file_for(tmp_path)))
     assert studio.store.users() == []
     response = studio.succeed(target="/board/SECRET-1")
-    assert response.status_code == 403
-    assert response.headers.get("content-type", "").startswith("application/json")
-    assert "location" not in response.headers
+    assert response.headers["location"] == "/signin?oidc_unbound=1"
+    assert "SECRET-1" not in response.headers["location"]
     assert session_cookie(response) is None
+    assert "set-cookie" not in response.headers
     assert studio.store.users() == []  # the sign-in created nobody
     studio.store.close()
 
@@ -676,14 +1170,14 @@ def test_a_domain_outside_the_allowlist_is_refused(tmp_path: Path) -> None:
 
 def test_an_allowed_domain_still_needs_a_binding(tmp_path: Path) -> None:
     studio = Studio(tmp_path, allowed_domains=["acme.com"])
-    assert studio.succeed().status_code == 403  # the gate passed; the missing binding is what refuses
+    assert _reached_the_binding_gate(studio.succeed())  # the gate passed; the missing binding is what refuses
     studio.store.close()
 
 
 def test_a_group_outside_the_allowlist_is_refused(tmp_path: Path) -> None:
     studio = Studio(tmp_path, groups_claim="groups", allowed_groups=["engineering"])
     assert studio.succeed(groups=["marketing"]).status_code == 401
-    assert studio.succeed(groups=["engineering", "marketing"]).status_code == 403
+    assert _reached_the_binding_gate(studio.succeed(groups=["engineering", "marketing"]))
     studio.store.close()
 
 
@@ -720,24 +1214,39 @@ def test_a_target_that_is_not_a_studio_route_does_not_survive(studio: Studio) ->
     assert studio.succeed(target="//evil.example").headers["location"] == "/"
 
 
-def test_the_callback_never_answers_302_without_a_session(studio: Studio) -> None:
-    """The invariant the route must keep, stated at the route: a 302 out of /callback always arrives with the
-    session cookie that makes the destination reachable.
+def test_a_302_without_a_session_goes_only_to_the_public_sign_in_screen(studio: Studio) -> None:
+    """The invariant the route keeps, restated for the one refusal that is allowed to redirect.
+
+    It used to read "a 302 out of /callback always arrives with the session cookie". That held only because no
+    failure could redirect at all, and it was never the property worth having — the property is that a
+    session-less browser is never sent somewhere it cannot stand. So the rule is now about the destination: a
+    302 with a cookie may name the person's target, and the one 302 without a cookie must name `/signin`
+    (`meta.public` in `web/src/router.ts`, so it cannot bounce), and never the target the attempt carried.
 
     The failure paths carry a real target because /start sanitises and saves it before anything is known about
     the subject, so a refactor that answered "go to your target, you'll get bounced" would produce an
-    attacker-chosen redirect — and on the unbound path, a loop into a guarded page that reads as the IdP being
-    broken. Nothing else in this file checks the pair (302, cookie) together."""
-    reachable = studio.succeed(target="/board/SECRET-1")  # nothing bound: refused
-    assert reachable.status_code == 403
+    attacker-chosen redirect, and a guarded page reads to the person as the IdP being broken."""
+    unbound = studio.succeed(target="/board/SECRET-1")  # nothing bound: the one refusal that redirects
+    assert unbound.status_code == 302
+    assert session_cookie(unbound) is None
+    assert unbound.headers["location"] == "/signin?oidc_unbound=1"
+
+    studio.idp.tokens = {"id_token": "unsigned-junk", "access_token": "a"}
+    unverified = studio.authorize_params(target="/board/SECRET-1")
+    refused_unverified = studio.callback({"code": "c", "state": unverified["state"]})
+    assert refused_unverified.status_code == 401
+    assert "location" not in refused_unverified.headers
+
     for response in (
-        reachable,
+        unbound,
+        refused_unverified,
         studio.callback({"code": "c"}),  # no state
         studio.callback({"code": "c", "state": "never-issued"}),  # unknown state
     ):
-        assert response.status_code != 302 or session_cookie(response) is not None
-        if response.status_code == 302:  # never today; the assertion is what must stay true
-            assert response.headers["location"].startswith("/")
+        location = response.headers.get("location")
+        if session_cookie(response) is None:
+            assert location is None or location == "/signin?oidc_unbound=1", response.status_code
+        assert location is None or "SECRET-1" not in location
 
     studio.bind("user-123")
     signed_in = studio.succeed(target="/board/SECRET-1")
@@ -748,13 +1257,83 @@ def test_the_callback_never_answers_302_without_a_session(studio: Studio) -> Non
 
 def test_the_failure_body_is_a_fixed_sentence_not_the_idps_words(studio: Studio) -> None:
     """The IdP's text describes airlie to a third party — our client_id, our endpoints, sometimes the secret.
-    The browser gets a fixed sentence; the detail belongs in the log."""
+    The browser gets a fixed sentence; the detail belongs in the log.
+
+    The `error` carries `outcome.failure` (`unbound`, `declined`): airlie's own word for which of its gates
+    stopped this, never the IdP's. It is what the sign-in screen's note is built on, and it stays one of a
+    small set of strings — a body that quoted the IdP would be a body describing airlie to a stranger."""
     studio.idp.statuses["document"] = 503
     studio.idp.document = {"error": f"upstream: {CLIENT_ID} authorize_endpoint {ISSUER}/authorize"}
     response = studio.start()
     assert response.status_code == 502
     for leak in (CLIENT_ID, "authorize", ISSUER):
         assert leak not in response.text
+
+
+def test_the_signin_screen_reads_the_flag_the_failure_leaves_behind() -> None:
+    """The unbound person is told to ask an admin by the web app, and that half of the fix lives on the other
+    side of a language boundary: `web/src/lib/oidc.ts` names the query flag `SignInScreen.vue` reads, and
+    `web:gate` would happily stay green if it were renamed there while the screen kept comparing against the
+    old spelling — the person would get the plain sign-in screen and go bother nobody, the one failure the
+    whole unbound path exists to prevent.
+
+    Read the constant, not a sentence: the wording may be reworded, the name may not. (The `iss`/`sub` half of
+    the same refusal is pinned by `test_a_refusal_is_logged_with_the_subject_but_never_a_token`, and the bind
+    route that consumes that pair by `test_an_admin_binds_a_subject_and_the_person_can_then_sign_in` — this
+    check is only the seam.)"""
+    web = Path(__file__).resolve().parents[2] / "web" / "src" / "lib" / "oidc.ts"
+    assert re.search(r'OIDC_UNBOUND_FLAG\s*=\s*"oidc_unbound"', web.read_text()), (
+        "the sign-in screen's unbound flag was renamed on one side only"
+    )
+
+
+def test_the_refusal_body_names_the_gate_and_nothing_else(tmp_path: Path) -> None:
+    """A refusal body the UI can branch on — `reason` — and nothing from the flow.
+
+    It is the *binding-without-a-user* refusal that answers with a body here: `unbound` redirects now, so no
+    unbound response carries JSON, and that is pinned by
+    `test_an_unbound_subject_is_sent_to_the_sign_in_screen_with_one_flag` rather than weakened into this one.
+    The two refusals share one rule, which is what this test still checks: `reason` is airlie's own word
+    for the gate, and every other value is either something the caller already held (the subject it just
+    presented, its own target) or a secret that must stay server-side. The state was live until this moment,
+    and the address the person was aiming at belongs to a redirect that a refused sign-in must not be."""
+    studio = Studio(tmp_path)
+    try:
+        studio.store.conn.execute("pragma foreign_keys=off")
+        studio.store.conn.execute(
+            "insert into oidc_bindings (iss, sub, user_id, bound_at, bound_by) values (?, ?, ?, ?, ?)",
+            (ISSUER, "user-123", "no-such-user", studio.clock.t, "admin"),
+        )
+        response = studio.succeed(target="/board/SECRET-1")
+        assert response.status_code == 403
+        body = response.json()
+        assert body["reason"] == "binding_without_user"
+        assert body["error"] == "sign-in failed"  # the fixed sentence stays
+        for leak in ("user-123", "SECRET-1", "board", "the-code", SECRET, ISSUER, CLIENT_ID):
+            assert leak not in response.text
+    finally:
+        studio.store.close()
+
+
+def test_a_failure_never_echoes_the_target_it_was_handed(studio: Studio) -> None:
+    """The target is the one value on this request that a refusal must not repeat.
+
+    `/start` sanitises and saves it before anything is known about the subject, so every failure path is
+    holding a destination that arrived on the request which just failed. Repeating it — as a `Location`, or as
+    a `next` field a client would obediently open — is the open redirect coming back through the JSON door,
+    and on the unbound path it also means a session-less browser sent to a guarded page and bounced into a
+    loop. The person's destination is used by exactly one answer: the 302 that arrives with a session."""
+    studio.bind("user-123")  # so the failures below are not merely the unbound one
+    forged = studio.authorize_params(target="/board/SECRET-1")
+    studio.idp.tokens = {"id_token": "unsigned-junk", "access_token": "a"}
+    for response in (
+        studio.callback({"code": "c", "state": forged["state"]}),  # token did not verify
+        studio.callback({"code": "c", "state": "never-issued"}),  # answers no attempt of ours
+        studio.callback({"code": "c"}),  # no state
+    ):
+        assert response.status_code in (400, 401)
+        assert "SECRET-1" not in response.text
+        assert "board" not in response.text
 
 
 def test_an_unreachable_idp_is_a_bad_gateway(studio: Studio) -> None:
@@ -981,10 +1560,11 @@ def test_deleting_a_bound_person_signs_them_out_and_is_not_inherited_by_a_namesa
 
     assert admin.delete(f"/v1/auth/users/{dana.id}").status_code == 204
     assert client_for(studio.app, cookie=raw).get("/v1/auth/me").status_code == 401
-    assert studio.succeed().status_code == 403  # the subject is nobody now, not a ghost of Dana
+    # the subject is nobody now, not a ghost of Dana
+    assert _refused_without_a_session(studio.succeed())
 
     studio.store.add_user("Dana", "admin", login="dana")  # a new person, the same login
-    assert studio.succeed().status_code == 403
+    assert _refused_without_a_session(studio.succeed())
     # and only a deliberate admin act gives the newcomer that subject
     made = admin.post("/v1/auth/oidc/bindings", json={"user_id": dana.id, "iss": ISSUER, "sub": "user-123"})
     assert made.status_code == 404  # the deleted row is gone, so binding to it is refused
@@ -1007,7 +1587,7 @@ def test_unbinding_stops_the_next_sign_in_and_404s_a_subject_that_was_never_boun
 
     r = admin.delete(f"/v1/auth/oidc/bindings?iss={ISSUER}&sub=user-123")
     assert r.status_code == 204
-    assert studio.succeed().status_code == 403
+    assert _refused_without_a_session(studio.succeed())
     assert admin.delete(f"/v1/auth/oidc/bindings?iss={ISSUER}&sub=typo").status_code == 404
 
 

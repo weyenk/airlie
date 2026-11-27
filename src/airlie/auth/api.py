@@ -46,14 +46,16 @@ PUBLIC_PATHS = frozenset(
         "logout",
         "oidc/start",
         "oidc/callback",
+        "signin/options",
         "operator",
     )
 )
 """The routes a person reaches before they are anyone; serve's middleware lets them through. The two OIDC
 routes are here because a sign-in through the IdP starts, by definition, from someone airlie does not know
 yet — and `/callback` arrives on the IdP's redirect, which carries no cookie airlie would recognize.
-`/operator` is here because the label the screen prints names the operator before it knows the person — its
-own docstring carries why that is safe."""
+`signin/options` is here for the same reason: the sign-in screen asks whether this install has an IdP
+before it offers the button, and it asks while nobody is signed in. `/operator` is here because the label the
+screen prints names the operator before it knows the person — its own docstring carries why that is safe."""
 
 CHALLENGE_SECONDS = 300
 MAX_CEREMONIES = 1000
@@ -244,6 +246,34 @@ def auth_router(
 
     _OIDC_FAILED = "sign-in failed"
 
+    _OIDC_UNBOUND_REDIRECT = "/signin?oidc_unbound=1"
+    """The only refusal this route answers with a redirect: a fixed string, never built from anything.
+
+    `oidc_unbound` is the flag the sign-in screen already reads (`OIDC_UNBOUND_FLAG` in
+    `web/src/lib/oidc.ts`), and the flag alone is the whole message — no subject, no issuer, nothing the flow
+    used. That pair belongs in the log line, which is where the setup guide tells an admin to read it from; a
+    URL is kept in browser history and can leave as a Referer, and a subject is the key a binding is made
+    on."""
+
+    @router.get("/signin/options")
+    async def signin_options(request: Request) -> dict[str, bool]:
+        """What the sign-in screen may offer. Public, and it names nothing but a flag.
+
+        `oidc` is `/start`'s own guard — a flow was built and that flow is enabled — read off the same object
+        the two OIDC routes read it off, so the button can never be offered for a route that would answer 404.
+        It says only whether airlie has an IdP configured: not which IdP, no issuer, no client id, nothing an
+        anonymous caller can use. A default install reports false and its sign-in screen shows what it showed
+        before SSO existed.
+
+        Public because the screen asks before anyone is anybody — which is why the body is a flag. Telling a
+        stranger which company's IdP a deployment fronts is why it is not the configured issuer, and why
+        nothing else about the flow (scopes, domains, groups) is here to be read. `request` is unused on
+        purpose and stays in the signature: it is the seam this route must not grow. Reading a destination, a
+        Host or a forwarded proto here would turn "which sign-in can I offer" into "where should I send this
+        person", and that is the derivation this spec rejected for the `redirect_uri`: *configured, never
+        derived*."""
+        return {"oidc": oidc is not None and oidc.enabled}
+
     @router.get("/operator")
     async def operator_label() -> dict[str, str]:
         """Whose name the sign-in and invite screens say to ask. Public, and it adds nothing to what a
@@ -265,9 +295,24 @@ def auth_router(
         """One log line naming the check that stopped this sign-in, and a fixed sentence to the browser.
 
         The IdP's own words never appear in the response: they describe airlie to a third party (client_id,
-        endpoints) and on a failed exchange they quote the request, client secret included."""
+        endpoints) and on a failed exchange they quote the request, client secret included.
+
+        `code` is the log's detail — which route noticed, and which gate closed — so a refusal stays greppable
+        as `auth_refused` beside the rest of this router's audit. It is deliberately not the body: the body
+        needs a *word* the sign-in screen can branch on, and one caller's prefix is not another's word."""
         refused(code, **fields)
         return JSONResponse({"error": _OIDC_FAILED}, status_code=status)
+
+    def oidc_refused(reason: str, status: int, **fields: Any) -> JSONResponse:
+        """A gate that closed, named. Same fixed sentence as `oidc_denied`, plus `reason`.
+
+        `reason` is airlie's own word for which of its gates stopped this, from a fixed set written in this
+        file and `oidc_flow.py` — `unbound`, `declined`, `no_attempt`, a `TokenRejected` code. It is in the
+        body because the sign-in screen must tell "nobody has linked you yet — ask an admin" from "that did
+        not verify, try again", and a body carrying only a fixed sentence cannot. Nothing the caller does not
+        already hold belongs in it: the tests around the refusal body pin what must not come back."""
+        refused(f"oidc callback: {reason}", **fields)
+        return JSONResponse({"error": _OIDC_FAILED, "reason": reason}, status_code=status)
 
     @router.get("/oidc/start")
     async def oidc_start(request: Request, target: str | None = None) -> Response:
@@ -284,6 +329,33 @@ def auth_router(
 
     @router.get("/oidc/callback")
     async def oidc_callback(request: Request) -> Response:
+        """Close an attempt: mint a session, or refuse.
+
+        Exactly one refusal redirects, and the rule behind it is unchanged — *never redirect on a failure that
+        did not verify*. `unbound` is the single gate on the far side of verification: the signature, issuer,
+        audience, expiry, nonce and this install's own domain and group policy all passed, and what stopped
+        the person is a row airlie's own administrator has not written. Every other refusal — `no_attempt`,
+        `declined`, `no_code`, a `TokenRejected` code, a token that never arrived, a binding pointing at a
+        person who is gone — is answered as it always was: the fixed JSON sentence at the status that gate
+        owns, and no `Location`.
+
+        The split is the destination, not the courtesy. A failure that did not verify is holding a `target`
+        that arrived on the request which just failed, and `Outcome.target` collapses to the sign-in screen
+        for exactly that reason: such a refusal has no destination of its own and must not invent one.
+        `unbound` redirects because it needs none — the address is one constant, named here rather than
+        derived, and the screen it names is public, so a session-less browser is not bounced. A guarded route
+        would be a loop, and honouring the attempt's target would be the open redirect this spec has refused
+        since Slice B. That is why the branches that cannot name a safe destination still answer JSON: the
+        rule is not "failures do not redirect", it is "a failure redirects only to an address airlie wrote
+        down".
+
+        Why that one gate is worth the exception: it is the ordinary first state of a corporate rollout — the
+        SSO worked, nobody is linked yet — and a bare 403 body left the browser sitting on airlie's JSON. The
+        SPA never booted, so the person read nothing and the `reason` field helped nobody.
+
+        The redirect carries the flag and nothing else. The log line keeps the `issuer=`/`sub=` the redirect
+        must not: that line is the actual handoff, because an admin binds exactly that pair, and a URL is kept
+        in browser history and can leave as a Referer."""
         if oidc is None or not oidc.enabled:
             raise HTTPException(404, "no such route")
         query = {key: str(value) for key, value in request.query_params.items()}
@@ -292,23 +364,28 @@ def auth_router(
         except Refused as e:
             # e.status is the route's answer: 401 for a token that did not verify (Slice D's UI distinguishes
             # "your IdP said no" from "nobody has linked you yet"), 400 for a callback answering no attempt.
-            return oidc_denied(f"oidc callback: {e.code}", status=e.status)
+            return oidc_refused(e.code, e.status)
         except Unsigned as e:
             refused(f"oidc callback: {e.code}")
             return JSONResponse({"error": _OIDC_FAILED}, status_code=502)
         if outcome.failure:
             # The verified subject is the one thing that makes this fixable: an admin binds exactly that. The
             # state is deliberately not logged — until this moment it was a live secret, and a log line is
-            # how a session ends up in a log file. 403, not 400: the request was well-formed and the token
-            # verified, airlie just has no permission for this person, which is what tells Slice D's UI that
-            # this is a "ask an admin to link you" state rather than a retry.
-            refused(f"oidc callback: {outcome.failure}", issuer=oidc.issuer, sub=outcome.subject or "?")
-            return oidc_denied(f"oidc callback: {outcome.failure}", status=403)
+            # how a session ends up in a log file. 403 stays the status of the refusal for anything reading
+            # this as an API rather than a browser: the request was well-formed and the token verified, airlie
+            # just has no permission for this person. The redirect is that same 403 said to a browser, which
+            # cannot render a JSON body it was navigated to, and it mints nothing — a refusal never signs
+            # anybody in.
+            oidc_refused(str(outcome.failure), 403, issuer=oidc.issuer, sub=outcome.subject or "?")
+            if outcome.failure == "unbound":
+                return RedirectResponse(_OIDC_UNBOUND_REDIRECT, status_code=302)
+            return JSONResponse({"error": _OIDC_FAILED, "reason": str(outcome.failure)}, status_code=403)
         user = store.user(str(outcome.user_id))
         if user is None:
             # A binding to a person airlie no longer has: Slice C drops those with the user. Refusing is the
-            # only safe reading, and re-linking is an admin action rather than a fresh sign-in.
-            return oidc_denied("oidc callback: binding without a user", status=403)
+            # only safe reading, and re-linking is an admin action rather than a fresh sign-in. Named as its
+            # own reason because the person can do nothing with it — this one is an admin noticing a row.
+            return oidc_refused("binding_without_user", 403)
         redirect = RedirectResponse(outcome.target, status_code=302)
         sign_in_oidc(redirect, request, user)
         return redirect

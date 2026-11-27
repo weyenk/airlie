@@ -14,6 +14,23 @@ export type User = { id: string; name: string; login: string | null; role: Role;
 /** A link to hand a person (`/join/<token>`), when it lapses (epoch seconds), and who it is for. */
 export type Invite = { url: string; expires_at: number; user: User };
 
+/** What the sign-in screen may offer. `oidc` is the server's answer to "does this install have an IdP" — the
+ * same condition that decides whether `/v1/auth/oidc/start` exists at all, so a default install reports false
+ * and the screen shows exactly what it showed before SSO existed. */
+export type SignInOptions = { oidc: boolean };
+
+/** Ask before the screen offers anything: `/v1/auth/oidc/start` answers 302 to the IdP, so a browser that
+ * discovered it by probing would be sent off-site. A server that cannot answer is a server with no IdP as far
+ * as this screen is concerned, so the caller keeps whatever it showed and tries again with the next load.
+ *
+ * `key: ""` so no stored admin key rides along: this is sent from the sign-in screen, where a person who has a
+ * key in this browser is exactly the person whose answer should not depend on it. `quiet401` because this route
+ * answers a stranger for a reason (see its docstring in `auth/api.py`), and it has no business signing anybody
+ * out of a page they were already on. */
+export function signInOptions(init: { quiet401?: boolean } = {}): Promise<SignInOptions> {
+  return request<SignInOptions>("/v1/auth/signin/options", { key: "", quiet401: true, ...init });
+}
+
 /** Admin only. */
 export function listUsers(init: { quiet401?: boolean } = {}): Promise<User[]> {
   return request<User[]>("/v1/auth/users", init);
