@@ -46,11 +46,14 @@ PUBLIC_PATHS = frozenset(
         "logout",
         "oidc/start",
         "oidc/callback",
+        "operator",
     )
 )
 """The routes a person reaches before they are anyone; serve's middleware lets them through. The two OIDC
 routes are here because a sign-in through the IdP starts, by definition, from someone airlie does not know
-yet — and `/callback` arrives on the IdP's redirect, which carries no cookie airlie would recognize."""
+yet — and `/callback` arrives on the IdP's redirect, which carries no cookie airlie would recognize.
+`/operator` is here because the label the screen prints names the operator before it knows the person — its
+own docstring carries why that is safe."""
 
 CHALLENGE_SECONDS = 300
 MAX_CEREMONIES = 1000
@@ -240,6 +243,23 @@ def auth_router(
     # ---- sign in with the company IdP (docs/superpowers/specs/2026-11-26-oidc-sign-in-design.md) ----
 
     _OIDC_FAILED = "sign-in failed"
+
+    @router.get("/operator")
+    async def operator_label() -> dict[str, str]:
+        """Whose name the sign-in and invite screens say to ask. Public, and it adds nothing to what a
+        stranger can already read on that screen.
+
+        A person reaches `/signin` or `/join/<token>` before airlie knows them, so `/auth/me` — which
+        needs a principal and answers 401 for nobody — cannot supply the copy those two pages show; this
+        is the read that screen makes instead. `auth.operator_label` is the same label already printed on
+        the page the caller is looking at ("Ask your administrator for an invite"), and a caller who cannot
+        read it has no way to enumerate people: names come from `/users`, which stays admin-only.
+
+        So the guard against a hostile install is not secrecy but *who can set it*: the key lives in
+        `airlie.yaml`, which only an operator of this machine edits. That is the same trust the label had when
+        it was one person's first person, hardcoded here, and it is why a corporate install can say "ask your
+        workspace admin" without a code change. See docs/integrations/sign-in.md."""
+        return {"operator_label": cfg.operator_label}
 
     def oidc_denied(code: str, status: int = 400, **fields: Any) -> JSONResponse:
         """One log line naming the check that stopped this sign-in, and a fixed sentence to the browser.
