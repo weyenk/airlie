@@ -15,10 +15,14 @@ not the one whose tokens we later insist on verifying.
 
 from __future__ import annotations
 
+import errno
+import os
+import stat
 import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -41,6 +45,64 @@ class IdPUnreachable(Exception):
     def __init__(self, code: str, detail: str = "") -> None:
         self.code = code
         super().__init__(f"{code}: {detail}" if detail else code)
+
+
+class SecretRefused(Exception):
+    """The client secret file is present but cannot be trusted. Never quotes the secret, only the setting and
+    the path, so a log line about it is safe."""
+
+
+class ClientSecret:
+    """`auth.oidc.client_secret_file`, opened under the same rules as `sources/github.py` opens its own.
+
+    A secret lives in a file because a value in airlie.yaml ends up in a backup, in a `git diff`, and on the
+    screen of whoever prints the config. The file is opened once with O_NOFOLLOW and checked on that
+    descriptor rather than stat'd first, because stat-then-open is a window in which the path can be swapped
+    for a link to something else."""
+
+    def __init__(self, path: Path, *, setting: str = "auth.oidc.client_secret_file") -> None:
+        self._path = path
+        self._setting = setting
+
+    def read(self) -> str | None:
+        """The secret, or None when there is no file or it holds nothing.
+
+        Absence is not a refusal: a public client has no secret, and whether airlie may run without one is a
+        load-time decision (config/schema.py), not a decision for a request."""
+        path = self._path.expanduser()
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError as e:
+            if e.errno in (errno.ENOENT, errno.ENOTDIR):
+                return None
+            # ELOOP is O_NOFOLLOW refusing a symlink; every other errno is a path we cannot trust either
+            named = "is a symlink: point the setting at the file" if e.errno == errno.ELOOP else str(e)
+            raise SecretRefused(f"{self._setting} {path} {named}") from e
+        try:
+            st = os.fstat(fd)
+            # What is wrong is reported in the order an operator can act on it. Owner before mode would tell
+            # someone holding a world-readable file that belongs to root to go chown it, which they cannot.
+            if st.st_uid != os.geteuid():
+                raise SecretRefused(f"{self._setting} {path} belongs to another user")
+            # stat.S_ISREG rather than an exception from read(): opening a directory succeeds on macOS, so a
+            # directory would otherwise surface however the OS feels about it. Same for a socket or a fifo.
+            if not stat.S_ISREG(st.st_mode):
+                raise SecretRefused(f"{self._setting} {path} is not a regular file")
+            # 0o077 is the read and write bits only, so an executable secret still reads. Execute leaks
+            # nothing, and on macOS an ACL can surface as a mode bit that `chmod 600` will not clear: refusing
+            # it would reject a safe file and then send the operator to a fix that does not work. Group *read*
+            # (0o640) is inside the mask and is refused.
+            if st.st_mode & 0o077:
+                raise SecretRefused(f"{self._setting} {path} can be read by others: chmod 600 {path}")
+            # the bytes are read last: a refusal below must not be built out of what this file contained
+            with os.fdopen(fd, "rb") as handle:
+                fd = -1
+                return handle.read().decode("utf-8", "replace").strip() or None
+        except OSError as e:
+            raise SecretRefused(f"{self._setting} {path} cannot be read: {type(e).__name__}") from e
+        finally:
+            if fd >= 0:
+                os.close(fd)
 
 
 def _origin(url: str) -> str:
