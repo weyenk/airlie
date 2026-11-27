@@ -23,7 +23,7 @@ import secrets
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlencode
 
 from airlie.auth.oidc import KeyRing, TokenRejected, verify_id_token
@@ -111,11 +111,25 @@ class Unsigned(Exception):
 def lookup_binding(iss: str, sub: str) -> str | None:
     """The user bound to this subject, or None when nobody is.
 
-    This is the seam Slice C's `oidc_bindings` table fills: until it exists, no subject is bound, which
-    is the safe answer — an IdP assertion alone must never create a user (the spec's "no auto-link by
-    email"). A module-level function rather than a store parameter so `oidc_flow` stays free of
-    `auth.store`, and so the test double replaces one name."""
+    Not the production path. serve builds a Flow over `auth/oidc_wiring.py`, which hands it the
+    `oidc_bindings` table, so `Flow.callback` calls a method and never reaches this. It stays as the default
+    for a Flow built without one — and the default must refuse, because an IdP assertion alone may never
+    create or adopt a user (the spec's "no auto-link by email"). Keeping it here rather than making the
+    parameter required is also what lets a test build a Flow over one dependency instead of two.
+    """
     return None
+
+
+class Bindings(Protocol):
+    """What `Flow.callback` asks once a token verified: is this subject somebody airlie has?
+
+    A `typing.Protocol` rather than a `(iss, sub) -> str | None` alias precisely because of `lookup_binding`
+    above: a plain function object is not callable *through* an attribute, so `self._bindings(iss, sub)` would
+    fail on one, while a method — `AuthStore.lookup_binding`, the real implementation — is. The protocol
+    states the one thing the callback needs and nothing else, so the flow stays free of `auth.store`.
+    """
+
+    def lookup_binding(self, iss: str, sub: str) -> str | None: ...
 
 
 class Outcome:
@@ -261,6 +275,24 @@ class Attempts:
 CALLBACK_PATH = "/v1/auth/oidc/callback"
 
 
+def _nothing_bound(iss: str, sub: str) -> str | None:
+    """The answer for a Flow built without bindings: nobody. See `_NothingBound` for why the default is an
+    object rather than this function, and `lookup_binding` for why refusing is the safe half of the pair."""
+    return None
+
+
+class _NothingBound:
+    """The `Bindings` a Flow gets when built without one: nobody is ever bound.
+
+    A class rather than a function so `self._bindings(iss, sub)` resolves the same way it does for the real
+    store — and so "no bindings were wired" cannot read as a bug: it refuses, which is what an unbuilt link
+    table should do.
+    """
+
+    def lookup_binding(self, iss: str, sub: str) -> str | None:
+        return _nothing_bound(iss, sub)
+
+
 class Flow:
     """The two halves of an authorization-code sign-in, over one `IdP`, one `Attempts` and one clock.
 
@@ -270,6 +302,10 @@ class Flow:
 
     `idp` is injected rather than built here so serve shares one instance (and therefore one discovery and
     JWKS cache) across requests, and tests hand it a `MockTransport`.
+
+    `bindings` is the link table (see `Bindings`). It has no production default: the value that a Flow built
+    without one falls back to refuses every subject, which is the correct answer for a deployment whose
+    bindings nobody has filled in, and the wrong one to reach for by accident.
     """
 
     def __init__(
@@ -280,12 +316,14 @@ class Flow:
         *,
         now: Callable[[], float],
         secret: ClientSecret | None = None,
+        bindings: Bindings | None = None,
     ) -> None:
         self._spec = spec
         self._idp = idp
         self._attempts = attempts
         self._now = now
         self._secret = secret
+        self._bindings: Bindings = bindings if bindings is not None else _NothingBound()
 
     @property
     def enabled(self) -> bool:
@@ -387,7 +425,7 @@ class Flow:
             # a key the JWT library cannot use is the IdP's problem, not the person's
             raise Unsigned("key") from e
 
-        user_id = lookup_binding(claims.iss, claims.sub)
+        user_id = self._bindings.lookup_binding(claims.iss, claims.sub)
         if user_id is None:
             # The verified subject is what an admin binds, so it is carried out for the log. The spec refuses
             # to guess: no user is created, and an email is never the key ("no auto-link by email").

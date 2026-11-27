@@ -145,8 +145,11 @@ class Studio:
             block["client_secret_file"] = str(secret_file)
         elif "client_secret_file" not in oidc:
             block["client_secret_file"] = str(secret_file_for(tmp_path))
+        auth: dict[str, Any] = {"oidc": block}
+        if "session_days" in oidc:  # an auth-level key, not part of the oidc block
+            auth["session_days"] = oidc.pop("session_days")
         merged = yaml.safe_load((tmp_path / "airlie.yaml").read_text())
-        merged["auth"] = {"oidc": block}
+        merged["auth"] = auth
         (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(merged))
         self.cfg = load_config(tmp_path / "airlie.yaml")
         self.secret_path = secret_file if secret_file is not None else Path(block["client_secret_file"])
@@ -201,21 +204,18 @@ class Studio:
         return self.callback({"code": "the-code", "state": params["state"]})
 
     def bind(self, sub: str, login: str = "dana", role: str = "member") -> Any:
-        """Bind a subject to a user the way Slice C's admin surface will, until Slice C exists: the store
-        record the callback looks up. Deliberately one call in one place, so replacing it with the real table
-        is a one-line change here rather than an edit in eight tests."""
+        """Bind a subject to a new person, through the same table the callback reads.
+
+        Deliberately the harness's only binding helper, and deliberately writing the real store rather than
+        a stand-in: Slice B faked this with a module dict patched into `oidc_flow`, which meant every green
+        happy path here proved the callback asked *something* and not that it asked the table an admin fills.
+        The issuer comes from the loaded config rather than the `ISSUER` constant so a test that runs against
+        a different issuer cannot pass by coincidence."""
         user = self.store.add_user("Dana", role, login=login)  # type: ignore[arg-type]
-        _BINDINGS[(self.cfg.auth.oidc.issuer, sub)] = user.id
+        self.store.bind_subject(
+            user_id=user.id, iss=str(self.cfg.auth.oidc.issuer), sub=sub, bound_by="admin"
+        )
         return user
-
-
-_BINDINGS: dict[tuple[str, str], str] = {}
-
-
-def lookup_binding(iss: str, sub: str) -> str | None:
-    """Stand-in for the `oidc_bindings` lookup Slice C adds to AuthStore, patched into `oidc_flow` so the
-    callback's happy path is testable now. Empty by default, which is why an unbound subject is refused."""
-    return _BINDINGS.get((iss, sub))
 
 
 def secret_file_for(tmp_path: Path, text: str = SECRET) -> Path:
@@ -233,17 +233,6 @@ def client_for(app: Any, *, cookie: str | None = None) -> Any:
     if cookie:
         client.cookies.set("airlie_session", cookie)
     return client
-
-
-@pytest.fixture(autouse=True)
-def no_bindings(monkeypatch: pytest.MonkeyPatch):
-    """No subject is bound unless a test binds one, and the mapping never outlives the test that made it."""
-    _BINDINGS.clear()
-    from airlie.auth import oidc_flow
-
-    monkeypatch.setattr(oidc_flow, "lookup_binding", lookup_binding, raising=False)
-    yield
-    _BINDINGS.clear()
 
 
 @pytest.fixture
@@ -602,15 +591,23 @@ def test_a_verified_but_unbound_subject_is_refused_and_no_user_appears(studio: S
     assert studio.store.users() == [dana]  # the sign-in created nobody
 
 
-def test_a_binding_to_a_user_airlie_does_not_have_is_refused(studio: Studio) -> None:
+def test_a_binding_to_a_user_airlie_does_not_have_is_refused(tmp_path: Path, studio: Studio) -> None:
     """A binding whose user id matches no row must not mint anything.
 
     This is the guard against the tempting shortcut of using the IdP's `sub` as the user id. `sub` is the
     issuer's identifier and never chosen by airlie; `user_id` is airlie's own primary key, and every
     downstream row (sessions, chat pins, source links) is keyed on it. Letting the issuer's namespace occupy
     airlie's means a subject that happens to name an existing row signs in as that row. Here the shortcut
-    would reach `make_session` for a user that does not exist."""
-    _BINDINGS[(ISSUER, "user-123")] = "no-such-user"
+    would reach `make_session` for a user that does not exist.
+
+    The store's foreign key refuses to create that row, and deleting a user cascades its bindings away, so
+    neither path can produce it — an orphan binding is written here by hand, with enforcement off, the way an
+    operator's own sqlite3 session would leave it (that client runs no `pragma foreign_keys`)."""
+    studio.store.conn.execute("pragma foreign_keys=off")
+    studio.store.conn.execute(
+        "insert into oidc_bindings (iss, sub, user_id, bound_at, bound_by) values (?, ?, ?, ?, ?)",
+        (ISSUER, "user-123", "no-such-user", studio.clock.t, "admin"),
+    )
     response = studio.succeed()
     assert response.status_code == 403
     assert session_cookie(response) is None
@@ -786,6 +783,269 @@ def test_a_refusal_is_logged_with_the_subject_but_never_a_token(studio: Studio, 
     assert SECRET not in joined
     assert "at-1" not in joined
     assert (studio.idp.tokens or {}).get("id_token", "no-token") not in joined
+
+
+# ---- Slice C: the session the callback mints ----
+
+
+def _max_age(response: httpx.Response) -> int | None:
+    for name, value in response.headers.multi_items():
+        if name.lower() == "set-cookie" and value.startswith("airlie_session="):
+            for part in value.split(";")[1:]:
+                key, _, got = part.strip().partition("=")
+                if key.lower() == "max-age":
+                    return int(got)
+    return None
+
+
+def test_an_oidc_session_is_minted_with_its_own_lifetime_not_session_days(studio: Studio) -> None:
+    """The callback's cookie says `session_hours` in the browser, not the 30-day `session_days` a passkey
+    login gets. The two have to agree in both places: a store row that outlives the cookie is a session the
+    browser threw away, and a cookie outliving the row is a browser that keeps sending a token nothing will
+    honour."""
+    studio.bind("user-123")
+    response = studio.succeed()
+    raw = session_cookie(response)
+    assert raw is not None
+    assert _max_age(response) == 12 * 3600
+    assert studio.store.session_expires_at(raw) == studio.clock.t + 12 * 3600
+
+
+def test_an_oidc_session_is_not_renewed_past_its_cap_by_ordinary_use(tmp_path: Path) -> None:
+    """The whole point of the cap, stated where the renewal happens.
+
+    A passkey session gets a fresh 30 days the moment it drops under half its life (`test_auth_api.py` pins
+    that), and the same middleware sees an IdP cookie too. Without the ceiling, a person the IdP had
+    deactivated would hold a self-renewing airlie session for another month after their first request — and
+    because the
+    renewal happens on a route that never spoke to the IdP, nothing else in the build would notice.
+
+    The session is walked out in ten-minute steps of real traffic, which is the shape of somebody actually
+    working: each call is a request that could have renewed it, and the walk runs right up to the moment the
+    passkey rule would have renewed. At every step it survives, the row is still exactly as long as the day it
+    was minted and the browser is told the same shortening number the store holds. A fresh client per request,
+    because a TestClient keeps the cookies a response sets and would otherwise hide a Set-Cookie that
+    mattered."""
+    studio = Studio(tmp_path, session_hours=1)
+    studio.bind("user-123")
+    token = session_cookie(studio.succeed())
+    assert token is not None
+    minted = studio.store.session_expires_at(token)
+    assert minted == studio.clock.t + 3600
+
+    steps = int((minted - studio.clock.t) // 600) - 1
+    for _ in range(steps):  # ten-minute steps up to the cap — past the half-life the passkey rule renews at
+        studio.clock.t += 600
+        response = client_for(studio.app, cookie=token).get("/v1/auth/me")
+        assert response.status_code == 200
+        assert studio.store.session_expires_at(token) == minted  # never pushed out, not by one second
+        if "set-cookie" in response.headers:  # the browser's copy shrinks toward the cap; it never grows
+            assert _max_age(response) == int(minted - studio.clock.t)
+
+    studio.clock.t += 3600  # one hour after minting: the cap, and the cookie is on its own way out
+    assert client_for(studio.app, cookie=token).get("/v1/auth/me").status_code == 401
+    studio.store.close()
+
+
+def test_a_passkey_session_is_still_renewed_where_an_oidc_one_is_not(tmp_path: Path) -> None:
+    """The cap must be about IdP sessions and nothing else. Same app, same middleware, same clock: a session
+    minted by a passkey login is still extended on use exactly as it was before this slice, or the change
+    would have quietly signed every passkey user out earlier instead of bounding the federation path."""
+    studio = Studio(tmp_path, session_hours=1)
+    dana = studio.store.add_user("Dana", "member", login="dana")
+    token = studio.store.make_session(dana.id, studio.cfg.auth.session_days)
+    studio.clock.t += 16 * 86400  # under half of 30 days, which is the renewal trigger
+    before = studio.store.session_expires_at(token)
+    assert client_for(studio.app, cookie=token).get("/v1/auth/me").status_code == 200
+    after = studio.store.session_expires_at(token)
+    assert after is not None and before is not None and after > before
+    assert after == studio.clock.t + studio.cfg.auth.session_days * 86400
+    studio.store.close()
+
+
+def test_a_refused_oidc_config_still_leaves_passkey_renewal_alone(tmp_path: Path) -> None:
+    """`session_hours` is only read through the OIDC block, so an install that has none — the shipped
+    default — must not acquire a ceiling it never asked for."""
+    studio = Studio(tmp_path)
+    dana = studio.store.add_user("Dana", "member", login="dana")
+    token = studio.store.make_session(dana.id, 30)
+    studio.clock.t += 16 * 86400
+    assert client_for(studio.app, cookie=token).get("/v1/auth/me").status_code == 200
+    assert studio.store.session_expires_at(token) == studio.clock.t + 30 * 86400
+    studio.store.close()
+
+
+# ---- Slice C: the admin's bind surface ----
+
+
+def _signed_in(studio: Studio, role: str = "admin") -> tuple[Any, Any]:
+    """A client holding a session for a person of this role, and that person. Most of these routes are about
+    who is asking, so the id is part of what a test has to keep rather than re-derive from the store."""
+    person = studio.store.add_user("Noah" if role == "admin" else "Pat", role, login=role)
+    return client_for(studio.app, cookie=studio.store.make_session(person.id, 30)), person
+
+
+def test_an_admin_binds_a_subject_and_the_person_can_then_sign_in(studio: Studio) -> None:
+    """The path an operator actually walks: a person is refused, the log names `iss` and `sub`, the admin
+    posts that pair at a person airlie already has, and the next sign-in works. Nothing about the callback
+    changed to make that happen — the admin surface writes the table the callback already read."""
+    admin = _signed_in(studio)[0]
+    dana = studio.store.add_user("Dana", "member", login="dana")
+    body = {"user_id": dana.id, "iss": ISSUER, "sub": "user-123", "email_display": "dana@acme.com"}
+    r = admin.post("/v1/auth/oidc/bindings", json=body)
+    assert r.status_code == 201, r.text
+    assert r.json()["user_id"] == dana.id and r.json()["sub"] == "user-123"
+    assert studio.store.lookup_binding(ISSUER, "user-123") == dana.id
+
+    signed_in = studio.succeed()
+    assert signed_in.status_code == 302
+    assert client_for(studio.app, cookie=session_cookie(signed_in)).get("/v1/auth/me").json()["user_id"] == (
+        dana.id
+    )
+
+
+def test_the_bind_surface_is_admin_only_and_anonymous_is_401(studio: Studio) -> None:
+    """`/oidc/start` and `/callback` are public because a stranger has to reach them; these are not, because
+    what they do is grant a person. A member is refused for the same reason they cannot invite or delete
+    anyone, and a stranger never gets as far as the role check — serve's middleware stops it first, which is
+    only true because the route is not on `PUBLIC_PATHS` (pinned by the test at the end of this group)."""
+    member = _signed_in(studio, role="member")[0]
+    body = {"user_id": "x", "iss": ISSUER, "sub": "s"}
+    assert member.get("/v1/auth/oidc/bindings").status_code == 403
+    assert member.post("/v1/auth/oidc/bindings", json=body).status_code == 403
+    assert member.delete(f"/v1/auth/oidc/bindings?iss={ISSUER}&sub=s").status_code == 403
+    anonymous = client_for(studio.app)
+    assert anonymous.get("/v1/auth/oidc/bindings").status_code == 401
+    assert anonymous.post("/v1/auth/oidc/bindings", json=body).status_code == 401
+    assert anonymous.delete(f"/v1/auth/oidc/bindings?iss={ISSUER}&sub=s").status_code == 401
+
+
+def test_binding_an_unknown_person_is_404_and_binds_nobody(studio: Studio) -> None:
+    """The subject in the log and the person in the People list are two strings an admin has to line up by
+    eye, so a mistyped id is the ordinary mistake. It must not create a row that points at nothing."""
+    admin = _signed_in(studio)[0]
+    r = admin.post(
+        "/v1/auth/oidc/bindings", json={"user_id": "no-such-user", "iss": ISSUER, "sub": "user-123"}
+    )
+    assert r.status_code == 404
+    assert studio.store.bindings() == []
+
+
+def test_an_empty_or_absent_field_is_refused_before_it_reaches_the_table(studio: Studio) -> None:
+    """Each of these would otherwise write a row that matches nothing (an empty `sub`) or everything
+    (no `user_id`), and a binding is the one row in this deployment that decides who may enter."""
+    admin = _signed_in(studio)[0]
+    dana = studio.store.add_user("Dana", "member", login="dana")
+    for body in (
+        {"user_id": dana.id, "iss": ISSUER, "sub": ""},
+        {"user_id": dana.id, "iss": "", "sub": "user-123"},
+        {"user_id": "", "iss": ISSUER, "sub": "user-123"},
+        {"user_id": dana.id, "iss": ISSUER},
+        {"iss": ISSUER, "sub": "user-123"},
+    ):
+        assert admin.post("/v1/auth/oidc/bindings", json=body).status_code == 422, body
+    assert studio.store.bindings() == []
+
+
+def test_the_list_names_who_is_bound_and_rebinding_moves_a_subject_to_one_person(studio: Studio) -> None:
+    """Two things the list has to get right: it is the audit trail, so it names the subject, the person and
+    the admin who linked them; and a subject corrected to a different person must appear once, because the
+    callback's answer has to be single-valued."""
+    admin, noah = _signed_in(studio)
+    dana = studio.store.add_user("Dana", "member", login="dana")
+    sam = studio.store.add_user("Sam", "member", login="sam")
+    admin.post("/v1/auth/oidc/bindings", json={"user_id": dana.id, "iss": ISSUER, "sub": "user-123"})
+    again = admin.post(
+        "/v1/auth/oidc/bindings",
+        json={"user_id": sam.id, "iss": ISSUER, "sub": "user-123", "email_display": "s@acme.com"},
+    )
+    assert again.status_code == 201
+    listed = admin.get("/v1/auth/oidc/bindings").json()
+    assert len(listed) == 1
+    assert listed[0]["user_id"] == sam.id and listed[0]["email_display"] == "s@acme.com"
+    assert listed[0]["bound_by"] == noah.id  # the audit trail names who clicked, not merely "an admin"
+    assert studio.store.lookup_binding(ISSUER, "user-123") == sam.id
+
+
+def test_deleting_a_bound_person_signs_them_out_and_is_not_inherited_by_a_namesake(studio: Studio) -> None:
+    """The whole hazard in one walk. The store test proves the cascade removes the row; this proves what the
+    deployment then does: the cookie the person was holding stops working, the subject that used to be them is
+    refused, and a *different* person created afterwards under the same login does not become the person the
+    IdP can sign in. Ids are uuid4, so inheritance would take a reused login rather than a reused id — the
+    ordinary thing that happens when somebody leaves and is replaced."""
+    admin = _signed_in(studio)[0]
+    dana = studio.bind("user-123")
+    raw = session_cookie(studio.succeed())
+    assert raw is not None
+    assert client_for(studio.app, cookie=raw).get("/v1/auth/me").status_code == 200
+
+    assert admin.delete(f"/v1/auth/users/{dana.id}").status_code == 204
+    assert client_for(studio.app, cookie=raw).get("/v1/auth/me").status_code == 401
+    assert studio.succeed().status_code == 403  # the subject is nobody now, not a ghost of Dana
+
+    studio.store.add_user("Dana", "admin", login="dana")  # a new person, the same login
+    assert studio.succeed().status_code == 403
+    # and only a deliberate admin act gives the newcomer that subject
+    made = admin.post("/v1/auth/oidc/bindings", json={"user_id": dana.id, "iss": ISSUER, "sub": "user-123"})
+    assert made.status_code == 404  # the deleted row is gone, so binding to it is refused
+    newcomer = studio.store.user_by_login("dana")
+    assert newcomer is not None and newcomer.id != dana.id
+    again = admin.post(
+        "/v1/auth/oidc/bindings", json={"user_id": newcomer.id, "iss": ISSUER, "sub": "user-123"}
+    )
+    assert again.status_code == 201
+    assert studio.succeed().status_code == 302
+
+
+def test_unbinding_stops_the_next_sign_in_and_404s_a_subject_that_was_never_bound(studio: Studio) -> None:
+    """Unbind is the revoke an operator can actually perform, so it has to bite on the *next* attempt: the
+    subject that signed in a moment ago is refused once its row is gone. And a typo in the pair must answer
+    404 rather than 204, or the operator believes a revocation happened that did not."""
+    admin = _signed_in(studio)[0]
+    studio.bind("user-123")
+    assert studio.succeed().status_code == 302
+
+    r = admin.delete(f"/v1/auth/oidc/bindings?iss={ISSUER}&sub=user-123")
+    assert r.status_code == 204
+    assert studio.succeed().status_code == 403
+    assert admin.delete(f"/v1/auth/oidc/bindings?iss={ISSUER}&sub=typo").status_code == 404
+
+
+def test_unbinding_leaves_existing_sessions_until_an_admin_ends_them(studio: Studio) -> None:
+    """Unbinding removes the route from an IdP subject to a person; it does not end what was already minted,
+    and this pins that split rather than leaving it to be assumed. A cookie belongs to a person, not to the
+    subject that happened to mint it, so ending it is the explicit per-person call — which is what makes the
+    pair of routes a complete revocation: unbind stops the next sign-in, the sessions call ends this one."""
+    admin = _signed_in(studio)[0]
+    dana = studio.bind("user-123")
+    raw = session_cookie(studio.succeed())
+    assert raw is not None
+    admin.delete(f"/v1/auth/oidc/bindings?iss={ISSUER}&sub=user-123")
+    assert client_for(studio.app, cookie=raw).get("/v1/auth/me").json()["user_id"] == dana.id
+
+    ended = admin.delete(f"/v1/auth/users/{dana.id}/sessions")
+    assert ended.status_code == 204
+    assert client_for(studio.app, cookie=raw).get("/v1/auth/me").status_code == 401
+
+
+def test_ending_sessions_keeps_the_person_and_their_passkeys(studio: Studio) -> None:
+    """The difference between this and `DELETE /v1/auth/users/{id}`, which is the reason both exist: a lost
+    laptop or a corporate session that must die now should not cost the person their passkey and an invite."""
+    admin = _signed_in(studio)[0]
+    dana = studio.bind("user-123")
+    raw = session_cookie(studio.succeed())
+    assert admin.delete(f"/v1/auth/users/{dana.id}/sessions").status_code == 204
+    assert studio.store.user(dana.id) is not None
+    assert studio.store.session_user(str(raw)) is None
+    assert admin.delete("/v1/auth/users/nobody/sessions").status_code == 404
+
+
+def test_the_admin_bind_routes_are_not_public(studio: Studio) -> None:
+    """serve allows a public path by exact string before resolving anyone. These three must not be on that
+    list: a public bind route would let any browser grant itself a person."""
+    assert "/v1/auth/oidc/bindings" not in PUBLIC_PATHS
+    assert "/v1/auth/oidc/start" in PUBLIC_PATHS  # the two that must stay public
+    assert "/v1/auth/oidc/callback" in PUBLIC_PATHS
 
 
 def session_cookie(response: httpx.Response) -> str | None:
