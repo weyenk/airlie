@@ -118,7 +118,12 @@ Where to look when something feels off: generation and prefill speed, stories in
 
 Who can sign in, their role, passkeys and Tailscale login, and an Engines table (each engine's state: `stopped`,
 `downloading`, `starting`, `ready`, `waiting`, `stopping`, `failed`, who holds it and why a caller is waiting). First admin and invites:
-`task auth:admin` / `task auth:invite` ([`docs/integrations/sign-in.md`](docs/integrations/sign-in.md)).
+`task auth:admin` / `task auth:invite` ([`docs/integrations/sign-in.md`](docs/integrations/sign-in.md)); a company IdP instead of a passkey is `auth.oidc` ([`docs/integrations/oidc-sign-in.md`](docs/integrations/oidc-sign-in.md)).
+Who the sign-in pages tell a person to ask for an invite is `auth.operator_label` — a name, a role or an
+organization; `your administrator` by default, so a default install shows a role it can actually stand behind
+rather than a person the build cannot know. The rest of
+the sign-in copy names neither a person, a machine, nor a kind of network, so it reads the same on a laptop, a
+NAS and a VPN-fronted host.
 
 <p align="center">
   <img src="docs/readme/admin.png" alt="Admin: people, roles, passkeys, invites" width="720" />
@@ -281,7 +286,8 @@ add its path to `[tool.airlie.mutation].enrolled` once `task mutate:changed` is 
 Terminal agents (OpenCode, Claude Code, Qwen Code) call the engine directly: see
 [`docs/integrations/local-agents.md`](docs/integrations/local-agents.md). VS Code's chat (Local session) and
 Cursor (`task tunnel`, with serve's `--api-key`) are in `docs/integrations/` too. People in the web app:
-[`docs/integrations/sign-in.md`](docs/integrations/sign-in.md) (passkeys, Tailscale, `task auth:admin`).
+[`docs/integrations/sign-in.md`](docs/integrations/sign-in.md) (passkeys, Tailscale, `task auth:admin`) and
+[`docs/integrations/oidc-sign-in.md`](docs/integrations/oidc-sign-in.md) (a company IdP; SSO grants no repository access).
 
 `task serve` starts an OpenAI-compatible server on `127.0.0.1:8090` and hosts the web app. Point Claude Code,
 Qwen Code, Cursor or `curl` at `http://127.0.0.1:8090/v1` and pick a role as the model name; airlie prepends

@@ -39,6 +39,15 @@ KNOWN_TOOLS = frozenset(
 
 MUTATING_TOOLS = frozenset({"write_file", "edit_file", "shell", "git", "run_tests"})  # fmt: skip
 
+DEFAULT_OPERATOR_LABEL = "your administrator"
+"""The operator the sign-in and invite screens name. A role phrase rather than a person: an install that never
+sets the key has no operator this build knows, so the fallback names the role instead of shipping one person's
+name as the product's voice. It reads in every sentence the copy builds, and none can add an apostrophe
+to it. The schema default, the web app's fallback when the
+server says nothing, and what `docs/integrations/sign-in.md` documents are this one string, so a default
+install's copy cannot drift from the value it would have to set to get back. `web/src/lib/operator.ts`
+keeps its own spelling of it: the build ships to a browser and cannot import Python."""
+
 
 class Sampling(Strict):
     temperature: float = 0.7
@@ -895,6 +904,24 @@ class AuthSpec(Strict):
         default=30, ge=1, description="how long a sign-in lasts idle; one used past half this is renewed"
     )
     invite_hours: int = Field(default=24, ge=1, description="how long an invite link may be used")
+    operator_label: str = Field(
+        default=DEFAULT_OPERATOR_LABEL,
+        min_length=1,
+        description="who the sign-in and invite screens say to ask for an invite; defaults to the role "
+        "phrase 'your administrator'. A personal name ('Noah'), an organization ('Acme Inc') or another "
+        "role are all fine. The one place the install names its operator, so the same build serves a "
+        "personal dogfood and a corporate one. It reaches an anonymous visitor (GET /v1/auth/operator) "
+        "because that is the copy their screen already prints, so it is not a place to keep a secret",
+    )
+
+    @field_validator("operator_label")
+    @classmethod
+    def _operator_label_says_something(cls, value: str) -> str:
+        """A label of spaces would render the sentence as a hole — exactly the blank the UI's fallback
+        exists to prevent — and the caller would have no idea the key was what did it."""
+        if not value.strip():
+            raise ValueError("auth.operator_label needs a word to show, not only whitespace")
+        return value
 
     @field_validator("trusted_proxies")
     @classmethod
