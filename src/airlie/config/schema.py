@@ -768,6 +768,17 @@ class NotificationsSpec(Strict):
     )
 
 
+def _origin_host_is_well_formed(host: str) -> bool:
+    """A host, with an optional :port, that could actually be dialled. Ports are allowed because airlie is
+    routinely served on one; an empty host or an empty port is a typo that would otherwise reach the IdP."""
+    name, colon, port = host.partition(":")
+    if not name:
+        return False
+    if not colon:
+        return True
+    return port.isdigit() and port != ""
+
+
 class OIDCSpec(Strict):
     """auth.oidc: sign in to airlie with a company IdP
     (docs/superpowers/specs/2026-11-26-oidc-sign-in-design.md). Off by default, so an install that never
@@ -812,6 +823,32 @@ class OIDCSpec(Strict):
         description="a claim whose values grant the admin role; null (default) makes every signed-in "
         "member and admin is granted in airlie, so an IdP group cannot silently mint admins",
     )
+    external_url: str | None = Field(
+        default=None,
+        description="the origin airlie is reached at, e.g. https://airlie.acme.com; the OIDC redirect_uri is "
+        "this plus a fixed path, so it is one configured value the IdP can match rather than a Host header "
+        "guessed per request (serve runs uvicorn with proxy_headers off, so that header is caller-supplied)",
+    )
+
+    @field_validator("external_url")
+    @classmethod
+    def _external_url_is_an_origin(cls, value: str | None) -> str | None:
+        """Same shape as the issuer, for a sharper reason: the redirect_uri is this plus a fixed path, so a
+        path or a trailing slash here yields a URI no IdP has registered, and a Host-derived value would let a
+        caller send the code exchange, and the client secret, to a host they chose."""
+        if value is None:
+            return None
+        if not value.startswith("https://"):
+            raise ValueError("external_url must be an https origin, e.g. https://airlie.acme.com")
+        rest = value.removeprefix("https://")
+        if not rest or "?" in rest or "#" in rest or "@" in rest:
+            raise ValueError("external_url must be an https origin, e.g. https://airlie.acme.com")
+        host, slash, _ = rest.partition("/")
+        if slash:
+            raise ValueError("external_url must carry no path; the redirect path is airlie's own")
+        if not _origin_host_is_well_formed(host):
+            raise ValueError("external_url must be an https origin, e.g. https://airlie.acme.com")
+        return value
 
     @field_validator("issuer")
     @classmethod
@@ -1402,7 +1439,7 @@ class AirlieConfig(Strict):
             problems.append("chat.sources lists github_app, which needs story.github_app.app_id")
         oidc = self.auth.oidc
         if oidc.enabled:  # an IdP that cannot finish a sign-in should fail at load, not on the callback
-            for field_name in ("issuer", "client_id", "client_secret_file"):
+            for field_name in ("issuer", "client_id", "client_secret_file", "external_url"):
                 if getattr(oidc, field_name) is None:
                     problems.append(f"auth.oidc.enabled needs auth.oidc.{field_name}")
         if oidc.allowed_groups and oidc.groups_claim is None:

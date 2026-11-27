@@ -16,6 +16,7 @@ def enabled(**overrides: object) -> dict:
         "issuer": "https://acme.okta.com",
         "client_id": "0oa123",
         "client_secret_file": "~/.config/airlie/oidc-secret",
+        "external_url": "https://airlie.acme.com",
         **overrides,
     }
 
