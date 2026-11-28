@@ -7,7 +7,9 @@ import { promptFileText, promptProblems } from "./promptFile";
 defineOptions({ name: "AirlieBuilderPromptFileDialog" });
 
 /** A new prompt file for a draft to carry: its id, the roles it is for, the fields it reads (the node's inputs and
- * `feedback`), why it exists, and its body. Create hands up the file's text. */
+ * `feedback`), why it exists, and its body. Create hands up the file's text.
+ *
+ * The body takes a pasted file too — a brief that already exists elsewhere is pasted whole rather than retyped. */
 const props = defineProps<{ open: boolean; roles: string[]; fields: string[]; hub: string[]; role?: string }>();
 const emit = defineEmits<{ "update:open": [open: boolean]; create: [id: string, text: string] }>();
 
@@ -36,6 +38,21 @@ function create() {
   if (problems.value.length) return;
   emit("create", file.value.id, promptFileText(file.value));
   emit("update:open", false);
+}
+
+const chosen = ref<HTMLInputElement | null>(null);
+/** A picked text file: its name seeds the id (a file named for its brief rarely needs typing), its text is the
+ * body. A non-text file reads as garbage, so its name only and the person's judgement. */
+async function read(file0: File | undefined) {
+  if (!file0) return;
+  if (!id.value) id.value = file0.name.replace(/\.(md|markdown|txt|prompt)$/i, "").replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "");
+  try {
+    body.value = await file0.text();
+  } catch {
+    // unreadable: the id it offered stands, the body stays for typing
+  }
+  // read() resolves after the input's own reset, so clearing first would be undone
+  if (chosen.value) chosen.value.value = "";
 }
 const fieldClass = "w-full rounded-md border border-input bg-background px-2 py-1.5 text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-ring";
 </script>
@@ -75,6 +92,10 @@ const fieldClass = "w-full rounded-md border border-input bg-background px-2 py-
         <label class="flex flex-col gap-1">
           <span class="text-muted-foreground">body</span>
           <textarea v-model="body" data-prompt-body rows="8" :class="[fieldClass, 'font-mono text-xs']" />
+        </label>
+        <label class="flex items-center gap-2 text-xs text-muted-foreground">
+          <input ref="chosen" type="file" data-prompt-file accept=".md,.markdown,.txt,.prompt,text/markdown,text/plain" class="text-xs" @change="read(($event.target as HTMLInputElement).files?.[0])" />
+          or fill this from a file on this computer
         </label>
         <ul v-if="problems.length" data-prompt-problems class="flex flex-col gap-0.5 text-xs text-muted-foreground">
           <li v-for="p in problems" :key="p">{{ p }}</li>

@@ -3,6 +3,7 @@ import { computed } from "vue";
 import type { GNode } from "./graph";
 
 import { SHAPE_CLASS, shapeOf } from "./shapes";
+import { kindLabel } from "./palette_types";
 
 /** One node on the canvas, in its type's shape; the canvas sets where it sits. A box validation found wrong is
  * outlined, and its hover says what is wrong. */
@@ -22,7 +23,7 @@ const sub = computed(() => {
   return "";
 });
 const bad = computed(() => (props.problems?.length ?? 0) > 0);
-const title = computed(() => [`${props.node.id} (${props.node.kind})`, ...(props.problems ?? [])].join("\n"));
+const title = computed(() => [`${props.node.id} (${kindLabel(props.node.kind)})`, ...(props.problems ?? [])].join("\n"));
 </script>
 
 <template>

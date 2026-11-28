@@ -319,7 +319,7 @@ test("the selected box shows its card; Edit and a double-click open the box", as
   const w = editable(graphOf(STORY_YAML), { selected: "layers" });
   const card = w.get("[data-box-card]");
   expect(card.text()).toContain("layers");
-  expect(card.text()).toContain("WORK");
+  expect(card.text()).toContain("Task"); // the kind's word for a person; the wire name stays WORK
   await w.get("[data-box-edit]").trigger("click");
   expect(w.emitted("open")).toEqual([["layers"]]);
   await w.get("[data-box][data-node=base]").trigger("dblclick");
