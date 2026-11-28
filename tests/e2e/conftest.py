@@ -61,12 +61,21 @@ OUTLINE = "3px solid #d9546e"
 @dataclass
 class Upstream:
     """The engine behind the test server: answers every chat completion with `reply`, as a stream or whole,
-    and keeps the bodies it was sent."""
+    and keeps the bodies it was sent. `probes` are the model lists a turn asks for before it streams.
+
+    A real engine answers both routes, and one transport carries both here, so answering only completions
+    would read the pre-flight as a turn: `request.content` is empty on a GET, and parsing it as a completion
+    body is what made every chat turn in this layer answer 502 with no assistant message on screen.
+    """
 
     reply: str = "ok"
     requests: list[dict[str, Any]] = field(default_factory=list)
+    probes: list[str] = field(default_factory=list)
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            self.probes.append(str(request.url))
+            return httpx.Response(200, json={"data": [{"id": "base"}]})
         body = json.loads(request.content)
         self.requests.append(body)
         if body.get("stream"):
