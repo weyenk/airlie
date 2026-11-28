@@ -25,7 +25,7 @@ const LIMITS = { max_per_message: 10, max_image_mb: 20, max_video_mb: 100, max_f
 export const OPTIONS: ChatOptions = {
   models: [
     { id: "gemma4", label: "Gemma 4" },
-    { id: "mlx-community--Qwen3.8-27B-4bit", label: "Qwen 3.8 27B" },
+    { id: "Qwen3.8-27B-oQ4e-mtp", label: "Qwen 3.8 27B" },
   ],
   personas: [
     { id: "chat", label: "chat" },

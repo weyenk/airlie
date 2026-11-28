@@ -2,9 +2,9 @@
 # The names roles pick (`roles.<name>.model`) and the label people see; each must be served by an engine in
 # airlie.yaml (`engines.<name>.models`). Weights, revisions and sizing belong to whatever serves the endpoint.
 models:
-  Qwen3.5-0.8B-oQ8e-mtp:
-    label: Qwen3.5 0.8B
-  mlx-community--Qwen3.8-27B-4bit:
+  Qwen3.8-27B-oQ4e-mtp:
     label: Qwen3.8 27B
   Qwen3.8-Flash-Next-oQ4e-mtp:
     label: Qwen3.8 Flash
+  Qwen3.5-9B-MLX-4bit:
+    label: Qwen3.5 9B

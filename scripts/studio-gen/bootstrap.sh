@@ -97,8 +97,8 @@ RAPID_MLX_HOST=0.0.0.0
 RAPID_MLX_API_KEY=${API_KEY}
 RAPID_MLX_IMAGE_MODEL=${IMAGE_MODEL}
 RAPID_MLX_VIDEO_MODEL=${VIDEO_MODEL}
-# Hostnames clients send (Tailscale MagicDNS + loopback). Quoted for shell source.
-RAPID_MLX_TRUSTED_HOSTS="localhost 127.0.0.1 mac-studio mac-studio.local mac-studio.taila5f450.ts.net 100.77.221.113"
+# Hostnames clients send (Tailscale MagicDNS + loopback + LAN IP for homenet). Quoted for shell source.
+RAPID_MLX_TRUSTED_HOSTS="localhost 127.0.0.1 mac-studio mac-studio.local mac-studio.taila5f450.ts.net 100.77.221.113 192.168.4.34"
 RAPID_MLX_RUN=${SCRIPT_DIR}/run-serve.sh
 EOF
 chmod 600 "${ENV_FILE}"

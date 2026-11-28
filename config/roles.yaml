@@ -2,7 +2,7 @@
 roles:
   summarizer:                      # LTS summary keys (15–20 words), stateless
     prompt: prompts/roles/summarizer.md
-    model: Qwen3.5-0.8B-oQ8e-mtp
+    model: Qwen3.5-9B-MLX-4bit
     max_context: 8192
     max_tokens: 64
     thinking: false
@@ -14,7 +14,7 @@ roles:
       presence_penalty: 0.0
   judge:                           # YES/NO admission judge and aggregator tie-breaker
     prompt: prompts/roles/judge.md
-    model: Qwen3.5-0.8B-oQ8e-mtp
+    model: Qwen3.5-9B-MLX-4bit
     max_context: 16384
     max_tokens: 256
     thinking: false
@@ -26,7 +26,7 @@ roles:
       presence_penalty: 0.0
   hypothesizer:                    # fork-when-stuck: lists distinct root-cause hypotheses at a fork point
     prompt: prompts/roles/hypothesizer.md
-    model: Qwen3.5-0.8B-oQ8e-mtp
+    model: Qwen3.5-9B-MLX-4bit
     max_context: 16384
     max_tokens: 400
     thinking: false
@@ -94,7 +94,7 @@ roles:
       presence_penalty: 0.0
   architect:
     prompt: prompts/roles/architect.md
-    model: mlx-community--Qwen3.8-27B-4bit
+    model: Qwen3.8-27B-oQ4e-mtp
     skills: docs/wiki/qa
     tools: [read_file, write_file, edit_file, list_dir, grep, shell, run_tests, git, compute]
     max_context: 131072
@@ -174,7 +174,7 @@ roles:
       presence_penalty: 0.0
   research:
     prompt: prompts/roles/research.md
-    model: mlx-community--Qwen3.8-27B-4bit
+    model: Qwen3.8-27B-oQ4e-mtp
     tools: [read_file, list_dir, grep, search_knowledge, web_search, web_fetch]
     knowledge: knowledge/research
     max_tokens: 16384
@@ -189,7 +189,7 @@ roles:
       presence_penalty: 0.0
   security:
     prompt: prompts/roles/security.md
-    model: mlx-community--Qwen3.8-27B-4bit
+    model: Qwen3.8-27B-oQ4e-mtp
     tools: [read_file, list_dir, grep]
     max_tokens: 4096
     thinking: false
@@ -231,7 +231,7 @@ roles:
       presence_penalty: 0.0
   aggregator:                      # spec 01 §4 step 9: combines team outputs into the final verified answer
     prompt: prompts/roles/aggregator.md
-    model: mlx-community--Qwen3.8-27B-4bit
+    model: Qwen3.8-27B-oQ4e-mtp
     max_context: 65536
     max_tokens: 4096
     thinking: false

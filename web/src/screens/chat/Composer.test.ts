@@ -179,11 +179,11 @@ test("the person can choose a model and persona; each choice PATCHes the chat wi
   const { w } = await open();
   expect(w.findAll("[data-model-select] option").map((o) => o.text())).toEqual(["Gemma 4", "Qwen 3.8 27B"]);
   expect(w.findAll("[data-persona-select] option").map((o) => o.attributes("value"))).toEqual(["chat", "architect"]);
-  await w.get("[data-model-select]").setValue("mlx-community--Qwen3.8-27B-4bit");
+  await w.get("[data-model-select]").setValue("Qwen3.8-27B-oQ4e-mtp");
   await flushPromises();
   await w.get("[data-persona-select]").setValue("architect");
   await flushPromises();
-  expect(patches()).toEqual([{ model: "mlx-community--Qwen3.8-27B-4bit" }, { persona: "architect" }]);
+  expect(patches()).toEqual([{ model: "Qwen3.8-27B-oQ4e-mtp" }, { persona: "architect" }]);
   expect(server.calls.filter((c) => c.method === "PATCH").every((c) => c.url === "/v1/airlie/chat/threads/chat-1")).toBe(true);
   expect(chosen(w.get("[data-model-select]"))).toBe("Qwen 3.8 27B");
   expect(chosen(w.get("[data-persona-select]"))).toBe("architect");

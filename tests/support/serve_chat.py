@@ -148,17 +148,26 @@ class SlowStream(httpx.AsyncByteStream):
 class ScriptedUpstream:
     """The engine's streamed chat/completions, one scripted reply per request (then "hi"), the way mlx-vlm
     streams it: content deltas, a tool call in one delta, a usage frame. `bodies` are the requests; `observe`
-    is called as each arrives."""
+    is called as each arrives.
+
+    It answers the engine's other route too, because a serve's turn asks for the model list before it streams
+    (the turn's pre-flight) and shares this transport to do it: an upstream that read that as a turn would
+    spend a scripted reply on it and answer the turn with nothing.
+    """
 
     def __init__(
         self, *replies: Text | Call | Fail | Hang | Slow, observe: Callable[[], Any] | None = None
     ) -> None:
         self.replies = list(replies)
         self.bodies: list[dict[str, Any]] = []
+        self.probes: list[str] = []
         self.observe = observe
         self.calls = 0
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):  # the pre-flight: an answer, not a turn
+            self.probes.append(str(request.url))
+            return httpx.Response(200, json={"data": [{"id": "base"}]})
         self.bodies.append(json.loads(request.content))
         if self.observe is not None:
             self.observe()
