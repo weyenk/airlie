@@ -1593,13 +1593,13 @@ def test_the_committed_config_lists_github_app_as_the_chat_source() -> None:
 
 
 def test_committed_catalog_uses_upstream_ids() -> None:
-    cfg = load_config()
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     assert set(cfg.models) >= {
         "Qwen3.8-Flash-Next-oQ4e-mtp",
-        "mlx-community--Qwen3.8-27B-4bit",
-        "Qwen3.5-0.8B-oQ8e-mtp",
+        "Qwen3.8-27B-oQ4e-mtp",
+        "Qwen3.5-9B-MLX-4bit",
     }
     assert "fast" not in cfg.models
     assert cfg.roles["chat"].model == "Qwen3.8-Flash-Next-oQ4e-mtp"
-    assert cfg.roles["architect"].model == "mlx-community--Qwen3.8-27B-4bit"
+    assert cfg.roles["architect"].model == "Qwen3.8-27B-oQ4e-mtp"
     assert cfg.engines["workflow"].passthru == {}

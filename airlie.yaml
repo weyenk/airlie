@@ -20,8 +20,8 @@ engines:
     base_url: ${AIRLIE_WORKFLOW_BASE_URL}
     api_key: ${AIRLIE_WORKFLOW_API_KEY}
     models:
-      - mlx-community--Qwen3.8-27B-4bit
-      - Qwen3.5-0.8B-oQ8e-mtp
+      - Qwen3.8-27B-oQ4e-mtp
+      - Qwen3.5-9B-MLX-4bit
       - Qwen3.8-Flash-Next-oQ4e-mtp
     passthru: {}
 
