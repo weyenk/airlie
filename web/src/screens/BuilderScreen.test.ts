@@ -156,10 +156,10 @@ test("a click on a box selects it; its card's Edit opens its fields in the modal
   await flushPromises();
   const modal = document.body.querySelector("[data-node-modal]")!;
   expect((modal.querySelector("input[data-input=id]") as HTMLInputElement).value).toBe("survey");
-  expect(modal.querySelector("[data-node-kind]")!.textContent).toBe("WORK");
+  expect(modal.querySelector("[data-node-kind]")!.textContent).toBe("Task");
   expect((modal.querySelector("select[data-input=role]") as HTMLSelectElement).value).toBe("architect");
   expect((modal.querySelector("select[data-input=prompt-file]") as HTMLSelectElement).value).toBe("prompt:story-survey");
-  expect((modal.querySelector("[data-input-name=card]") as HTMLInputElement).checked).toBe(true);
+  expect(modal.querySelector('[data-input-row="card"]')).not.toBeNull();
   expect((modal.querySelector("[data-output-row] [data-output-name]") as HTMLInputElement).value).toBe("survey");
   expect((modal.querySelector("[data-output-row] [data-output-format]") as HTMLSelectElement).value).toBe("markdown");
   (modal.querySelector("[data-node-done]") as HTMLButtonElement).click();
@@ -541,9 +541,22 @@ test("a box's modal edits the box as the change is made", async () => {
   api.getWorkflowDef.mockResolvedValue(lined());
   const { w } = await open("/workflows/build/fix");
   await openBoxEdit(w, "fix");
-  const verdict = document.body.querySelector("[data-node-modal] [data-input-name=verdict]") as HTMLInputElement;
-  verdict.checked = true;
-  verdict.dispatchEvent(new Event("change"));
+  // Add input, then the second dropdown: the box's own inputs are [report], and verdict is another box's output.
+  // The draft opens on the first kind, so it is moved to that kind before its candidates show.
+  (document.body.querySelector("[data-input-add]") as HTMLButtonElement).click();
+  await flushPromises();
+  const kinds = document.body.querySelector("[data-input-draft-source]") as HTMLSelectElement;
+  expect([...kinds.options].map((o) => o.value)).toEqual(["workflow", "box", "repo", "file", "literal"]);
+  kinds.value = "box";
+  kinds.dispatchEvent(new Event("change"));
+  await flushPromises();
+  const picked = document.body.querySelector("[data-input-draft-value]") as HTMLSelectElement;
+  // "Another box" offers every readable name — "the workflow" is not a box, so `card` stays out
+  expect([...picked.options].map((o) => o.value)).toEqual(["", "report", "verdict"]);
+  picked.value = "verdict";
+  picked.dispatchEvent(new Event("change"));
+  await flushPromises();
+  (document.body.querySelector("[data-input-draft-add]") as HTMLButtonElement).click();
   await flushPromises();
   (document.body.querySelector("[data-node-done]") as HTMLButtonElement).click();
   await flushPromises();

@@ -8,7 +8,9 @@ import CatalogPicker from "./CatalogPicker.vue";
 import { formatSentence, outputSpecs, specValue } from "./fields";
 import { NODE_KINDS, inputsOf, readable, renameNode, renameOutput } from "./graph";
 import type { GNode, Graph, NodeSpec, OutputSpec } from "./graph";
+import InputsEditor from "./InputsEditor.vue";
 import OutputsEditor from "./OutputsEditor.vue";
+import { kindLabel } from "./palette_types";
 import { promptFieldsOf } from "./promptFile";
 import PromptFileDialog from "./PromptFileDialog.vue";
 import PromptText from "./PromptText.vue";
@@ -40,9 +42,9 @@ const isMeeting = computed(() => kind.value === "ROUND_ROBIN");
 const isSupervisor = computed(() => kind.value === "SUPERVISOR_WORKERS");
 const isKin = computed(() => kind.value === "K_INDEPENDENT_TEAMS");
 const isBundleBox = computed(() => kind.value === "WORK" && text(spec.value.workflow) !== "");
-const isRunBox = computed(
-  () => kind.value === "WORK" && !isBundleBox.value && (typeof spec.value.run === "string" || (!text(spec.value.prompt) && !text(spec.value.prompt_id))),
-);
+// A WORK box is a run box while it runs a command. An empty `prompt: ""` — what trading the run away for a written
+// prompt hands back — counts as no prompt text, and must stay on the prompt side rather than bounce back as a run box.
+const isRunBox = computed(() => kind.value === "WORK" && !isBundleBox.value && (typeof spec.value.run === "string" || (!text(spec.value.prompt) && !text(spec.value.prompt_id) && !("prompt" in spec.value || "prompt_id" in spec.value))));
 const isPromptBox = computed(() => kind.value === "WORK" && !isBundleBox.value && !isRunBox.value);
 const hasTurn = computed(() => typeof spec.value.turn === "string");
 const type = kind;
@@ -90,12 +92,6 @@ function rename(e: Event) {
 // inputs: what the box may read (the workflow's inputs, the other boxes' outputs), and anything it reads already
 const inputs = computed(() => inputsOf(spec.value));
 const readableNames = computed(() => [...new Set([...readable(props.graph, props.node.id), ...inputs.value, ...(isMeeting.value ? (meeting.value?.inputs ?? []) : [])])]);
-/** A meeting's input the protocol fixes: listed, it cannot be unchecked (the protocol reads it). */
-const fixedInput = (name: string) => isMeeting.value && (meeting.value?.inputs ?? []).includes(name);
-function toggleInput(name: string, on: boolean) {
-  const next = on ? [...inputs.value.filter((n) => n !== name), name] : inputs.value.filter((n) => n !== name);
-  set("inputs", next);
-}
 
 /** The boxes upstream of this one: those that reach it along forward lines (a loop line goes back, not down). */
 const upstream = computed(() => {
@@ -122,6 +118,15 @@ const written = computed(() => {
   }
   return out;
 });
+/** Who writes a readable name that reaches the box along a line: the workflow for one of its inputs, the boxes
+ * upstream for another's output. A box further down that happens to write the same name is not a producer here — it
+ * hands nothing over, so the row must not refuse to drop that name. */
+const readableRows = computed(() =>
+  readableNames.value.map((name) => ({
+    name,
+    producers: props.graph.inputs.includes(name) ? ["the workflow"] : (written.value.get(name) ?? []).map((w) => w.node.id),
+  })),
+);
 
 // role: one for a model box; a supervisor and a worker for a team; a meeting's are the protocol's
 const role = computed(() => (typeof spec.value.role === "string" ? spec.value.role : ""));
@@ -146,6 +151,10 @@ const meetingRoles = computed(() => {
 });
 const roleChoices = computed(() => [...new Set([...(meeting.value?.roles ?? []), ...meetingRoles.value])]);
 const fixedRole = (r: string) => (meeting.value?.roles ?? []).includes(r);
+/** The protocol's inputs the box must keep listed. One stable array: a fresh one per render would rebuild the
+ * inputs editor's rows (and drop a row being typed) on every patch. */
+const protocolInputs = computed(() => (isMeeting.value ? (meeting.value?.inputs ?? []) : []));
+
 /** The protocol's roles and inputs the box does not list. */
 const unseated = computed(() => {
   const m = meeting.value;
@@ -187,20 +196,27 @@ const prompt = computed(() =>
   typeof spec.value.prompt_id === "string" && spec.value.prompt_id ? `prompt:${text(spec.value.prompt_id)}` : text(spec.value.prompt),
 );
 const fileMode = ref(false);
+// a run box that picked the prompt file: answered once by the watcher below, whose immediate first run must not
+// read it before usePromptFile exists
+let takeFile = false;
 const refusal = ref<string | null>(null);
 // another box: its prompt's own mode, and no refusal said of the last one
 watch(
   () => [props.node.id, spec.value.prompt_id, spec.value.prompt],
   () => {
-    fileMode.value = text(spec.value.prompt_id) !== "" || prompt.value.startsWith(PROMPT_FILE);
     refusal.value = null;
     nameRefusal.value = null;
+    // the box's own prompt says whether it is a file; the picker a run box asked for rides along with its trade,
+    // since the empty text handed back reads as no file
+    if (takeFile) fileMode.value = true;
+    else fileMode.value = text(spec.value.prompt_id) !== "" || prompt.value.startsWith(PROMPT_FILE);
   },
   { immediate: true },
 );
 const promptFiles = computed(() => [...new Set([...props.catalog.prompt_files, ...Object.keys(props.prompts)])].map((id) => `${PROMPT_FILE}${id}`));
 const dialog = ref(false);
 function pickPromptFile(e: Event) {
+  takeFile = false;
   const select = e.target as HTMLSelectElement;
   if (select.value === NEW) {
     select.value = prompt.value.startsWith(PROMPT_FILE) ? prompt.value : "";
@@ -218,9 +234,33 @@ function pickPromptFile(e: Event) {
   delete next.prompt_id;
   emitUpdate(next);
 }
-/** Back to a text: the file stays named until the text is written (an empty area changes nothing). */
+/** Back to a text: the file stays named until the text is written (an empty area changes nothing). A run box's
+ * trade cleared the flag first — that empty text is the picker's own asking, not a file's. */
 function writeHere() {
+  takeFile = false;
   fileMode.value = false;
+}
+/** A run box taking a prompt: the run goes (a WORK node has exactly one of prompt / prompt file / run), the text
+ * area is the box's fields from the next change on. */
+function usePromptHere() {
+  takeFile = false;
+  const next: NodeSpec = { ...spec.value, prompt: "" };
+  delete next.run;
+  delete next.prompt_id;
+  fileMode.value = false;
+  emitUpdate(next);
+}
+/** A run box taking a prompt file: the same trade, and the picker opens on the spot — a box cannot both run a
+ * command and ask a model, so the trade is said where the choice is made rather than by a picker with nothing
+ * in it. The flag lives until a pick, a write, or a new box: the empty prompt the trade hands back reads as no
+ * file, and the watcher below rebuilds the mode from the fields on every change. */
+function usePromptFile() {
+  takeFile = true;
+  const next: NodeSpec = { ...spec.value, prompt: "" };
+  delete next.run;
+  delete next.prompt_id;
+  fileMode.value = true;
+  emitUpdate(next);
 }
 function created(id: string, body: string) {
   emit("createPrompt", id, body);
@@ -330,10 +370,12 @@ function setEvent(outcome: "done" | "failed", e: Event) {
  * that does not read keeps the modal open, the error said by the field, so it is never dropped unsaid. */
 const form = ref<HTMLFormElement | null>(null);
 const outputsEditor = ref<InstanceType<typeof OutputsEditor> | null>(null);
+const inputsEditor = ref<InstanceType<typeof InputsEditor> | null>(null);
 function close() {
   const el = document.activeElement;
   const typing = el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && el.type !== "checkbox");
   if (typing && form.value?.contains(el)) el.dispatchEvent(new Event("change"));
+  if (inputsEditor.value?.held()) return;
   if (outputsEditor.value?.held()) return;
   emit("update:open", false);
 }
@@ -355,7 +397,7 @@ const label = "text-muted-foreground";
         <div class="flex items-center gap-2 pr-8">
           <DialogTitle class="sr-only">Edit the box {{ node.id }}</DialogTitle>
           <input :value="node.id" data-input="id" aria-label="Box name" :class="[control, 'max-w-xs font-mono font-semibold']" @change="rename" />
-          <span data-node-kind class="flex-none rounded-full bg-chip px-2 py-px text-xs font-semibold text-chip-foreground">{{ node.kind }}</span>
+          <span data-node-kind class="flex-none rounded-full bg-chip px-2 py-px text-xs font-semibold text-chip-foreground">{{ kindLabel(node.kind) }}</span>
           <DialogDescription class="truncate text-xs text-muted-foreground max-sm:sr-only">Changes apply as you make them.</DialogDescription>
         </div>
         <p v-if="nameRefusal" data-rename-refused="box" role="alert" class="-mt-1 text-xs text-danger-foreground">{{ nameRefusal }}</p>
@@ -380,7 +422,7 @@ const label = "text-muted-foreground";
                 :value="promptText"
                 :names="inputs"
                 grow
-                placeholder="What the box is asked; {name} reads one of its inputs"
+                :placeholder="isRunBox ? 'What the box is asked, now that it runs nothing; {name} reads one of its inputs' : 'What the box is asked; {name} reads one of its inputs'"
                 @commit="(t) => setTextValue('prompt', t)"
               >
                 <template #actions>
@@ -400,7 +442,9 @@ const label = "text-muted-foreground";
             </template>
 
             <template v-else-if="isRunBox">
-              <div data-form-field="run" class="flex min-h-0 flex-1 flex-col gap-1">
+              <!-- a run box asks nothing, so its prompt is off: the same two ways a model box has of carrying one,
+                   each trading the run away (a WORK node has exactly one of prompt / prompt file / run) -->
+              <div data-form-field="run" class="flex flex-col gap-1">
                 <span :class="label">{{ catalog.checks.length ? "run (a check from the catalog)" : "run (shell command)" }}</span>
                 <template v-if="catalog.checks.length">
                   <p v-if="text(spec.run) && !check" data-run-unknown class="text-xs text-danger-foreground">{{ text(spec.run) }} is not in the catalog.</p>
@@ -415,6 +459,14 @@ const label = "text-muted-foreground";
                   placeholder="true"
                   @change="set('run', valueOf($event) || undefined)"
                 />
+              </div>
+              <div data-form-field="prompt" class="flex flex-col gap-1">
+                <span :class="label">prompt, or a prompt file (a run box needs none: it asks nothing)</span>
+                <div class="flex flex-wrap gap-1.5">
+                  <Button type="button" size="xs" variant="outline" data-prompt-write-here @click="usePromptHere">Write a prompt here</Button>
+                  <Button type="button" size="xs" variant="outline" data-prompt-use-file @click="usePromptFile">Use a prompt file…</Button>
+                </div>
+                <span data-prompt-trade class="text-xs text-muted-foreground">Either replaces the run: a box runs a command or asks a model, never both.</span>
               </div>
             </template>
 
@@ -511,22 +563,19 @@ const label = "text-muted-foreground";
               <input data-input="advisor" :value="text(spec.advisor)" :class="[control, 'font-mono']" @change="setText('advisor', $event)" />
             </label>
 
-            <fieldset data-form-field="inputs" class="flex flex-col gap-1">
-              <legend :class="[label, 'mb-1']">inputs</legend>
-              <p v-if="!readableNames.length" class="text-muted-foreground">Nothing to read yet: give a box outputs, or the workflow inputs.</p>
-              <div class="flex flex-wrap gap-x-3 gap-y-1 font-mono text-xs">
-                <label v-for="n in readableNames" :key="n" class="inline-flex items-center gap-1.5">
-                  <input
-                    type="checkbox"
-                    :data-input-name="n"
-                    :data-fixed="fixedInput(n) ? 'true' : undefined"
-                    :checked="inputs.includes(n)"
-                    :disabled="fixedInput(n) && inputs.includes(n)"
-                    @change="toggleInput(n, ($event.target as HTMLInputElement).checked)"
-                  />{{ n }}<span v-if="fixedInput(n)" class="font-sans text-muted-foreground">(protocol)</span>
-                </label>
-              </div>
-            </fieldset>
+            <div data-form-field="inputs" class="flex flex-col gap-1">
+              <span :class="label">inputs</span>
+              <InputsEditor
+                ref="inputsEditor"
+                :key="node.id"
+                :inputs="inputs"
+                :readable="readableRows"
+                :workflow-inputs="graph.inputs"
+                :is-run-box="isRunBox"
+                :fixed="protocolInputs"
+                @update="(next) => set('inputs', next)"
+              />
+            </div>
             <div v-if="missing.length" data-form-field="missing" class="flex flex-col gap-1 rounded-md border border-warn p-2">
               <span class="text-xs text-muted-foreground">{{ check?.name }} reads these, which the box does not list:</span>
               <div class="flex flex-wrap gap-1">
