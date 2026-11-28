@@ -34,6 +34,7 @@ from airlie.board import BoardStore
 from airlie.board.api import board_router
 from airlie.board.model import WorkflowDraft
 from airlie.chat.confirm import Confirmations
+from airlie.chat.engine_probe import EngineProber
 from airlie.chat.hooks import UnknownSkill, default_hooks, slash_section
 from airlie.chat.sources_api import sources_router
 from airlie.chat.superpowers import SuperpowersLibrary, check_library
@@ -668,6 +669,7 @@ def create_app(
     pinnable: Callable[[], Awaitable[list[str]]] | None = None,
     repo_sources: Mapping[str, RepoSource] | None = None,
     model_live_ids: Callable[[], Awaitable[list[str]]] | None = None,
+    chat_engine_probe: Callable[[str], Awaitable[None]] | None = None,
     run_start: Callable[..., Awaitable[Any]] | None = None,
     run_engine: Callable[[], Any] | None = None,
 ) -> FastAPI:
@@ -702,6 +704,7 @@ def create_app(
         build_commit()
     )  # the code this process runs: a pull after it changes the checkout, not this
     started_release = running_release(started_commit)  # read once: an image does not change under us
+    chat_prober: Any = chat_engine_probe or EngineProber(transport)
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
     factory = orchestrator_factory or _default_factory
     feed = Feed()
@@ -1183,6 +1186,7 @@ def create_app(
             allowlist=model_allowlist,
             live_ids=model_live_ids or _live_model_ids(cfg, client),
             chat_slot=dispatcher.request_chat_slot,
+            engine_probe=chat_prober,
         )
     )
     app.include_router(
@@ -1950,6 +1954,7 @@ def create_app(
         except Exception:
             log.exception("stopping the chat VMs at shutdown failed")
         await leases.close()  # engines stay running
+        await chat_prober.aclose()
         serving_cm.close()
         watcher.stop()
         await client.aclose()

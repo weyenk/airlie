@@ -24,6 +24,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 from airlie.auth.principal import Principal
 from airlie.boxes.protocol import BoxUnavailable
 from airlie.chat.confirm import Answered, Approval, Confirmations, answered_note, before_tool, guard
+from airlie.chat.engine_probe import EngineOffline
 from airlie.chat.hooks import Hooks, TurnContext, TurnRefused
 from airlie.chat.kinds import ChatKind, KindUnavailable, registry_for
 from airlie.chat.repo_session import NoAccess, RepoSessions, session_branch, valid_repo
@@ -364,6 +365,7 @@ def chat_router(
     allowlist: ModelAllowlist | None = None,
     live_ids: Callable[[], Awaitable[list[str]]] | None = None,
     chat_slot: ChatSlot | None = None,
+    engine_probe: Callable[[str], Awaitable[None]] | None = None,
 ) -> APIRouter:
     """`publish` is the live feed's: each change to a thread (made, a turn's end, an answer, deleted) sends
     the `chat` hint with no key (the feed reaches every signed-in client: it names no one's chat; each
@@ -384,6 +386,9 @@ def chat_router(
     clock = clock or RealClock()
     confirmations = confirmations if confirmations is not None else Confirmations(cfg)
     hooks.on("before_tool", before_tool(confirmations))
+    # Off unless a probe is given: a turn refuses with 502 rather than open a stream a dead engine can only
+    # answer with silence.
+    probe = engine_probe
 
     async def drop_empty(thread: Thread, principal: Principal) -> None:
         """A thread this request opened and could not start leaves no empty row (nor VM) behind."""
@@ -575,6 +580,15 @@ def chat_router(
             # allowlist alone says so, so a turn costs the engine no model-list request
             return error(f"model '{model}' is not allowed in airlie", 400)
         engine_name = engine_of(model, engine_name)
+        # Prove that engine answers before taking any of the turn's state (thread, run slot, busy turn, VM).
+        # Once the stream is open a dead engine has nothing left to say it with: the person keeps a spinner,
+        # and the server log gets nothing pointing at the engine. That is how this shipped unnoticed.
+        if probe is not None:
+            try:
+                await probe(cfg.engines[engine_name].base_url)
+            except EngineOffline as e:
+                log.error("chat turn refused: %s", e)
+                return error(str(e), 502)
         stored: StoredMessage | None = None
         retries: str | None = None
         parts: list[dict[str, Any]] = []
